@@ -1996,6 +1996,41 @@ async fn cypher_transparent_with_relationship_aliases_execute_against_synthetic_
 }
 
 #[tokio::test]
+async fn cypher_transparent_with_dropped_variables_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person)-[:OWNS]->(service:Service) \
+         WITH service \
+         MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         RETURN service.name AS service, dependency.name AS dependency \
+         ORDER BY service, dependency",
+    )
+    .await
+    .expect("transparent WITH with dropped variables should execute");
+
+    assert!(
+        !execution.translated_sql().contains("WITH"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments"}),
+            json!({"service": "billing-api", "dependency": "experiments"}),
+            json!({"service": "deployments", "dependency": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_transparent_with_star_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

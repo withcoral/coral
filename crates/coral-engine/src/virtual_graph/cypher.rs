@@ -51,6 +51,8 @@ struct CompiledRelationship {
 #[derive(Debug, Default)]
 struct CypherCompileState {
     ignored_path_variables: BTreeSet<String>,
+    hidden_graph_variables: BTreeSet<String>,
+    out_of_scope_graph_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -812,15 +814,33 @@ fn apply_transparent_with_scope(
         renames.insert(input, output);
     }
 
-    let bound = bound_graph_variables(plan);
-    if carried_inputs != bound {
+    let visible = visible_graph_variables(plan, state);
+    if !carried_inputs.is_subset(&visible) {
         return Err(unsupported(
             format!("{path}.items"),
-            "transparent WITH must carry every currently bound graph variable without dropping or adding variables",
+            "transparent WITH can only carry currently visible graph variables",
         ));
+    }
+    let dropped_variables = visible
+        .difference(&carried_inputs)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut hidden_renames = BTreeMap::new();
+    for variable in &dropped_variables {
+        let hidden = fresh_hidden_graph_variable(plan, state, variable);
+        renames.insert(variable.clone(), hidden.clone());
+        hidden_renames.insert(hidden.clone(), hidden);
     }
     if renames.iter().any(|(from, to)| from != to) {
         rename_graph_plan_variables(plan, &renames);
+        rename_hidden_graph_variables(state, &renames);
+    }
+    state
+        .hidden_graph_variables
+        .extend(hidden_renames.into_values());
+    state.out_of_scope_graph_names.extend(dropped_variables);
+    for variable in carried_outputs {
+        state.out_of_scope_graph_names.remove(&variable);
     }
 
     let predicate = compile_transparent_with_where(with, plan, path.clone(), context)?;
@@ -861,6 +881,24 @@ fn bound_graph_variables(plan: &GraphPlan) -> BTreeSet<String> {
                 .filter_map(|relationship| relationship.variable.clone()),
         )
         .collect()
+}
+
+fn visible_graph_variables(plan: &GraphPlan, state: &CypherCompileState) -> BTreeSet<String> {
+    bound_graph_variables(plan)
+        .difference(&state.hidden_graph_variables)
+        .cloned()
+        .collect()
+}
+
+fn rename_hidden_graph_variables(
+    state: &mut CypherCompileState,
+    renames: &BTreeMap<String, String>,
+) {
+    state.hidden_graph_variables = state
+        .hidden_graph_variables
+        .iter()
+        .map(|variable| renames.get(variable).unwrap_or(variable).clone())
+        .collect();
 }
 
 fn rename_graph_plan_variables(plan: &mut GraphPlan, renames: &BTreeMap<String, String>) {
@@ -1193,7 +1231,7 @@ fn reject_ignored_path_variable_references(
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
-    if state.ignored_path_variables.is_empty() {
+    if state.ignored_path_variables.is_empty() && state.out_of_scope_graph_names.is_empty() {
         return Ok(());
     }
     for (index, projection) in plan.projections.iter().enumerate() {
@@ -1784,6 +1822,12 @@ fn reject_ignored_path_variable(
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
+    if state.out_of_scope_graph_names.contains(variable) {
+        return Err(unsupported(
+            path,
+            format!("graph variable '{variable}' is not in scope after WITH"),
+        ));
+    }
     if state.ignored_path_variables.contains(variable) {
         return Err(unsupported(
             path,
@@ -1793,6 +1837,10 @@ fn reject_ignored_path_variable(
         ));
     }
     Ok(())
+}
+
+fn mark_graph_variable_in_scope(state: &mut CypherCompileState, variable: &str) {
+    state.out_of_scope_graph_names.remove(variable);
 }
 
 fn compile_reading_clauses_into(
@@ -1997,6 +2045,7 @@ fn compile_match_into(
         let mut previous_variable = start_node.variable.clone();
         plan.predicates.extend(start_node.predicates);
         if let Some(pattern) = start_node.pattern {
+            mark_graph_variable_in_scope(state, &pattern.variable);
             plan.nodes.push(pattern);
         }
 
@@ -2027,9 +2076,13 @@ fn compile_match_into(
             previous_variable = next_variable;
             plan.predicates.extend(next_node.predicates);
             if let Some(pattern) = next_node.pattern {
+                mark_graph_variable_in_scope(state, &pattern.variable);
                 plan.nodes.push(pattern);
             }
             plan.predicates.extend(relationship.predicates);
+            if let Some(variable) = relationship.pattern.variable.as_deref() {
+                mark_graph_variable_in_scope(state, variable);
+            }
             if match_clause.optional {
                 plan.optional_relationships.push(relationship_index);
             }
@@ -6534,6 +6587,27 @@ fn fresh_internal_relationship_variable(
     }
 }
 
+fn fresh_hidden_graph_variable(
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    variable: &str,
+) -> String {
+    let mut suffix = 0;
+    loop {
+        let candidate = if suffix == 0 {
+            format!("__coral_hidden_{variable}")
+        } else {
+            format!("__coral_hidden_{variable}_{suffix}")
+        };
+        if !plan_uses_variable(plan, &candidate)
+            && !state.hidden_graph_variables.contains(&candidate)
+        {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 fn plan_uses_variable(plan: &GraphPlan, candidate: &str) -> bool {
     plan.nodes.iter().any(|node| node.variable == candidate)
         || plan
@@ -6978,6 +7052,73 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_transparent_with_dropped_variables() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH service \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS source, target.name AS target",
+        )
+        .expect("transparent WITH should allow dropping graph variables");
+
+        assert_eq!(plan.nodes.len(), 3);
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| node.variable.starts_with("__coral_hidden_person")),
+            "{:?}",
+            plan.nodes
+        );
+        assert!(
+            plan.relationships
+                .first()
+                .is_some_and(|relationship| relationship.left.starts_with("__coral_hidden_person")),
+            "{:?}",
+            plan.relationships
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_transparent_with_rebound_dropped_variable_name() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH service \
+             MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN person.name AS owner, service.name AS service",
+        )
+        .expect("dropped variable names should be reusable after transparent WITH");
+
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| node.variable.starts_with("__coral_hidden_person")),
+            "{:?}",
+            plan.nodes
+        );
+        assert!(plan.nodes.iter().any(|node| node.variable == "person"));
+        assert_eq!(plan.relationships.len(), 2);
     }
 
     #[test]
@@ -10695,7 +10836,7 @@ mod tests {
             "MATCH (service:Service) WITH service LIMIT 1 MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name",
         );
         assert_unsupported(
-            "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN service.name",
+            "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN person.name",
         );
     }
 
