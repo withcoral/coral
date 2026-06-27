@@ -1797,7 +1797,7 @@ fn compile_where_property_conditions(
     };
     let mut expression = None;
     for (operator, value) in operators {
-        let predicate = compile_where_operator(
+        let predicate = compile_where_operator_expression(
             graph_variable,
             property,
             operator,
@@ -1805,8 +1805,7 @@ fn compile_where_property_conditions(
             format!("{path}.{operator}"),
             context,
         )?;
-        expression =
-            append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
+        expression = append_optional_and(expression, Some(predicate));
     }
     Ok(expression)
 }
@@ -1820,15 +1819,14 @@ fn compile_where_variable_property_conditions(
     let path = path.into();
     let mut expression = None;
     for (operator, value) in operators {
-        let predicate = compile_where_variable_operator(
+        let predicate = compile_where_variable_operator_expression(
             graph_variable,
             property,
             operator,
             value,
             format!("{path}.{operator}"),
         )?;
-        expression =
-            append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
+        expression = append_optional_and(expression, Some(predicate));
     }
     Ok(expression)
 }
@@ -1926,6 +1924,10 @@ enum GraphqlWhereOperator {
     RegexMatch,
     In,
     IsNull,
+    IsNotNull,
+    NegatedComparison(ComparisonOperator),
+    NegatedRegexMatch,
+    NotIn,
 }
 
 fn classify_graphql_where_operator(operator: &str) -> Option<GraphqlWhereOperator> {
@@ -1955,54 +1957,117 @@ fn classify_graphql_where_operator(operator: &str) -> Option<GraphqlWhereOperato
         "contains" => Some(GraphqlWhereOperator::Comparison(
             ComparisonOperator::Contains,
         )),
+        "notStartsWith" | "not_starts_with" => Some(GraphqlWhereOperator::NegatedComparison(
+            ComparisonOperator::StartsWith,
+        )),
+        "notEndsWith" | "not_ends_with" => Some(GraphqlWhereOperator::NegatedComparison(
+            ComparisonOperator::EndsWith,
+        )),
+        "notContains" | "not_contains" => Some(GraphqlWhereOperator::NegatedComparison(
+            ComparisonOperator::Contains,
+        )),
         "matches" | "regex" => Some(GraphqlWhereOperator::RegexMatch),
+        "notMatches" | "notRegex" | "not_regex" => Some(GraphqlWhereOperator::NegatedRegexMatch),
         "in" => Some(GraphqlWhereOperator::In),
+        "notIn" | "not_in" => Some(GraphqlWhereOperator::NotIn),
         "isNull" | "is_null" => Some(GraphqlWhereOperator::IsNull),
+        "isNotNull" | "is_not_null" => Some(GraphqlWhereOperator::IsNotNull),
         _ => None,
     }
 }
 
-fn compile_where_operator(
+fn comparison_expression(
+    property: PropertyRef,
+    operator: ComparisonOperator,
+    rhs: PredicateRhs,
+) -> PredicateExpression {
+    PredicateExpression::Comparison(PropertyPredicate {
+        property,
+        operator,
+        rhs,
+    })
+}
+
+fn negated_comparison_expression(
+    property: PropertyRef,
+    operator: ComparisonOperator,
+    rhs: PredicateRhs,
+) -> PredicateExpression {
+    PredicateExpression::Not {
+        expression: Box::new(comparison_expression(property, operator, rhs)),
+    }
+}
+
+fn compile_where_operator_expression(
     variable: &str,
     property: &str,
     operator: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
-) -> Result<PropertyPredicate, CoreError> {
+) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     let property = PropertyRef {
         variable: variable.to_string(),
         property: property.to_string(),
     };
     match classify_graphql_where_operator(operator) {
-        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
             property,
             operator,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        Some(GraphqlWhereOperator::RegexMatch) => Ok(PropertyPredicate {
+            PredicateRhs::Literal(compile_literal(value, path, context)?),
+        )),
+        Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
             property,
-            operator: ComparisonOperator::RegexMatch,
-            rhs: PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
-        }),
-        Some(GraphqlWhereOperator::In) => Ok(PropertyPredicate {
+            ComparisonOperator::RegexMatch,
+            PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
+        )),
+        Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
             property,
-            operator: ComparisonOperator::In,
-            rhs: PredicateRhs::List(compile_literal_list(value, path, context)?),
-        }),
+            ComparisonOperator::In,
+            PredicateRhs::List(compile_literal_list(value, path, context)?),
+        )),
         Some(GraphqlWhereOperator::IsNull) => {
             let is_null = compile_boolean(value, path, "isNull", context)?;
-            Ok(PropertyPredicate {
+            Ok(comparison_expression(
                 property,
-                operator: if is_null {
+                if is_null {
                     ComparisonOperator::Equal
                 } else {
                     ComparisonOperator::NotEqual
                 },
-                rhs: PredicateRhs::Literal(Literal::Null),
-            })
+                PredicateRhs::Literal(Literal::Null),
+            ))
         }
+        Some(GraphqlWhereOperator::IsNotNull) => {
+            let is_not_null = compile_boolean(value, path, "isNotNull", context)?;
+            Ok(comparison_expression(
+                property,
+                if is_not_null {
+                    ComparisonOperator::NotEqual
+                } else {
+                    ComparisonOperator::Equal
+                },
+                PredicateRhs::Literal(Literal::Null),
+            ))
+        }
+        Some(GraphqlWhereOperator::NegatedComparison(operator)) => {
+            Ok(negated_comparison_expression(
+                property,
+                operator,
+                PredicateRhs::Literal(compile_literal(value, path, context)?),
+            ))
+        }
+        Some(GraphqlWhereOperator::NegatedRegexMatch) => Ok(negated_comparison_expression(
+            property,
+            ComparisonOperator::RegexMatch,
+            PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
+        )),
+        Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
+            property,
+            ComparisonOperator::In,
+            PredicateRhs::List(compile_literal_list(value, path, context)?),
+        )),
         None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
@@ -2010,46 +2075,75 @@ fn compile_where_operator(
     }
 }
 
-fn compile_where_variable_operator(
+fn compile_where_variable_operator_expression(
     variable: &str,
     property: &str,
     operator: &str,
     value: &GraphqlVariableValue,
     path: impl Into<String>,
-) -> Result<PropertyPredicate, CoreError> {
+) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     let property = PropertyRef {
         variable: variable.to_string(),
         property: property.to_string(),
     };
     match classify_graphql_where_operator(operator) {
-        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
             property,
             operator,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        Some(GraphqlWhereOperator::RegexMatch) => Ok(PropertyPredicate {
+            PredicateRhs::Literal(compile_variable_literal(value, path)?),
+        )),
+        Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
             property,
-            operator: ComparisonOperator::RegexMatch,
-            rhs: PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
-        }),
-        Some(GraphqlWhereOperator::In) => Ok(PropertyPredicate {
+            ComparisonOperator::RegexMatch,
+            PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
+        )),
+        Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
             property,
-            operator: ComparisonOperator::In,
-            rhs: PredicateRhs::List(compile_variable_literal_list(value, path)?),
-        }),
+            ComparisonOperator::In,
+            PredicateRhs::List(compile_variable_literal_list(value, path)?),
+        )),
         Some(GraphqlWhereOperator::IsNull) => {
             let is_null = compile_variable_boolean(value, path, "isNull")?;
-            Ok(PropertyPredicate {
+            Ok(comparison_expression(
                 property,
-                operator: if is_null {
+                if is_null {
                     ComparisonOperator::Equal
                 } else {
                     ComparisonOperator::NotEqual
                 },
-                rhs: PredicateRhs::Literal(Literal::Null),
-            })
+                PredicateRhs::Literal(Literal::Null),
+            ))
         }
+        Some(GraphqlWhereOperator::IsNotNull) => {
+            let is_not_null = compile_variable_boolean(value, path, "isNotNull")?;
+            Ok(comparison_expression(
+                property,
+                if is_not_null {
+                    ComparisonOperator::NotEqual
+                } else {
+                    ComparisonOperator::Equal
+                },
+                PredicateRhs::Literal(Literal::Null),
+            ))
+        }
+        Some(GraphqlWhereOperator::NegatedComparison(operator)) => {
+            Ok(negated_comparison_expression(
+                property,
+                operator,
+                PredicateRhs::Literal(compile_variable_literal(value, path)?),
+            ))
+        }
+        Some(GraphqlWhereOperator::NegatedRegexMatch) => Ok(negated_comparison_expression(
+            property,
+            ComparisonOperator::RegexMatch,
+            PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
+        )),
+        Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
+            property,
+            ComparisonOperator::In,
+            PredicateRhs::List(compile_variable_literal_list(value, path)?),
+        )),
         None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
@@ -2594,6 +2688,24 @@ mod tests {
             .collect()
     }
 
+    fn predicate_expression_contains_not(expression: &PredicateExpression) -> bool {
+        match expression {
+            PredicateExpression::Not { .. } => true,
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right } => {
+                predicate_expression_contains_not(left) || predicate_expression_contains_not(right)
+            }
+            PredicateExpression::Boolean(_)
+            | PredicateExpression::Comparison(_)
+            | PredicateExpression::KeyComparison(_)
+            | PredicateExpression::ElementIdComparison(_)
+            | PredicateExpression::Presence(_)
+            | PredicateExpression::PropertyKeyMembership(_)
+            | PredicateExpression::ScalarComparison(_) => false,
+        }
+    }
+
     #[test]
     fn compiles_root_node_query() {
         let plan = compile_graphql(
@@ -2828,6 +2940,36 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_negated_filter_operators() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(
+                where: {
+                  tier: { isNotNull: true }
+                  name: {
+                    notIn: ["legacy-sync", "experiments"]
+                    notContains: "legacy"
+                    notRegex: "^internal"
+                  }
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL negated filter operators should compile");
+
+        assert!(plan.predicates.is_empty());
+        let expression = plan
+            .predicate
+            .as_ref()
+            .expect("negated GraphQL filters should compile into the predicate tree");
+        assert!(predicate_expression_contains_not(expression));
+    }
+
+    #[test]
     fn compiles_root_query_with_variables() {
         let variables = BTreeMap::from([
             (
@@ -3032,6 +3174,54 @@ mod tests {
             predicate.property.property == "risk"
                 && predicate.operator == ComparisonOperator::LessThanOrEqual
         }));
+    }
+
+    #[test]
+    fn compiles_root_query_with_object_where_variable_negated_operators() {
+        let variables = BTreeMap::from([(
+            "filter".to_string(),
+            variable_object([
+                (
+                    "tier",
+                    variable_object([(
+                        "isNotNull",
+                        GraphqlVariableValue::Literal(Literal::Boolean(true)),
+                    )]),
+                ),
+                (
+                    "name",
+                    variable_object([
+                        (
+                            "notIn",
+                            GraphqlVariableValue::List(vec![
+                                Literal::String("legacy-sync".to_string()),
+                                Literal::String("experiments".to_string()),
+                            ]),
+                        ),
+                        (
+                            "notStartsWith",
+                            GraphqlVariableValue::Literal(Literal::String("internal".to_string())),
+                        ),
+                    ]),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($filter: ServiceWhere!) {
+              Service(where: $filter) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL object where variable negated operators should compile");
+
+        assert!(plan.predicates.is_empty());
+        let expression = plan
+            .predicate
+            .as_ref()
+            .expect("negated GraphQL variable filters should compile into the predicate tree");
+        assert!(predicate_expression_contains_not(expression));
     }
 
     #[test]

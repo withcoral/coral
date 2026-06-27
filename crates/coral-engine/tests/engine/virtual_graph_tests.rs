@@ -722,6 +722,54 @@ async fn graphql_filter_operator_aliases_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_negated_filter_operators_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: {
+              tier: { isNotNull: true }
+              name: {
+                notIn: ["legacy-sync", "experiments"]
+                notContains: "deploy"
+                notRegex: "^internal"
+              }
+            }
+          ) {
+            service: name
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL negated filter operator query should execute");
+
+    assert!(
+        execution.translated_sql().contains("NOT (")
+            && execution
+                .translated_sql()
+                .contains("\"n0\".\"service_name\" IN ('legacy-sync', 'experiments')")
+            && execution
+                .translated_sql()
+                .contains("\"n0\".\"service_name\" LIKE '%deploy%' ESCAPE '\\'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
 async fn graphql_generated_client_shape_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
