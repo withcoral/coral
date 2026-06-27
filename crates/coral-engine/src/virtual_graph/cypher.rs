@@ -5755,6 +5755,23 @@ fn compile_character_length_scalar_expression(
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "{}() requires exactly one argument",
+                qualified_function_name(function)
+            ),
+        ));
+    };
+    if let Some(length) = compile_literal_list_length_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        context,
+    )? {
+        return Ok(length);
+    }
     let function_name = qualified_function_name(function);
     Ok(ScalarExpression::CharacterLength {
         expression: Box::new(compile_single_scalar_function_argument(
@@ -5765,6 +5782,37 @@ fn compile_character_length_scalar_expression(
             context,
         )?),
     })
+}
+
+fn compile_literal_list_length_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_literal_list_length_scalar_expression(inner, path, context)
+        }
+        Expression::Literal(CypherLiteral::List(_)) => Ok(Some(list_length_scalar_expression(
+            compile_literal_list(expression, path, context)?.len(),
+        )?)),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::List(values) => {
+                    Ok(Some(list_length_scalar_expression(values.len())?))
+                }
+                CypherParameterValue::Literal(_) => Ok(None),
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn list_length_scalar_expression(length: usize) -> Result<ScalarExpression, CoreError> {
+    let length = i64::try_from(length)
+        .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
+    Ok(ScalarExpression::Literal(Literal::Integer(length)))
 }
 
 fn compile_substring_scalar_expression(
@@ -8291,6 +8339,17 @@ fn compile_is_empty_predicate(
             "isEmpty() supports exactly one scalar string argument",
         ));
     };
+    if let Some(length) = compile_literal_list_length_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        context,
+    )? {
+        return Ok(ScalarPredicate {
+            lhs: length,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+        });
+    }
     Ok(ScalarPredicate {
         lhs: ScalarExpression::CharacterLength {
             expression: Box::new(compile_scalar_expression_in_mode(

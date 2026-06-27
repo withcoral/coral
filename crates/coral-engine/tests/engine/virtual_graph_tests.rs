@@ -5847,6 +5847,79 @@ async fn cypher_character_length_and_substring_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_literal_list_size_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "selected_tiers".to_string(),
+            GraphCypherParameterValue::List(vec![
+                GraphLiteral::String("prod".to_string()),
+                GraphLiteral::String("dev".to_string()),
+            ]),
+        ),
+        (
+            "empty_tiers".to_string(),
+            GraphCypherParameterValue::List(Vec::new()),
+        ),
+        (
+            "empty_name".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String(String::new())),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         WHERE size(['prod', 'dev']) = 2 \
+           AND size($selected_tiers) = 2 \
+           AND isEmpty([]) \
+           AND isEmpty($empty_tiers) \
+           AND isEmpty($empty_name) \
+           AND NOT isEmpty(['prod']) \
+           AND NOT isEmpty($selected_tiers) \
+         RETURN size(['prod', 'dev', 'critical']) AS literal_size, \
+                size($selected_tiers) AS parameter_size, \
+                size(service.name) AS name_length",
+        &parameters,
+    )
+    .await
+    .expect("literal list size query should execute");
+
+    assert!(
+        execution.translated_sql().contains("3 AS \"literal_size\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("2 AS \"parameter_size\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("character_length(\"n0\".\"service_name\") AS \"name_length\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "literal_size": 3,
+            "parameter_size": 2,
+            "name_length": 11,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_is_empty_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -5880,6 +5953,31 @@ async fn cypher_is_empty_execute_against_synthetic_sources() {
             json!({"service": "experiments"}),
             json!({"service": "legacy-sync"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_literal_list_size_rejects_dynamic_elements() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN size([service.name]) AS names",
+    )
+    .await
+    .expect_err("literal list size should reject dynamic list elements");
+
+    assert!(
+        error
+            .to_string()
+            .contains("only string, numeric, boolean, and null literals are supported"),
+        "{error}"
     );
 }
 
