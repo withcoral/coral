@@ -1063,6 +1063,9 @@ fn compile_order_expression(
         Expression::CountStar { .. } => {
             count_star_order_expression_for_projection(projections, path)
         }
+        expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
+            compile_literal(expression, path, context)?,
+        )),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
@@ -1316,6 +1319,9 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
+        expression if is_literal_expression(expression) => {
+            compile_literal_projection(expression, item, path, context)
+        }
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
@@ -1346,6 +1352,22 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_literal_projection(
+    expression: &Expression,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Literal {
+        literal: compile_literal(expression, format!("{path}.expression"), context)?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "literal".to_string(), variable_name),
+    })
 }
 
 fn compile_id_projection(
@@ -2872,6 +2894,19 @@ fn compile_literal(
     }
 }
 
+fn is_literal_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_literal_expression(inner),
+        Expression::Literal(_) | Expression::Parameter(_) => true,
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            operand,
+            ..
+        } => is_literal_expression(operand),
+        _ => false,
+    }
+}
+
 fn compile_float_literal(value: f64, path: impl Into<String>) -> Result<Literal, CoreError> {
     let path = path.into();
     if value.is_finite() {
@@ -4031,6 +4066,54 @@ mod tests {
     }
 
     #[test]
+    fn compiles_literal_projections() {
+        let parameters = BTreeMap::from([(
+            "kind".to_string(),
+            CypherParameterValue::Literal(Literal::String("service".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             RETURN $kind AS kind, 1 AS version, true AS enabled, null AS missing, -1.5 AS score \
+             ORDER BY 'constant'",
+            &parameters,
+        )
+        .expect("literal projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Literal {
+                    literal: Literal::String("service".to_string()),
+                    alias: "kind".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Integer(1),
+                    alias: "version".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Boolean(true),
+                    alias: "enabled".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Null,
+                    alias: "missing".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Float(OrderedFloat(-1.5)),
+                    alias: "score".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::String("constant".to_string())),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_float_literals() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -4758,6 +4841,22 @@ mod tests {
             &list_for_scalar,
         )
         .expect_err("list parameter should not bind as scalar literal");
+        assert!(
+            error
+                .to_string()
+                .contains("list parameters can only be used"),
+            "unexpected error: {error}"
+        );
+
+        let list_for_literal_projection = BTreeMap::from([(
+            "value".to_string(),
+            CypherParameterValue::List(vec![Literal::String("prod".to_string())]),
+        )]);
+        let error = compile_cypher_with_parameters(
+            "MATCH (service:Service) RETURN $value AS value",
+            &list_for_literal_projection,
+        )
+        .expect_err("list parameter should not bind as literal projection");
         assert!(
             error
                 .to_string()
