@@ -91,9 +91,14 @@ enum LabelTypeAlternative {
     RelationshipType(LabelExpression),
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PathBinding {
+    length: usize,
+}
+
 #[derive(Debug, Default)]
 struct CypherCompileState {
-    ignored_path_variables: BTreeSet<String>,
+    path_variables: BTreeMap<String, PathBinding>,
     hidden_graph_variables: BTreeSet<String>,
     out_of_scope_graph_names: BTreeSet<String>,
 }
@@ -1957,7 +1962,7 @@ fn compile_single_part(
         &mut state,
         context,
     )?;
-    compile_return(return_clause, &mut plan, context)?;
+    compile_return(return_clause, &mut plan, &state, context)?;
     reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(plan)
 }
@@ -2016,7 +2021,7 @@ fn compile_terminal_with_projection(
         context,
     )?;
 
-    compile_terminal_with_clause(&part.with, &mut plan, context)?;
+    compile_terminal_with_clause(&part.with, &mut plan, &state, context)?;
     apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
     apply_terminal_return_modifiers(return_clause, &mut plan, context)?;
     reject_ignored_path_variable_references(&plan, &state, "with")?;
@@ -2095,7 +2100,7 @@ fn compile_terminal_with_graph_modifiers(
         append_predicate_expression(predicate, &mut plan);
     }
     apply_terminal_graph_with_modifiers(&part.with, &mut plan, context)?;
-    compile_return(return_clause, &mut plan, context)?;
+    compile_return(return_clause, &mut plan, &state, context)?;
     reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(Some(plan))
 }
@@ -2139,6 +2144,7 @@ fn apply_terminal_graph_with_modifiers(
 fn compile_terminal_with_clause(
     with: &With,
     plan: &mut GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     plan.distinct = with.distinct;
@@ -2175,7 +2181,8 @@ fn compile_terminal_with_clause(
                 "terminal WITH projections support graph properties and aggregates, not graph variable aliases",
             ));
         }
-        let projection = compile_projection(item, format!("with.items[{index}]"), context, plan)?;
+        let projection =
+            compile_projection(item, format!("with.items[{index}]"), context, plan, state)?;
         plan.projections.push(projection);
     }
     if let Some(where_clause) = &with.where_clause {
@@ -2414,7 +2421,7 @@ fn compile_transparent_multi_part(
         }
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
-    compile_return(return_clause, &mut plan, context)?;
+    compile_return(return_clause, &mut plan, &state, context)?;
     reject_ignored_path_variable_references(&plan, &state, "final_part.return")?;
     Ok(plan)
 }
@@ -2489,7 +2496,7 @@ fn apply_transparent_with_scope(
                 "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
             ));
         }
-        if !state.ignored_path_variables.is_empty() {
+        if !state.path_variables.is_empty() {
             return Err(unsupported(
                 format!("{path}.star"),
                 "WITH * cannot carry path variables because Coral does not materialize path values yet; explicitly carry graph variables to drop path values",
@@ -2574,7 +2581,7 @@ fn apply_transparent_with_scope(
             format!("{path}.where"),
         )?;
     }
-    state.ignored_path_variables.clear();
+    state.path_variables.clear();
     Ok(predicate)
 }
 
@@ -2935,7 +2942,7 @@ fn reject_ignored_path_variable_references(
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
-    if state.ignored_path_variables.is_empty() && state.out_of_scope_graph_names.is_empty() {
+    if state.path_variables.is_empty() && state.out_of_scope_graph_names.is_empty() {
         return Ok(());
     }
     for (index, projection) in plan.projections.iter().enumerate() {
@@ -3204,21 +3211,17 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
     path: String,
 ) -> Result<(), CoreError> {
     match expression {
-        ScalarExpression::Coalesce { expressions } => reject_ignored_path_variables_in_scalar_list(
-            expressions,
-            state,
-            format!("{path}.expressions"),
-        ),
-        ScalarExpression::NullIf { expression, value } => {
-            reject_ignored_path_variables_in_scalar_pair(
-                ("expression", expression),
-                ("value", value),
-                state,
-                path,
-            )
+        ScalarExpression::Coalesce { expressions } => {
+            reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
         }
+        ScalarExpression::NullIf { expression, value } => reject_path_variables_in_scalar_pair(
+            ("expression", expression),
+            ("value", value),
+            state,
+            path,
+        ),
         ScalarExpression::Round { expression, places } => {
-            reject_ignored_path_variables_in_scalar_optional_pair(
+            reject_path_variables_in_scalar_optional_pair(
                 ("expression", expression),
                 ("places", places.as_deref()),
                 state,
@@ -3226,19 +3229,17 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             )
         }
         ScalarExpression::Left { expression, count }
-        | ScalarExpression::Right { expression, count } => {
-            reject_ignored_path_variables_in_scalar_pair(
-                ("expression", expression),
-                ("count", count),
-                state,
-                path,
-            )
-        }
+        | ScalarExpression::Right { expression, count } => reject_path_variables_in_scalar_pair(
+            ("expression", expression),
+            ("count", count),
+            state,
+            path,
+        ),
         ScalarExpression::Replace {
             expression,
             search,
             replacement,
-        } => reject_ignored_path_variables_in_replace_expression(
+        } => reject_path_variables_in_replace_expression(
             expression,
             search,
             replacement,
@@ -3249,7 +3250,7 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             expression,
             start,
             length,
-        } => reject_ignored_path_variables_in_substring_expression(
+        } => reject_path_variables_in_substring_expression(
             expression,
             start,
             length.as_deref(),
@@ -3257,15 +3258,10 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             path,
         ),
         ScalarExpression::Arithmetic { left, right, .. } => {
-            reject_ignored_path_variables_in_scalar_pair(
-                ("left", left),
-                ("right", right),
-                state,
-                path,
-            )
+            reject_path_variables_in_scalar_pair(("left", left), ("right", right), state, path)
         }
         ScalarExpression::Atan2 { y, x } => {
-            reject_ignored_path_variables_in_scalar_pair(("y", y), ("x", x), state, path)
+            reject_path_variables_in_scalar_pair(("y", y), ("x", x), state, path)
         }
         ScalarExpression::Case {
             alternatives,
@@ -3346,7 +3342,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
     }
 }
 
-fn reject_ignored_path_variables_in_scalar_list(
+fn reject_path_variables_in_scalar_list(
     expressions: &[ScalarExpression],
     state: &CypherCompileState,
     path: impl Into<String>,
@@ -3362,7 +3358,7 @@ fn reject_ignored_path_variables_in_scalar_list(
     Ok(())
 }
 
-fn reject_ignored_path_variables_in_scalar_pair(
+fn reject_path_variables_in_scalar_pair(
     left: (&str, &ScalarExpression),
     right: (&str, &ScalarExpression),
     state: &CypherCompileState,
@@ -3381,7 +3377,7 @@ fn reject_ignored_path_variables_in_scalar_pair(
     )
 }
 
-fn reject_ignored_path_variables_in_scalar_optional_pair(
+fn reject_path_variables_in_scalar_optional_pair(
     required: (&str, &ScalarExpression),
     optional: (&str, Option<&ScalarExpression>),
     state: &CypherCompileState,
@@ -3403,7 +3399,7 @@ fn reject_ignored_path_variables_in_scalar_optional_pair(
     Ok(())
 }
 
-fn reject_ignored_path_variables_in_replace_expression(
+fn reject_path_variables_in_replace_expression(
     expression: &ScalarExpression,
     search: &ScalarExpression,
     replacement: &ScalarExpression,
@@ -3428,7 +3424,7 @@ fn reject_ignored_path_variables_in_replace_expression(
     )
 }
 
-fn reject_ignored_path_variables_in_substring_expression(
+fn reject_path_variables_in_substring_expression(
     expression: &ScalarExpression,
     start: &ScalarExpression,
     length: Option<&ScalarExpression>,
@@ -3544,7 +3540,7 @@ fn reject_ignored_path_variable(
             format!("graph variable '{variable}' is not in scope after WITH"),
         ));
     }
-    if state.ignored_path_variables.contains(variable) {
+    if state.path_variables.contains_key(variable) {
         return Err(unsupported(
             path,
             format!(
@@ -3937,7 +3933,7 @@ fn validate_ignored_path_variable(
     let anonymous_variables = anonymous_pattern_variables(pattern_part);
     if let Some(conflict) = anonymous_variables
         .iter()
-        .find(|variable| state.ignored_path_variables.contains(*variable))
+        .find(|variable| state.path_variables.contains_key(*variable))
     {
         return Err(unsupported(
             format!("{path}.anonymous"),
@@ -3950,7 +3946,7 @@ fn validate_ignored_path_variable(
     };
     let name = validate_variable(variable)?;
     if plan_uses_variable(plan, &name)
-        || state.ignored_path_variables.contains(&name)
+        || state.path_variables.contains_key(&name)
         || anonymous_variables.contains(&name)
     {
         return Err(unsupported(
@@ -3958,8 +3954,27 @@ fn validate_ignored_path_variable(
             format!("path variable '{name}' conflicts with an in-scope graph or path variable"),
         ));
     }
-    state.ignored_path_variables.insert(name);
+    let length = path_pattern_length(pattern_part, &path)?;
+    state.path_variables.insert(name, PathBinding { length });
     Ok(())
+}
+
+fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, CoreError> {
+    let PatternElement::Path { chains, .. } = &pattern_part.anonymous.element else {
+        return Err(unsupported(
+            format!("{path}.anonymous"),
+            "path variables require a path pattern",
+        ));
+    };
+
+    let mut length = 0;
+    for (index, chain) in chains.iter().enumerate() {
+        length += relationship_fixed_length(
+            &chain.relationship,
+            &format!("{path}.anonymous.relationships[{index}]"),
+        )?;
+    }
+    Ok(length)
 }
 
 fn anonymous_pattern_variables(pattern_part: &PatternPart) -> BTreeSet<String> {
@@ -4249,6 +4264,7 @@ fn fixed_length_bounds(
 fn compile_return(
     return_clause: &Return,
     plan: &mut GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     plan.distinct = return_clause.distinct;
@@ -4266,7 +4282,8 @@ fn compile_return(
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
-        let projection = compile_projection(item, format!("return.items[{index}]"), context, plan)?;
+        let projection =
+            compile_projection(item, format!("return.items[{index}]"), context, plan, state)?;
         plan.projections.push(projection);
     }
 
@@ -4643,6 +4660,7 @@ fn compile_projection(
     path: impl Into<String>,
     context: &CypherCompileContext,
     plan: &GraphPlan,
+    state: &CypherCompileState,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     match &item.expression {
@@ -4688,6 +4706,9 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_keys_function(function) => {
             compile_keys_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_length_function(function) => {
+            compile_path_length_projection(function, item, path, state, context)
+        }
         Expression::FunctionCall(function) => {
             if let Some(projection) =
                 compile_scalar_function_projection(function, item, path.clone(), plan, context)?
@@ -4710,6 +4731,37 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_path_length_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "length() supports exactly one path variable argument",
+        context,
+    )?;
+    let binding = state.path_variables.get(&variable).ok_or_else(|| {
+        unsupported(
+            format!("{path}.expression.arguments[0]"),
+            format!("length() argument '{variable}' is not a bound path variable"),
+        )
+    })?;
+    let length = i64::try_from(binding.length)
+        .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))?;
+    Ok(Projection::Expression {
+        expression: ScalarExpression::Literal(Literal::Integer(length)),
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "length".to_string(), variable_name),
+    })
 }
 
 fn compile_literal_projection(
@@ -6649,6 +6701,13 @@ fn is_keys_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("keys")
+    )
+}
+
+fn is_length_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("length")
     )
 }
 
@@ -9883,6 +9942,89 @@ mod tests {
     }
 
     #[test]
+    fn compiles_path_length_projection() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             RETURN source.name AS source, target.name AS target, length(path) AS hops",
+        )
+        .expect("path length projection should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(2)),
+                    alias: "hops".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_terminal_with_path_length_projection() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON]->{2}(target:Service) \
+             WITH source.name AS source, target.name AS target, length(path) AS hops \
+             RETURN source, target, hops",
+        )
+        .expect("terminal WITH path length projection should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(2)),
+                    alias: "hops".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_length_over_non_path_variable() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN length(service) AS length",
+        )
+        .expect_err("length() should only accept bound path variables");
+
+        assert!(
+            error
+                .to_string()
+                .contains("length() argument 'service' is not a bound path variable"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_path_variable_collisions() {
         let error = compile_cypher(
             "MATCH path = (path:Person)-[:OWNS]->(service:Service) \
@@ -9914,7 +10056,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_with_drops_ignored_path_variables() {
+    fn explicit_with_drops_path_variables() {
         let plan = compile_cypher(
             "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
              WITH person, service \
@@ -9927,7 +10069,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_with_star_over_ignored_path_variables() {
+    fn rejects_with_star_over_path_variables() {
         let error = compile_cypher(
             "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
              WITH * \
