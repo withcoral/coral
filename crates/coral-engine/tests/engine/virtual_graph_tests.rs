@@ -540,7 +540,7 @@ async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings(
         "MATCH (service:Service) \
          OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
          WHERE person.team = 'platform' \
-         RETURN service.name AS service, id(owns) AS ownership_id, person.name AS owner \
+         RETURN service.name AS service, id(owns) AS ownership_id, type(owns) AS relationship_type, person.name AS owner \
          ORDER BY service",
     )
     .await
@@ -559,7 +559,7 @@ async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings(
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"service": "billing-api", "ownership_id": 100, "owner": "Ada Lovelace"}),
+            json!({"service": "billing-api", "ownership_id": 100, "relationship_type": "OWNS", "owner": "Ada Lovelace"}),
             json!({"service": "deployments"}),
             json!({"service": "experiments"}),
             json!({"service": "legacy-sync"}),
@@ -1736,7 +1736,9 @@ async fn cypher_id_and_type_projections_execute_against_synthetic_sources() {
     assert!(
         execution
             .translated_sql()
-            .contains("'OWNS' AS \"relationship_type\""),
+            .contains(
+                "CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\""
+            ),
         "{}",
         execution.translated_sql()
     );

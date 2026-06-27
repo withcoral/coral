@@ -401,6 +401,17 @@ impl<'a> GraphPlanValidator<'a> {
                         format!("projections[{index}].variable"),
                     )?;
                 }
+                Projection::RelationshipType {
+                    variable,
+                    relationship_type,
+                    ..
+                } => {
+                    self.validate_relationship_type_projection(
+                        variable,
+                        relationship_type,
+                        format!("projections[{index}].variable"),
+                    )?;
+                }
                 Projection::Literal { .. } | Projection::CountAll { .. } => {}
                 Projection::Aggregate {
                     function, target, ..
@@ -806,6 +817,7 @@ impl<'a> GraphPlanValidator<'a> {
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
+                | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::CountAll { .. }
                 | Projection::Aggregate { .. } => None,
@@ -879,6 +891,14 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::Key { variable } => {
                 self.validate_key_projection(variable, format!("{path}.variable"))
             }
+            OrderExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self.validate_relationship_type_projection(
+                variable,
+                relationship_type,
+                format!("{path}.variable"),
+            ),
             OrderExpression::Literal(_) => Ok(()),
             OrderExpression::ProjectionAlias(alias) => {
                 if self.projection_alias_exists(alias) {
@@ -907,6 +927,19 @@ impl<'a> GraphPlanValidator<'a> {
                     matches!(projection, Projection::Key { variable: projected, .. } if projected == variable)
                 })
             }
+            OrderExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self.plan.projections.iter().any(|projection| {
+                matches!(
+                    projection,
+                    Projection::RelationshipType {
+                        variable: projected,
+                        relationship_type: projected_type,
+                        ..
+                    } if projected == variable && projected_type == relationship_type
+                )
+            }),
             OrderExpression::Literal(literal) => {
                 self.plan.projections.iter().any(|projection| {
                     matches!(projection, Projection::Literal { literal: projected, .. } if projected == literal)
@@ -929,6 +962,10 @@ impl<'a> GraphPlanValidator<'a> {
                     alias: projection_alias,
                 }
                 | Projection::Key {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::RelationshipType {
                     alias: projection_alias,
                     ..
                 }
@@ -1268,6 +1305,43 @@ impl<'a> GraphPlanValidator<'a> {
                 }
             }
         }
+    }
+
+    fn validate_relationship_type_projection(
+        &self,
+        variable: &str,
+        relationship_type: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
+            return Err(Diagnostic::new(
+                "INVALID_TYPE_PROJECTION",
+                path,
+                format!("type({variable}) requires a relationship variable"),
+            )
+            .into_core_error());
+        };
+        if relationship.relationship_type != relationship_type {
+            return Err(Diagnostic::new(
+                "INVALID_TYPE_PROJECTION",
+                path,
+                format!(
+                    "type({variable}) expected relationship type '{}', got '{relationship_type}'",
+                    relationship.relationship_type
+                ),
+            )
+            .into_core_error());
+        }
+        Ok(())
     }
 
     fn validate_string_predicate(

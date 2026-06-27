@@ -342,6 +342,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::RelationshipType {
+            alias: projection_alias,
+            ..
+        }
         | Projection::Literal {
             alias: projection_alias,
             ..
@@ -420,6 +424,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
@@ -1177,9 +1182,10 @@ fn compile_type_order_expression(
                 format!("type() argument '{variable}' is not a named relationship variable"),
             )
         })?;
-    Ok(OrderExpression::Literal(Literal::String(
-        relationship.relationship_type.clone(),
-    )))
+    Ok(OrderExpression::RelationshipType {
+        variable,
+        relationship_type: relationship.relationship_type.clone(),
+    })
 }
 
 fn projection_order_expression_for_alias(
@@ -1339,8 +1345,9 @@ fn compile_type_projection(
                 format!("type() argument '{variable}' is not a named relationship variable"),
             )
         })?;
-    Ok(Projection::Literal {
-        literal: Literal::String(relationship.relationship_type.clone()),
+    Ok(Projection::RelationshipType {
+        variable,
+        relationship_type: relationship.relationship_type.clone(),
         alias: item
             .alias
             .as_ref()
@@ -3001,8 +3008,9 @@ mod tests {
                     variable: "owns".to_string(),
                     alias: "ownership_id".to_string(),
                 },
-                Projection::Literal {
-                    literal: Literal::String("OWNS".to_string()),
+                Projection::RelationshipType {
+                    variable: "owns".to_string(),
+                    relationship_type: "OWNS".to_string(),
                     alias: "relationship_type".to_string(),
                 },
             ]
@@ -3041,7 +3049,10 @@ mod tests {
                     direction: OrderDirection::Descending,
                 },
                 OrderKey {
-                    expression: OrderExpression::Literal(Literal::String("OWNS".to_string())),
+                    expression: OrderExpression::RelationshipType {
+                        variable: "owns".to_string(),
+                        relationship_type: "OWNS".to_string(),
+                    },
                     direction: OrderDirection::Ascending,
                 },
             ]

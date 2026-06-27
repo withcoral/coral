@@ -32,7 +32,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
 | Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
-| Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types |
+| Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types; optional `type(relationship)` returns null when the relationship is unmatched |
 | Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE type(r)` is folded from the fixed relationship type |
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
@@ -71,7 +71,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |
 | `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys |
 | `RETURN count(relationship)` | Supported foundation | Requires the relationship mapping to declare a key |
-| `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship type literals |
+| `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship types; optional relationship types preserve nulls |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |

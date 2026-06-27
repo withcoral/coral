@@ -536,6 +536,17 @@ impl<'a> Lowerer<'a> {
                         quote_ident(alias)
                     ));
                 }
+                Projection::RelationshipType {
+                    variable,
+                    relationship_type,
+                    alias,
+                } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        self.render_relationship_type_ref(variable, relationship_type)?,
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::Literal { literal, alias } => {
                     rendered.push(format!(
                         "{} AS {}",
@@ -640,6 +651,7 @@ impl<'a> Lowerer<'a> {
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
+                | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::CountAll { .. }
                 | Projection::Aggregate { .. } => None,
@@ -653,11 +665,33 @@ impl<'a> Lowerer<'a> {
                     .filter_map(|projection| match projection {
                         Projection::Key { variable, .. } => Some(variable),
                         Projection::Property { .. }
+                        | Projection::RelationshipType { .. }
                         | Projection::Literal { .. }
                         | Projection::CountAll { .. }
                         | Projection::Aggregate { .. } => None,
                     })
                     .map(|variable| self.render_binding_key_ref(variable)),
+            )
+            .chain(
+                self.validated
+                    .plan()
+                    .projections
+                    .iter()
+                    .filter_map(|projection| match projection {
+                        Projection::RelationshipType {
+                            variable,
+                            relationship_type,
+                            ..
+                        } => Some((variable, relationship_type)),
+                        Projection::Property { .. }
+                        | Projection::Key { .. }
+                        | Projection::Literal { .. }
+                        | Projection::CountAll { .. }
+                        | Projection::Aggregate { .. } => None,
+                    })
+                    .map(|(variable, relationship_type)| {
+                        self.render_relationship_type_ref(variable, relationship_type)
+                    }),
             )
             .collect::<Result<Vec<_>, _>>()?;
         if properties.is_empty() {
@@ -942,6 +976,10 @@ impl<'a> Lowerer<'a> {
         match expression {
             OrderExpression::Property(property) => self.render_property_ref(property),
             OrderExpression::Key { variable } => self.render_binding_key_ref(variable),
+            OrderExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self.render_relationship_type_ref(variable, relationship_type),
             OrderExpression::Literal(literal) => Ok(render_literal(literal)),
             OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         }
@@ -952,6 +990,36 @@ impl<'a> Lowerer<'a> {
             AggregateTarget::Property(property) => self.render_property_ref(property),
             AggregateTarget::VariableKey { variable } => self.render_binding_key_ref(variable),
         }
+    }
+
+    fn render_relationship_type_ref(
+        &self,
+        variable: &str,
+        relationship_type: &str,
+    ) -> Result<String, CoreError> {
+        let presence = self.render_relationship_presence_ref(variable)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE {} END",
+            quote_string_literal(relationship_type)
+        ))
+    }
+
+    fn render_relationship_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated relationship type expression did not reference a relationship",
+            ));
+        };
+        let column = relationship
+            .key
+            .as_deref()
+            .unwrap_or(&relationship.from.key);
+        Ok(format!(
+            "{}.{}",
+            quote_ident(binding.alias()),
+            quote_ident(column)
+        ))
     }
 
     fn render_projection_alias_ref(&self, alias: &str) -> Result<String, CoreError> {
@@ -969,6 +1037,11 @@ impl<'a> Lowerer<'a> {
         match projection {
             Projection::Property { property, .. } => self.render_property_ref(property),
             Projection::Key { variable, .. } => self.render_binding_key_ref(variable),
+            Projection::RelationshipType {
+                variable,
+                relationship_type,
+                ..
+            } => self.render_relationship_type_ref(variable, relationship_type),
             Projection::Literal { literal, .. } => Ok(render_literal(literal)),
             Projection::CountAll { .. } => Ok("COUNT(*)".to_string()),
             Projection::Aggregate {
@@ -1061,6 +1134,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
@@ -1456,7 +1530,7 @@ relationships:
     }
 
     #[test]
-    fn lower_graph_plan_renders_key_and_literal_projections() {
+    fn lower_graph_plan_renders_key_and_relationship_type_projections() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.relationships
@@ -1472,19 +1546,20 @@ relationships:
                 variable: "owns".to_string(),
                 alias: "ownership_id".to_string(),
             },
-            Projection::Literal {
-                literal: Literal::String("OWNS".to_string()),
+            Projection::RelationshipType {
+                variable: "owns".to_string(),
+                relationship_type: "OWNS".to_string(),
                 alias: "relationship_type".to_string(),
             },
         ];
 
         let translation = graph
             .lower_graph_plan(&plan)
-            .expect("key and literal projections should lower");
+            .expect("key and relationship type projections should lower");
 
         assert_eq!(
             translation.sql(),
-            "SELECT \"n0\".\"id\" AS \"person_id\", \"r0\".\"ownership_id\" AS \"ownership_id\", 'OWNS' AS \"relationship_type\" \
+            "SELECT \"n0\".\"id\" AS \"person_id\", \"r0\".\"ownership_id\" AS \"ownership_id\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\" \
              FROM \"ops\".\"people\" AS \"n0\" \
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \

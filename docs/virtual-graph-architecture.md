@@ -91,7 +91,8 @@ The supported foundation subset is intentionally narrow:
   scalar parameters are accepted in literal positions and list parameters are
   accepted as `IN` right-hand sides;
 - `id(node)`, `id(keyedRelationship)`, and `type(relationship)` in predicates,
-  projections, and ordering;
+  projections, and ordering, with `type(relationship)` preserving null for
+  unmatched optional relationship bindings;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
 - inline node property maps normalized to equality predicates;

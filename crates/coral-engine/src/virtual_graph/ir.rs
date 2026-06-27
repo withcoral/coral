@@ -137,6 +137,16 @@ pub enum Projection {
         /// Output alias.
         alias: String,
     },
+    /// Project the static type of a relationship variable, preserving null for
+    /// unmatched optional relationships.
+    RelationshipType {
+        /// Graph relationship variable.
+        variable: String,
+        /// Static graph relationship type.
+        relationship_type: String,
+        /// Output alias.
+        alias: String,
+    },
     /// Project a literal value.
     Literal {
         /// Literal to project.
@@ -306,6 +316,13 @@ pub enum OrderExpression {
     Key {
         /// Graph variable.
         variable: String,
+    },
+    /// Order by the static type of a relationship variable.
+    RelationshipType {
+        /// Graph relationship variable.
+        variable: String,
+        /// Static graph relationship type.
+        relationship_type: String,
     },
     /// Order by a literal value.
     Literal(Literal),
