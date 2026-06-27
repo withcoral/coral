@@ -10,7 +10,6 @@ use decypher::ast::expr::{
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
     LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternPart, Properties,
-    Quantifier as CypherQuantifier, RangeLiteral as CypherRangeLiteral,
     RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
@@ -39,6 +38,7 @@ use crate::CoreError;
 #[derive(Debug)]
 struct CompiledNode {
     variable: String,
+    label: String,
     pattern: Option<NodePattern>,
     predicates: Vec<PropertyPredicate>,
 }
@@ -47,9 +47,11 @@ struct CompiledNode {
 struct CompiledRelationship {
     pattern: RelationshipPattern,
     predicates: Vec<PropertyPredicate>,
+    length: usize,
 }
 
 const MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES: usize = 64;
+const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
 
@@ -3735,76 +3737,169 @@ fn compile_match_into(
     }
 
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
-        validate_ignored_path_variable(
+        compile_pattern_part_into(
             pattern_part,
+            part_index,
+            match_clause.optional,
             plan,
             state,
-            format!("match.pattern.parts[{part_index}]"),
-        )?;
-
-        let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
-            return Err(unsupported(
-                format!("match.pattern.parts[{part_index}]"),
-                "parenthesized and quantified path patterns are not supported yet",
-            ));
-        };
-
-        let start_node = compile_node(
-            start,
-            plan,
-            fresh_internal_node_variable(plan, part_index, 0),
-            format!("match.pattern.parts[{part_index}].nodes[0]"),
             context,
         )?;
-        let mut previous_variable = start_node.variable.clone();
-        plan.predicates.extend(start_node.predicates);
-        if let Some(pattern) = start_node.pattern {
-            mark_graph_variable_in_scope(state, &pattern.variable);
-            plan.nodes.push(pattern);
-        }
-
-        for (chain_index, chain) in chains.iter().enumerate() {
-            let node_path = format!(
-                "match.pattern.parts[{part_index}].nodes[{}]",
-                chain_index + 1
-            );
-            let next_node = compile_node(
-                &chain.node,
-                plan,
-                fresh_internal_node_variable(plan, part_index, chain_index + 1),
-                node_path,
-                context,
-            )?;
-            let next_variable = next_node.variable.clone();
-            let relationship_index = plan.relationships.len();
-            let relationship_path =
-                format!("match.pattern.parts[{part_index}].relationships[{chain_index}]");
-            let relationship = compile_relationship(
-                &chain.relationship,
-                (&previous_variable, &next_variable),
-                relationship_index,
-                plan,
-                relationship_path,
-                context,
-            )?;
-            previous_variable = next_variable;
-            plan.predicates.extend(next_node.predicates);
-            if let Some(pattern) = next_node.pattern {
-                mark_graph_variable_in_scope(state, &pattern.variable);
-                plan.nodes.push(pattern);
-            }
-            plan.predicates.extend(relationship.predicates);
-            if let Some(variable) = relationship.pattern.variable.as_deref() {
-                mark_graph_variable_in_scope(state, variable);
-            }
-            if match_clause.optional {
-                plan.optional_relationships.push(relationship_index);
-            }
-            plan.relationships.push(relationship.pattern);
-        }
     }
 
     Ok(())
+}
+
+fn compile_pattern_part_into(
+    pattern_part: &PatternPart,
+    part_index: usize,
+    optional: bool,
+    plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    validate_ignored_path_variable(
+        pattern_part,
+        plan,
+        state,
+        format!("match.pattern.parts[{part_index}]"),
+    )?;
+
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return Err(unsupported(
+            format!("match.pattern.parts[{part_index}]"),
+            "parenthesized and quantified path patterns are not supported yet",
+        ));
+    };
+
+    let start_node = compile_node(
+        start,
+        plan,
+        fresh_internal_node_variable(plan, part_index, 0),
+        format!("match.pattern.parts[{part_index}].nodes[0]"),
+        context,
+    )?;
+    let mut previous_variable = start_node.variable.clone();
+    plan.predicates.extend(start_node.predicates);
+    if let Some(pattern) = start_node.pattern {
+        mark_graph_variable_in_scope(state, &pattern.variable);
+        plan.nodes.push(pattern);
+    }
+    let mut previous_label = start_node.label.clone();
+
+    for (chain_index, chain) in chains.iter().enumerate() {
+        let node_path = format!(
+            "match.pattern.parts[{part_index}].nodes[{}]",
+            chain_index + 1
+        );
+        let next_node = compile_node(
+            &chain.node,
+            plan,
+            fresh_internal_node_variable(plan, part_index, chain_index + 1),
+            node_path,
+            context,
+        )?;
+        let next_variable = next_node.variable.clone();
+        let next_label = next_node.label.clone();
+        let relationship_index = plan.relationships.len();
+        let relationship_path =
+            format!("match.pattern.parts[{part_index}].relationships[{chain_index}]");
+        let relationship = compile_relationship(
+            &chain.relationship,
+            (&previous_variable, &next_variable),
+            relationship_index,
+            plan,
+            relationship_path,
+            context,
+        )?;
+        plan.predicates.extend(next_node.predicates);
+        if let Some(pattern) = next_node.pattern {
+            mark_graph_variable_in_scope(state, &pattern.variable);
+            plan.nodes.push(pattern);
+        }
+        plan.predicates.extend(relationship.predicates);
+        if relationship.length == 1 {
+            if let Some(variable) = relationship.pattern.variable.as_deref() {
+                mark_graph_variable_in_scope(state, variable);
+            }
+            if optional {
+                plan.optional_relationships.push(relationship_index);
+            }
+            plan.relationships.push(relationship.pattern);
+        } else {
+            if previous_label != next_label {
+                return Err(unsupported(
+                    format!("match.pattern.parts[{part_index}].relationships[{chain_index}]"),
+                    "fixed-length relationship ranges greater than 1 currently require same-label endpoints so Coral can infer intermediate node mappings",
+                ));
+            }
+            append_fixed_length_relationship(
+                plan,
+                state,
+                &relationship.pattern,
+                relationship.length,
+                &FixedLengthExpansion {
+                    part_index,
+                    chain_index,
+                    left_variable: &previous_variable,
+                    right_variable: &next_variable,
+                    node_label: &previous_label,
+                    optional,
+                },
+            );
+        }
+        previous_variable = next_variable;
+        previous_label = next_label;
+    }
+
+    Ok(())
+}
+
+struct FixedLengthExpansion<'a> {
+    part_index: usize,
+    chain_index: usize,
+    left_variable: &'a str,
+    right_variable: &'a str,
+    node_label: &'a str,
+    optional: bool,
+}
+
+fn append_fixed_length_relationship(
+    plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
+    template: &RelationshipPattern,
+    length: usize,
+    expansion: &FixedLengthExpansion<'_>,
+) {
+    let mut left = expansion.left_variable.to_string();
+    for hop in 1..=length {
+        let right = if hop == length {
+            expansion.right_variable.to_string()
+        } else {
+            let variable = fresh_internal_node_variable_avoiding(
+                plan,
+                expansion.part_index,
+                expansion.chain_index + hop,
+                expansion.right_variable,
+            );
+            mark_graph_variable_in_scope(state, &variable);
+            plan.nodes.push(NodePattern {
+                variable: variable.clone(),
+                label: expansion.node_label.to_string(),
+            });
+            variable
+        };
+        let relationship_index = plan.relationships.len();
+        let mut pattern = template.clone();
+        pattern.left = left;
+        pattern.right.clone_from(&right);
+        pattern.variable = None;
+        if expansion.optional {
+            plan.optional_relationships.push(relationship_index);
+        }
+        plan.relationships.push(pattern);
+        left = right;
+    }
 }
 
 fn validate_ignored_path_variable(
@@ -3926,6 +4021,7 @@ fn compile_node(
         }
         return Ok(CompiledNode {
             variable,
+            label: existing.label.clone(),
             pattern: None,
             predicates,
         });
@@ -3939,6 +4035,7 @@ fn compile_node(
 
     Ok(CompiledNode {
         variable: variable.clone(),
+        label: label.clone(),
         pattern: Some(NodePattern { variable, label }),
         predicates,
     })
@@ -3986,9 +4083,7 @@ fn compile_relationship(
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
     let (left, right) = endpoints;
-    if let Some(quantifier) = &pattern.quantifier {
-        validate_exact_one_quantifier(quantifier, format!("{path}.quantifier"))?;
-    }
+    let length = relationship_fixed_length(pattern, &path)?;
 
     let direction = match pattern.direction {
         CypherRelationshipDirection::Right => Direction::Outgoing,
@@ -4004,8 +4099,17 @@ fn compile_relationship(
             "relationship type is required for virtual graph queries",
         )
     })?;
-    if let Some(range) = &detail.range {
-        validate_exact_one_range(range, format!("{path}.range"))?;
+    if length > 1 && detail.variable.is_some() {
+        return Err(unsupported(
+            format!("{path}.variable"),
+            "fixed-length relationship ranges greater than 1 cannot bind a relationship variable because Coral does not materialize relationship lists yet",
+        ));
+    }
+    if length > 1 && detail.properties.is_some() {
+        return Err(unsupported(
+            format!("{path}.properties"),
+            "fixed-length relationship ranges greater than 1 do not support inline relationship property maps yet",
+        ));
     }
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
         unsupported(
@@ -4048,43 +4152,79 @@ fn compile_relationship(
             right: right.to_string(),
         },
         predicates,
+        length,
     })
 }
 
-fn validate_exact_one_quantifier(
-    quantifier: &CypherQuantifier,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    validate_exact_one_bounds(
-        quantifier.start,
-        quantifier.end,
-        path,
-        "relationship quantifiers other than exact {1} are not supported yet",
-    )
+fn relationship_fixed_length(
+    pattern: &CypherRelationshipPattern,
+    path: &str,
+) -> Result<usize, CoreError> {
+    let quantifier_length = pattern
+        .quantifier
+        .as_ref()
+        .map(|quantifier| {
+            fixed_length_bounds(
+                quantifier.start,
+                quantifier.end,
+                format!("{path}.quantifier"),
+                "relationship quantifiers must be exact positive fixed lengths such as {2}",
+            )
+        })
+        .transpose()?;
+    let range_length = pattern
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.range.as_ref())
+        .map(|range| {
+            fixed_length_bounds(
+                range.start,
+                range.end,
+                format!("{path}.range"),
+                "variable-length relationship ranges must be exact positive fixed lengths such as *2 or *2..2",
+            )
+        })
+        .transpose()?;
+
+    match (quantifier_length, range_length) {
+        (Some(_), Some(_)) => Err(unsupported(
+            path,
+            "relationship patterns cannot combine a variable-length range and a GQL quantifier",
+        )),
+        (Some(length), None) | (None, Some(length)) => Ok(length),
+        (None, None) => Ok(1),
+    }
 }
 
-fn validate_exact_one_range(
-    range: &CypherRangeLiteral,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    validate_exact_one_bounds(
-        range.start,
-        range.end,
-        path,
-        "variable-length relationship ranges other than exact *1 are not supported yet",
-    )
-}
-
-fn validate_exact_one_bounds(
+fn fixed_length_bounds(
     start: Option<i64>,
     end: Option<i64>,
     path: impl Into<String>,
-    message: &'static str,
-) -> Result<(), CoreError> {
-    if start == Some(1) && end == Some(1) {
-        return Ok(());
+    message: impl Into<String>,
+) -> Result<usize, CoreError> {
+    let path = path.into();
+    let message = message.into();
+    let (Some(start), Some(end)) = (start, end) else {
+        return Err(unsupported(path, message));
+    };
+    if start != end || start < 1 {
+        return Err(unsupported(path, message));
     }
-    Err(unsupported(path, message))
+    let length = usize::try_from(start).map_err(|error| {
+        unsupported(
+            path.clone(),
+            format!("fixed relationship length is out of range: {error}"),
+        )
+    })?;
+    if length > MAX_FIXED_RELATIONSHIP_LENGTH {
+        return Err(unsupported(
+            path,
+            format!(
+                "fixed relationship length {length} exceeds Coral's current maximum of {MAX_FIXED_RELATIONSHIP_LENGTH} hops"
+            ),
+        ));
+    }
+    Ok(length)
 }
 
 fn compile_return(
@@ -8651,6 +8791,15 @@ fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
 }
 
 fn fresh_internal_node_variable(plan: &GraphPlan, part_index: usize, node_index: usize) -> String {
+    fresh_internal_node_variable_avoiding(plan, part_index, node_index, "")
+}
+
+fn fresh_internal_node_variable_avoiding(
+    plan: &GraphPlan,
+    part_index: usize,
+    node_index: usize,
+    avoid: &str,
+) -> String {
     let mut suffix = 0;
     loop {
         let candidate = if suffix == 0 {
@@ -8658,7 +8807,7 @@ fn fresh_internal_node_variable(plan: &GraphPlan, part_index: usize, node_index:
         } else {
             format!("__coral_node_{part_index}_{node_index}_{suffix}")
         };
-        if !plan_uses_variable(plan, &candidate) {
+        if candidate != avoid && !plan_uses_variable(plan, &candidate) {
             return candidate;
         }
         suffix += 1;
@@ -14158,6 +14307,10 @@ mod tests {
             "MATCH (a:Service)-[:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON]->{1,3}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON]->{1,}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*9..9]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Person) RETURN a.name",
+            "MATCH (a:Service)-[r:DEPENDS_ON*2]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*2 {active: true}]->(b:Service) RETURN a.name",
         ] {
             assert_unsupported(cypher);
         }
@@ -14182,6 +14335,55 @@ mod tests {
                     direction: Direction::Outgoing,
                     right: "b".to_string(),
                 }]
+            );
+        }
+    }
+
+    #[test]
+    fn compiles_exact_fixed_relationship_ranges_as_repeated_hops() {
+        for cypher in [
+            "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*2..2]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{2}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{2,2}(b:Service) RETURN a.name",
+        ] {
+            let plan = compile_cypher(cypher).expect("exact fixed relationship should compile");
+
+            assert_eq!(
+                plan.nodes,
+                vec![
+                    NodePattern {
+                        variable: "a".to_string(),
+                        label: "Service".to_string(),
+                    },
+                    NodePattern {
+                        variable: "b".to_string(),
+                        label: "Service".to_string(),
+                    },
+                    NodePattern {
+                        variable: "__coral_node_0_1".to_string(),
+                        label: "Service".to_string(),
+                    },
+                ]
+            );
+            assert_eq!(
+                plan.relationships,
+                vec![
+                    RelationshipPattern {
+                        variable: None,
+                        relationship_type: "DEPENDS_ON".to_string(),
+                        left: "a".to_string(),
+                        direction: Direction::Outgoing,
+                        right: "__coral_node_0_1".to_string(),
+                    },
+                    RelationshipPattern {
+                        variable: None,
+                        relationship_type: "DEPENDS_ON".to_string(),
+                        left: "__coral_node_0_1".to_string(),
+                        direction: Direction::Outgoing,
+                        right: "b".to_string(),
+                    },
+                ]
             );
         }
     }

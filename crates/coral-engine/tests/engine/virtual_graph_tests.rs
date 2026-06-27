@@ -970,6 +970,39 @@ async fn cypher_exact_one_relationship_ranges_execute_as_single_hop() {
 }
 
 #[tokio::test]
+async fn cypher_exact_fixed_relationship_ranges_execute_as_repeated_hops() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[:DEPENDS_ON*2..2]->(target:Service) \
+         RETURN source.name AS source, target.name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("exact fixed relationship range query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .matches("JOIN \"ops\".\"service_dependencies\"")
+            .count()
+            >= 2,
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"source": "billing-api", "target": "experiments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_inline_node_property_maps_execute_as_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
