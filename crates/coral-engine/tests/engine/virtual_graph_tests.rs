@@ -102,6 +102,82 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_union_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN service.name AS item \
+         UNION \
+         MATCH (person:Person) \
+         WHERE person.team = 'platform' \
+         RETURN person.name AS item",
+    )
+    .await
+    .expect("UNION Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION "),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(|row| row["item"].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({"item": "Ada Lovelace"}),
+            json!({"item": "billing-api"}),
+            json!({"item": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_union_all_preserves_duplicate_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN service.tier AS tier \
+         UNION ALL \
+         MATCH (service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN service.tier AS tier",
+    )
+    .await
+    .expect("UNION ALL Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "prod"}),
+            json!({"tier": "prod"}),
+            json!({"tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_ignored_path_variables_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

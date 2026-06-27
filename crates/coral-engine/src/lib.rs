@@ -81,7 +81,8 @@ pub use virtual_graph::{
     AggregateFunction as GraphAggregateFunction, AggregateTarget as GraphAggregateTarget,
     ComparisonOperator, CypherParameterValue as GraphCypherParameterValue,
     Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic, Direction as GraphDirection,
-    GraphExecution, GraphPlan, GraphQueryPlan, GraphqlVariableValue as GraphGraphqlVariableValue,
+    GraphExecution, GraphPlan, GraphQuery, GraphQueryPlan, GraphUnion as GraphQueryUnion,
+    GraphUnionBranch as GraphQueryUnionBranch, GraphqlVariableValue as GraphGraphqlVariableValue,
     Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
     OrderExpression as GraphOrderExpression, OrderKey as GraphOrderKey,
     PredicateExpression as GraphPredicateExpression, PredicateRhs as GraphPredicateRhs,
@@ -90,9 +91,9 @@ pub use virtual_graph::{
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
-    compile_cypher_with_parameters, compile_graphql, compile_graphql_for_graph,
-    compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
-    graphql_schema_sdl_for_graph,
+    compile_cypher_query, compile_cypher_query_with_parameters, compile_cypher_with_parameters,
+    compile_graphql, compile_graphql_for_graph, compile_graphql_for_graph_with_variables,
+    compile_graphql_with_variables, graphql_schema_sdl_for_graph,
 };
 
 /// High-level query operations for the local query engine.
@@ -256,9 +257,52 @@ impl CoralQuery {
         Ok(GraphQueryPlan::new(translation, query_plan))
     }
 
+    /// Executes one read-only virtual graph query over the provided source set.
+    ///
+    /// This is the query-level companion to [`Self::execute_graph_plan`] and
+    /// supports top-level composition such as `UNION` / `UNION ALL`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if graph lowering fails, source compilation fails,
+    /// or the generated SQL cannot execute.
+    pub async fn execute_graph_query(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        query: &GraphQuery,
+    ) -> Result<GraphExecution, CoreError> {
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        graph.validate_graph_query_against_catalog(query, &catalog)?;
+        let translation = graph.lower_graph_query(query)?;
+        let execution = query_runtime.execute_sql(translation.sql()).await?;
+        Ok(GraphExecution::new(translation, execution))
+    }
+
+    /// Explains one read-only virtual graph query over the provided source set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if graph lowering fails, source compilation fails,
+    /// or the generated SQL cannot be planned.
+    pub async fn explain_graph_query(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        query: &GraphQuery,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        graph.validate_graph_query_against_catalog(query, &catalog)?;
+        let translation = graph.lower_graph_query(query)?;
+        let query_plan = query_runtime.explain_sql(translation.sql()).await?;
+        Ok(GraphQueryPlan::new(translation, query_plan))
+    }
+
     /// Executes one supported read-only Cypher query over a virtual graph declaration.
     ///
-    /// The Cypher text is parsed and compiled into Coral's shared graph plan,
+    /// The Cypher text is parsed and compiled into Coral's shared graph query,
     /// then lowered to `DataFusion` SQL and executed through the normal SQL
     /// runtime. The returned wrapper preserves the translated SQL.
     ///
@@ -279,13 +323,13 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_cypher(cypher)?;
-        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+        let query = compile_cypher_query(cypher)?;
+        Self::execute_graph_query(sources, runtime, graph, &query).await
     }
 
     /// Executes one supported read-only Cypher query with typed parameters.
     ///
-    /// Parameters are bound into Coral's shared graph plan before SQL lowering.
+    /// Parameters are bound into Coral's shared graph query before SQL lowering.
     /// Scalar parameters can be used anywhere the supported subset accepts a
     /// literal; list parameters can be used as `IN` right-hand sides.
     ///
@@ -308,8 +352,8 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_cypher_with_parameters(cypher, parameters)?;
-        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+        let query = compile_cypher_query_with_parameters(cypher, parameters)?;
+        Self::execute_graph_query(sources, runtime, graph, &query).await
     }
 
     /// Explains one supported read-only Cypher query over a virtual graph declaration.
@@ -331,8 +375,8 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_cypher(cypher)?;
-        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+        let query = compile_cypher_query(cypher)?;
+        Self::explain_graph_query(sources, runtime, graph, &query).await
     }
 
     /// Explains one supported read-only Cypher query with typed parameters.
@@ -356,8 +400,8 @@ impl CoralQuery {
             ));
         }
 
-        let plan = compile_cypher_with_parameters(cypher, parameters)?;
-        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+        let query = compile_cypher_query_with_parameters(cypher, parameters)?;
+        Self::explain_graph_query(sources, runtime, graph, &query).await
     }
 
     /// Executes one supported read-only GraphQL virtual graph query.

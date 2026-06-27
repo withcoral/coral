@@ -5,10 +5,11 @@ use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyRef, ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, KeyPredicate, Literal, OrderDirection,
+    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyRef, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -51,6 +52,44 @@ impl Declaration {
     pub fn lower_graph_plan(&self, plan: &GraphPlan) -> Result<SqlTranslation, CoreError> {
         let validated = self.validate_graph_plan(plan)?;
         Lowerer::new(validated).lower()
+    }
+
+    /// Lowers a read-only virtual graph query into `DataFusion` SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError::InvalidInput`] when any branch plan is invalid for
+    /// this declaration or when the query shape is not supported by the lowerer.
+    pub fn lower_graph_query(&self, query: &GraphQuery) -> Result<SqlTranslation, CoreError> {
+        match query {
+            GraphQuery::Plan(plan) => self.lower_graph_plan(plan),
+            GraphQuery::Union(union) => self.lower_graph_union(union),
+        }
+    }
+
+    fn lower_graph_union(&self, union: &GraphUnion) -> Result<SqlTranslation, CoreError> {
+        if union.branches.is_empty() {
+            return Err(CoreError::internal("graph union had no union branches"));
+        }
+
+        let mut diagnostics = Vec::new();
+        let first = self.lower_graph_plan(&union.first)?;
+        diagnostics.extend(first.diagnostics().iter().cloned());
+        let mut sql = render_union_branch_sql(first.sql(), 0);
+
+        for (index, branch) in union.branches.iter().enumerate() {
+            let translation = self.lower_graph_plan(&branch.plan)?;
+            diagnostics.extend(translation.diagnostics().iter().cloned());
+            write!(
+                sql,
+                " {} {}",
+                if branch.all { "UNION ALL" } else { "UNION" },
+                render_union_branch_sql(translation.sql(), index + 1)
+            )
+            .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
+        }
+
+        Ok(SqlTranslation::new(sql, diagnostics))
     }
 }
 
@@ -626,8 +665,8 @@ impl<'a> Lowerer<'a> {
             Projection::Property { property, alias } => {
                 let expression = self.render_property_ref(property)?;
                 let alias = alias
-                    .clone()
-                    .unwrap_or_else(|| format!("{}_{}", property.variable, property.property));
+                    .as_deref()
+                    .map_or_else(|| projection.output_name(), ToString::to_string);
                 Ok(format!("{expression} AS {}", quote_ident(&alias)))
             }
             Projection::Key { variable, alias } => Ok(format!(
@@ -1878,6 +1917,13 @@ fn render_table_ref(table: &TableRef) -> String {
         "{}.{}",
         quote_ident(&table.schema),
         quote_ident(&table.name)
+    )
+}
+
+fn render_union_branch_sql(sql: &str, index: usize) -> String {
+    format!(
+        "SELECT * FROM ({sql}) AS {}",
+        quote_ident(&format!("__coral_union_b{index}"))
     )
 }
 

@@ -527,6 +527,26 @@ impl Projection {
     pub fn is_aggregate(&self) -> bool {
         matches!(self, Self::CountAll { .. } | Self::Aggregate { .. })
     }
+
+    /// Returns the tabular output name rendered for this projection.
+    #[must_use]
+    pub fn output_name(&self) -> String {
+        match self {
+            Self::Property { property, alias } => alias
+                .clone()
+                .unwrap_or_else(|| format!("{}_{}", property.variable, property.property)),
+            Self::Key { alias, .. }
+            | Self::ElementId { alias, .. }
+            | Self::NodeLabels { alias, .. }
+            | Self::PropertyKeys { alias, .. }
+            | Self::RelationshipType { alias, .. }
+            | Self::Literal { alias, .. }
+            | Self::LiteralList { alias, .. }
+            | Self::Expression { alias, .. }
+            | Self::CountAll { alias }
+            | Self::Aggregate { alias, .. } => alias.clone(),
+        }
+    }
 }
 
 /// Aggregate functions in the shared graph IR.
@@ -808,4 +828,31 @@ pub struct GraphPlan {
     pub skip: Option<u64>,
     /// Optional row limit.
     pub limit: Option<u64>,
+}
+
+/// Read-only virtual graph query shape consumed by SQL lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphQuery {
+    /// A single graph query plan.
+    Plan(GraphPlan),
+    /// A top-level set union of graph query plans.
+    Union(GraphUnion),
+}
+
+/// Top-level `UNION` / `UNION ALL` over graph plans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnion {
+    /// Initial branch before the first `UNION` operator.
+    pub first: GraphPlan,
+    /// Subsequent branches and their leading union operator.
+    pub branches: Vec<GraphUnionBranch>,
+}
+
+/// One branch after a `UNION` or `UNION ALL` operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnionBranch {
+    /// Whether this branch uses `UNION ALL` and preserves duplicates.
+    pub all: bool,
+    /// Branch plan.
+    pub plan: GraphPlan,
 }

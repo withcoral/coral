@@ -15,7 +15,10 @@ mod ir;
 mod sql;
 mod validation;
 
-pub use cypher::{CypherParameterValue, compile_cypher, compile_cypher_with_parameters};
+pub use cypher::{
+    CypherParameterValue, compile_cypher, compile_cypher_query,
+    compile_cypher_query_with_parameters, compile_cypher_with_parameters,
+};
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
@@ -26,9 +29,10 @@ pub use graphql::{
 pub use graphql_schema::graphql_schema_sdl_for_graph;
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch, KeyPredicate, Literal, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 pub use sql::SqlTranslation;

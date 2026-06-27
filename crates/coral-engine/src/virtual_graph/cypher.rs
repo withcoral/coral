@@ -15,8 +15,8 @@ use decypher::ast::pattern::{
     RelationshipPattern as CypherRelationshipPattern,
 };
 use decypher::ast::query::{
-    MultiPartQuery, MultiPartQueryPart, Query, QueryBody, ReadingClause, SinglePartBody,
-    SinglePartQuery, SingleQueryKind,
+    MultiPartQuery, MultiPartQueryPart, Query, QueryBody, ReadingClause, RegularQuery,
+    SinglePartBody, SinglePartQuery, SingleQuery, SingleQueryKind,
 };
 use decypher::cst::{AstNode as _, AstToken as _, Ident};
 use decypher::syntax::{SyntaxKind, SyntaxNode};
@@ -26,12 +26,12 @@ use regex::Regex;
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionBranch, KeyPredicate, Literal,
+    NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -203,6 +203,39 @@ pub fn compile_cypher_with_parameters(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
 ) -> Result<GraphPlan, CoreError> {
+    match compile_cypher_query_with_parameters(cypher, parameters)? {
+        GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Union(_) => Err(unsupported(
+            "query.union",
+            "compile_cypher returns a single graph plan; use compile_cypher_query for UNION queries",
+        )),
+    }
+}
+
+/// Parses and compiles Cypher into a read-only virtual graph query.
+///
+/// This accepts the same single-query subset as [`compile_cypher`] plus
+/// top-level `UNION` / `UNION ALL` composition between supported branch queries.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
+/// Cypher/GQL features outside Coral's current read-only virtual graph subset.
+pub fn compile_cypher_query(cypher: &str) -> Result<GraphQuery, CoreError> {
+    compile_cypher_query_with_parameters(cypher, &BTreeMap::new())
+}
+
+/// Parses and compiles Cypher with typed parameter values into a read-only graph query.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported Cypher/GQL features, references a missing parameter, or binds a
+/// parameter value in an unsupported position.
+pub fn compile_cypher_query_with_parameters(
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+) -> Result<GraphQuery, CoreError> {
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
@@ -210,7 +243,7 @@ pub fn compile_cypher_with_parameters(
     compile_query(&query, &context)
 }
 
-fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphPlan, CoreError> {
+fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphQuery, CoreError> {
     if query.statements.len() != 1 {
         return Err(unsupported(
             "query",
@@ -222,16 +255,67 @@ fn compile_query(query: &Query, context: &CypherCompileContext) -> Result<GraphP
         .first()
         .ok_or_else(|| unsupported("query", "Cypher query must contain a statement"))?;
 
-    let QueryBody::SingleQuery(single_query) = statement else {
-        return Err(unsupported(
+    match statement {
+        QueryBody::SingleQuery(single_query) => Ok(GraphQuery::Plan(compile_single_query(
+            single_query,
+            context,
+        )?)),
+        QueryBody::Regular(regular_query) => compile_regular_query(regular_query, context),
+        _ => Err(unsupported(
             "query",
-            "only read-only single MATCH queries are supported",
-        ));
-    };
+            "only read-only MATCH queries and UNION queries are supported",
+        )),
+    }
+}
+
+fn compile_single_query(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
     match &single_query.kind {
         SingleQueryKind::SinglePart(single_part) => compile_single_part(single_part, context),
         SingleQueryKind::MultiPart(multi_part) => compile_multi_part(multi_part, context),
     }
+}
+
+fn compile_regular_query(
+    query: &RegularQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphQuery, CoreError> {
+    let first = compile_single_query(&query.single_query, context)?;
+    if query.unions.is_empty() {
+        return Ok(GraphQuery::Plan(first));
+    }
+
+    let expected_projection_names = projection_names(&first);
+    let mut branches = Vec::with_capacity(query.unions.len());
+    for (index, union) in query.unions.iter().enumerate() {
+        let plan = compile_single_query(&union.single_query, context)?;
+        let projection_names = projection_names(&plan);
+        if projection_names != expected_projection_names {
+            return Err(unsupported(
+                format!("query.unions[{index}].return"),
+                format!(
+                    "UNION branch projections must match the first branch; expected [{}], got [{}]",
+                    expected_projection_names.join(", "),
+                    projection_names.join(", ")
+                ),
+            ));
+        }
+        branches.push(GraphUnionBranch {
+            all: union.all,
+            plan,
+        });
+    }
+
+    Ok(GraphQuery::Union(GraphUnion { first, branches }))
+}
+
+fn projection_names(plan: &GraphPlan) -> Vec<String> {
+    plan.projections
+        .iter()
+        .map(Projection::output_name)
+        .collect()
 }
 
 fn compile_single_part(
@@ -7125,6 +7209,70 @@ mod tests {
         );
         assert_eq!(plan.limit, Some(10));
         assert_eq!(plan.predicate, None);
+    }
+
+    #[test]
+    fn compiles_union_query() {
+        let query = compile_cypher_query(
+            "MATCH (service:Service) \
+             WHERE service.tier = 'prod' \
+             RETURN service.name AS item \
+             UNION \
+             MATCH (person:Person) \
+             WHERE person.team = 'platform' \
+             RETURN person.name AS item",
+        )
+        .expect("UNION query should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected union query");
+        };
+        assert_eq!(projection_names(&union.first), vec!["item".to_string()]);
+        assert_eq!(union.branches.len(), 1);
+        let branch = union.branches.first().expect("union branch should exist");
+        assert!(!branch.all);
+        assert_eq!(projection_names(&branch.plan), vec!["item".to_string()]);
+    }
+
+    #[test]
+    fn compiles_union_all_query() {
+        let query = compile_cypher_query(
+            "MATCH (service:Service) RETURN service.tier AS tier \
+             UNION ALL \
+             MATCH (service:Service) RETURN service.tier AS tier",
+        )
+        .expect("UNION ALL query should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected union query");
+        };
+        assert_eq!(union.branches.len(), 1);
+        let branch = union.branches.first().expect("union branch should exist");
+        assert!(branch.all);
+    }
+
+    #[test]
+    fn rejects_union_projection_mismatches() {
+        let error = compile_cypher_query(
+            "MATCH (service:Service) RETURN service.name AS item \
+             UNION \
+             MATCH (person:Person) RETURN person.name AS person",
+        )
+        .expect_err("mismatched UNION projections should fail");
+
+        assert!(error.to_string().contains("UNION branch projections"));
+    }
+
+    #[test]
+    fn single_plan_compile_rejects_union_queries() {
+        let error = compile_cypher(
+            "MATCH (service:Service) RETURN service.name AS item \
+             UNION \
+             MATCH (person:Person) RETURN person.name AS item",
+        )
+        .expect_err("single-plan compiler should reject UNION");
+
+        assert!(error.to_string().contains("compile_cypher"));
     }
 
     #[test]

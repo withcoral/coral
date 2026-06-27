@@ -4,8 +4,8 @@ use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    GraphPlan, GraphQuery, KeyPredicate, Literal, OptionalMatchScope, OrderExpression,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
     ScalarPredicate, ScalarPredicateRhs,
@@ -96,6 +96,23 @@ impl Declaration {
         GraphPlanValidator::new(self, plan, Some(catalog))
             .validate()
             .map(|_| ())
+    }
+
+    pub(crate) fn validate_graph_query_against_catalog(
+        &self,
+        query: &GraphQuery,
+        catalog: &CatalogInfo,
+    ) -> Result<(), CoreError> {
+        match query {
+            GraphQuery::Plan(plan) => self.validate_graph_plan_against_catalog(plan, catalog),
+            GraphQuery::Union(union) => {
+                self.validate_graph_plan_against_catalog(&union.first, catalog)?;
+                for branch in &union.branches {
+                    self.validate_graph_plan_against_catalog(&branch.plan, catalog)?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 
