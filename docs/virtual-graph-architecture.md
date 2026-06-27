@@ -86,7 +86,7 @@ The supported foundation subset is intentionally narrow:
 - `WHERE` comparisons combined with `AND`, `OR`, `NOT`, and parentheses;
 - literal-left and chained comparisons normalized into property predicates;
 - integer and finite floating-point predicate literals;
-- `IN` predicates over scalar literal lists, including numeric lists;
+- `IN` predicates over scalar literal lists, including numeric and null members;
 - typed Cypher parameters bound through the explicit parameter API, where
   scalar parameters are accepted in literal positions and list parameters are
   accepted as `IN` right-hand sides;

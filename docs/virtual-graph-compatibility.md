@@ -59,7 +59,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Chained comparisons | Supported foundation | Normalized to conjunctions, e.g. `10 <= n.score < 20` |
 | Literal-left comparisons | Supported foundation | Operators are inverted around the property operand where possible |
 | `WHERE` boolean logic | Supported foundation | `AND`, `OR`, `NOT`, and parentheses lower to SQL boolean predicates |
-| `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric lists, lower to SQL `IN`; empty lists lower to `FALSE` |
+| `WHERE ... IN [...]` | Supported foundation | Literal scalar lists, including numeric and null members, lower to SQL `IN`; empty lists lower to `FALSE` |
 | Cypher parameters | Supported foundation | Explicit typed parameter API binds scalar values in literal positions and list values as `IN` right-hand sides before SQL lowering |
 | `WHERE ... STARTS WITH` / `ENDS WITH` / `CONTAINS` | Supported foundation | String-literal RHS lowers to escaped SQL `LIKE` |
 | `WHERE ... IS NULL` / `IS NOT NULL` | Supported foundation | Lowers to SQL `IS NULL` / `IS NOT NULL` |
@@ -81,7 +81,6 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Optional-local `WHERE` and inline property maps | Supported foundation | Supported for single-hop directed optional patterns by placing predicates inside the null-preserving join scope |
 | Multi-hop or undirected optional-local predicates | Rejected | Needs broader optional-scope grouping and orientation-aware predicate placement |
 | `WHERE XOR` | Rejected | Not portable across target SQL dialects |
-| `WHERE ... IN` with null list values | Rejected | Needs explicit Cypher null-membership semantics |
 | `WHERE ... =~` regex matching | Rejected | Needs regex dialect compatibility across DataFusion targets |
 | Variable-length paths | Rejected | Needs recursive/path expansion semantics |
 | Path variables and path values | Rejected | Needs graph value representation |

@@ -3356,7 +3356,7 @@ mod tests {
     fn compiles_in_predicates_with_literal_lists() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
-             WHERE service.tier IN ['prod', 'dev'] \
+             WHERE service.tier IN ['prod', null, 'dev'] \
              RETURN service.name",
         )
         .expect("query should compile");
@@ -3371,6 +3371,7 @@ mod tests {
                 operator: ComparisonOperator::In,
                 rhs: PredicateRhs::List(vec![
                     Literal::String("prod".to_string()),
+                    Literal::Null,
                     Literal::String("dev".to_string()),
                 ]),
             }]

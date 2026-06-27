@@ -975,7 +975,7 @@ async fn cypher_in_predicates_execute_against_synthetic_sources() {
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         WHERE service.tier IN ['prod', 'dev'] \
+         WHERE service.tier IN ['prod', null, 'dev'] \
          RETURN service.name AS service \
          ORDER BY service",
     )
@@ -983,7 +983,9 @@ async fn cypher_in_predicates_execute_against_synthetic_sources() {
     .expect("Cypher IN predicate query should execute");
 
     assert!(
-        execution.translated_sql().contains(" IN "),
+        execution
+            .translated_sql()
+            .contains(" IN ('prod', NULL, 'dev')"),
         "{}",
         execution.translated_sql()
     );

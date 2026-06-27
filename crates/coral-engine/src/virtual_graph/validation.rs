@@ -1049,7 +1049,7 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
-            PredicateRhs::List(literals) => {
+            PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1058,7 +1058,7 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                Self::validate_in_list(path, literals)
+                Ok(())
             }
         }
     }
@@ -1131,7 +1131,7 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
-            PredicateRhs::List(literals) => {
+            PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1140,7 +1140,7 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                Self::validate_in_list(path, literals)
+                Ok(())
             }
         }
     }
@@ -1189,7 +1189,7 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 self.validate_projection_alias(alias, format!("{path}.rhs"))
             }
-            ProjectionPredicateRhs::List(literals) => {
+            ProjectionPredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -1198,7 +1198,7 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                Self::validate_in_list(path, literals)
+                Ok(())
             }
         }
     }
@@ -1364,21 +1364,6 @@ impl<'a> GraphPlanValidator<'a> {
                 "string predicates require a string literal right-hand side",
             )
             .into_core_error());
-        }
-        Ok(())
-    }
-
-    fn validate_in_list(path: impl Into<String>, literals: &[Literal]) -> Result<(), CoreError> {
-        let path = path.into();
-        for (index, literal) in literals.iter().enumerate() {
-            if matches!(literal, Literal::Null) {
-                return Err(Diagnostic::new(
-                    "UNSUPPORTED_IN_LIST",
-                    format!("{path}.rhs[{index}]"),
-                    "null values in IN lists are not supported yet",
-                )
-                .into_core_error());
-            }
         }
         Ok(())
     }
@@ -2179,7 +2164,7 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_null_values_in_in_lists() {
+    fn validate_graph_plan_accepts_null_values_in_in_lists() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.predicates = vec![PropertyPredicate {
@@ -2191,14 +2176,9 @@ relationships:
             rhs: PredicateRhs::List(vec![Literal::String("prod".to_string()), Literal::Null]),
         }];
 
-        let error = graph
+        graph
             .validate_graph_plan(&plan)
-            .expect_err("null values in IN list should fail validation");
-
-        assert!(
-            error.to_string().contains("UNSUPPORTED_IN_LIST"),
-            "{error:?}"
-        );
+            .expect("null values in IN lists should validate");
     }
 
     #[test]
