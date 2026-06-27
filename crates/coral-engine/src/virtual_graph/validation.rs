@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
+    GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -435,6 +436,12 @@ impl<'a> GraphPlanValidator<'a> {
                         format!("projections[{index}].variable"),
                     )?;
                 }
+                Projection::ElementId { variable, .. } => {
+                    self.validate_element_id_projection(
+                        variable,
+                        format!("projections[{index}].variable"),
+                    )?;
+                }
                 Projection::NodeLabels {
                     variable, label, ..
                 } => {
@@ -701,6 +708,10 @@ impl<'a> GraphPlanValidator<'a> {
                 variables.insert(predicate.variable.as_str());
                 Self::collect_predicate_rhs_variables(&predicate.rhs, variables);
             }
+            PredicateExpression::ElementIdComparison(predicate) => {
+                variables.insert(predicate.variable.as_str());
+                Self::collect_predicate_rhs_variables(&predicate.rhs, variables);
+            }
             PredicateExpression::Presence(predicate) => {
                 variables.insert(predicate.variable.as_str());
             }
@@ -730,7 +741,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Property(property) => {
                 variables.insert(property.variable.as_str());
             }
-            PredicateRhs::Key { variable } => {
+            PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
                 variables.insert(variable.as_str());
             }
             PredicateRhs::Literal(_) | PredicateRhs::List(_) => {}
@@ -749,6 +760,13 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::KeyComparison(predicate) => {
                 Self::validate_key_predicate_not_optional(predicate, optional_variables, path)
+            }
+            PredicateExpression::ElementIdComparison(predicate) => {
+                Self::validate_element_id_predicate_not_optional(
+                    predicate,
+                    optional_variables,
+                    path,
+                )
             }
             PredicateExpression::Presence(predicate) => {
                 Self::validate_presence_predicate_not_optional(predicate, optional_variables, path)
@@ -804,6 +822,20 @@ impl<'a> GraphPlanValidator<'a> {
         Self::validate_predicate_rhs_not_optional(&predicate.rhs, optional_variables, path)
     }
 
+    fn validate_element_id_predicate_not_optional(
+        predicate: &ElementIdPredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_variable_not_optional(
+            &predicate.variable,
+            optional_variables,
+            format!("{path}.variable"),
+        )?;
+        Self::validate_predicate_rhs_not_optional(&predicate.rhs, optional_variables, path)
+    }
+
     fn validate_presence_predicate_not_optional(
         predicate: &PresencePredicate,
         optional_variables: &BTreeSet<&str>,
@@ -829,11 +861,13 @@ impl<'a> GraphPlanValidator<'a> {
                 optional_variables,
                 format!("{path}.rhs.variable"),
             ),
-            PredicateRhs::Key { variable } => Self::validate_variable_not_optional(
-                variable,
-                optional_variables,
-                format!("{path}.rhs.variable"),
-            ),
+            PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
+                Self::validate_variable_not_optional(
+                    variable,
+                    optional_variables,
+                    format!("{path}.rhs.variable"),
+                )
+            }
             PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(()),
         }
     }
@@ -885,6 +919,7 @@ impl<'a> GraphPlanValidator<'a> {
             .filter_map(|projection| match projection {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
+                | Projection::ElementId { .. }
                 | Projection::NodeLabels { .. }
                 | Projection::PropertyKeys { .. }
                 | Projection::RelationshipType { .. }
@@ -916,6 +951,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::KeyComparison(predicate) => {
                 self.validate_key_predicate(predicate, path)
+            }
+            PredicateExpression::ElementIdComparison(predicate) => {
+                self.validate_element_id_predicate(predicate, path)
             }
             PredicateExpression::Presence(predicate) => {
                 self.validate_presence_predicate(predicate, path)
@@ -964,6 +1002,9 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::Key { variable } => {
                 self.validate_key_projection(variable, format!("{path}.variable"))
             }
+            OrderExpression::ElementId { variable } => {
+                self.validate_element_id_projection(variable, format!("{path}.variable"))
+            }
             OrderExpression::NodeLabels { variable, label } => {
                 self.validate_node_labels_projection(variable, label, format!("{path}.variable"))
             }
@@ -1003,6 +1044,9 @@ impl<'a> GraphPlanValidator<'a> {
                     matches!(projection, Projection::Key { variable: projected, .. } if projected == variable)
                 })
             }
+            OrderExpression::ElementId { variable } => self.plan.projections.iter().any(|projection| {
+                matches!(projection, Projection::ElementId { variable: projected, .. } if projected == variable)
+            }),
             OrderExpression::RelationshipType {
                 variable,
                 relationship_type,
@@ -1050,6 +1094,10 @@ impl<'a> GraphPlanValidator<'a> {
                     alias: projection_alias,
                 }
                 | Projection::Key {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::ElementId {
                     alias: projection_alias,
                     ..
                 }
@@ -1145,6 +1193,30 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
+            PredicateRhs::ElementId { variable } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_element_id_projection(variable, format!("{path}.rhs"))
+            }
             PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -1227,6 +1299,12 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
+            PredicateRhs::ElementId { .. } => Err(Diagnostic::new(
+                "INVALID_PREDICATE_OPERAND",
+                path,
+                "id() predicates cannot compare against elementId(); compare id() to mapped keys or elementId() to string values",
+            )
+            .into_core_error()),
             PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -1238,6 +1316,113 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn validate_element_id_predicate(
+        &self,
+        predicate: &ElementIdPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        self.validate_element_id_projection(&predicate.variable, format!("{path}.variable"))?;
+        match &predicate.rhs {
+            PredicateRhs::Literal(literal) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                Self::validate_element_id_literal(path.clone(), literal)?;
+                Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
+                Self::validate_literal_predicate(path, predicate.operator, literal)
+            }
+            PredicateRhs::ElementId { variable } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_element_id_projection(variable, format!("{path}.rhs"))
+            }
+            PredicateRhs::List(literals) => {
+                if predicate.operator != ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "literal lists are only supported with IN predicates",
+                    )
+                    .into_core_error());
+                }
+                for (index, literal) in literals.iter().enumerate() {
+                    Self::validate_element_id_literal(format!("{path}.rhs[{index}]"), literal)?;
+                }
+                Ok(())
+            }
+            PredicateRhs::Property(property) => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                if matches!(
+                    predicate.operator,
+                    ComparisonOperator::StartsWith
+                        | ComparisonOperator::EndsWith
+                        | ComparisonOperator::Contains
+                ) {
+                    return Err(Diagnostic::new(
+                        "INVALID_PREDICATE_OPERAND",
+                        path,
+                        "string predicates require a string literal right-hand side",
+                    )
+                    .into_core_error());
+                }
+                self.validate_property_ref(property, format!("{path}.rhs"))
+            }
+            PredicateRhs::Key { .. } => Err(Diagnostic::new(
+                "INVALID_PREDICATE_OPERAND",
+                path,
+                "elementId() predicates cannot compare against id(); compare elementId() to string values or id() to mapped keys",
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn validate_element_id_literal(
+        path: impl Into<String>,
+        literal: &Literal,
+    ) -> Result<(), CoreError> {
+        match literal {
+            Literal::String(_) | Literal::Null => Ok(()),
+            Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_) => Err(Diagnostic::new(
+                "INVALID_PREDICATE_OPERAND",
+                path,
+                "elementId() predicates require string or null literal operands",
+            )
+            .into_core_error()),
         }
     }
 
@@ -1466,6 +1651,40 @@ impl<'a> GraphPlanValidator<'a> {
                         path,
                         format!(
                             "id({variable}) requires relationship type '{}' to declare a key column",
+                            relationship.relationship_type
+                        ),
+                    )
+                    .into_core_error())
+                }
+            }
+        }
+    }
+
+    fn validate_element_id_projection(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        match binding.kind() {
+            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Relationship(relationship) => {
+                if relationship.key.is_some() {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::new(
+                        "INVALID_ELEMENT_ID_PROJECTION",
+                        path,
+                        format!(
+                            "elementId({variable}) requires relationship type '{}' to declare a key column",
                             relationship.relationship_type
                         ),
                     )
@@ -2064,6 +2283,47 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("keyless relationship count target should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_keyless_relationship_element_id_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::ElementId {
+            variable: "owns".to_string(),
+            alias: "ownership_element_id".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("keyless relationship element id should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_ELEMENT_ID_PROJECTION"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_non_string_element_id_predicate_literals() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable: "person".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Integer(1)),
+            },
+        ));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("non-string element id literal should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_PREDICATE_OPERAND"),
+            "{error:?}"
+        );
     }
 
     #[test]

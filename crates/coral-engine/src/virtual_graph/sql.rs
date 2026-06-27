@@ -4,10 +4,10 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyRef,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
+    GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -537,6 +537,13 @@ impl<'a> Lowerer<'a> {
                         quote_ident(alias)
                     ));
                 }
+                Projection::ElementId { variable, alias } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        self.render_binding_element_id_ref(variable)?,
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::NodeLabels {
                     variable,
                     label,
@@ -674,6 +681,9 @@ impl<'a> Lowerer<'a> {
                 Projection::Key { variable, .. } => {
                     expressions.push(self.render_binding_key_ref(variable)?);
                 }
+                Projection::ElementId { variable, .. } => {
+                    expressions.push(self.render_binding_element_id_ref(variable)?);
+                }
                 Projection::RelationshipType {
                     variable,
                     relationship_type,
@@ -706,6 +716,9 @@ impl<'a> Lowerer<'a> {
             PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
             PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
             PredicateExpression::KeyComparison(predicate) => self.render_key_predicate(predicate),
+            PredicateExpression::ElementIdComparison(predicate) => {
+                self.render_element_id_predicate(predicate)
+            }
             PredicateExpression::Presence(predicate) => self.render_presence_predicate(predicate),
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
@@ -927,6 +940,66 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_element_id_predicate(
+        &self,
+        predicate: &ElementIdPredicate,
+    ) -> Result<String, CoreError> {
+        let element_id = self.render_binding_element_id_ref(&predicate.variable)?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{element_id} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated elementId() IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                PredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{element_id} LIKE {} ESCAPE '\\'",
+                render_like_pattern(predicate.operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated elementId() string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{element_id} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{element_id} IS NOT NULL"))
+            }
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                PredicateRhs::Literal(Literal::Null),
+            ) => Err(CoreError::internal(
+                "validated elementId() predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{element_id} {} {}",
+                render_operator(predicate.operator),
+                self.render_predicate_rhs(&predicate.rhs)?
+            )),
+        }
+    }
+
     fn render_presence_predicate(
         &self,
         predicate: &PresencePredicate,
@@ -966,6 +1039,7 @@ impl<'a> Lowerer<'a> {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
             PredicateRhs::Property(property) => self.render_property_ref(property),
             PredicateRhs::Key { variable } => self.render_binding_key_ref(variable),
+            PredicateRhs::ElementId { variable } => self.render_binding_element_id_ref(variable),
             PredicateRhs::List(_) => Err(CoreError::internal(
                 "validated literal list predicate reached generic RHS renderer",
             )),
@@ -995,6 +1069,7 @@ impl<'a> Lowerer<'a> {
         match expression {
             OrderExpression::Property(property) => self.render_property_ref(property),
             OrderExpression::Key { variable } => self.render_binding_key_ref(variable),
+            OrderExpression::ElementId { variable } => self.render_binding_element_id_ref(variable),
             OrderExpression::NodeLabels { variable, label } => {
                 self.render_node_labels_ref(variable, label)
             }
@@ -1119,6 +1194,7 @@ impl<'a> Lowerer<'a> {
         match projection {
             Projection::Property { property, .. } => self.render_property_ref(property),
             Projection::Key { variable, .. } => self.render_binding_key_ref(variable),
+            Projection::ElementId { variable, .. } => self.render_binding_element_id_ref(variable),
             Projection::NodeLabels {
                 variable, label, ..
             } => self.render_node_labels_ref(variable, label),
@@ -1160,6 +1236,13 @@ impl<'a> Lowerer<'a> {
             "{}.{}",
             quote_ident(binding.alias()),
             quote_ident(key)
+        ))
+    }
+
+    fn render_binding_element_id_ref(&self, variable: &str) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS VARCHAR)",
+            self.render_binding_key_ref(variable)?
         ))
     }
 
@@ -1221,6 +1304,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::ElementId { alias, .. }
         | Projection::NodeLabels { alias, .. }
         | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
@@ -2025,6 +2109,73 @@ relationships: []
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE (\"n0\".\"id\" = 1 AND \"r0\".\"ownership_id\" IN (100, 200))"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_element_id_projection_predicate_and_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .first_mut()
+            .expect("ownership plan should contain a relationship")
+            .variable = Some("owns".to_string());
+        plan.projections = vec![
+            Projection::ElementId {
+                variable: "person".to_string(),
+                alias: "person_element_id".to_string(),
+            },
+            Projection::ElementId {
+                variable: "owns".to_string(),
+                alias: "ownership_element_id".to_string(),
+            },
+        ];
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable: "person".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("1".to_string())),
+            },
+        ));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::ElementId {
+                variable: "owns".to_string(),
+            },
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("elementId() projection and predicate should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("CAST(\"n0\".\"id\" AS VARCHAR) AS \"person_element_id\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("CAST(\"r0\".\"ownership_id\" AS VARCHAR) AS \"ownership_element_id\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE CAST(\"n0\".\"id\" AS VARCHAR) = '1'"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY CAST(\"r0\".\"ownership_id\" AS VARCHAR) DESC"),
+            "{}",
+            translation.sql()
         );
     }
 

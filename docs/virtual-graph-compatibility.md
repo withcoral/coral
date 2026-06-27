@@ -33,10 +33,10 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
 | Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
-| Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types; optional `type(relationship)` returns null when the relationship is unmatched |
+| Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, `elementId(node)`, `elementId(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types; `elementId` casts mapped keys to strings; optional `type(relationship)` returns null when the relationship is unmatched |
 | Node label projections | Supported foundation | `labels(node)` lowers to a one-element DataFusion list containing the statically mapped node label and preserves null for unmatched optional nodes |
 | Property key projections | Supported foundation | `keys(node)` and `keys(relationship)` lower to a deterministic list of declared graph property names and preserve null for unmatched optional bindings |
-| Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE type(r)` is folded from the fixed relationship type |
+| Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE elementId(...)` compares string-cast mapped keys and rejects keyless relationships; `WHERE type(r)` is folded from the fixed relationship type |
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
 | Declaration-aware plan validation | Supported foundation | Resolves variables/properties and rejects unsupported plan shapes before SQL rendering |
@@ -77,12 +77,12 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN count(node)` | Supported foundation | Supports `count(node)` and `count(DISTINCT node)` over declared node keys |
 | `RETURN count(relationship)` | Supported foundation | Counts keyed or keyless relationship rows; `count(DISTINCT relationship)` requires a declared relationship key |
 | `RETURN collect(property)` | Supported foundation | Supports property collection with optional `DISTINCT`; collecting nodes, relationships, or paths is rejected until graph values are modeled |
-| `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship types; optional relationship types preserve nulls |
+| `RETURN id(...)` / `elementId(...)` / `type(r)` | Supported foundation | Projects mapped keys, string-cast mapped keys, and fixed relationship types; `elementId(relationship)` requires a declared relationship key; optional relationship types preserve nulls |
 | `RETURN labels(node)` | Supported foundation | Projects the statically mapped label as a one-element list via DataFusion `make_array` |
 | `RETURN keys(variable)` | Supported foundation | Projects declared property keys for node and relationship variables via DataFusion `make_array`; identity keys are included only when declared as graph properties |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
-| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
+| `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions including `elementId(...)`, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
 | `WITH` pass-through | Supported foundation | Transparent `WITH var, ...` and `WITH *` preserve bound graph variables |
 | Terminal `WITH` projections | Supported foundation | Terminal projection, alias filtering, ordering, skip, and limit are supported without staging another `MATCH` |
 | `OPTIONAL MATCH` | Supported foundation | Requires an already-bound node anchor and one connected pattern part; preserves unmatched rows with nullable optional bindings |

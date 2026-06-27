@@ -22,11 +22,11 @@ use ordered_float::OrderedFloat;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, GraphPlan, KeyPredicate,
-    Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
+    GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
+    PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -342,6 +342,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::ElementId {
+            alias: projection_alias,
+            ..
+        }
         | Projection::NodeLabels {
             alias: projection_alias,
             ..
@@ -432,6 +436,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
     match projection {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
+        | Projection::ElementId { alias, .. }
         | Projection::NodeLabels { alias, .. }
         | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
@@ -1061,6 +1066,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_element_id_function(function) => {
+            compile_element_id_order_expression(function, path, plan, context)
+        }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_order_expression(function, path, plan, context)
         }
@@ -1172,6 +1180,16 @@ fn compile_id_order_expression(
     Ok(OrderExpression::Key { variable })
 }
 
+fn compile_element_id_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let variable = compile_element_id_variable(function, path, plan, context)?;
+    Ok(OrderExpression::ElementId { variable })
+}
+
 fn compile_type_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1228,6 +1246,10 @@ fn projection_order_expression_for_alias(
                 alias: projection_alias,
             }
             | Projection::Key {
+                alias: projection_alias,
+                ..
+            }
+            | Projection::ElementId {
                 alias: projection_alias,
                 ..
             }
@@ -1297,6 +1319,9 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_element_id_function(function) => {
+            compile_element_id_projection(function, item, path, plan, context)
+        }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_projection(function, item, path, plan, context)
         }
@@ -1349,6 +1374,25 @@ fn compile_id_projection(
             .alias
             .as_ref()
             .map_or_else(|| "id".to_string(), variable_name),
+    })
+}
+
+fn compile_element_id_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable =
+        compile_element_id_variable(function, format!("{path}.expression"), plan, context)?;
+    Ok(Projection::ElementId {
+        variable,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "elementId".to_string(), variable_name),
     })
 }
 
@@ -1642,6 +1686,13 @@ fn is_id_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("id")
+    )
+}
+
+fn is_element_id_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("elementId")
     )
 }
 
@@ -2063,6 +2114,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => false,
@@ -2081,6 +2133,7 @@ fn append_conjunctive_expression(
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => {
@@ -2187,6 +2240,17 @@ fn compile_binary_comparison(
             rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), plan, context)?,
         }));
     }
+    if let Some(variable) =
+        compile_optional_element_id_ref(lhs, format!("{path}.lhs"), plan, context)?
+    {
+        return Ok(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable,
+                operator,
+                rhs: compile_predicate_rhs(rhs, format!("{path}.rhs"), plan, context)?,
+            },
+        ));
+    }
     if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
@@ -2201,6 +2265,17 @@ fn compile_binary_comparison(
             rhs: compile_literal_predicate_rhs(lhs, format!("{path}.lhs"), plan, context)?,
         }));
     }
+    if let Some(variable) =
+        compile_optional_element_id_ref(rhs, format!("{path}.rhs"), plan, context)?
+    {
+        return Ok(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable,
+                operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+                rhs: compile_literal_predicate_rhs(lhs, format!("{path}.lhs"), plan, context)?,
+            },
+        ));
+    }
 
     if contains_type_function(lhs) || contains_type_function(rhs) {
         let lhs = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
@@ -2212,7 +2287,7 @@ fn compile_binary_comparison(
 
     Err(unsupported(
         path,
-        "comparisons must include at least one variable.property, id(variable), or type(relationship) operand",
+        "comparisons must include at least one variable.property, id(variable), elementId(variable), or type(relationship) operand",
     ))
 }
 
@@ -2244,13 +2319,24 @@ fn compile_in_predicate(
             rhs: PredicateRhs::List(literals),
         }));
     }
+    if let Some(variable) =
+        compile_optional_element_id_ref(lhs, format!("{path}.lhs"), plan, context)?
+    {
+        return Ok(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable,
+                operator: ComparisonOperator::In,
+                rhs: PredicateRhs::List(literals),
+            },
+        ));
+    }
     if contains_type_function(lhs) {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
         return Ok(PredicateExpression::Boolean(literals.contains(&literal)));
     }
     Err(unsupported(
         format!("{path}.lhs"),
-        "IN predicates require variable.property, id(variable), type(relationship), or '<label>' IN labels(node)",
+        "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), or '<label>' IN labels(node)",
     ))
 }
 
@@ -2408,6 +2494,11 @@ fn compile_predicate_rhs(
         Expression::FunctionCall(function) if is_id_function(function) => Ok(PredicateRhs::Key {
             variable: compile_id_variable(function, path, plan, context)?,
         }),
+        Expression::FunctionCall(function) if is_element_id_function(function) => {
+            Ok(PredicateRhs::ElementId {
+                variable: compile_element_id_variable(function, path, plan, context)?,
+            })
+        }
         _ => Ok(PredicateRhs::Literal(compile_predicate_literal(
             expression, path, plan, context,
         )?)),
@@ -2454,6 +2545,17 @@ fn compile_null_predicate(
             rhs: PredicateRhs::Literal(Literal::Null),
         }));
     }
+    if let Some(variable) =
+        compile_optional_element_id_ref(operand, format!("{path}.operand"), plan, context)?
+    {
+        return Ok(PredicateExpression::ElementIdComparison(
+            ElementIdPredicate {
+                variable,
+                operator,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            },
+        ));
+    }
     if let Some(variable) = compile_optional_graph_variable_ref(operand) {
         if !plan_uses_variable(plan, &variable) {
             return Err(unsupported(
@@ -2471,7 +2573,7 @@ fn compile_null_predicate(
     }
     Err(unsupported(
         format!("{path}.operand"),
-        "IS NULL predicates require a graph variable, variable.property, id(variable), or type(relationship)",
+        "IS NULL predicates require a graph variable, variable.property, id(variable), elementId(variable), or type(relationship)",
     ))
 }
 
@@ -2499,6 +2601,24 @@ fn compile_optional_id_ref(
     }
 }
 
+fn compile_optional_element_id_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<String>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_element_id_ref(inner, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_element_id_function(function) => Ok(Some(
+            compile_element_id_variable(function, path, plan, context)?,
+        )),
+        _ => Ok(None),
+    }
+}
+
 fn compile_id_variable(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2516,6 +2636,28 @@ fn compile_id_variable(
         return Err(unsupported(
             format!("{path}.arguments[0]"),
             format!("id() argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(variable)
+}
+
+fn compile_element_id_variable(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        "elementId() supports exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!("elementId() argument '{variable}' is not a bound graph variable"),
         ));
     }
     Ok(variable)
@@ -3329,6 +3471,37 @@ mod tests {
     }
 
     #[test]
+    fn compiles_element_id_projections() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN elementId(person) AS person_element_id, elementId(owns) AS ownership_element_id \
+             ORDER BY ownership_element_id",
+        )
+        .expect("elementId() projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::ElementId {
+                    variable: "person".to_string(),
+                    alias: "person_element_id".to_string(),
+                },
+                Projection::ElementId {
+                    variable: "owns".to_string(),
+                    alias: "ownership_element_id".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("ownership_element_id".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_labels_projection() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -3384,6 +3557,34 @@ mod tests {
                         relationship_type: "OWNS".to_string(),
                     },
                     direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_element_id_function() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN person.name AS owner \
+             ORDER BY elementId(person), elementId(owns) DESC",
+        )
+        .expect("elementId() order expressions should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ElementId {
+                        variable: "person".to_string(),
+                    },
+                    direction: OrderDirection::Ascending,
+                },
+                OrderKey {
+                    expression: OrderExpression::ElementId {
+                        variable: "owns".to_string(),
+                    },
+                    direction: OrderDirection::Descending,
                 },
             ]
         );
@@ -3470,6 +3671,40 @@ mod tests {
                     operator: ComparisonOperator::In,
                     rhs: PredicateRhs::List(vec![Literal::Integer(100), Literal::Integer(200)]),
                 })),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_element_id_predicates() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE elementId(person) = '1' AND elementId(owns) IN ['100', '200'] \
+             RETURN person.name AS owner",
+        )
+        .expect("elementId() predicates should compile");
+
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ElementIdComparison(
+                    ElementIdPredicate {
+                        variable: "person".to_string(),
+                        operator: ComparisonOperator::Equal,
+                        rhs: PredicateRhs::Literal(Literal::String("1".to_string())),
+                    },
+                )),
+                right: Box::new(PredicateExpression::ElementIdComparison(
+                    ElementIdPredicate {
+                        variable: "owns".to_string(),
+                        operator: ComparisonOperator::In,
+                        rhs: PredicateRhs::List(vec![
+                            Literal::String("100".to_string()),
+                            Literal::String("200".to_string()),
+                        ]),
+                    },
+                )),
             })
         );
     }

@@ -81,6 +81,11 @@ pub enum PredicateRhs {
         /// Graph variable.
         variable: String,
     },
+    /// Compare against the string element id for a graph variable.
+    ElementId {
+        /// Graph variable.
+        variable: String,
+    },
     /// Compare against a literal list.
     List(Vec<Literal>),
 }
@@ -132,6 +137,13 @@ pub enum Projection {
     },
     /// Project the stable mapped key for a graph variable.
     Key {
+        /// Graph variable.
+        variable: String,
+        /// Output alias.
+        alias: String,
+    },
+    /// Project the string element id for a graph variable.
+    ElementId {
         /// Graph variable.
         variable: String,
         /// Output alias.
@@ -248,6 +260,17 @@ pub struct KeyPredicate {
     pub rhs: PredicateRhs,
 }
 
+/// Element id comparison predicate, compiled from `elementId(variable)` expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementIdPredicate {
+    /// Graph variable whose mapped key is compared as a string element id.
+    pub variable: String,
+    /// Comparison operator.
+    pub operator: ComparisonOperator,
+    /// Right-hand comparison operand.
+    pub rhs: PredicateRhs,
+}
+
 /// Predicate over graph binding presence, compiled from `variable IS NULL`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresencePredicate {
@@ -275,6 +298,8 @@ pub enum PredicateExpression {
     Comparison(PropertyPredicate),
     /// Leaf key comparison.
     KeyComparison(KeyPredicate),
+    /// Leaf element id comparison.
+    ElementIdComparison(ElementIdPredicate),
     /// Leaf graph binding presence comparison.
     Presence(PresencePredicate),
     /// Boolean conjunction.
@@ -344,6 +369,11 @@ pub enum OrderExpression {
     Property(PropertyRef),
     /// Order by the stable mapped key for a graph variable.
     Key {
+        /// Graph variable.
+        variable: String,
+    },
+    /// Order by the string element id for a graph variable.
+    ElementId {
         /// Graph variable.
         variable: String,
     },
