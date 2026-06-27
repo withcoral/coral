@@ -156,6 +156,56 @@ async fn cypher_inline_node_property_maps_execute_as_predicates() {
 }
 
 #[tokio::test]
+async fn graphql_root_query_executes_against_synthetic_file_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: { tier: { eq: "prod" }, risk: { gte: 0.5 } }
+            orderBy: [{ field: name, direction: ASC }]
+            limit: 10
+          ) {
+            service: name
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL virtual graph query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"risk_score\" >= 0.5"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_property_to_property_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

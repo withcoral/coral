@@ -22,6 +22,7 @@ datafusion-functions-json.workspace = true
 datafusion-tracing.workspace = true
 decypher.workspace = true
 futures.workspace = true
+graphql-parser.workspace = true
 httpdate.workspace = true
 object_store.workspace = true
 opentelemetry.workspace = true

@@ -120,3 +120,21 @@ This includes writes, multi-hop or undirected optional-local predicates, path
 variables, variable-length paths, parameterized property maps, keyless
 relationship identity operations, non-terminal projection boundaries, subqueries,
 procedure calls, and broad expression semantics.
+
+## GraphQL Frontend Boundary
+
+The GraphQL frontend follows the same rule as Cypher: parse GraphQL into the
+shared graph IR and let validation, catalog checks, SQL lowering, and execution
+remain separate. The first supported slice is intentionally root-node oriented:
+
+- exactly one query operation or anonymous selection set;
+- exactly one root field whose name is the graph node label;
+- scalar property selections with optional GraphQL aliases;
+- root `where` object predicates over selected node properties;
+- `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
+- integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments.
+
+Fragments, directives, variables, mutations, subscriptions, and relationship
+nesting are rejected with GraphQL-specific diagnostics until their IR contracts
+are defined. Relationship nesting should be declaration-aware and compile
+directly to relationship patterns, not to Cypher strings.

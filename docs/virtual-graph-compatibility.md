@@ -101,7 +101,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | User variables beginning with `__coral_` | Rejected | Prefix reserved for internal planner bindings |
 | General `WITH`, `UNION`, subqueries, procedure calls | Rejected | Non-terminal projection boundaries and set/pipeline semantics need staged planning |
 | Parameterized property maps | Rejected | Full map expansion would need shape-aware parameter semantics; use scalar inline property values instead |
-| GraphQL parser | Planned | Must compile to shared IR, not Cypher strings |
+| GraphQL parser | Supported foundation | Root-node query fields compile directly to shared IR with scalar property selections, `where`, `orderBy`, `limit`, `offset`/`skip`, and `distinct`; relationship nesting is deferred |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 
 ## Validation

@@ -90,7 +90,7 @@ pub use virtual_graph::{
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
-    compile_cypher_with_parameters,
+    compile_cypher_with_parameters, compile_graphql,
 };
 
 /// High-level query operations for the local query engine.
@@ -353,6 +353,56 @@ impl CoralQuery {
         }
 
         let plan = compile_cypher_with_parameters(cypher, parameters)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Executes one supported read-only GraphQL virtual graph query.
+    ///
+    /// The GraphQL text is parsed and compiled into Coral's shared graph plan,
+    /// then lowered to `DataFusion` SQL and executed through the normal SQL
+    /// runtime. The returned wrapper preserves the translated SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, graph
+    /// lowering fails, source compilation fails, or the generated SQL cannot
+    /// execute.
+    pub async fn execute_graphql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+    ) -> Result<GraphExecution, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql(graphql)?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one supported read-only GraphQL virtual graph query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, graph
+    /// lowering fails, source compilation fails, or the generated SQL cannot be
+    /// planned.
+    pub async fn explain_graphql(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql(graphql)?;
         Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 
