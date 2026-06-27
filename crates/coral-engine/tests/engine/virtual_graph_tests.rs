@@ -1900,7 +1900,11 @@ async fn cypher_case_graph_null_checks_execute_against_optional_matches() {
                   WHEN id(owns) IS NOT NULL THEN person.name \
                   ELSE 'unknown' \
                 END AS ownership_state, \
-                CASE WHEN id(person) IS NULL THEN 'missing' ELSE 'present' END AS owner_presence \
+                CASE WHEN id(person) IS NULL THEN 'missing' ELSE 'present' END AS owner_presence, \
+                CASE \
+                  WHEN person.team = service.team THEN 'team_match' \
+                  ELSE 'team_missing' \
+                END AS owner_team_state \
          ORDER BY service",
     )
     .await
@@ -1920,13 +1924,20 @@ async fn cypher_case_graph_null_checks_execute_against_optional_matches() {
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("WHEN \"n1\".\"team\" = \"n0\".\"owning_team\" THEN 'team_match'"),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"service": "billing-api", "ownership_state": "Ada Lovelace", "owner_presence": "present"}),
-            json!({"service": "deployments", "ownership_state": "Grace Hopper", "owner_presence": "present"}),
-            json!({"service": "experiments", "ownership_state": "Katherine Johnson", "owner_presence": "present"}),
-            json!({"service": "legacy-sync", "ownership_state": "unowned", "owner_presence": "missing"}),
+            json!({"service": "billing-api", "ownership_state": "Ada Lovelace", "owner_presence": "present", "owner_team_state": "team_match"}),
+            json!({"service": "deployments", "ownership_state": "Grace Hopper", "owner_presence": "present", "owner_team_state": "team_match"}),
+            json!({"service": "experiments", "ownership_state": "Katherine Johnson", "owner_presence": "present", "owner_team_state": "team_match"}),
+            json!({"service": "legacy-sync", "ownership_state": "unowned", "owner_presence": "missing", "owner_team_state": "team_missing"}),
         ]
     );
 }

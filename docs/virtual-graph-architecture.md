@@ -123,6 +123,9 @@ The supported foundation subset is intentionally narrow:
   Cypher `log` lowers to DataFusion `ln` to preserve natural-log semantics,
   while `pi()` and `e()` compile to deterministic float literals and
   `haversin(x)` lowers as `(1 - cos(x)) / 2`;
+- projected and ordered searched `CASE` expressions can reference optional
+  bindings and preserve SQL null/unknown semantics without moving those
+  predicates into row-filtering scope;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
