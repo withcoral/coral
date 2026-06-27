@@ -2613,6 +2613,10 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate_connectivity(&self) -> Result<(), CoreError> {
+        if self.plan.optional_relationships.is_empty() {
+            return Ok(());
+        }
+
         let mandatory_nodes = self.mandatory_reachable_nodes()?;
         for (index, relationship) in self.plan.relationships.iter().enumerate() {
             if self
@@ -3920,7 +3924,7 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_disconnected_patterns_before_lowering() {
+    fn validate_graph_plan_accepts_disconnected_mandatory_patterns() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.nodes.push(NodePattern {
@@ -3928,14 +3932,9 @@ relationships:
             label: "Service".to_string(),
         });
 
-        let error = graph
+        graph
             .validate_graph_plan(&plan)
-            .expect_err("disconnected node should fail validation");
-
-        assert!(
-            error.to_string().contains("DISCONNECTED_PATTERN"),
-            "{error:?}"
-        );
+            .expect("disconnected mandatory nodes should validate for CROSS JOIN lowering");
     }
 
     fn ownership_plan() -> GraphPlan {

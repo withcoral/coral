@@ -1973,25 +1973,37 @@ async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources
 }
 
 #[tokio::test]
-async fn cypher_disconnected_comma_patterns_are_rejected_before_sql_planning() {
+async fn cypher_disconnected_comma_patterns_execute_as_cross_joins() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
         "MATCH (source:Service)-[:DEPENDS_ON]->(target:Service), (orphan:Person) \
-         RETURN source.name AS source, target.name AS target",
+         RETURN source.name AS source, target.name AS target, orphan.name AS person \
+         ORDER BY source, target, person \
+         LIMIT 4",
     )
     .await
-    .expect_err("disconnected comma-separated patterns should fail validation");
+    .expect("disconnected comma-separated patterns should execute");
 
     assert!(
-        error.to_string().contains("DISCONNECTED_PATTERN"),
-        "unexpected error: {error}"
+        execution.translated_sql().contains("CROSS JOIN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments", "person": "Ada Lovelace"}),
+            json!({"source": "billing-api", "target": "deployments", "person": "Grace Hopper"}),
+            json!({"source": "billing-api", "target": "deployments", "person": "Katherine Johnson"}),
+            json!({"source": "billing-api", "target": "experiments", "person": "Ada Lovelace"}),
+        ]
     );
 }
 

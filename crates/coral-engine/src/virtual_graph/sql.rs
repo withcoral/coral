@@ -120,31 +120,90 @@ impl<'a> Lowerer<'a> {
 
     fn build_from_clause(&mut self) -> Result<(), CoreError> {
         let plan = self.validated.plan();
-        let validated = &self.validated;
         let first_node = plan
             .nodes
             .first()
             .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
-        let first_binding = validated.binding(first_node.variable.as_str())?;
-        let ValidatedBindingKind::Node(first_node_mapping) = first_binding.kind() else {
-            return Err(CoreError::internal("first graph binding was not a node"));
+        self.start_from_node(first_node.variable.as_str())?;
+
+        self.join_mandatory_relationships()?;
+        self.cross_join_isolated_nodes()?;
+        self.join_relationships(true)?;
+
+        Ok(())
+    }
+
+    fn start_from_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
+            return Err(CoreError::internal("graph component root was not a node"));
         };
         self.from_clause = format!(
             "FROM {} AS {}",
-            render_table_ref(&first_node_mapping.table),
-            quote_ident(first_binding.alias())
+            render_table_ref(&node_mapping.table),
+            quote_ident(binding.alias())
         );
-        self.joined_nodes.insert(first_node.variable.as_str());
+        self.joined_nodes.insert(variable);
+        Ok(())
+    }
 
-        self.join_relationships(false)?;
-        self.join_relationships(true)?;
+    fn cross_join_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
+        if self.joined_nodes.contains(variable) {
+            return Ok(());
+        }
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
+            return Err(CoreError::internal("graph component root was not a node"));
+        };
+        write!(
+            self.from_clause,
+            " CROSS JOIN {} AS {}",
+            render_table_ref(&node_mapping.table),
+            quote_ident(binding.alias())
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        self.joined_nodes.insert(variable);
+        Ok(())
+    }
 
-        for node in &plan.nodes {
-            if !self.joined_nodes.contains(node.variable.as_str()) {
-                return Err(CoreError::internal(
-                    "validated graph plan contained a disconnected node",
-                ));
+    fn cross_join_isolated_nodes(&mut self) -> Result<(), CoreError> {
+        let optional_nodes = self
+            .validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .filter_map(|index| self.validated.plan().relationships.get(*index))
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+            .collect::<BTreeSet<_>>();
+        for node in &self.validated.plan().nodes {
+            if !self.joined_nodes.contains(node.variable.as_str())
+                && !optional_nodes.contains(node.variable.as_str())
+            {
+                self.cross_join_node(node.variable.as_str())?;
             }
+        }
+        Ok(())
+    }
+
+    fn join_mandatory_relationships(&mut self) -> Result<(), CoreError> {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let mut remaining_relationships = (0..plan.relationships.len())
+            .filter(|index| !validated.relationship_is_optional(*index))
+            .collect::<BTreeSet<_>>();
+        while !remaining_relationships.is_empty() {
+            let progressed =
+                self.join_available_relationships(&mut remaining_relationships, false)?;
+            if progressed {
+                continue;
+            }
+            let index = *remaining_relationships
+                .first()
+                .ok_or_else(|| CoreError::internal("remaining relationship set was empty"))?;
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal("validated relationship index was out of bounds")
+            })?;
+            self.cross_join_node(pattern.left.as_str())?;
         }
         Ok(())
     }
@@ -156,36 +215,8 @@ impl<'a> Lowerer<'a> {
             .filter(|index| validated.relationship_is_optional(*index) == optional)
             .collect::<BTreeSet<_>>();
         while !remaining_relationships.is_empty() {
-            let mut progressed = false;
-            for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
-                let pattern = plan.relationships.get(index).ok_or_else(|| {
-                    CoreError::internal("validated relationship index was out of bounds")
-                })?;
-                let left_joined = self.joined_nodes.contains(pattern.left.as_str());
-                let right_joined = self.joined_nodes.contains(pattern.right.as_str());
-                if left_joined || right_joined {
-                    let relationship = validated.relationship_mapping(index)?;
-                    let optional_predicate = if optional {
-                        self.render_optional_join_predicate(index)?
-                    } else {
-                        None
-                    };
-                    Self::join_relationship(
-                        validated,
-                        &mut self.joined_nodes,
-                        &mut self.from_clause,
-                        index,
-                        pattern,
-                        relationship,
-                        JoinRelationshipOptions {
-                            optional,
-                            optional_predicate: optional_predicate.as_deref(),
-                        },
-                    )?;
-                    remaining_relationships.remove(&index);
-                    progressed = true;
-                }
-            }
+            let progressed =
+                self.join_available_relationships(&mut remaining_relationships, optional)?;
             if !progressed {
                 return Err(CoreError::internal(
                     "validated graph plan contained an unjoinable relationship",
@@ -193,6 +224,46 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ok(())
+    }
+
+    fn join_available_relationships(
+        &mut self,
+        remaining_relationships: &mut BTreeSet<usize>,
+        optional: bool,
+    ) -> Result<bool, CoreError> {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let mut progressed = false;
+        for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal("validated relationship index was out of bounds")
+            })?;
+            let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+            let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+            if left_joined || right_joined {
+                let relationship = validated.relationship_mapping(index)?;
+                let optional_predicate = if optional {
+                    self.render_optional_join_predicate(index)?
+                } else {
+                    None
+                };
+                Self::join_relationship(
+                    validated,
+                    &mut self.joined_nodes,
+                    &mut self.from_clause,
+                    index,
+                    pattern,
+                    relationship,
+                    JoinRelationshipOptions {
+                        optional,
+                        optional_predicate: optional_predicate.as_deref(),
+                    },
+                )?;
+                remaining_relationships.remove(&index);
+                progressed = true;
+            }
+        }
+        Ok(progressed)
     }
 
     fn join_relationship(
@@ -1967,6 +2038,79 @@ relationships:
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE \"n1\".\"tier\" = 'prod' ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_disconnected_components_as_cross_joins() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            }],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("person".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("disconnected mandatory components should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"source\", \"n1\".\"service_name\" AS \"target\", \"n2\".\"full_name\" AS \"person\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r0\" ON \"r0\".\"from_service_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"to_service_id\" = \"n1\".\"id\" \
+             CROSS JOIN \"ops\".\"people\" AS \"n2\""
         );
     }
 

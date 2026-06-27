@@ -22,6 +22,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Directed relationship traversals | Supported foundation | Forward and reverse traversal lower to joins |
 | Relationship type overloads | Supported foundation | A relationship type can map to multiple edge tables when endpoint labels disambiguate the pattern |
 | Connected multi-hop paths | Supported foundation | Linear and closed connected patterns lower to deterministic joins |
+| Disconnected mandatory patterns | Supported foundation | Disconnected mandatory node/path components lower to explicit SQL `CROSS JOIN`; disconnected patterns that include `OPTIONAL MATCH` remain rejected until optional lowering is component-aware |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
 | Numeric literals | Supported foundation | Integer and finite floating-point literals, including negated values |
@@ -50,8 +51,8 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Cypher parser | Supported foundation | `decypher` AST frontend compiles to shared IR, not directly to SQL |
-| Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one or more connected pattern parts |
-| Comma-separated `MATCH` patterns | Supported foundation | Supported when parts are connected by reused node variables |
+| Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one or more mandatory pattern parts |
+| Comma-separated `MATCH` patterns | Supported foundation | Connected parts lower to joins; disconnected mandatory parts lower to explicit SQL `CROSS JOIN` |
 | Labeled node patterns | Supported foundation | Named node variables are supported; anonymous node patterns are supported when they declare exactly one static label; first named binding needs exactly one static label and repeated named bindings may omit the label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type; exact-one relationship ranges/quantifiers such as `*1`, `*1..1`, `{1}`, and `{1,1}` are accepted as single-hop syntax compatibility |
 | Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions; inverse overloaded mappings that both match are rejected as ambiguous |

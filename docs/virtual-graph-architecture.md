@@ -52,8 +52,9 @@ The foundation slice establishes:
 - a declaration-aware graph plan validator that frontloads user-facing semantic
   diagnostics before SQL lowering.
 - SQL lowering for node scans, directed and undirected relationship traversals,
-  property and identity projections, connected multi-hop paths, property and
-  identity predicates, grouping aggregates, ordering, `SKIP`, and `LIMIT`.
+  property and identity projections, connected multi-hop paths, disconnected
+  mandatory components as explicit `CROSS JOIN`s, property and identity
+  predicates, grouping aggregates, ordering, `SKIP`, and `LIMIT`.
 - `CoralQuery::execute_graph_plan` and `CoralQuery::explain_graph_plan`
   wrappers that validate declarations against the built runtime catalog,
   preserve translated SQL and diagnostics, and reuse the existing SQL execution
@@ -75,10 +76,12 @@ execution remain separate layers.
 The supported foundation subset is intentionally narrow:
 
 - read-only single-part queries and transparent multi-part `MATCH` queries;
-- one or more non-optional `MATCH` clauses with connected path parts;
+- one or more non-optional `MATCH` clauses with connected path parts or
+  disconnected mandatory parts lowered as explicit cartesian products;
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
   including single-hop directed optional-local predicates and inline property
-  maps placed in the join scope;
+  maps placed in the join scope; optional plans still require mandatory
+  bindings to stay anchored to the first component;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;
