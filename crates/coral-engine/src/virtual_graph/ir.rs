@@ -656,14 +656,14 @@ pub struct PropertyKeyMembershipPredicate {
     pub key: String,
 }
 
-/// Existential one-hop graph pattern predicate.
+/// Existential graph pattern predicate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistsPatternPredicate {
     /// Node variables introduced by the existential pattern. Previously bound
     /// outer variables are not repeated here.
     pub nodes: Vec<NodePattern>,
-    /// Relationship pattern tested by the existential predicate.
-    pub relationship: RelationshipPattern,
+    /// Relationship chain tested by the existential predicate.
+    pub relationships: Vec<RelationshipPattern>,
     /// Inline node/relationship property predicates applied inside the
     /// existential subquery.
     pub predicates: Vec<PropertyPredicate>,

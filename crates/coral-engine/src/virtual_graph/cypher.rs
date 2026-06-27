@@ -3127,11 +3127,13 @@ fn rename_predicate_expression_variables(
             for node in &mut predicate.nodes {
                 rename_string(&mut node.variable, renames);
             }
-            if let Some(variable) = &mut predicate.relationship.variable {
-                rename_string(variable, renames);
+            for relationship in &mut predicate.relationships {
+                if let Some(variable) = &mut relationship.variable {
+                    rename_string(variable, renames);
+                }
+                rename_string(&mut relationship.left, renames);
+                rename_string(&mut relationship.right, renames);
             }
-            rename_string(&mut predicate.relationship.left, renames);
-            rename_string(&mut predicate.relationship.right, renames);
             for predicate in &mut predicate.predicates {
                 rename_property_predicate_variables(predicate, renames);
             }
@@ -3502,23 +3504,25 @@ fn reject_ignored_path_variable_references_in_predicate(
                     format!("{path}.nodes[{index}].variable"),
                 )?;
             }
-            if let Some(variable) = &predicate.relationship.variable {
+            for (index, relationship) in predicate.relationships.iter().enumerate() {
+                if let Some(variable) = &relationship.variable {
+                    reject_ignored_path_variable(
+                        variable,
+                        state,
+                        format!("{path}.relationships[{index}].variable"),
+                    )?;
+                }
                 reject_ignored_path_variable(
-                    variable,
+                    &relationship.left,
                     state,
-                    format!("{path}.relationship.variable"),
+                    format!("{path}.relationships[{index}].left"),
+                )?;
+                reject_ignored_path_variable(
+                    &relationship.right,
+                    state,
+                    format!("{path}.relationships[{index}].right"),
                 )?;
             }
-            reject_ignored_path_variable(
-                &predicate.relationship.left,
-                state,
-                format!("{path}.relationship.left"),
-            )?;
-            reject_ignored_path_variable(
-                &predicate.relationship.right,
-                state,
-                format!("{path}.relationship.right"),
-            )?;
             for (index, predicate) in predicate.predicates.iter().enumerate() {
                 reject_ignored_path_variable_references_in_property_predicate(
                     predicate,
@@ -7968,16 +7972,17 @@ fn compile_scoped_plan_delta_predicate(
         .get(delta.relationship_base..)
         .ok_or_else(|| CoreError::internal("EXISTS relationship slice was invalid"))?
         .to_vec();
-    let [relationship] = relationships.as_slice() else {
+    if relationships.is_empty() {
         return Err(unsupported(
             format!("{path}.pattern.relationships"),
-            format!("{feature_name} currently support exactly one relationship pattern"),
+            format!("{feature_name} require at least one relationship pattern"),
         ));
-    };
+    }
     let outer_variables = bound_graph_variables(plan);
-    if !outer_variables.contains(&relationship.left)
-        && !outer_variables.contains(&relationship.right)
-    {
+    if !relationships.iter().any(|relationship| {
+        outer_variables.contains(&relationship.left)
+            || outer_variables.contains(&relationship.right)
+    }) {
         return Err(unsupported(
             format!("{path}.pattern"),
             format!("{feature_name} must be anchored to a currently bound graph variable"),
@@ -8007,7 +8012,7 @@ fn compile_scoped_plan_delta_predicate(
             .get(delta.nodes_before..)
             .ok_or_else(|| CoreError::internal("EXISTS node slice was invalid"))?
             .to_vec(),
-        relationship: relationship.clone(),
+        relationships,
         predicates,
     }))
 }

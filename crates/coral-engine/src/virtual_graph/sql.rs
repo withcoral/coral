@@ -108,6 +108,13 @@ struct Lowerer<'a> {
 }
 
 #[derive(Debug, Clone)]
+struct ExistsRelationshipSqlBinding<'a, 'b> {
+    pattern: &'b RelationshipPattern,
+    relationship: &'a Relationship,
+    alias: String,
+}
+
+#[derive(Debug, Clone)]
 struct RelationshipOrientation {
     left_relationship_key: String,
     right_relationship_key: String,
@@ -1803,15 +1810,30 @@ impl<'a> Lowerer<'a> {
         predicate: &ExistsPatternPredicate,
     ) -> Result<String, CoreError> {
         let local_nodes = self.exists_local_node_map(predicate)?;
-        let relationship = self.exists_relationship_mapping(predicate, &local_nodes)?;
-        let relationship_alias = "__coral_exists_r0";
-        let relationship_variable = predicate.relationship.variable.as_deref();
+        let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
+        if relationship_bindings.is_empty() {
+            return Err(CoreError::internal(
+                "validated EXISTS pattern had no relationship bindings",
+            ));
+        }
         let local_aliases = Self::exists_local_node_aliases(predicate);
-        let mut from_clause = format!(
-            "{} AS {}",
-            render_table_ref(&relationship.table),
-            quote_ident(relationship_alias)
-        );
+        let mut from_clause = relationship_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let table_ref = format!(
+                    "{} AS {}",
+                    render_table_ref(&binding.relationship.table),
+                    quote_ident(&binding.alias)
+                );
+                if index == 0 {
+                    table_ref
+                } else {
+                    format!("JOIN {table_ref} ON TRUE")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         for node in &predicate.nodes {
             let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
                 CoreError::internal("validated EXISTS local node mapping was missing")
@@ -1828,21 +1850,26 @@ impl<'a> Lowerer<'a> {
             .map_err(|_| CoreError::internal("failed to render EXISTS pattern SQL"))?;
         }
 
-        let mut conditions = vec![self.exists_relationship_condition(
-            predicate,
-            relationship,
-            relationship_alias,
-            &local_nodes,
-            &local_aliases,
-        )?];
+        let mut conditions = Vec::with_capacity(
+            relationship_bindings
+                .len()
+                .saturating_add(predicate.predicates.len()),
+        );
+        for binding in &relationship_bindings {
+            conditions.push(self.exists_relationship_condition(
+                binding.pattern,
+                binding.relationship,
+                &binding.alias,
+                &local_nodes,
+                &local_aliases,
+            )?);
+        }
         for property_predicate in &predicate.predicates {
             conditions.push(self.render_exists_property_predicate(
                 property_predicate,
-                relationship,
-                relationship_alias,
+                &relationship_bindings,
                 &local_nodes,
                 &local_aliases,
-                relationship_variable,
             )?);
         }
         Ok(format!(
@@ -1874,21 +1901,45 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn exists_relationship_mapping<'b>(
+    fn exists_relationship_bindings<'b>(
         &self,
         predicate: &'b ExistsPatternPredicate,
         local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<Vec<ExistsRelationshipSqlBinding<'a, 'b>>, CoreError> {
+        predicate
+            .relationships
+            .iter()
+            .enumerate()
+            .map(|(index, pattern)| {
+                self.exists_relationship_mapping(pattern, local_nodes)
+                    .map(|relationship| ExistsRelationshipSqlBinding {
+                        pattern,
+                        relationship,
+                        alias: Self::exists_relationship_alias(index),
+                    })
+            })
+            .collect()
+    }
+
+    fn exists_relationship_alias(index: usize) -> String {
+        format!("__coral_exists_r{index}")
+    }
+
+    fn exists_relationship_mapping<'b>(
+        &self,
+        pattern: &'b RelationshipPattern,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
     ) -> Result<&'a Relationship, CoreError> {
-        let left_node = self.exists_node_mapping(local_nodes, &predicate.relationship.left)?;
-        let right_node = self.exists_node_mapping(local_nodes, &predicate.relationship.right)?;
+        let left_node = self.exists_node_mapping(local_nodes, &pattern.left)?;
+        let right_node = self.exists_node_mapping(local_nodes, &pattern.right)?;
         let matches = self
             .validated
             .graph()
-            .relationships_for_type(&predicate.relationship.relationship_type)
+            .relationships_for_type(&pattern.relationship_type)
             .filter(|relationship| {
                 Self::relationship_matches_labels(
                     relationship,
-                    predicate.relationship.direction,
+                    pattern.direction,
                     &left_node.label,
                     &right_node.label,
                 )
@@ -1924,17 +1975,17 @@ impl<'a> Lowerer<'a> {
 
     fn exists_relationship_condition<'b>(
         &self,
-        predicate: &'b ExistsPatternPredicate,
+        pattern: &'b RelationshipPattern,
         relationship: &Relationship,
         relationship_alias: &str,
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
-        let left_node = self.exists_node_mapping(local_nodes, &predicate.relationship.left)?;
-        let right_node = self.exists_node_mapping(local_nodes, &predicate.relationship.right)?;
+        let left_node = self.exists_node_mapping(local_nodes, &pattern.left)?;
+        let right_node = self.exists_node_mapping(local_nodes, &pattern.right)?;
         let orientations = Self::relationship_orientations_for_labels(
             relationship,
-            predicate.relationship.direction,
+            pattern.direction,
             &left_node.label,
             &right_node.label,
         )?;
@@ -1942,14 +1993,10 @@ impl<'a> Lowerer<'a> {
         let conditions = orientations
             .iter()
             .map(|orientation| {
-                let left_ref = self.exists_node_key_ref(
-                    &predicate.relationship.left,
-                    left_node,
-                    local_nodes,
-                    local_aliases,
-                )?;
+                let left_ref =
+                    self.exists_node_key_ref(&pattern.left, left_node, local_nodes, local_aliases)?;
                 let right_ref = self.exists_node_key_ref(
-                    &predicate.relationship.right,
+                    &pattern.right,
                     right_node,
                     local_nodes,
                     local_aliases,
@@ -1992,19 +2039,15 @@ impl<'a> Lowerer<'a> {
     fn render_exists_property_predicate<'b>(
         &self,
         predicate: &PropertyPredicate,
-        relationship: &Relationship,
-        relationship_alias: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
-        relationship_variable: Option<&str>,
     ) -> Result<String, CoreError> {
         let property = self.render_exists_property_ref(
             &predicate.property,
-            relationship,
-            relationship_alias,
+            relationships,
             local_nodes,
             local_aliases,
-            relationship_variable,
         )?;
         match (&predicate.operator, &predicate.rhs) {
             (ComparisonOperator::In, PredicateRhs::List(literals)) => {
@@ -2045,11 +2088,9 @@ impl<'a> Lowerer<'a> {
                 &property,
                 &self.render_exists_predicate_rhs(
                     rhs,
-                    relationship,
-                    relationship_alias,
+                    relationships,
                     local_nodes,
                     local_aliases,
-                    relationship_variable,
                 )?,
             )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
@@ -2072,11 +2113,9 @@ impl<'a> Lowerer<'a> {
                 render_operator(predicate.operator),
                 self.render_exists_predicate_rhs(
                     &predicate.rhs,
-                    relationship,
-                    relationship_alias,
+                    relationships,
                     local_nodes,
                     local_aliases,
-                    relationship_variable,
                 )?
             )),
         }
@@ -2085,40 +2124,21 @@ impl<'a> Lowerer<'a> {
     fn render_exists_predicate_rhs<'b>(
         &self,
         rhs: &PredicateRhs,
-        relationship: &Relationship,
-        relationship_alias: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
-        relationship_variable: Option<&str>,
     ) -> Result<String, CoreError> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
-            PredicateRhs::Property(property) => self.render_exists_property_ref(
-                property,
-                relationship,
-                relationship_alias,
-                local_nodes,
-                local_aliases,
-                relationship_variable,
-            ),
-            PredicateRhs::Key { variable } => self.render_exists_key_ref(
-                variable,
-                relationship,
-                relationship_alias,
-                local_nodes,
-                local_aliases,
-                relationship_variable,
-            ),
+            PredicateRhs::Property(property) => {
+                self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
+            }
+            PredicateRhs::Key { variable } => {
+                self.render_exists_key_ref(variable, relationships, local_nodes, local_aliases)
+            }
             PredicateRhs::ElementId { variable } => Ok(format!(
                 "CAST({} AS VARCHAR)",
-                self.render_exists_key_ref(
-                    variable,
-                    relationship,
-                    relationship_alias,
-                    local_nodes,
-                    local_aliases,
-                    relationship_variable,
-                )?
+                self.render_exists_key_ref(variable, relationships, local_nodes, local_aliases,)?
             )),
             PredicateRhs::List(_) => Err(CoreError::internal(
                 "validated EXISTS literal list predicate reached generic RHS renderer",
@@ -2129,21 +2149,22 @@ impl<'a> Lowerer<'a> {
     fn render_exists_property_ref<'b>(
         &self,
         property: &PropertyRef,
-        relationship: &Relationship,
-        relationship_alias: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
-        relationship_variable: Option<&str>,
     ) -> Result<String, CoreError> {
-        if relationship_variable == Some(property.variable.as_str()) {
+        if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, property.variable.as_str())
+        {
             let column = relationship
+                .relationship
                 .column_for_property(&property.property)
                 .ok_or_else(|| {
                     CoreError::internal("validated EXISTS relationship property was not resolvable")
                 })?;
             return Ok(format!(
                 "{}.{}",
-                quote_ident(relationship_alias),
+                quote_ident(&relationship.alias),
                 quote_ident(column)
             ));
         }
@@ -2164,19 +2185,18 @@ impl<'a> Lowerer<'a> {
     fn render_exists_key_ref<'b>(
         &self,
         variable: &str,
-        relationship: &Relationship,
-        relationship_alias: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
-        relationship_variable: Option<&str>,
     ) -> Result<String, CoreError> {
-        if relationship_variable == Some(variable) {
-            let key = relationship.key.as_deref().ok_or_else(|| {
+        if let Some(relationship) = Self::exists_relationship_for_variable(relationships, variable)
+        {
+            let key = relationship.relationship.key.as_deref().ok_or_else(|| {
                 CoreError::internal("validated EXISTS relationship key was not resolvable")
             })?;
             return Ok(format!(
                 "{}.{}",
-                quote_ident(relationship_alias),
+                quote_ident(&relationship.alias),
                 quote_ident(key)
             ));
         }
@@ -2187,6 +2207,15 @@ impl<'a> Lowerer<'a> {
             return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
         }
         self.render_binding_key_ref(variable)
+    }
+
+    fn exists_relationship_for_variable<'b, 'c>(
+        relationships: &'c [ExistsRelationshipSqlBinding<'a, 'b>],
+        variable: &str,
+    ) -> Option<&'c ExistsRelationshipSqlBinding<'a, 'b>> {
+        relationships
+            .iter()
+            .find(|relationship| relationship.pattern.variable.as_deref() == Some(variable))
     }
 
     fn render_projection_predicate_rhs(
@@ -5727,13 +5756,13 @@ relationships: []
                     variable: "dependency".to_string(),
                     label: "Service".to_string(),
                 }],
-                relationship: RelationshipPattern {
+                relationships: vec![RelationshipPattern {
                     variable: Some("dependency_edge".to_string()),
                     relationship_type: "DEPENDS_ON".to_string(),
                     left: "service".to_string(),
                     direction: Direction::Outgoing,
                     right: "dependency".to_string(),
-                },
+                }],
                 predicates: vec![
                     PropertyPredicate {
                         property: PropertyRef {

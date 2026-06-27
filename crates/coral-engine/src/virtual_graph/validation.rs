@@ -226,9 +226,14 @@ struct GraphPlanValidator<'a> {
 
 #[derive(Debug, Clone, Copy)]
 struct ExistsPredicateValidationContext<'a, 'b> {
-    relationship: &'a Relationship,
+    relationships: &'b [ExistsRelationshipValidation<'a, 'b>],
     local_nodes: &'b BTreeMap<&'b str, &'a Node>,
-    relationship_variable: Option<&'b str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExistsRelationshipValidation<'a, 'b> {
+    pattern: &'b RelationshipPattern,
+    relationship: &'a Relationship,
 }
 
 impl<'a> GraphPlanValidator<'a> {
@@ -1019,11 +1024,13 @@ impl<'a> GraphPlanValidator<'a> {
         variables: &mut BTreeSet<&'b str>,
     ) {
         let local_variables = Self::exists_pattern_local_variables(predicate);
-        if !local_variables.contains(predicate.relationship.left.as_str()) {
-            variables.insert(predicate.relationship.left.as_str());
-        }
-        if !local_variables.contains(predicate.relationship.right.as_str()) {
-            variables.insert(predicate.relationship.right.as_str());
+        for relationship in &predicate.relationships {
+            if !local_variables.contains(relationship.left.as_str()) {
+                variables.insert(relationship.left.as_str());
+            }
+            if !local_variables.contains(relationship.right.as_str()) {
+                variables.insert(relationship.right.as_str());
+            }
         }
         for property_predicate in &predicate.predicates {
             let mut predicate_variables = BTreeSet::new();
@@ -1044,7 +1051,12 @@ impl<'a> GraphPlanValidator<'a> {
             .nodes
             .iter()
             .map(|node| node.variable.as_str())
-            .chain(predicate.relationship.variable.as_deref())
+            .chain(
+                predicate
+                    .relationships
+                    .iter()
+                    .filter_map(|relationship| relationship.variable.as_deref()),
+            )
             .collect()
     }
 
@@ -1352,16 +1364,18 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         let path = path.into();
         let local_variables = Self::exists_pattern_local_variables(predicate);
-        for (field, variable) in [
-            ("relationship.left", predicate.relationship.left.as_str()),
-            ("relationship.right", predicate.relationship.right.as_str()),
-        ] {
-            if !local_variables.contains(variable) {
-                Self::validate_variable_not_optional(
-                    variable,
-                    optional_variables,
-                    format!("{path}.{field}"),
-                )?;
+        for (index, relationship) in predicate.relationships.iter().enumerate() {
+            for (field, variable) in [
+                ("left", relationship.left.as_str()),
+                ("right", relationship.right.as_str()),
+            ] {
+                if !local_variables.contains(variable) {
+                    Self::validate_variable_not_optional(
+                        variable,
+                        optional_variables,
+                        format!("{path}.relationships[{index}].{field}"),
+                    )?;
+                }
             }
         }
         for (index, property_predicate) in predicate.predicates.iter().enumerate() {
@@ -2153,24 +2167,14 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         let path = path.into();
         let local_nodes = self.validate_exists_pattern_nodes(predicate, &path)?;
-        let relationship =
-            self.resolve_exists_relationship_mapping(predicate, &local_nodes, &path)?;
+        self.validate_exists_relationship_variables(predicate, &local_nodes, &path)?;
+        let relationships =
+            self.resolve_exists_relationship_mappings(predicate, &local_nodes, &path)?;
+        Self::validate_exists_pattern_connectivity(predicate, &local_nodes, &path)?;
         let scope = ExistsPredicateValidationContext {
-            relationship,
+            relationships: &relationships,
             local_nodes: &local_nodes,
-            relationship_variable: predicate.relationship.variable.as_deref(),
         };
-        self.validate_exists_relationship_variable(predicate, &local_nodes, &path)?;
-        if local_nodes.contains_key(predicate.relationship.left.as_str())
-            && local_nodes.contains_key(predicate.relationship.right.as_str())
-        {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_EXISTS_PATTERN",
-                format!("{path}.relationship"),
-                "EXISTS pattern predicates must be anchored to at least one previously bound node variable",
-            )
-            .into_core_error());
-        }
         for (index, property_predicate) in predicate.predicates.iter().enumerate() {
             self.validate_exists_property_predicate(
                 property_predicate,
@@ -2224,54 +2228,92 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(local_nodes)
     }
 
-    fn validate_exists_relationship_variable(
+    fn validate_exists_relationship_variables(
         &self,
         predicate: &ExistsPatternPredicate,
         local_nodes: &BTreeMap<&str, &Node>,
         path: &str,
     ) -> Result<(), CoreError> {
-        let Some(variable) = predicate.relationship.variable.as_deref() else {
-            return Ok(());
-        };
-        validate_variable(format!("{path}.relationship.variable"), variable)?;
-        if self.bindings.contains_key(variable) || local_nodes.contains_key(variable) {
-            return Err(Diagnostic::new(
-                "DUPLICATE_VARIABLE",
-                format!("{path}.relationship.variable"),
-                format!("EXISTS pattern relationship variable '{variable}' shadows another graph variable"),
-            )
-            .into_core_error());
+        let mut relationship_variables = BTreeSet::new();
+        for (index, relationship) in predicate.relationships.iter().enumerate() {
+            let Some(variable) = relationship.variable.as_deref() else {
+                continue;
+            };
+            validate_variable(format!("{path}.relationships[{index}].variable"), variable)?;
+            if self.bindings.contains_key(variable) || local_nodes.contains_key(variable) {
+                return Err(Diagnostic::new(
+                    "DUPLICATE_VARIABLE",
+                    format!("{path}.relationships[{index}].variable"),
+                    format!("EXISTS pattern relationship variable '{variable}' shadows another graph variable"),
+                )
+                .into_core_error());
+            }
+            if !relationship_variables.insert(variable) {
+                return Err(Diagnostic::new(
+                    "DUPLICATE_VARIABLE",
+                    format!("{path}.relationships[{index}].variable"),
+                    format!(
+                        "EXISTS pattern relationship variable '{variable}' is bound more than once"
+                    ),
+                )
+                .into_core_error());
+            }
         }
         Ok(())
     }
 
-    fn resolve_exists_relationship_mapping<'b>(
+    fn resolve_exists_relationship_mappings<'b>(
         &self,
         predicate: &'b ExistsPatternPredicate,
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         path: &str,
+    ) -> Result<Vec<ExistsRelationshipValidation<'a, 'b>>, CoreError> {
+        predicate
+            .relationships
+            .iter()
+            .enumerate()
+            .map(|(index, relationship)| {
+                self.resolve_exists_relationship_mapping(
+                    relationship,
+                    local_nodes,
+                    format!("{path}.relationships[{index}]"),
+                )
+                .map(|mapping| ExistsRelationshipValidation {
+                    pattern: relationship,
+                    relationship: mapping,
+                })
+            })
+            .collect()
+    }
+
+    fn resolve_exists_relationship_mapping<'b>(
+        &self,
+        relationship: &'b RelationshipPattern,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        path: impl Into<String>,
     ) -> Result<&'a Relationship, CoreError> {
+        let path = path.into();
         let left_node = self.exists_node_binding_for_path(
             local_nodes,
-            &predicate.relationship.left,
-            format!("{path}.relationship.left"),
+            &relationship.left,
+            format!("{path}.left"),
         )?;
         let right_node = self.exists_node_binding_for_path(
             local_nodes,
-            &predicate.relationship.right,
-            format!("{path}.relationship.right"),
+            &relationship.right,
+            format!("{path}.right"),
         )?;
         let candidates = self
             .graph
-            .relationships_for_type(&predicate.relationship.relationship_type)
+            .relationships_for_type(&relationship.relationship_type)
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return Err(Diagnostic::new(
                 "UNKNOWN_RELATIONSHIP_TYPE",
-                format!("{path}.relationship.type"),
+                format!("{path}.type"),
                 format!(
                     "unknown relationship type '{}'",
-                    predicate.relationship.relationship_type
+                    relationship.relationship_type
                 ),
             )
             .into_core_error());
@@ -2280,10 +2322,10 @@ impl<'a> GraphPlanValidator<'a> {
         let matches = candidates
             .iter()
             .copied()
-            .filter(|relationship| {
+            .filter(|candidate| {
                 Self::relationship_matches_pattern(
-                    relationship,
-                    predicate.relationship.direction,
+                    candidate,
+                    relationship.direction,
                     &left_node.label,
                     &right_node.label,
                 )
@@ -2304,20 +2346,20 @@ impl<'a> GraphPlanValidator<'a> {
                     .join(", ");
                 Err(Diagnostic::new(
                     "RELATIONSHIP_ENDPOINT_MISMATCH",
-                    format!("{path}.relationship"),
+                    path.clone(),
                     format!(
                         "relationship type '{}' has no mapping for {} -> {}; available endpoint mappings: {}",
-                        predicate.relationship.relationship_type, left_node.label, right_node.label, available
+                        relationship.relationship_type, left_node.label, right_node.label, available
                     ),
                 )
                 .into_core_error())
             }
             _ => Err(Diagnostic::new(
                 "AMBIGUOUS_RELATIONSHIP_MAPPING",
-                format!("{path}.relationship"),
+                path,
                 format!(
                     "relationship type '{}' with endpoints {} -> {} matches {} mappings; add direction or use distinct relationship types",
-                    predicate.relationship.relationship_type,
+                    relationship.relationship_type,
                     left_node.label,
                     right_node.label,
                     matches.len()
@@ -2325,6 +2367,66 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error()),
         }
+    }
+
+    fn validate_exists_pattern_connectivity(
+        predicate: &ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&str, &Node>,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        if predicate.relationships.is_empty() {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_EXISTS_PATTERN",
+                format!("{path}.relationships"),
+                "EXISTS pattern predicates require at least one relationship pattern",
+            )
+            .into_core_error());
+        }
+
+        let mut reachable = BTreeSet::new();
+        for relationship in &predicate.relationships {
+            for endpoint in [relationship.left.as_str(), relationship.right.as_str()] {
+                if !local_nodes.contains_key(endpoint) {
+                    reachable.insert(endpoint);
+                }
+            }
+        }
+        if reachable.is_empty() {
+            return Err(Diagnostic::new(
+                "UNSUPPORTED_EXISTS_PATTERN",
+                format!("{path}.relationships"),
+                "EXISTS pattern predicates must be anchored to at least one previously bound node variable",
+            )
+            .into_core_error());
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for relationship in &predicate.relationships {
+                let left = relationship.left.as_str();
+                let right = relationship.right.as_str();
+                if reachable.contains(left) || reachable.contains(right) {
+                    changed |= reachable.insert(left);
+                    changed |= reachable.insert(right);
+                }
+            }
+        }
+
+        for (index, relationship) in predicate.relationships.iter().enumerate() {
+            if !reachable.contains(relationship.left.as_str())
+                && !reachable.contains(relationship.right.as_str())
+            {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_EXISTS_PATTERN",
+                    format!("{path}.relationships[{index}]"),
+                    "EXISTS pattern relationship components must be connected to a previously bound node variable",
+                )
+                .into_core_error());
+            }
+        }
+
+        Ok(())
     }
 
     fn exists_node_binding_for_path<'b>(
@@ -2363,9 +2465,8 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         self.validate_exists_property_ref(
             &predicate.property,
-            scope.relationship,
+            scope.relationships,
             scope.local_nodes,
-            scope.relationship_variable,
             format!("{path}.property"),
         )?;
         match &predicate.rhs {
@@ -2396,9 +2497,8 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 self.validate_exists_property_ref(
                     property,
-                    scope.relationship,
+                    scope.relationships,
                     scope.local_nodes,
-                    scope.relationship_variable,
                     format!("{path}.rhs"),
                 )
             }
@@ -2417,9 +2517,8 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 self.validate_exists_key_ref(
                     variable,
-                    scope.relationship,
+                    scope.relationships,
                     scope.local_nodes,
-                    scope.relationship_variable,
                     format!("{path}.rhs"),
                 )
             }
@@ -2437,9 +2536,8 @@ impl<'a> GraphPlanValidator<'a> {
         }?;
         let lhs_type = self.exists_property_ref_scalar_type(
             &predicate.property,
-            scope.relationship,
+            scope.relationships,
             scope.local_nodes,
-            scope.relationship_variable,
         )?;
         self.validate_exists_predicate_rhs_operand_types(predicate, lhs_type, scope, &path)
     }
@@ -2447,18 +2545,12 @@ impl<'a> GraphPlanValidator<'a> {
     fn validate_exists_property_ref<'b>(
         &self,
         property: &PropertyRef,
-        relationship: &'a Relationship,
+        relationships: &[ExistsRelationshipValidation<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
-        relationship_variable: Option<&str>,
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
-        let column = self.exists_column_for_property(
-            property,
-            relationship,
-            local_nodes,
-            relationship_variable,
-        )?;
+        let column = self.exists_column_for_property(property, relationships, local_nodes)?;
         if column.is_none() {
             return Err(Diagnostic::new(
                 "UNKNOWN_PROPERTY",
@@ -2476,13 +2568,13 @@ impl<'a> GraphPlanValidator<'a> {
     fn validate_exists_key_ref<'b>(
         &self,
         variable: &str,
-        relationship: &'a Relationship,
+        relationships: &[ExistsRelationshipValidation<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
-        relationship_variable: Option<&str>,
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
-        if relationship_variable == Some(variable) {
+        if let Some(relationship) = Self::exists_relationship_for_variable(relationships, variable)
+        {
             if relationship.key.is_some() {
                 return Ok(());
             }
@@ -2505,11 +2597,12 @@ impl<'a> GraphPlanValidator<'a> {
     fn exists_column_for_property<'b>(
         &self,
         property: &PropertyRef,
-        relationship: &'a Relationship,
+        relationships: &[ExistsRelationshipValidation<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
-        relationship_variable: Option<&str>,
     ) -> Result<Option<&'a str>, CoreError> {
-        if relationship_variable == Some(property.variable.as_str()) {
+        if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, &property.variable)
+        {
             return Ok(relationship.column_for_property(&property.property));
         }
         if let Some(node) = local_nodes.get(property.variable.as_str()).copied() {
@@ -2537,11 +2630,12 @@ impl<'a> GraphPlanValidator<'a> {
     fn exists_property_ref_scalar_type<'b>(
         &self,
         property: &PropertyRef,
-        relationship: &'a Relationship,
+        relationships: &[ExistsRelationshipValidation<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
-        relationship_variable: Option<&str>,
     ) -> Result<ScalarType, CoreError> {
-        if relationship_variable == Some(property.variable.as_str()) {
+        if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, &property.variable)
+        {
             let Some(column) = relationship.column_for_property(&property.property) else {
                 return Ok(ScalarType::Unknown);
             };
@@ -2573,9 +2667,8 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Property(property) => {
                 let rhs_type = self.exists_property_ref_scalar_type(
                     property,
-                    scope.relationship,
+                    scope.relationships,
                     scope.local_nodes,
-                    scope.relationship_variable,
                 )?;
                 Self::validate_scalar_predicate_operand_types(
                     predicate.operator,
@@ -2585,13 +2678,14 @@ impl<'a> GraphPlanValidator<'a> {
                 )
             }
             PredicateRhs::Key { variable } => {
-                let rhs_type = if scope.relationship_variable == Some(variable.as_str()) {
-                    scope
-                        .relationship
+                let rhs_type = if let Some(relationship) =
+                    Self::exists_relationship_for_variable(scope.relationships, variable)
+                {
+                    relationship
                         .key
                         .as_deref()
                         .map_or(ScalarType::Unknown, |column| {
-                            self.column_scalar_type(&scope.relationship.table, column)
+                            self.column_scalar_type(&relationship.table, column)
                         })
                 } else if let Some(node) = scope.local_nodes.get(variable.as_str()).copied() {
                     self.column_scalar_type(&node.table, &node.key)
@@ -2615,6 +2709,16 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
             }
         }
+    }
+
+    fn exists_relationship_for_variable<'b>(
+        relationships: &[ExistsRelationshipValidation<'a, 'b>],
+        variable: &str,
+    ) -> Option<&'a Relationship> {
+        relationships.iter().find_map(|candidate| {
+            (candidate.pattern.variable.as_deref() == Some(variable))
+                .then_some(candidate.relationship)
+        })
     }
 
     fn validate_scalar_predicate(
