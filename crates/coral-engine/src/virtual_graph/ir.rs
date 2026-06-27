@@ -857,6 +857,8 @@ pub struct GraphUnion {
     pub first: GraphPlan,
     /// Subsequent branches and their leading union operator.
     pub branches: Vec<GraphUnionBranch>,
+    /// Optional outer projection applied after all union branches are combined.
+    pub outer_projection: Option<GraphUnionOuterProjection>,
     /// Whether the union result should be deduplicated after all branches are combined.
     pub distinct: bool,
     /// Outer ordering applied after all union branches have been combined.
@@ -874,4 +876,14 @@ pub struct GraphUnionBranch {
     pub all: bool,
     /// Branch plan.
     pub plan: GraphPlan,
+}
+
+/// Projection applied after a graph union has combined all branch rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphUnionOuterProjection {
+    /// Count all combined rows.
+    CountAll {
+        /// Output alias for the count projection.
+        alias: String,
+    },
 }

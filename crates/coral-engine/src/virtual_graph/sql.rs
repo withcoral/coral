@@ -5,9 +5,9 @@ use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
-    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, KeyPredicate, Literal, OrderDirection,
-    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    ElementIdPredicate, GraphPlan, GraphQuery, GraphUnion, GraphUnionOuterProjection, KeyPredicate,
+    Literal, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyRef, ScalarCaseAlternative, ScalarExpression,
     ScalarPredicate, ScalarPredicateRhs,
 };
@@ -1935,14 +1935,19 @@ fn render_union_branch_sql(sql: &str, index: usize) -> String {
 }
 
 fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, CoreError> {
-    if !union.distinct && union.order_by.is_empty() && union.skip.is_none() && union.limit.is_none()
+    if union.outer_projection.is_none()
+        && !union.distinct
+        && union.order_by.is_empty()
+        && union.skip.is_none()
+        && union.limit.is_none()
     {
         return Ok(sql);
     }
 
     let distinct = if union.distinct { "DISTINCT " } else { "" };
+    let projection = render_union_outer_projection(union);
     let mut outer_sql = format!(
-        "SELECT {distinct}* FROM ({sql}) AS {}",
+        "SELECT {distinct}{projection} FROM ({sql}) AS {}",
         quote_ident("__coral_union_outer")
     );
     if !union.order_by.is_empty() {
@@ -1969,6 +1974,15 @@ fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, Cor
             .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
     }
     Ok(outer_sql)
+}
+
+fn render_union_outer_projection(union: &GraphUnion) -> String {
+    match &union.outer_projection {
+        Some(GraphUnionOuterProjection::CountAll { alias }) => {
+            format!("COUNT(*) AS {}", quote_ident(alias))
+        }
+        None => "*".to_string(),
+    }
 }
 
 fn render_union_outer_order_expression(
