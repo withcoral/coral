@@ -7,7 +7,8 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyRef,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyRef,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -728,6 +729,9 @@ impl<'a> Lowerer<'a> {
                 self.render_element_id_predicate(predicate)
             }
             PredicateExpression::Presence(predicate) => self.render_presence_predicate(predicate),
+            PredicateExpression::PropertyKeyMembership(predicate) => {
+                self.render_property_key_membership_predicate(predicate)
+            }
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
                 self.render_predicate_expression(left)?,
@@ -1027,6 +1031,24 @@ impl<'a> Lowerer<'a> {
                 "validated presence predicate contained an invalid operator",
             )),
         }
+    }
+
+    fn render_property_key_membership_predicate(
+        &self,
+        predicate: &PropertyKeyMembershipPredicate,
+    ) -> Result<String, CoreError> {
+        let binding = self.validated.binding(&predicate.variable)?;
+        let has_key = match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.properties.contains_key(&predicate.key),
+            ValidatedBindingKind::Relationship(relationship) => {
+                relationship.properties.contains_key(&predicate.key)
+            }
+        };
+        let presence = self.render_binding_presence_ref(&predicate.variable)?;
+        let value = if has_key { "TRUE" } else { "FALSE" };
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE {value} END"
+        ))
     }
 
     fn render_projection_predicate_rhs(

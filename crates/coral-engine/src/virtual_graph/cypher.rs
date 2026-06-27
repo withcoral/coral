@@ -26,8 +26,8 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
     OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
-    PropertyRef, RelationshipPattern,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -2197,6 +2197,7 @@ fn is_conjunctive_expression(expression: &PredicateExpression) -> bool {
         | PredicateExpression::KeyComparison(_)
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => false,
     }
@@ -2216,6 +2217,7 @@ fn append_conjunctive_expression(
         | PredicateExpression::KeyComparison(_)
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_)
         | PredicateExpression::Or { .. }
         | PredicateExpression::Not { .. } => {
             unreachable!("non-conjunctive predicate expression reached conjunctive appender")
@@ -2392,6 +2394,11 @@ fn compile_in_predicate(
     {
         return Ok(predicate);
     }
+    if let Some(predicate) =
+        compile_property_key_membership_predicate(lhs, rhs, path.clone(), plan, context)?
+    {
+        return Ok(predicate);
+    }
     let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -2432,8 +2439,32 @@ fn compile_in_predicate(
     }
     Err(unsupported(
         format!("{path}.lhs"),
-        "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), or '<label>' IN labels(node)",
+        "IN predicates require variable.property, id(variable), elementId(variable), type(relationship), '<label>' IN labels(node), or '<key>' IN keys(variable)",
     ))
+}
+
+fn compile_property_key_membership_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let Some(variable) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)?
+    else {
+        return Ok(None);
+    };
+    let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+    let Literal::String(key) = literal else {
+        return Err(unsupported(
+            format!("{path}.lhs"),
+            "keys() membership predicates require a string literal or scalar string parameter",
+        ));
+    };
+    Ok(Some(PredicateExpression::PropertyKeyMembership(
+        PropertyKeyMembershipPredicate { variable, key },
+    )))
 }
 
 fn compile_label_membership_predicate(
@@ -2550,6 +2581,34 @@ fn evaluate_static_label_expression(
         LabelExpression::Group { inner, .. } => {
             evaluate_static_label_expression(inner, mapped_label, path)
         }
+    }
+}
+
+fn compile_optional_keys_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<String>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_optional_keys_ref(inner, path, plan, context),
+        Expression::FunctionCall(function) if is_keys_function(function) => {
+            let variable = compile_single_variable_function_argument(
+                function,
+                format!("{path}.arguments"),
+                "keys() supports exactly one graph variable argument",
+                context,
+            )?;
+            if !plan_uses_variable(plan, &variable) {
+                return Err(unsupported(
+                    format!("{path}.arguments[0]"),
+                    format!("keys() argument '{variable}' is not a bound graph variable"),
+                ));
+            }
+            Ok(Some(variable))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -3948,6 +4007,55 @@ mod tests {
                     alias: "ownership_keys".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_property_key_membership_predicates() {
+        let parameters = BTreeMap::from([(
+            "relationship_key".to_string(),
+            CypherParameterValue::Literal(Literal::String("since".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE 'name' IN keys(person) AND $relationship_key IN keys(owns) \
+             RETURN person.name AS owner",
+            &parameters,
+        )
+        .expect("keys() membership predicates should compile");
+
+        assert_eq!(plan.predicates, Vec::new());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::PropertyKeyMembership(
+                    PropertyKeyMembershipPredicate {
+                        variable: "person".to_string(),
+                        key: "name".to_string(),
+                    },
+                )),
+                right: Box::new(PredicateExpression::PropertyKeyMembership(
+                    PropertyKeyMembershipPredicate {
+                        variable: "owns".to_string(),
+                        key: "since".to_string(),
+                    },
+                )),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_property_key_membership_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 1 IN keys(service) \
+             RETURN service.name",
+        )
+        .expect_err("keys() membership should require a string literal");
+
+        assert!(
+            error.to_string().contains("keys() membership predicates"),
+            "{error:?}"
         );
     }
 

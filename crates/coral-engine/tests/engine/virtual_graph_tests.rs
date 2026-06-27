@@ -2075,6 +2075,58 @@ async fn cypher_keys_projection_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_property_key_membership_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE 'name' IN keys(person) AND 'since' IN keys(owns) AND 'tier' IN keys(service) \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("keys() membership predicate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("ELSE TRUE END"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+        ]
+    );
+
+    let no_rows = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE 'missing' IN keys(service) \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("missing keys() membership predicate query should execute");
+
+    assert!(
+        no_rows.translated_sql().contains("ELSE FALSE END"),
+        "{}",
+        no_rows.translated_sql()
+    );
+    assert_eq!(execution_to_rows(no_rows.execution()), Vec::<Value>::new());
+}
+
+#[tokio::test]
 async fn cypher_keys_projection_preserves_optional_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

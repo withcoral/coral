@@ -6,8 +6,8 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, KeyPredicate, Literal, OptionalMatchScope, OrderExpression, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -721,6 +721,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::Presence(predicate) => {
                 variables.insert(predicate.variable.as_str());
             }
+            PredicateExpression::PropertyKeyMembership(predicate) => {
+                variables.insert(predicate.variable.as_str());
+            }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::collect_predicate_expression_variables(left, variables);
                 Self::collect_predicate_expression_variables(right, variables);
@@ -776,6 +779,13 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::Presence(predicate) => {
                 Self::validate_presence_predicate_not_optional(predicate, optional_variables, path)
+            }
+            PredicateExpression::PropertyKeyMembership(predicate) => {
+                Self::validate_property_key_membership_predicate_not_optional(
+                    predicate,
+                    optional_variables,
+                    path,
+                )
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 Self::validate_predicate_expression_not_optional(
@@ -844,6 +854,19 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn validate_presence_predicate_not_optional(
         predicate: &PresencePredicate,
+        optional_variables: &BTreeSet<&str>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        Self::validate_variable_not_optional(
+            &predicate.variable,
+            optional_variables,
+            format!("{path}.variable"),
+        )
+    }
+
+    fn validate_property_key_membership_predicate_not_optional(
+        predicate: &PropertyKeyMembershipPredicate,
         optional_variables: &BTreeSet<&str>,
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
@@ -964,6 +987,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateExpression::Presence(predicate) => {
                 self.validate_presence_predicate(predicate, path)
+            }
+            PredicateExpression::PropertyKeyMembership(predicate) => {
+                self.validate_property_key_membership_predicate(predicate, path)
             }
             PredicateExpression::And { left, right } | PredicateExpression::Or { left, right } => {
                 self.validate_predicate_expression(left, format!("{path}.left"))?;
@@ -1467,6 +1493,24 @@ impl<'a> GraphPlanValidator<'a> {
                 "graph variable presence predicates only support IS NULL and IS NOT NULL",
             )
             .into_core_error()),
+        }
+    }
+
+    fn validate_property_key_membership_predicate(
+        &self,
+        predicate: &PropertyKeyMembershipPredicate,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if self.bindings.contains_key(predicate.variable.as_str()) {
+            Ok(())
+        } else {
+            Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                format!("{path}.variable"),
+                format!("unknown graph variable '{}'", predicate.variable),
+            )
+            .into_core_error())
         }
     }
 
@@ -2545,6 +2589,40 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("property keys projections should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_property_key_membership_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::PropertyKeyMembership(
+            PropertyKeyMembershipPredicate {
+                variable: "person".to_string(),
+                key: "name".to_string(),
+            },
+        ));
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("property key membership predicate should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_property_key_membership_on_unknown_variables() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::PropertyKeyMembership(
+            PropertyKeyMembershipPredicate {
+                variable: "unknown".to_string(),
+                key: "name".to_string(),
+            },
+        ));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("unknown property key membership variable should fail validation");
+
+        assert!(error.to_string().contains("UNKNOWN_VARIABLE"), "{error:?}");
     }
 
     #[test]

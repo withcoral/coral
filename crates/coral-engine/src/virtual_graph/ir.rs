@@ -287,6 +287,16 @@ pub struct PresencePredicate {
     pub operator: ComparisonOperator,
 }
 
+/// Predicate checking whether a statically declared graph property key exists
+/// on a graph variable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyKeyMembershipPredicate {
+    /// Graph variable whose declared property keys should be tested.
+    pub variable: String,
+    /// Property key name to check.
+    pub key: String,
+}
+
 /// Scope introduced by one `OPTIONAL MATCH` clause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalMatchScope {
@@ -309,6 +319,8 @@ pub enum PredicateExpression {
     ElementIdComparison(ElementIdPredicate),
     /// Leaf graph binding presence comparison.
     Presence(PresencePredicate),
+    /// Leaf declared property key membership test.
+    PropertyKeyMembership(PropertyKeyMembershipPredicate),
     /// Boolean conjunction.
     And {
         /// Left-hand expression.
