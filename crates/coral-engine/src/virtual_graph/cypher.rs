@@ -4328,6 +4328,10 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
         Some(AggregateFunction::Sum)
     } else if name.name.eq_ignore_ascii_case("avg") {
         Some(AggregateFunction::Avg)
+    } else if name.name.eq_ignore_ascii_case("stDev") {
+        Some(AggregateFunction::StdDev)
+    } else if name.name.eq_ignore_ascii_case("stDevP") {
+        Some(AggregateFunction::StdDevP)
     } else if name.name.eq_ignore_ascii_case("min") {
         Some(AggregateFunction::Min)
     } else if name.name.eq_ignore_ascii_case("max") {
@@ -4343,6 +4347,8 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
         AggregateFunction::Collect => "collect",
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
+        AggregateFunction::StdDev => "stDev",
+        AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
         AggregateFunction::Max => "max",
     }
@@ -11100,6 +11106,40 @@ mod tests {
     }
 
     #[test]
+    fn compiles_statistical_aggregate_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN stDev(service.risk) AS sample_risk, \
+                    stDevP(DISTINCT service.risk) AS population_risk",
+        )
+        .expect("statistical aggregate query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: super::AggregateFunction::StdDev,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "sample_risk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::StdDevP,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "population_risk".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_count_node_projection() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -11145,7 +11185,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_return_functions() {
-        assert_unsupported("MATCH (service:Service) RETURN stdev(service.id) AS total");
+        assert_unsupported("MATCH (service:Service) RETURN median(service.id) AS total");
         assert_unsupported("MATCH (service:Service) RETURN id(missing)");
         assert_unsupported("MATCH (service:Service) RETURN type(service)");
     }

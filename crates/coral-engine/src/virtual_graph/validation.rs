@@ -2821,6 +2821,8 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
         AggregateFunction::Collect => "collect",
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
+        AggregateFunction::StdDev => "stDev",
+        AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
         AggregateFunction::Max => "max",
     }

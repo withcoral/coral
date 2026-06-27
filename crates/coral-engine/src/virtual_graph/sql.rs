@@ -1883,6 +1883,8 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
         AggregateFunction::Collect => "ARRAY_AGG",
         AggregateFunction::Sum => "SUM",
         AggregateFunction::Avg => "AVG",
+        AggregateFunction::StdDev => "STDDEV_SAMP",
+        AggregateFunction::StdDevP => "STDDEV_POP",
         AggregateFunction::Min => "MIN",
         AggregateFunction::Max => "MAX",
     }
@@ -4467,6 +4469,43 @@ relationships: []
         );
         assert!(
             translation.sql().contains(" GROUP BY "),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_statistical_aggregate_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::StdDev,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "sample_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::StdDevP,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: true,
+            alias: "population_risk".to_string(),
+        });
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("statistical aggregate projections should lower");
+
+        assert!(
+            translation.sql().contains(
+                "STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
+                 STDDEV_POP(DISTINCT \"n1\".\"risk_score\") AS \"population_risk\""
+            ),
             "{}",
             translation.sql()
         );

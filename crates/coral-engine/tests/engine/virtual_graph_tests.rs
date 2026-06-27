@@ -12,6 +12,14 @@ use tempfile::TempDir;
 
 use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
 
+fn assert_close(actual: f64, expected: f64) {
+    let delta = (actual - expected).abs();
+    assert!(
+        delta <= 1e-12,
+        "expected {actual} to be within 1e-12 of {expected}, delta {delta}"
+    );
+}
+
 #[tokio::test]
 async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
@@ -4979,6 +4987,61 @@ async fn cypher_numeric_aggregate_projections_execute_against_synthetic_sources(
             }),
         ]
     );
+}
+
+#[tokio::test]
+async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN stDev(service.risk) AS sample_risk, \
+                stDevP(service.risk) AS population_risk, \
+                sum(DISTINCT service.risk) AS distinct_total_risk, \
+                avg(DISTINCT service.risk) AS distinct_average_risk",
+    )
+    .await
+    .expect("statistical aggregate Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("STDDEV_SAMP(\"n0\".\"risk_score\") AS \"sample_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT STDDEV_SAMP(risk_score) AS \"sample_risk\", \
+                STDDEV_POP(risk_score) AS \"population_risk\", \
+                SUM(DISTINCT risk_score) AS \"distinct_total_risk\", \
+                AVG(DISTINCT risk_score) AS \"distinct_average_risk\" \
+         FROM ops.services \
+         WHERE tier = 'prod'",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+
+    let row = graph_rows
+        .first()
+        .expect("aggregate query should return one row");
+    assert_close(row["sample_risk"].as_f64().unwrap(), 0.282_842_712_474_619);
+    assert_close(row["population_risk"].as_f64().unwrap(), 0.2);
+    assert_close(row["distinct_total_risk"].as_f64().unwrap(), 1.4);
+    assert_close(row["distinct_average_risk"].as_f64().unwrap(), 0.7);
 }
 
 #[tokio::test]

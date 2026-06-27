@@ -522,6 +522,10 @@ pub enum AggregateFunction {
     Sum,
     /// `AVG(property)`.
     Avg,
+    /// `STDEV(property)` / sample standard deviation.
+    StdDev,
+    /// `STDEVP(property)` / population standard deviation.
+    StdDevP,
     /// `MIN(property)`.
     Min,
     /// `MAX(property)`.
