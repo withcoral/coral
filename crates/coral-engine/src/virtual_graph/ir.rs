@@ -234,6 +234,28 @@ pub enum ScalarExpression {
         /// Inner expression to reverse.
         expression: Box<ScalarExpression>,
     },
+    /// Absolute value of a numeric scalar expression.
+    Abs {
+        /// Inner expression to normalize.
+        expression: Box<ScalarExpression>,
+    },
+    /// Ceiling of a numeric scalar expression.
+    Ceil {
+        /// Inner expression to round up.
+        expression: Box<ScalarExpression>,
+    },
+    /// Floor of a numeric scalar expression.
+    Floor {
+        /// Inner expression to round down.
+        expression: Box<ScalarExpression>,
+    },
+    /// Round a numeric scalar expression, optionally to a decimal precision.
+    Round {
+        /// Inner expression to round.
+        expression: Box<ScalarExpression>,
+        /// Optional decimal places expression.
+        places: Option<Box<ScalarExpression>>,
+    },
     /// Numeric binary arithmetic over scalar expressions.
     Arithmetic {
         /// Arithmetic operator.

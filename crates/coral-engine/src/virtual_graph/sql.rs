@@ -1424,6 +1424,18 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Reverse { expression } => {
                 self.render_unary_function_expression("reverse", expression)
             }
+            ScalarExpression::Abs { expression } => {
+                self.render_unary_function_expression("abs", expression)
+            }
+            ScalarExpression::Ceil { expression } => {
+                self.render_unary_function_expression("ceil", expression)
+            }
+            ScalarExpression::Floor { expression } => {
+                self.render_unary_function_expression("floor", expression)
+            }
+            ScalarExpression::Round { expression, places } => {
+                self.render_round_expression(expression, places.as_deref())
+            }
             ScalarExpression::Arithmetic {
                 operator,
                 left,
@@ -1487,6 +1499,21 @@ impl<'a> Lowerer<'a> {
             "{function_name}({}, {})",
             self.render_scalar_expression(left)?,
             self.render_scalar_expression(right)?
+        ))
+    }
+
+    fn render_round_expression(
+        &self,
+        expression: &ScalarExpression,
+        places: Option<&ScalarExpression>,
+    ) -> Result<String, CoreError> {
+        let expression_sql = self.render_scalar_expression(expression)?;
+        let Some(places) = places else {
+            return Ok(format!("round({expression_sql})"));
+        };
+        Ok(format!(
+            "round({expression_sql}, {})",
+            self.render_scalar_expression(places)?
         ))
     }
 
@@ -2924,6 +2951,93 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY reverse(\"n1\".\"service_name\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_numeric_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            Projection::Expression {
+                expression: ScalarExpression::Ceil {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                },
+                alias: "risk_ceiling".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Floor {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                },
+                alias: "risk_floor".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Round {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                    places: Some(Box::new(ScalarExpression::Literal(Literal::Integer(1)))),
+                },
+                alias: "risk_rounded".to_string(),
+            },
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Abs {
+                expression: Box::new(ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Subtract,
+                    left: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                    right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                }),
+            },
+            operator: ComparisonOperator::LessThan,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(1))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Round {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+                places: None,
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("numeric scalar expressions should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("SELECT ceil(\"n1\".\"risk_score\") AS \"risk_ceiling\", floor(\"n1\".\"risk_score\") AS \"risk_floor\", round(\"n1\".\"risk_score\", 1) AS \"risk_rounded\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE abs((\"n1\".\"risk_score\" - 1)) < 1"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY round(\"n1\".\"risk_score\") ASC"),
             "{}",
             translation.sql()
         );

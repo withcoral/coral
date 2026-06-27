@@ -1826,6 +1826,76 @@ fn compile_reverse_scalar_expression(
     })
 }
 
+fn compile_abs_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Abs {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "abs", context,
+        )?),
+    })
+}
+
+fn compile_ceil_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Ceil {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "ceil", context,
+        )?),
+    })
+}
+
+fn compile_floor_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Floor {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "floor", context,
+        )?),
+    })
+}
+
+fn compile_round_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [expression] => Ok(ScalarExpression::Round {
+            expression: Box::new(compile_scalar_expression(
+                expression,
+                format!("{path}.arguments[0]"),
+                context,
+            )?),
+            places: None,
+        }),
+        [expression, places] => Ok(ScalarExpression::Round {
+            expression: Box::new(compile_scalar_expression(
+                expression,
+                format!("{path}.arguments[0]"),
+                context,
+            )?),
+            places: Some(Box::new(compile_scalar_expression(
+                places,
+                format!("{path}.arguments[1]"),
+                context,
+            )?)),
+        }),
+        _ => Err(unsupported(
+            format!("{path}.arguments"),
+            "round() requires exactly one or two arguments",
+        )),
+    }
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1898,7 +1968,15 @@ fn compile_scalar_function_expression(
     } else if is_right_function(function) {
         compile_right_scalar_expression(function, path.clone(), context)?
     } else if is_reverse_function(function) {
-        compile_reverse_scalar_expression(function, path, context)?
+        compile_reverse_scalar_expression(function, path.clone(), context)?
+    } else if is_abs_function(function) {
+        compile_abs_scalar_expression(function, path.clone(), context)?
+    } else if is_ceil_function(function) {
+        compile_ceil_scalar_expression(function, path.clone(), context)?
+    } else if is_floor_function(function) {
+        compile_floor_scalar_expression(function, path.clone(), context)?
+    } else if is_round_function(function) {
+        compile_round_scalar_expression(function, path, context)?
     } else {
         return Ok(None);
     };
@@ -1946,7 +2024,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
         )),
     }
 }
@@ -2171,7 +2249,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
                 )),
             }
         }
@@ -2183,7 +2261,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), or round() expressions",
         )),
     }
 }
@@ -2626,6 +2704,34 @@ fn is_reverse_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("reverse")
+    )
+}
+
+fn is_abs_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("abs")
+    )
+}
+
+fn is_ceil_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("ceil")
+    )
+}
+
+fn is_floor_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("floor")
+    )
+}
+
+fn is_round_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("round")
     )
 }
 
@@ -5882,6 +5988,90 @@ mod tests {
             error
                 .to_string()
                 .contains("left() requires exactly two arguments"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn compiles_numeric_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE abs(service.risk - 1.0) < 0.2 \
+             RETURN ceil(service.risk) AS risk_ceiling, \
+                    floor(service.risk) AS risk_floor, \
+                    round(service.risk, 1) AS risk_rounded \
+             ORDER BY round(service.risk)",
+        )
+        .expect("numeric scalar functions should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Abs { expression },
+                operator: ComparisonOperator::LessThan,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Float(_))),
+            })) if matches!(
+                expression.as_ref(),
+                ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Subtract,
+                    ..
+                }
+            )
+        ));
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Ceil {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                    },
+                    alias: "risk_ceiling".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Floor {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                    },
+                    alias: "risk_floor".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Round {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                        places: Some(Box::new(ScalarExpression::Literal(Literal::Integer(1)))),
+                    },
+                    alias: "risk_rounded".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Round { places: None, .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_round_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN round(service.risk, 1, 2) AS rounded",
+        )
+        .expect_err("round() supports only optional places");
+
+        assert!(
+            error
+                .to_string()
+                .contains("round() requires exactly one or two arguments"),
             "{error}"
         );
     }

@@ -1812,6 +1812,55 @@ async fn cypher_left_right_and_reverse_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_numeric_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         WHERE abs(service.risk - 1.0) < 0.11 \
+         RETURN service.name AS service, \
+                ceil(service.risk) AS risk_ceiling, \
+                floor(service.risk) AS risk_floor, \
+                round(service.risk, 1) AS risk_rounded, \
+                round(service.risk) AS risk_nearest \
+         ORDER BY round(service.risk, 1)",
+    )
+    .await
+    .expect("numeric scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("abs((\"n0\".\"risk_score\" - 1)) < 0.11"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("round(\"n0\".\"risk_score\", 1) AS \"risk_rounded\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "risk_ceiling": 1.0,
+            "risk_floor": 0.0,
+            "risk_rounded": 0.9,
+            "risk_nearest": 1.0,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_scalar_null_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
