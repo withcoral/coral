@@ -17,7 +17,10 @@ pub use cypher::{CypherParameterValue, compile_cypher, compile_cypher_with_param
 pub use declaration::{Declaration, Endpoint, Node, Relationship, TableRef};
 pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
-pub use graphql::{compile_graphql, compile_graphql_for_graph};
+pub use graphql::{
+    GraphqlVariableValue, compile_graphql, compile_graphql_for_graph,
+    compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
+};
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,

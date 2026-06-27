@@ -81,16 +81,17 @@ pub use virtual_graph::{
     AggregateFunction as GraphAggregateFunction, AggregateTarget as GraphAggregateTarget,
     ComparisonOperator, CypherParameterValue as GraphCypherParameterValue,
     Declaration as GraphDeclaration, Diagnostic as GraphDiagnostic, Direction as GraphDirection,
-    GraphExecution, GraphPlan, GraphQueryPlan, Literal as GraphLiteral, NodePattern,
-    OrderDirection as GraphOrderDirection, OrderExpression as GraphOrderExpression,
-    OrderKey as GraphOrderKey, PredicateExpression as GraphPredicateExpression,
-    PredicateRhs as GraphPredicateRhs, Projection as GraphProjection,
-    ProjectionPredicate as GraphProjectionPredicate,
+    GraphExecution, GraphPlan, GraphQueryPlan, GraphqlVariableValue as GraphGraphqlVariableValue,
+    Literal as GraphLiteral, NodePattern, OrderDirection as GraphOrderDirection,
+    OrderExpression as GraphOrderExpression, OrderKey as GraphOrderKey,
+    PredicateExpression as GraphPredicateExpression, PredicateRhs as GraphPredicateRhs,
+    Projection as GraphProjection, ProjectionPredicate as GraphProjectionPredicate,
     ProjectionPredicateExpression as GraphProjectionPredicateExpression,
     ProjectionPredicateRhs as GraphProjectionPredicateRhs,
     PropertyPredicate as GraphPropertyPredicate, PropertyRef as GraphPropertyRef,
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
     compile_cypher_with_parameters, compile_graphql, compile_graphql_for_graph,
+    compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
 };
 
 /// High-level query operations for the local query engine.
@@ -383,6 +384,36 @@ impl CoralQuery {
         Self::execute_graph_plan(sources, runtime, graph, &plan).await
     }
 
+    /// Executes one supported read-only GraphQL query with typed variables.
+    ///
+    /// Variables are bound into Coral's shared graph plan before SQL lowering.
+    /// Scalar variables can be used anywhere the supported GraphQL subset
+    /// accepts scalar literals or enum-like names; list variables can be used
+    /// as `in` right-hand sides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, a required
+    /// variable is missing, a variable value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot execute.
+    pub async fn execute_graphql_with_variables(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        variables: &BTreeMap<String, GraphGraphqlVariableValue>,
+    ) -> Result<GraphExecution, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_variables(graph, graphql, variables)?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
     /// Explains one supported read-only GraphQL virtual graph query.
     ///
     /// # Errors
@@ -403,6 +434,31 @@ impl CoralQuery {
         }
 
         let plan = compile_graphql_for_graph(graph, graphql)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one supported read-only GraphQL query with typed variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, a required
+    /// variable is missing, a variable value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot be planned.
+    pub async fn explain_graphql_with_variables(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        variables: &BTreeMap<String, GraphGraphqlVariableValue>,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_variables(graph, graphql, variables)?;
         Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 

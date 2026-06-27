@@ -153,6 +153,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
   `and`, `or`, and `not` boolean filter composition;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
 - integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments.
+- typed GraphQL variables bound through the explicit variable API in supported
+  scalar literal, scalar-list `in`, enum/string name, boolean, and
+  non-negative integer positions;
 - nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
   Label)`, or `any_TYPE(label: Label)`;
 - nested relationship target filters via `where` and relationship property
@@ -169,6 +172,6 @@ relationship properties are flattened into the tabular result set; GraphQL
 object materialization is intentionally out of scope for the DataFusion
 execution path.
 
-Fragments, directives, variables, mutations, subscriptions, nested row
-modifiers, and optional GraphQL traversals are rejected with GraphQL-specific
-diagnostics until their IR contracts are defined.
+Fragments, directives, variable defaults, object-level variables, mutations,
+subscriptions, nested row modifiers, and optional GraphQL traversals are
+rejected with GraphQL-specific diagnostics until their IR contracts are defined.

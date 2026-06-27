@@ -3,9 +3,9 @@ use std::path::Path;
 
 use coral_engine::{
     ComparisonOperator, CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphDirection,
-    GraphLiteral, GraphOrderDirection, GraphOrderExpression, GraphOrderKey, GraphPlan,
-    GraphPredicateRhs, GraphProjection, GraphPropertyPredicate, GraphPropertyRef, NodePattern,
-    RelationshipPattern,
+    GraphGraphqlVariableValue, GraphLiteral, GraphOrderDirection, GraphOrderExpression,
+    GraphOrderKey, GraphPlan, GraphPredicateRhs, GraphProjection, GraphPropertyPredicate,
+    GraphPropertyRef, NodePattern, RelationshipPattern,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -193,6 +193,77 @@ async fn graphql_root_query_executes_against_synthetic_file_sources() {
         execution
             .translated_sql()
             .contains("\"n0\".\"risk_score\" >= 0.5"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn graphql_variables_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([
+        (
+            "tier".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::String("prod".to_string())),
+        ),
+        (
+            "minRisk".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Float(ordered_float::OrderedFloat(
+                0.5,
+            ))),
+        ),
+        (
+            "names".to_string(),
+            GraphGraphqlVariableValue::List(vec![
+                GraphLiteral::String("billing-api".to_string()),
+                GraphLiteral::String("deployments".to_string()),
+            ]),
+        ),
+        (
+            "limit".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Integer(10)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($tier: String!, $minRisk: Float!, $names: [String!], $limit: Int!) {
+          Service(
+            where: {
+              tier: { eq: $tier }
+              risk: { gte: $minRisk }
+              name: { in: $names }
+            }
+            orderBy: [{ field: name, direction: ASC }]
+            limit: $limit
+          ) {
+            service: name
+            tier
+          }
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("GraphQL variable query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" IN ('billing-api', 'deployments')"),
         "{}",
         execution.translated_sql()
     );

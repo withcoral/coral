@@ -1,5 +1,8 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use graphql_parser::query::{
-    Definition, Field, OperationDefinition, Selection, SelectionSet, Value, parse_query,
+    Definition, Field, OperationDefinition, Selection, SelectionSet, Value, VariableDefinition,
+    parse_query,
 };
 use ordered_float::OrderedFloat;
 
@@ -11,6 +14,54 @@ use super::ir::{
     PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
+
+/// Runtime value that can be bound to a GraphQL variable in the supported subset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphqlVariableValue {
+    /// Scalar literal variable, usable where a literal value is accepted.
+    Literal(Literal),
+    /// Scalar-list variable, usable where a literal list is accepted.
+    List(Vec<Literal>),
+}
+
+struct GraphqlCompileContext<'a> {
+    variables: &'a BTreeMap<String, GraphqlVariableValue>,
+    declared_variables: BTreeSet<String>,
+}
+
+impl<'a> GraphqlCompileContext<'a> {
+    fn new(
+        variables: &'a BTreeMap<String, GraphqlVariableValue>,
+        declared_variables: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            variables,
+            declared_variables,
+        }
+    }
+
+    fn parameter_value(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<&GraphqlVariableValue, CoreError> {
+        let path = path.into();
+        if !self.declared_variables.contains(variable) {
+            return Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' is not declared by the operation"),
+            ));
+        }
+        self.variables.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "MISSING_GRAPHQL_VARIABLE",
+                path,
+                format!("GraphQL variable '${variable}' was not provided"),
+            )
+            .into_core_error()
+        })
+    }
+}
 
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph subset.
 ///
@@ -26,10 +77,28 @@ use crate::CoreError;
 /// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
 /// GraphQL features outside Coral's current read-only virtual graph subset.
 pub fn compile_graphql(graphql: &str) -> Result<GraphPlan, CoreError> {
+    compile_graphql_with_variables(graphql, &BTreeMap::new())
+}
+
+/// Parses and compiles GraphQL with typed variable values into a shared graph plan.
+///
+/// Variables are bound before SQL lowering and only in positions where the
+/// same literal or literal-list value is already supported by the read-only
+/// GraphQL subset.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported GraphQL features, references a missing variable, or binds a list
+/// variable where a scalar literal is required.
+pub fn compile_graphql_with_variables(
+    graphql: &str,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
+) -> Result<GraphPlan, CoreError> {
     let document = parse_query::<String>(graphql).map_err(|error| {
         Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_document(&document, None)
+    compile_document(&document, None, variables)
 }
 
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph
@@ -43,15 +112,30 @@ pub fn compile_graphql_for_graph(
     graph: &Declaration,
     graphql: &str,
 ) -> Result<GraphPlan, CoreError> {
+    compile_graphql_for_graph_with_variables(graph, graphql, &BTreeMap::new())
+}
+
+/// Parses and compiles GraphQL with typed variable values and a graph declaration.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed or uses
+/// GraphQL features outside Coral's current read-only virtual graph subset.
+pub fn compile_graphql_for_graph_with_variables(
+    graph: &Declaration,
+    graphql: &str,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
+) -> Result<GraphPlan, CoreError> {
     let document = parse_query::<String>(graphql).map_err(|error| {
         Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_document(&document, Some(graph))
+    compile_document(&document, Some(graph), variables)
 }
 
 fn compile_document(
     document: &graphql_parser::query::Document<'_, String>,
     graph: Option<&Declaration>,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
 ) -> Result<GraphPlan, CoreError> {
     let [definition] = document.definitions.as_slice() else {
         return Err(unsupported(
@@ -60,7 +144,7 @@ fn compile_document(
         ));
     };
     match definition {
-        Definition::Operation(operation) => compile_operation(operation, graph),
+        Definition::Operation(operation) => compile_operation(operation, graph, variables),
         Definition::Fragment(_) => Err(unsupported(
             "query.definitions[0]",
             "GraphQL fragments are not supported yet",
@@ -71,25 +155,25 @@ fn compile_document(
 fn compile_operation(
     operation: &OperationDefinition<'_, String>,
     graph: Option<&Declaration>,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
 ) -> Result<GraphPlan, CoreError> {
     match operation {
         OperationDefinition::SelectionSet(selection_set) => {
-            compile_root_selection_set(selection_set, graph, "query.selectionSet")
+            let context = GraphqlCompileContext::new(variables, BTreeSet::new());
+            compile_root_selection_set(selection_set, graph, "query.selectionSet", &context)
         }
         OperationDefinition::Query(query) => {
-            if !query.variable_definitions.is_empty() {
-                return Err(unsupported(
-                    "query.variables",
-                    "GraphQL variables are not supported yet; use literal root arguments",
-                ));
-            }
+            let context = GraphqlCompileContext::new(
+                variables,
+                compile_variable_definitions(&query.variable_definitions)?,
+            );
             if !query.directives.is_empty() {
                 return Err(unsupported(
                     "query.directives",
                     "GraphQL query directives are not supported yet",
                 ));
             }
-            compile_root_selection_set(&query.selection_set, graph, "query.selectionSet")
+            compile_root_selection_set(&query.selection_set, graph, "query.selectionSet", &context)
         }
         OperationDefinition::Mutation(_) | OperationDefinition::Subscription(_) => {
             Err(unsupported(
@@ -100,10 +184,36 @@ fn compile_operation(
     }
 }
 
+fn compile_variable_definitions(
+    definitions: &[VariableDefinition<'_, String>],
+) -> Result<BTreeSet<String>, CoreError> {
+    let mut variables = BTreeSet::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        let path = format!("query.variables[{index}]");
+        if !variables.insert(definition.name.clone()) {
+            return Err(unsupported(
+                format!("{path}.name"),
+                format!(
+                    "GraphQL variable '${}' is declared more than once",
+                    definition.name
+                ),
+            ));
+        }
+        if definition.default_value.is_some() {
+            return Err(unsupported(
+                format!("{path}.default"),
+                "GraphQL variable default values are not supported yet",
+            ));
+        }
+    }
+    Ok(variables)
+}
+
 fn compile_root_selection_set(
     selection_set: &SelectionSet<'_, String>,
     graph: Option<&Declaration>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
     let [selection] = selection_set.items.as_slice() else {
@@ -118,13 +228,14 @@ fn compile_root_selection_set(
             "GraphQL fragments are not supported yet",
         ));
     };
-    compile_root_field(root, graph, format!("{path}.items[0]"))
+    compile_root_field(root, graph, format!("{path}.items[0]"), context)
 }
 
 fn compile_root_field(
     root: &Field<'_, String>,
     graph: Option<&Declaration>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
     if !root.directives.is_empty() {
@@ -176,6 +287,7 @@ fn compile_root_field(
             edge_variable: None,
         },
         format!("{path}.selectionSet"),
+        context,
     )?;
 
     for (index, (name, value)) in root.arguments.iter().enumerate() {
@@ -185,6 +297,7 @@ fn compile_root_field(
             name,
             value,
             format!("{path}.arguments[{index}]"),
+            context,
         )?;
     }
 
@@ -205,6 +318,7 @@ fn compile_selection_set_into_plan(
     selection_set: &SelectionSet<'_, String>,
     context: &NodeContext,
     path: impl Into<String>,
+    compile_context: &GraphqlCompileContext<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     for (index, selection) in selection_set.items.iter().enumerate() {
@@ -249,6 +363,7 @@ fn compile_selection_set_into_plan(
                 context,
                 field,
                 format!("{path}.items[{index}]"),
+                compile_context,
             )?;
         }
     }
@@ -261,12 +376,17 @@ fn compile_relationship_field(
     source: &NodeContext,
     field: &Field<'_, String>,
     path: impl Into<String>,
+    compile_context: &GraphqlCompileContext<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     let (direction, relationship_type, endpoint_argument) =
         compile_relationship_field_name(&field.name, format!("{path}.name"))?;
-    let target_label =
-        compile_relationship_target_label(field, endpoint_argument, format!("{path}.arguments"))?;
+    let target_label = compile_relationship_target_label(
+        field,
+        endpoint_argument,
+        format!("{path}.arguments"),
+        compile_context,
+    )?;
 
     ensure_node_label(
         graph,
@@ -296,47 +416,15 @@ fn compile_relationship_field(
         .then(|| relationship_variable_for_field(field, relationship_index));
     let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
 
-    for (index, (name, value)) in field.arguments.iter().enumerate() {
-        let argument_path = format!("{path}.arguments[{index}]");
-        match name.as_str() {
-            "to" | "from" | "label" => {
-                if name != endpoint_argument {
-                    return Err(unsupported(
-                        argument_path,
-                        format!(
-                            "GraphQL relationship field '{}' requires '{}' instead of '{}'",
-                            field.name, endpoint_argument, name
-                        ),
-                    ));
-                }
-            }
-            "where" => append_where_predicate(
-                plan,
-                compile_where_argument(&target_variable, value, argument_path)?,
-            ),
-            "relationshipWhere" => {
-                let relationship_variable = relationship_variable
-                    .as_deref()
-                    .ok_or_else(|| CoreError::internal("relationshipWhere variable missing"))?;
-                append_where_predicate(
-                    plan,
-                    compile_where_argument(relationship_variable, value, argument_path)?,
-                );
-            }
-            "orderBy" | "limit" | "offset" | "skip" | "distinct" => {
-                return Err(unsupported(
-                    argument_path,
-                    "GraphQL nested relationship fields do not support row modifiers yet",
-                ));
-            }
-            _ => {
-                return Err(unsupported(
-                    argument_path,
-                    format!("unsupported GraphQL relationship argument '{name}'"),
-                ));
-            }
-        }
-    }
+    compile_relationship_field_arguments(
+        plan,
+        field,
+        endpoint_argument,
+        &target_variable,
+        relationship_variable.as_deref(),
+        &path,
+        compile_context,
+    )?;
 
     plan.nodes.push(NodePattern {
         variable: target_variable.clone(),
@@ -361,7 +449,65 @@ fn compile_relationship_field(
             edge_variable: relationship_variable,
         },
         format!("{path}.selectionSet"),
+        compile_context,
     )
+}
+
+fn compile_relationship_field_arguments(
+    plan: &mut GraphPlan,
+    field: &Field<'_, String>,
+    endpoint_argument: &str,
+    target_variable: &str,
+    relationship_variable: Option<&str>,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_>,
+) -> Result<(), CoreError> {
+    for (index, (name, value)) in field.arguments.iter().enumerate() {
+        let argument_path = format!("{path}.arguments[{index}]");
+        match name.as_str() {
+            "to" | "from" | "label" => {
+                if name != endpoint_argument {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship field '{}' requires '{}' instead of '{}'",
+                            field.name, endpoint_argument, name
+                        ),
+                    ));
+                }
+            }
+            "where" => append_where_predicate(
+                plan,
+                compile_where_argument(target_variable, value, argument_path, compile_context)?,
+            ),
+            "relationshipWhere" => {
+                let relationship_variable = relationship_variable
+                    .ok_or_else(|| CoreError::internal("relationshipWhere variable missing"))?;
+                append_where_predicate(
+                    plan,
+                    compile_where_argument(
+                        relationship_variable,
+                        value,
+                        argument_path,
+                        compile_context,
+                    )?,
+                );
+            }
+            "orderBy" | "limit" | "offset" | "skip" | "distinct" => {
+                return Err(unsupported(
+                    argument_path,
+                    "GraphQL nested relationship fields do not support row modifiers yet",
+                ));
+            }
+            _ => {
+                return Err(unsupported(
+                    argument_path,
+                    format!("unsupported GraphQL relationship argument '{name}'"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compile_edge_field(
@@ -469,6 +615,7 @@ fn compile_relationship_target_label(
     field: &Field<'_, String>,
     endpoint_argument: &str,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     let mut target_label = None;
@@ -483,6 +630,7 @@ fn compile_relationship_target_label(
             target_label = Some(compile_name_value(
                 value,
                 format!("{path}.{endpoint_argument}"),
+                context,
             )?);
         }
     }
@@ -601,28 +749,32 @@ fn compile_root_argument(
     name: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     match name {
         "where" => {
-            append_where_predicate(plan, compile_where_argument(variable, value, path)?);
+            append_where_predicate(
+                plan,
+                compile_where_argument(variable, value, path, context)?,
+            );
             Ok(())
         }
         "orderBy" => {
             plan.order_by
-                .extend(compile_order_by_argument(variable, value, path)?);
+                .extend(compile_order_by_argument(variable, value, path, context)?);
             Ok(())
         }
         "limit" => {
-            plan.limit = Some(compile_non_negative_u64(value, path, "limit")?);
+            plan.limit = Some(compile_non_negative_u64(value, path, "limit", context)?);
             Ok(())
         }
         "offset" | "skip" => {
-            plan.skip = Some(compile_non_negative_u64(value, path, name)?);
+            plan.skip = Some(compile_non_negative_u64(value, path, name, context)?);
             Ok(())
         }
         "distinct" => {
-            plan.distinct = compile_boolean(value, path, "distinct")?;
+            plan.distinct = compile_boolean(value, path, "distinct", context)?;
             Ok(())
         }
         _ => Err(unsupported(
@@ -636,8 +788,15 @@ fn compile_where_argument(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
+    if matches!(value, Value::Variable(_)) {
+        return Err(unsupported(
+            path,
+            "GraphQL object variables are not supported yet; bind variables inside scalar fields",
+        ));
+    }
     let Value::Object(properties) = value else {
         return Err(unsupported(path, "GraphQL where must be an object"));
     };
@@ -649,6 +808,7 @@ fn compile_where_argument(
                 operator,
                 condition,
                 format!("{path}.{property}"),
+                context,
             )?
         } else {
             compile_where_property_conditions(
@@ -656,6 +816,7 @@ fn compile_where_argument(
                 property,
                 condition,
                 format!("{path}.{property}"),
+                context,
             )?
         };
         expression = append_optional_and(expression, next);
@@ -684,6 +845,7 @@ fn compile_where_boolean_operator(
     operator: GraphqlBooleanOperator,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     match operator {
@@ -702,7 +864,8 @@ fn compile_where_boolean_operator(
             }
             let mut expression = None;
             for (index, item) in items.iter().enumerate() {
-                let next = compile_where_argument(variable, item, format!("{path}[{index}]"))?;
+                let next =
+                    compile_where_argument(variable, item, format!("{path}[{index}]"), context)?;
                 expression = match operator {
                     GraphqlBooleanOperator::And => append_optional_and(expression, next),
                     GraphqlBooleanOperator::Or => append_optional_or(expression, next),
@@ -714,7 +877,7 @@ fn compile_where_boolean_operator(
                 .ok_or_else(|| unsupported(path, "GraphQL where boolean list was empty"))
         }
         GraphqlBooleanOperator::Not => {
-            let expression = compile_where_argument(variable, value, path.clone())?
+            let expression = compile_where_argument(variable, value, path.clone(), context)?
                 .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
             Ok(Some(PredicateExpression::Not {
                 expression: Box::new(expression),
@@ -728,8 +891,15 @@ fn compile_where_property_conditions(
     property: &str,
     condition: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
+    if matches!(condition, Value::Variable(_)) {
+        return Err(unsupported(
+            path,
+            "GraphQL property condition variables are not supported yet; bind variables inside operators",
+        ));
+    }
     let Value::Object(operators) = condition else {
         return Err(unsupported(
             path,
@@ -744,6 +914,7 @@ fn compile_where_property_conditions(
             operator,
             value,
             format!("{path}.{operator}"),
+            context,
         )?;
         expression =
             append_optional_and(expression, Some(PredicateExpression::Comparison(predicate)));
@@ -844,6 +1015,7 @@ fn compile_where_operator(
     operator: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<PropertyPredicate, CoreError> {
     let path = path.into();
     let property = PropertyRef {
@@ -854,55 +1026,55 @@ fn compile_where_operator(
         "eq" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "ne" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::NotEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "gt" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::GreaterThan,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "gte" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::GreaterThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "lt" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::LessThan,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "lte" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::LessThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "startsWith" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::StartsWith,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "endsWith" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::EndsWith,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "contains" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::Contains,
-            rhs: PredicateRhs::Literal(compile_literal(value, path)?),
+            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
         "in" => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::In,
-            rhs: PredicateRhs::List(compile_literal_list(value, path)?),
+            rhs: PredicateRhs::List(compile_literal_list(value, path, context)?),
         }),
         "isNull" => {
-            let is_null = compile_boolean(value, path, "isNull")?;
+            let is_null = compile_boolean(value, path, "isNull", context)?;
             Ok(PropertyPredicate {
                 property,
                 operator: if is_null {
@@ -924,15 +1096,18 @@ fn compile_order_by_argument(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
     match value {
-        Value::Object(_) => Ok(vec![compile_order_by_object(variable, value, path)?]),
+        Value::Object(_) => Ok(vec![compile_order_by_object(
+            variable, value, path, context,
+        )?]),
         Value::List(items) => items
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                compile_order_by_object(variable, value, format!("{path}[{index}]"))
+                compile_order_by_object(variable, value, format!("{path}[{index}]"), context)
             })
             .collect(),
         _ => Err(unsupported(
@@ -946,6 +1121,7 @@ fn compile_order_by_object(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<OrderKey, CoreError> {
     let path = path.into();
     let Value::Object(object) = value else {
@@ -962,11 +1138,11 @@ fn compile_order_by_object(
     let field_value = object
         .get("field")
         .ok_or_else(|| unsupported(format!("{path}.field"), "GraphQL orderBy requires field"))?;
-    let field = compile_name_value(field_value, format!("{path}.field"))?;
+    let field = compile_name_value(field_value, format!("{path}.field"), context)?;
     let direction = object
         .get("direction")
         .map_or(Ok(OrderDirection::Ascending), |value| {
-            compile_order_direction(value, format!("{path}.direction"))
+            compile_order_direction(value, format!("{path}.direction"), context)
         })?;
     Ok(OrderKey {
         expression: OrderExpression::Property(PropertyRef {
@@ -980,9 +1156,10 @@ fn compile_order_by_object(
 fn compile_order_direction(
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<OrderDirection, CoreError> {
     let path = path.into();
-    let direction = compile_name_value(value, path.clone())?;
+    let direction = compile_name_value(value, path.clone(), context)?;
     match direction.as_str() {
         "ASC" | "asc" => Ok(OrderDirection::Ascending),
         "DESC" | "desc" => Ok(OrderDirection::Descending),
@@ -996,6 +1173,7 @@ fn compile_order_direction(
 fn compile_literal(
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     match value {
@@ -1011,7 +1189,13 @@ fn compile_literal(
         Value::String(value) => Ok(Literal::String(value.clone())),
         Value::Boolean(value) => Ok(Literal::Boolean(*value)),
         Value::Null => Ok(Literal::Null),
-        Value::Variable(_) => Err(unsupported(path, "GraphQL variables are not supported yet")),
+        Value::Variable(variable) => match context.parameter_value(variable, path.clone())? {
+            GraphqlVariableValue::Literal(value) => Ok(value.clone()),
+            GraphqlVariableValue::List(_) => Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a scalar literal"),
+            )),
+        },
         Value::Enum(_) | Value::List(_) | Value::Object(_) => {
             Err(unsupported(path, "GraphQL value must be a scalar literal"))
         }
@@ -1021,8 +1205,18 @@ fn compile_literal(
 fn compile_literal_list(
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<Vec<Literal>, CoreError> {
     let path = path.into();
+    if let Value::Variable(variable) = value {
+        return match context.parameter_value(variable, path.clone())? {
+            GraphqlVariableValue::List(values) => Ok(values.clone()),
+            GraphqlVariableValue::Literal(_) => Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a scalar-list literal"),
+            )),
+        };
+    }
     let Value::List(items) = value else {
         return Err(unsupported(
             path,
@@ -1032,7 +1226,7 @@ fn compile_literal_list(
     items
         .iter()
         .enumerate()
-        .map(|(index, value)| compile_literal(value, format!("{path}[{index}]")))
+        .map(|(index, value)| compile_literal(value, format!("{path}[{index}]"), context))
         .collect()
 }
 
@@ -1040,8 +1234,25 @@ fn compile_non_negative_u64(
     value: &Value<'_, String>,
     path: impl Into<String>,
     name: &str,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<u64, CoreError> {
     let path = path.into();
+    if let Value::Variable(variable) = value {
+        let GraphqlVariableValue::Literal(Literal::Integer(value)) =
+            context.parameter_value(variable, path.clone())?
+        else {
+            return Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a non-negative integer"),
+            ));
+        };
+        return u64::try_from(*value).map_err(|error| {
+            unsupported(
+                path,
+                format!("GraphQL {name} must be a non-negative integer: {error}"),
+            )
+        });
+    }
     let Value::Int(number) = value else {
         return Err(unsupported(
             path,
@@ -1063,8 +1274,20 @@ fn compile_boolean(
     value: &Value<'_, String>,
     path: impl Into<String>,
     name: &str,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<bool, CoreError> {
     let path = path.into();
+    if let Value::Variable(variable) = value {
+        let GraphqlVariableValue::Literal(Literal::Boolean(value)) =
+            context.parameter_value(variable, path.clone())?
+        else {
+            return Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a boolean"),
+            ));
+        };
+        return Ok(*value);
+    }
     let Value::Boolean(value) = value else {
         return Err(unsupported(
             path,
@@ -1077,10 +1300,18 @@ fn compile_boolean(
 fn compile_name_value(
     value: &Value<'_, String>,
     path: impl Into<String>,
+    context: &GraphqlCompileContext<'_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     match value {
         Value::Enum(value) | Value::String(value) => Ok(value.clone()),
+        Value::Variable(variable) => match context.parameter_value(variable, path.clone())? {
+            GraphqlVariableValue::Literal(Literal::String(value)) => Ok(value.clone()),
+            GraphqlVariableValue::Literal(_) | GraphqlVariableValue::List(_) => Err(unsupported(
+                path,
+                format!("GraphQL variable '${variable}' must be a string or enum name"),
+            )),
+        },
         _ => Err(unsupported(
             path,
             "GraphQL value must be an enum or string name",
@@ -1201,6 +1432,180 @@ mod tests {
             plan.predicate,
             Some(PredicateExpression::And { .. })
         ));
+    }
+
+    #[test]
+    fn compiles_root_query_with_variables() {
+        let variables = BTreeMap::from([
+            (
+                "tier".to_string(),
+                GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+            ),
+            (
+                "minRisk".to_string(),
+                GraphqlVariableValue::Literal(Literal::Float(OrderedFloat(0.5))),
+            ),
+            (
+                "names".to_string(),
+                GraphqlVariableValue::List(vec![
+                    Literal::String("billing-api".to_string()),
+                    Literal::String("deployments".to_string()),
+                ]),
+            ),
+            (
+                "sortField".to_string(),
+                GraphqlVariableValue::Literal(Literal::String("name".to_string())),
+            ),
+            (
+                "sortDirection".to_string(),
+                GraphqlVariableValue::Literal(Literal::String("DESC".to_string())),
+            ),
+            (
+                "rowLimit".to_string(),
+                GraphqlVariableValue::Literal(Literal::Integer(10)),
+            ),
+            (
+                "dedupe".to_string(),
+                GraphqlVariableValue::Literal(Literal::Boolean(true)),
+            ),
+        ]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services(
+              $tier: String!
+              $minRisk: Float!
+              $names: [String!]
+              $sortField: ServiceOrderField!
+              $sortDirection: SortDirection!
+              $rowLimit: Int!
+              $dedupe: Boolean!
+            ) {
+              Service(
+                where: {
+                  tier: { eq: $tier }
+                  risk: { gte: $minRisk }
+                  name: { in: $names }
+                }
+                orderBy: [{ field: $sortField, direction: $sortDirection }]
+                limit: $rowLimit
+                distinct: $dedupe
+              ) {
+                name
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL variables should compile");
+
+        assert_eq!(plan.predicates.len(), 3);
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Descending,
+            }]
+        );
+        assert_eq!(plan.limit, Some(10));
+        assert!(plan.distinct);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && matches!(
+                    &predicate.rhs,
+                    PredicateRhs::List(values) if values.len() == 2
+                )
+        }));
+    }
+
+    #[test]
+    fn rejects_missing_graphql_variables() {
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($tier: String!) {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            ",
+            &BTreeMap::new(),
+        )
+        .expect_err("missing GraphQL variable should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable '$tier' was not provided"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_undeclared_graphql_variables() {
+        let variables = BTreeMap::from([(
+            "tier".to_string(),
+            GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("undeclared GraphQL variable should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable '$tier' is not declared"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_variable_list_in_scalar_position() {
+        let variables = BTreeMap::from([(
+            "tier".to_string(),
+            GraphqlVariableValue::List(vec![Literal::String("prod".to_string())]),
+        )]);
+        let error = compile_graphql_with_variables(
+            r"
+            query Services($tier: [String!]) {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("list variable in scalar position should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable '$tier' must be a scalar literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_variable_defaults() {
+        let error = compile_graphql_with_variables(
+            r#"
+            query Services($tier: String = "prod") {
+              Service(where: { tier: { eq: $tier } }) { name }
+            }
+            "#,
+            &BTreeMap::new(),
+        )
+        .expect_err("GraphQL variable defaults should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL variable default values are not supported yet"),
+            "{error}"
+        );
     }
 
     #[test]
