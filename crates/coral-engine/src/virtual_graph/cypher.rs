@@ -312,10 +312,7 @@ fn compile_regular_query(
 }
 
 fn projection_names(plan: &GraphPlan) -> Vec<String> {
-    plan.projections
-        .iter()
-        .map(Projection::output_name)
-        .collect()
+    plan.projection_output_names()
 }
 
 fn compile_single_part(

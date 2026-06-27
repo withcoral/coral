@@ -830,6 +830,17 @@ pub struct GraphPlan {
     pub limit: Option<u64>,
 }
 
+impl GraphPlan {
+    /// Returns the tabular output names rendered for this plan's projections.
+    #[must_use]
+    pub fn projection_output_names(&self) -> Vec<String> {
+        self.projections
+            .iter()
+            .map(Projection::output_name)
+            .collect()
+    }
+}
+
 /// Read-only virtual graph query shape consumed by SQL lowering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphQuery {

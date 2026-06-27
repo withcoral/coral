@@ -72,12 +72,18 @@ impl Declaration {
             return Err(CoreError::internal("graph union had no union branches"));
         }
 
+        let expected_names = union.first.projection_output_names();
         let mut diagnostics = Vec::new();
         let first = self.lower_graph_plan(&union.first)?;
         diagnostics.extend(first.diagnostics().iter().cloned());
         let mut sql = render_union_branch_sql(first.sql(), 0);
 
         for (index, branch) in union.branches.iter().enumerate() {
+            validate_union_branch_output_names(
+                &expected_names,
+                &branch.plan.projection_output_names(),
+                index,
+            )?;
             let translation = self.lower_graph_plan(&branch.plan)?;
             diagnostics.extend(translation.diagnostics().iter().cloned());
             write!(
@@ -1925,6 +1931,26 @@ fn render_union_branch_sql(sql: &str, index: usize) -> String {
         "SELECT * FROM ({sql}) AS {}",
         quote_ident(&format!("__coral_union_b{index}"))
     )
+}
+
+fn validate_union_branch_output_names(
+    expected: &[String],
+    actual: &[String],
+    branch_index: usize,
+) -> Result<(), CoreError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(Diagnostic::new(
+        "UNION_SCHEMA_MISMATCH",
+        format!("union.branches[{branch_index}].projections"),
+        format!(
+            "UNION branch projections must match the first branch; expected [{}], got [{}]",
+            expected.join(", "),
+            actual.join(", ")
+        ),
+    )
+    .into_core_error())
 }
 
 fn render_operator(operator: ComparisonOperator) -> &'static str {

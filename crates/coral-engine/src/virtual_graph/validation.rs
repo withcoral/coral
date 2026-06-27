@@ -103,12 +103,25 @@ impl Declaration {
         query: &GraphQuery,
         catalog: &CatalogInfo,
     ) -> Result<(), CoreError> {
+        self.validate_against_catalog(catalog)?;
         match query {
-            GraphQuery::Plan(plan) => self.validate_graph_plan_against_catalog(plan, catalog),
+            GraphQuery::Plan(plan) => GraphPlanValidator::new(self, plan, Some(catalog))
+                .validate()
+                .map(|_| ()),
             GraphQuery::Union(union) => {
-                self.validate_graph_plan_against_catalog(&union.first, catalog)?;
-                for branch in &union.branches {
-                    self.validate_graph_plan_against_catalog(&branch.plan, catalog)?;
+                if union.branches.is_empty() {
+                    return Err(CoreError::internal("graph union had no union branches"));
+                }
+
+                let expected_names = union.first.projection_output_names();
+                let mut merged_types = GraphPlanValidator::new(self, &union.first, Some(catalog))
+                    .validate_and_infer_projection_scalar_types()?;
+                for (index, branch) in union.branches.iter().enumerate() {
+                    let branch_names = branch.plan.projection_output_names();
+                    validate_union_projection_names(&expected_names, &branch_names, index)?;
+                    let branch_types = GraphPlanValidator::new(self, &branch.plan, Some(catalog))
+                        .validate_and_infer_projection_scalar_types()?;
+                    validate_union_projection_types(&mut merged_types, &branch_types, index)?;
                 }
                 Ok(())
             }
@@ -210,6 +223,21 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate(mut self) -> Result<ValidatedGraphPlan<'a>, CoreError> {
+        self.validate_plan()?;
+
+        Ok(ValidatedGraphPlan {
+            plan: self.plan,
+            bindings: self.bindings,
+            relationship_mappings: self.relationship_mappings,
+        })
+    }
+
+    fn validate_and_infer_projection_scalar_types(mut self) -> Result<Vec<ScalarType>, CoreError> {
+        self.validate_plan()?;
+        self.projection_scalar_types()
+    }
+
+    fn validate_plan(&mut self) -> Result<(), CoreError> {
         self.bind_nodes()?;
         self.bind_relationships()?;
         self.validate_optional_relationship_indices()?;
@@ -219,12 +247,7 @@ impl<'a> GraphPlanValidator<'a> {
         self.validate_optional_predicates()?;
         self.validate_distinct_ordering()?;
         self.validate_connectivity()?;
-
-        Ok(ValidatedGraphPlan {
-            plan: self.plan,
-            bindings: self.bindings,
-            relationship_mappings: self.relationship_mappings,
-        })
+        Ok(())
     }
 
     fn bind_nodes(&mut self) -> Result<(), CoreError> {
@@ -391,6 +414,69 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error());
         }
         Ok(())
+    }
+
+    fn projection_scalar_types(&self) -> Result<Vec<ScalarType>, CoreError> {
+        self.plan
+            .projections
+            .iter()
+            .enumerate()
+            .map(|(index, projection)| {
+                self.infer_projection_scalar_type(projection, format!("projections[{index}]"))
+            })
+            .collect()
+    }
+
+    fn infer_projection_scalar_type(
+        &self,
+        projection: &Projection,
+        path: impl Into<String>,
+    ) -> Result<ScalarType, CoreError> {
+        let path = path.into();
+        match projection {
+            Projection::Property { property, .. } => {
+                self.validate_property_ref(property, &path)?;
+                self.property_ref_scalar_type(property)
+            }
+            Projection::Key { variable, .. } => {
+                self.validate_key_projection(variable, &path)?;
+                self.key_scalar_type(variable)
+            }
+            Projection::ElementId { variable, .. } => {
+                self.validate_element_id_projection(variable, &path)?;
+                Ok(ScalarType::String)
+            }
+            Projection::NodeLabels {
+                variable, label, ..
+            } => {
+                self.validate_node_labels_projection(variable, label, &path)?;
+                Ok(ScalarType::Other)
+            }
+            Projection::PropertyKeys { variable, .. } => {
+                self.validate_property_keys_projection(variable, &path)?;
+                Ok(ScalarType::Other)
+            }
+            Projection::RelationshipType {
+                variable,
+                relationship_type,
+                ..
+            } => {
+                self.validate_relationship_type_projection(variable, relationship_type, &path)?;
+                Ok(ScalarType::String)
+            }
+            Projection::Literal { literal, .. } => Ok(literal_scalar_type(literal)),
+            Projection::LiteralList { literals, .. } => {
+                Self::validate_literal_list_projection(literals, &path)?;
+                Ok(ScalarType::Other)
+            }
+            Projection::Expression { expression, .. } => {
+                self.infer_scalar_expression_type(expression, &path)
+            }
+            Projection::CountAll { .. } => Ok(ScalarType::Integer),
+            Projection::Aggregate {
+                function, target, ..
+            } => self.infer_aggregate_projection_type(*function, target, &path),
+        }
     }
 
     fn validate_optional_relationship_indices(&self) -> Result<(), CoreError> {
@@ -2322,6 +2408,28 @@ impl<'a> GraphPlanValidator<'a> {
         .into_core_error())
     }
 
+    fn infer_aggregate_projection_type(
+        &self,
+        function: AggregateFunction,
+        target: &AggregateTarget,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        self.validate_aggregate_target(function, target, path)?;
+        match function {
+            AggregateFunction::Count => Ok(ScalarType::Integer),
+            AggregateFunction::Collect => Ok(ScalarType::Other),
+            AggregateFunction::Sum
+            | AggregateFunction::Avg
+            | AggregateFunction::Median
+            | AggregateFunction::StdDev
+            | AggregateFunction::StdDevP => Ok(ScalarType::Float),
+            AggregateFunction::Min | AggregateFunction::Max => match target {
+                AggregateTarget::Property(property) => self.property_ref_scalar_type(property),
+                AggregateTarget::VariableKey { .. } => Ok(ScalarType::Unknown),
+            },
+        }
+    }
+
     fn validate_node_labels_projection(
         &self,
         variable: &str,
@@ -3515,6 +3623,58 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
         return Err(
             Diagnostic::new("EMPTY_VARIABLE", path, "variable must not be empty").into_core_error(),
         );
+    }
+    Ok(())
+}
+
+fn validate_union_projection_names(
+    expected: &[String],
+    actual: &[String],
+    branch_index: usize,
+) -> Result<(), CoreError> {
+    if expected == actual {
+        return Ok(());
+    }
+
+    Err(Diagnostic::new(
+        "UNION_SCHEMA_MISMATCH",
+        format!("union.branches[{branch_index}].projections"),
+        format!(
+            "UNION branch projections must match the first branch; expected [{}], got [{}]",
+            expected.join(", "),
+            actual.join(", ")
+        ),
+    )
+    .into_core_error())
+}
+
+fn validate_union_projection_types(
+    merged_types: &mut [ScalarType],
+    branch_types: &[ScalarType],
+    branch_index: usize,
+) -> Result<(), CoreError> {
+    if merged_types.len() != branch_types.len() {
+        return Err(Diagnostic::new(
+            "UNION_SCHEMA_MISMATCH",
+            format!("union.branches[{branch_index}].projections"),
+            format!(
+                "UNION branch projection count must match the first branch; expected {}, got {}",
+                merged_types.len(),
+                branch_types.len()
+            ),
+        )
+        .into_core_error());
+    }
+
+    for (index, (merged_type, branch_type)) in
+        merged_types.iter_mut().zip(branch_types.iter()).enumerate()
+    {
+        *merged_type = GraphPlanValidator::merge_scalar_types(
+            *merged_type,
+            *branch_type,
+            format!("union.branches[{branch_index}].projections[{index}]"),
+            "UNION branch projection types",
+        )?;
     }
     Ok(())
 }

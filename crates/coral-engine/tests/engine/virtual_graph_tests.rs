@@ -178,6 +178,32 @@ async fn cypher_union_all_preserves_duplicate_rows() {
 }
 
 #[tokio::test]
+async fn cypher_union_rejects_catalog_typed_projection_mismatches_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS value \
+         UNION \
+         MATCH (service:Service) \
+         RETURN service.risk AS value",
+    )
+    .await
+    .expect_err("UNION projection type mismatch should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("UNION branch projection types"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_ignored_path_variables_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

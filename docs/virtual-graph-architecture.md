@@ -155,7 +155,8 @@ The supported foundation subset is intentionally narrow:
   graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets
   whose final `RETURN` can reorder or rename every projected alias;
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
-  with identical output names and column order;
+  with identical output names, column order, and catalog-compatible output
+  types;
 - non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
   carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.
