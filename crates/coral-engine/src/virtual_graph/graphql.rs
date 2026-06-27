@@ -365,6 +365,10 @@ fn push_where_input(
     writeln!(sdl, "  _xor: [{input_name}!]")
         .expect("writing GraphQL SDL to string should not fail");
     writeln!(sdl, "  _not: {input_name}").expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  AND: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  OR: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  XOR: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  NOT: {input_name}").expect("writing GraphQL SDL to string should not fail");
     sdl.push_str("}\n\n");
 }
 
@@ -5589,6 +5593,8 @@ mod tests {
         assert!(sdl.contains("  _elementId: CoralGraphElementIdFilter"));
         assert!(sdl.contains("  _and: [PersonWhere!]"));
         assert!(sdl.contains("  _not: PersonWhere"));
+        assert!(sdl.contains("  AND: [PersonWhere!]"));
+        assert!(sdl.contains("  NOT: PersonWhere"));
         assert!(sdl.contains("enum PersonOrderField {"));
         assert!(sdl.contains("  team"));
         assert!(sdl.contains(
