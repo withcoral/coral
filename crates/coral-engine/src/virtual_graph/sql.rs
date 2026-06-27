@@ -922,6 +922,19 @@ impl<'a> Lowerer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
+                ScalarPredicateRhs::Expression(expression),
+            ) => {
+                let rhs = self.render_scalar_expression(expression)?;
+                Ok(render_string_function_predicate(
+                    predicate.operator,
+                    &lhs,
+                    &rhs,
+                ))
+            }
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
                 _,
             ) => Err(CoreError::internal(
                 "validated scalar string predicate did not contain a string literal",
@@ -1684,6 +1697,16 @@ fn render_like_pattern(operator: ComparisonOperator, value: &str) -> String {
         _ => unreachable!("LIKE pattern requested for non-string predicate operator"),
     };
     quote_string_literal(&pattern)
+}
+
+fn render_string_function_predicate(operator: ComparisonOperator, lhs: &str, rhs: &str) -> String {
+    let function_name = match operator {
+        ComparisonOperator::StartsWith => "starts_with",
+        ComparisonOperator::EndsWith => "ends_with",
+        ComparisonOperator::Contains => "contains",
+        _ => unreachable!("string function requested for non-string predicate operator"),
+    };
+    format!("{function_name}({lhs}, {rhs})")
 }
 
 fn escape_like_literal(value: &str) -> String {
@@ -2819,6 +2842,33 @@ relationships: []
         assert!(
             translation.sql().contains(
                 "WHERE \"n1\".\"service_name\" LIKE 'bill\\_\\%%' ESCAPE '\\' AND \"n1\".\"service_name\" LIKE '%api%' ESCAPE '\\'"
+            ),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_dynamic_string_predicates_as_functions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: service_name_expression(),
+            operator: ComparisonOperator::StartsWith,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Left {
+                expression: Box::new(service_name_expression()),
+                count: Box::new(ScalarExpression::Literal(Literal::Integer(4))),
+            }),
+        }));
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("dynamic string predicate should lower");
+
+        assert!(
+            translation.sql().contains(
+                "WHERE starts_with(\"n1\".\"service_name\", left(\"n1\".\"service_name\", 4))"
             ),
             "{}",
             translation.sql()
@@ -3999,6 +4049,13 @@ relationships: []
         ScalarExpression::Property(PropertyRef {
             variable: "service".to_string(),
             property: "risk".to_string(),
+        })
+    }
+
+    fn service_name_expression() -> ScalarExpression {
+        ScalarExpression::Property(PropertyRef {
+            variable: "service".to_string(),
+            property: "name".to_string(),
         })
     }
 }

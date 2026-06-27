@@ -99,7 +99,8 @@ The supported foundation subset is intentionally narrow:
   label-expression conjunction, disjunction, and negation evaluated against
   mapped labels and relationship types;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
-  `LIKE`;
+  `LIKE` for literal and parameter RHS values, or DataFusion string functions
+  for scalar expression RHS values;
 - scalar string, numeric, and conversion expressions in projections,
   predicates, and ordering, including arithmetic `+`, `-`, `*`, `/`, `%`,
   and `^`, unary numeric negation, `coalesce`, scalar casts, string case

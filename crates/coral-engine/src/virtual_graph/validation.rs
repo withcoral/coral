@@ -1733,21 +1733,8 @@ impl<'a> GraphPlanValidator<'a> {
                     .into_core_error());
                 }
                 self.validate_scalar_expression(expression, format!("{path}.rhs"))?;
-                if matches!(
-                    predicate.operator,
-                    ComparisonOperator::StartsWith
-                        | ComparisonOperator::EndsWith
-                        | ComparisonOperator::Contains
-                ) && !matches!(expression, ScalarExpression::Literal(Literal::String(_)))
-                {
-                    return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
-                        path,
-                        "string predicates require a string literal right-hand side",
-                    )
-                    .into_core_error());
-                }
                 if let ScalarExpression::Literal(literal) = expression {
+                    Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                     Self::validate_literal_predicate(path, predicate.operator, literal)
                 } else {
                     Ok(())

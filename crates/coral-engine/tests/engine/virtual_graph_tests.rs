@@ -2184,6 +2184,52 @@ async fn cypher_string_predicates_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_dynamic_string_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name STARTS WITH left(service.name, 4) \
+            AND service.name ENDS WITH right(service.name, 3) \
+            AND service.name CONTAINS substring(service.name, 1, 3) \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher dynamic string predicate query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("starts_with(\"n0\".\"service_name\", left(\"n0\".\"service_name\", 4))"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ends_with(\"n0\".\"service_name\", right(\"n0\".\"service_name\", 3))"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_chained_comparisons_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

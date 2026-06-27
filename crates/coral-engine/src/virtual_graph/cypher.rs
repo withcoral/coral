@@ -3442,6 +3442,11 @@ fn compile_binary_comparison(
     let path = path.into();
     let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
     if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+        if let Some(predicate) =
+            compile_dynamic_string_property_predicate(&property, operator, rhs, &path, context)?
+        {
+            return Ok(predicate);
+        }
         return Ok(PredicateExpression::Comparison(PropertyPredicate {
             property,
             operator,
@@ -3534,6 +3539,32 @@ fn compile_binary_comparison(
     }
 
     Err(unsupported(path, mode.unsupported_comparison_message()))
+}
+
+fn compile_dynamic_string_property_predicate(
+    property: &PropertyRef,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if !is_string_comparison_operator(operator) || is_literal_expression(rhs) {
+        return Ok(None);
+    }
+
+    let Some(rhs) =
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), context)?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(PredicateExpression::ScalarComparison(
+        ScalarPredicate {
+            lhs: ScalarExpression::Property(property.clone()),
+            operator,
+            rhs: ScalarPredicateRhs::Expression(rhs),
+        },
+    )))
 }
 
 fn compile_in_predicate(
@@ -4572,6 +4603,15 @@ fn invert_comparison_operator(
             "this comparison operator requires a variable.property left-hand side",
         )),
     }
+}
+
+fn is_string_comparison_operator(operator: ComparisonOperator) -> bool {
+    matches!(
+        operator,
+        ComparisonOperator::StartsWith
+            | ComparisonOperator::EndsWith
+            | ComparisonOperator::Contains
+    )
 }
 
 fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
@@ -6978,6 +7018,50 @@ mod tests {
                 ComparisonOperator::Contains,
             ]
         );
+    }
+
+    #[test]
+    fn compiles_dynamic_string_predicate_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.name STARTS WITH left(service.name, 4) \
+                AND service.name ENDS WITH right(service.name, 3) \
+                AND service.name CONTAINS substring(service.name, 1, 3) \
+             RETURN service.name",
+        )
+        .expect("dynamic string predicates should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::And { left, right })
+                if matches!(
+                    left.as_ref(),
+                    PredicateExpression::And { left, right }
+                        if matches!(
+                            left.as_ref(),
+                            PredicateExpression::ScalarComparison(ScalarPredicate {
+                                lhs: ScalarExpression::Property(PropertyRef { property, .. }),
+                                operator: ComparisonOperator::StartsWith,
+                                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Left { .. }),
+                            }) if property == "name"
+                        ) && matches!(
+                            right.as_ref(),
+                            PredicateExpression::ScalarComparison(ScalarPredicate {
+                                operator: ComparisonOperator::EndsWith,
+                                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Right { .. }),
+                                ..
+                            })
+                        )
+                ) && matches!(
+                    right.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        operator: ComparisonOperator::Contains,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Substring { .. }),
+                        ..
+                    })
+                )
+        ));
     }
 
     #[test]
