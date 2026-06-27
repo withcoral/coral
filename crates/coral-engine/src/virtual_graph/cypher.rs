@@ -3817,8 +3817,8 @@ fn compile_pattern_part_into(
             mark_graph_variable_in_scope(state, &pattern.variable);
             plan.nodes.push(pattern);
         }
-        plan.predicates.extend(relationship.predicates);
         if relationship.length == 1 {
+            plan.predicates.extend(relationship.predicates);
             if let Some(variable) = relationship.pattern.variable.as_deref() {
                 mark_graph_variable_in_scope(state, variable);
             }
@@ -3837,6 +3837,7 @@ fn compile_pattern_part_into(
                 plan,
                 state,
                 &relationship.pattern,
+                &relationship.predicates,
                 relationship.length,
                 &FixedLengthExpansion {
                     part_index,
@@ -3868,6 +3869,7 @@ fn append_fixed_length_relationship(
     plan: &mut GraphPlan,
     state: &mut CypherCompileState,
     template: &RelationshipPattern,
+    predicates: &[PropertyPredicate],
     length: usize,
     expansion: &FixedLengthExpansion<'_>,
 ) {
@@ -3893,13 +3895,36 @@ fn append_fixed_length_relationship(
         let mut pattern = template.clone();
         pattern.left = left;
         pattern.right.clone_from(&right);
-        pattern.variable = None;
+        pattern.variable = template
+            .variable
+            .as_ref()
+            .map(|_| fresh_internal_relationship_variable(plan, &right, relationship_index));
+        if let (Some(template_variable), Some(hop_variable)) =
+            (template.variable.as_deref(), pattern.variable.as_deref())
+        {
+            plan.predicates.extend(predicates.iter().map(|predicate| {
+                rebind_property_predicate_variable(predicate, template_variable, hop_variable)
+            }));
+            mark_graph_variable_in_scope(state, hop_variable);
+        }
         if expansion.optional {
             plan.optional_relationships.push(relationship_index);
         }
         plan.relationships.push(pattern);
         left = right;
     }
+}
+
+fn rebind_property_predicate_variable(
+    predicate: &PropertyPredicate,
+    from: &str,
+    to: &str,
+) -> PropertyPredicate {
+    let mut predicate = predicate.clone();
+    if predicate.property.variable == from {
+        predicate.property.variable = to.to_string();
+    }
+    predicate
 }
 
 fn validate_ignored_path_variable(
@@ -4103,12 +4128,6 @@ fn compile_relationship(
         return Err(unsupported(
             format!("{path}.variable"),
             "fixed-length relationship ranges greater than 1 cannot bind a relationship variable because Coral does not materialize relationship lists yet",
-        ));
-    }
-    if length > 1 && detail.properties.is_some() {
-        return Err(unsupported(
-            format!("{path}.properties"),
-            "fixed-length relationship ranges greater than 1 do not support inline relationship property maps yet",
         ));
     }
     let relationship_type = detail.types.as_ref().ok_or_else(|| {
@@ -14310,7 +14329,6 @@ mod tests {
             "MATCH (a:Service)-[:DEPENDS_ON*9..9]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Person) RETURN a.name",
             "MATCH (a:Service)-[r:DEPENDS_ON*2]->(b:Service) RETURN a.name",
-            "MATCH (a:Service)-[:DEPENDS_ON*2 {active: true}]->(b:Service) RETURN a.name",
         ] {
             assert_unsupported(cypher);
         }
@@ -14386,6 +14404,55 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn compiles_exact_fixed_relationship_range_property_maps_per_hop() {
+        let plan = compile_cypher(
+            "MATCH (a:Service)-[:DEPENDS_ON*2 {source: 'catalog'}]->(b:Service) RETURN a.name",
+        )
+        .expect("exact fixed relationship property map should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![
+                RelationshipPattern {
+                    variable: Some("__coral_rel_0".to_string()),
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "a".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "__coral_node_0_1".to_string(),
+                },
+                RelationshipPattern {
+                    variable: Some("__coral_rel_1".to_string()),
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "__coral_node_0_1".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "b".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "__coral_rel_0".to_string(),
+                        property: "source".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "__coral_rel_1".to_string(),
+                        property: "source".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
+                },
+            ]
+        );
     }
 
     #[test]
