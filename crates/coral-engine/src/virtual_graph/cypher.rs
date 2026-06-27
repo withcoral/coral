@@ -325,12 +325,18 @@ fn compile_single_query_as_graph_query(
 
     validate_static_label_type_alternative_expansion_supported(single_query, &path)?;
     let outer_projection_plan = analyze_static_alternative_outer_projection(single_query, &path)?;
+    let hidden_order_plan = analyze_static_alternative_hidden_order(
+        single_query,
+        outer_projection_plan.as_ref(),
+        &path,
+    )?;
     for variant in &mut variants {
         apply_static_alternative_outer_projection_rewrite(
             variant,
             outer_projection_plan.as_ref(),
             &path,
         )?;
+        apply_static_alternative_hidden_order_rewrite(variant, hidden_order_plan.as_ref(), &path)?;
         clear_final_return_outer_modifiers(variant, &path)?;
     }
     let plans = variants
@@ -345,12 +351,22 @@ fn compile_single_query_as_graph_query(
         outer_projection_plan.as_ref(),
         &projection_names,
     )?;
+    let outer_projection = compile_static_alternative_hidden_order_outer_projection(
+        outer_projection,
+        hidden_order_plan.as_ref(),
+        &projection_names,
+        final_return_clause(single_query, &path)?.items.len(),
+    )?;
     let projection_names = outer_projection.as_ref().map_or_else(
         || projection_names.clone(),
         GraphUnionOuterProjection::output_names,
     );
-    let order_by =
-        compile_static_alternative_outer_order_by(single_query, &projection_names, &path)?;
+    let order_by = compile_static_alternative_outer_order_by(
+        single_query,
+        &projection_names,
+        hidden_order_plan.as_ref(),
+        &path,
+    )?;
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
@@ -660,9 +676,163 @@ fn count_star_item_alias(item: &ProjectionItem) -> Option<String> {
     )
 }
 
+#[derive(Debug, Clone)]
+struct StaticAlternativeHiddenOrderPlan {
+    items: Vec<StaticAlternativeHiddenOrderItem>,
+}
+
+#[derive(Debug, Clone)]
+struct StaticAlternativeHiddenOrderItem {
+    order_index: usize,
+    expression: Expression,
+    alias: String,
+}
+
+impl StaticAlternativeHiddenOrderPlan {
+    fn alias_for_order_index(&self, order_index: usize) -> Option<&str> {
+        self.items
+            .iter()
+            .find(|item| item.order_index == order_index)
+            .map(|item| item.alias.as_str())
+    }
+}
+
+fn analyze_static_alternative_hidden_order(
+    single_query: &SingleQuery,
+    outer_projection: Option<&StaticAlternativeOuterProjectionPlan>,
+    path: &str,
+) -> Result<Option<StaticAlternativeHiddenOrderPlan>, CoreError> {
+    let return_clause = final_return_clause(single_query, path)?;
+    let Some(order) = &return_clause.order else {
+        return Ok(None);
+    };
+    let mut hidden_items = Vec::new();
+    let projection_names = return_clause
+        .items
+        .iter()
+        .map(return_item_projection_name)
+        .collect::<Vec<_>>();
+    for (index, item) in order.items.iter().enumerate() {
+        if resolve_projected_static_alternative_outer_order_alias(
+            &item.expression,
+            return_clause,
+            &projection_names,
+            format!("{path}.return.order.items[{index}].expression"),
+        )?
+        .is_some()
+        {
+            continue;
+        }
+        if outer_projection.is_some() {
+            return Err(unsupported(
+                format!("{path}.return.order.items[{index}].expression"),
+                "static label/type alternatives with aggregate RETURN projections cannot ORDER BY unprojected expressions yet",
+            ));
+        }
+        if return_clause.distinct {
+            return Err(unsupported(
+                format!("{path}.return.order.items[{index}].expression"),
+                "static label/type alternatives with RETURN DISTINCT cannot ORDER BY unprojected expressions yet",
+            ));
+        }
+        hidden_items.push(StaticAlternativeHiddenOrderItem {
+            order_index: index,
+            expression: item.expression.clone(),
+            alias: format!("__coral_order_{index}"),
+        });
+    }
+    if hidden_items.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(StaticAlternativeHiddenOrderPlan {
+            items: hidden_items,
+        }))
+    }
+}
+
+fn return_item_projection_name(item: &ProjectionItem) -> String {
+    item.alias.as_ref().map_or_else(
+        || match &item.expression {
+            Expression::PropertyLookup { base, property, .. } => match base.as_ref() {
+                Expression::Variable(variable) => {
+                    format!("{}_{}", variable_name(variable), property.name.name)
+                }
+                _ => "expression".to_string(),
+            },
+            Expression::CountStar { .. } => "count".to_string(),
+            Expression::FunctionCall(function) => {
+                if let Some(function_kind) = compile_aggregate_function(function) {
+                    aggregate_function_name(function_kind).to_string()
+                } else {
+                    default_scalar_function_alias(function)
+                }
+            }
+            Expression::Case(_) => "case".to_string(),
+            _ => "expression".to_string(),
+        },
+        variable_name,
+    )
+}
+
+fn apply_static_alternative_hidden_order_rewrite(
+    single_query: &mut SingleQuery,
+    hidden_order: Option<&StaticAlternativeHiddenOrderPlan>,
+    path: &str,
+) -> Result<(), CoreError> {
+    let Some(hidden_order) = hidden_order else {
+        return Ok(());
+    };
+    let return_clause = final_return_clause_mut(single_query, path)?;
+    let span = return_clause.span;
+    return_clause
+        .items
+        .extend(hidden_order.items.iter().map(|item| ProjectionItem {
+            expression: item.expression.clone(),
+            alias: Some(Variable {
+                name: SymbolicName {
+                    name: item.alias.clone(),
+                    span,
+                },
+            }),
+        }));
+    Ok(())
+}
+
+fn compile_static_alternative_hidden_order_outer_projection(
+    outer_projection: Option<GraphUnionOuterProjection>,
+    hidden_order: Option<&StaticAlternativeHiddenOrderPlan>,
+    branch_projection_names: &[String],
+    return_item_count: usize,
+) -> Result<Option<GraphUnionOuterProjection>, CoreError> {
+    if hidden_order.is_none() {
+        return Ok(outer_projection);
+    }
+    if outer_projection.is_some() {
+        return Err(CoreError::internal(
+            "hidden static alternative ORDER BY should have been rejected for aggregate outer projections",
+        ));
+    }
+    let items = branch_projection_names
+        .get(..return_item_count)
+        .ok_or_else(|| {
+            CoreError::internal(
+                "static alternative hidden ORDER BY projection names were not aligned",
+            )
+        })?
+        .iter()
+        .cloned()
+        .map(|name| GraphUnionOuterProjectionItem::Column { name })
+        .collect();
+    Ok(Some(GraphUnionOuterProjection {
+        items,
+        group_by: Vec::new(),
+    }))
+}
+
 fn compile_static_alternative_outer_order_by(
     single_query: &SingleQuery,
     projection_names: &[String],
+    hidden_order: Option<&StaticAlternativeHiddenOrderPlan>,
     path: &str,
 ) -> Result<Vec<OrderKey>, CoreError> {
     let return_clause = final_return_clause(single_query, path)?;
@@ -672,12 +842,25 @@ fn compile_static_alternative_outer_order_by(
 
     let mut order_by = Vec::with_capacity(order.items.len());
     for (index, item) in order.items.iter().enumerate() {
-        let alias = resolve_static_alternative_outer_order_alias(
+        let alias = resolve_projected_static_alternative_outer_order_alias(
             &item.expression,
             return_clause,
             projection_names,
             format!("{path}.return.order.items[{index}].expression"),
-        )?;
+        )?
+        .or_else(|| {
+            hidden_order.and_then(|hidden_order| {
+                hidden_order
+                    .alias_for_order_index(index)
+                    .map(ToString::to_string)
+            })
+        })
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.return.order.items[{index}].expression"),
+                "static label/type alternatives with global ORDER BY currently require projected aliases, projected expressions, or row-preserving hidden sort expressions",
+            )
+        })?;
         order_by.push(OrderKey {
             expression: OrderExpression::ProjectionAlias(alias),
             direction: match item.direction {
@@ -689,17 +872,17 @@ fn compile_static_alternative_outer_order_by(
     Ok(order_by)
 }
 
-fn resolve_static_alternative_outer_order_alias(
+fn resolve_projected_static_alternative_outer_order_alias(
     expression: &Expression,
     return_clause: &Return,
     projection_names: &[String],
     path: impl Into<String>,
-) -> Result<String, CoreError> {
+) -> Result<Option<String>, CoreError> {
     let path = path.into();
     if let Expression::Variable(variable) = expression {
         let alias = variable_name(variable);
         if projection_names.iter().any(|name| name == &alias) {
-            return Ok(alias);
+            return Ok(Some(alias));
         }
         return Err(unsupported(
             path,
@@ -709,16 +892,19 @@ fn resolve_static_alternative_outer_order_alias(
 
     for (index, item) in return_clause.items.iter().enumerate() {
         if expressions_equivalent_ignoring_span(&item.expression, expression) {
-            return projection_names.get(index).cloned().ok_or_else(|| {
-                CoreError::internal("RETURN projection names were not aligned with RETURN items")
-            });
+            return projection_names
+                .get(index)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| {
+                    CoreError::internal(
+                        "RETURN projection names were not aligned with RETURN items",
+                    )
+                });
         }
     }
 
-    Err(unsupported(
-        path,
-        "static label/type alternatives with global ORDER BY currently require projected aliases or projected expressions",
-    ))
+    Ok(None)
 }
 
 fn expressions_equivalent_ignoring_span(left: &Expression, right: &Expression) -> bool {
@@ -8969,15 +9155,49 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_unprojected_global_ordering() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_with_hidden_global_ordering() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team) \
              RETURN entity.name AS name \
              ORDER BY entity.team",
         )
-        .expect_err("unprojected global ordering should require staged planning");
+        .expect("row-preserving hidden global ordering should compile");
 
-        assert!(error.to_string().contains("projected expressions"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec!["name".to_string(), "__coral_order_0".to_string()]
+        );
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![GraphUnionOuterProjectionItem::Column {
+                    name: "name".to_string(),
+                }],
+                group_by: Vec::new(),
+            })
+        );
+        assert_eq!(
+            union.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("__coral_order_0".to_string()),
+                direction: OrderDirection::Ascending,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_aggregate_hidden_global_ordering() {
+        let error = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, count(*) AS services \
+             ORDER BY service.name",
+        )
+        .expect_err("aggregate hidden global ordering should require staged planning");
+
+        assert!(error.to_string().contains("aggregate RETURN"));
     }
 
     #[test]

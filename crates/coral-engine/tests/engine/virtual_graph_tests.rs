@@ -179,6 +179,41 @@ async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_apply_hidden_global_ordering_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner \
+         ORDER BY service.risk, lower(owner.name) \
+         LIMIT 4",
+    )
+    .await
+    .expect("static label alternatives with hidden global ordering should execute");
+
+    assert!(
+        execution.translated_sql().contains("__coral_order_0"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "analytics"}),
+            json!({"owner": "Katherine Johnson"}),
+            json!({"owner": "Grace Hopper"}),
+            json!({"owner": "infra"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_distinct_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
