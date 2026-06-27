@@ -198,3 +198,28 @@ Fragment definition directives, operation directives, unknown directives,
 mutations, subscriptions, nested row modifiers, and optional GraphQL traversals
 are rejected with GraphQL-specific diagnostics until their IR contracts are
 defined.
+
+`graphql_schema_sdl_for_graph` generates a GraphQL execution schema from the
+same declaration model. It is intentionally a schema view over the supported
+compiler contract, not a separate runtime: query execution still compiles the
+submitted GraphQL document into the shared graph IR before validation and SQL
+lowering. Because v1 graph declarations do not include source column type
+metadata, mapped graph properties use a custom `CoralGraphValue` scalar while
+reserved identity fields use `_id: CoralGraphValue` and `_elementId: String`.
+The schema includes root node fields, node `where` and `orderBy` inputs,
+relationship traversal fields, relationship `relationshipWhere` inputs, and
+relationship object types for the properties and identity fields available
+through `_edge` selections. Standard GraphQL SDL cannot express Coral's
+context-specific `_edge` field without changing the query contract to wrapper
+objects, so SDL generation exposes the relationship object shapes while the
+compiler remains the authority for validating `_edge` placement inside traversal
+selections.
+
+SDL generation is stricter than declaration parsing: names must be legal
+GraphQL names, graph properties cannot collide with reserved virtual fields
+such as `_id`, `_elementId`, or `__typename`, generated type names must be
+unique, and relationship overloads must produce unambiguous `out_TYPE`,
+`in_TYPE`, and `any_TYPE` fields. Ambiguous overloads remain queryable through
+the compiler when an endpoint argument disambiguates them, but they cannot be
+losslessly represented by one standard GraphQL field signature without a
+broader schema design.

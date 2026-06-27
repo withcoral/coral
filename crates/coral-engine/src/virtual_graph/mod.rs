@@ -20,6 +20,7 @@ pub use execution::{GraphExecution, GraphQueryPlan};
 pub use graphql::{
     GraphqlVariableValue, compile_graphql, compile_graphql_for_graph,
     compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
+    graphql_schema_sdl_for_graph,
 };
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,

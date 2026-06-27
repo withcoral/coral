@@ -92,6 +92,7 @@ pub use virtual_graph::{
     RelationshipPattern, SqlTranslation as GraphSqlTranslation, compile_cypher,
     compile_cypher_with_parameters, compile_graphql, compile_graphql_for_graph,
     compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
+    graphql_schema_sdl_for_graph,
 };
 
 /// High-level query operations for the local query engine.
