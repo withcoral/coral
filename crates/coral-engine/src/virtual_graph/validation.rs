@@ -971,6 +971,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
+            | ScalarExpression::GraphIdentity { variable }
             | ScalarExpression::RelationshipType { variable, .. } => {
                 variables.insert(variable.as_str());
             }
@@ -1301,6 +1302,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::Key { variable }
             | ScalarExpression::ElementId { variable }
+            | ScalarExpression::GraphIdentity { variable }
             | ScalarExpression::RelationshipType { variable, .. } => {
                 Self::validate_variable_not_optional(variable, optional_variables, path)
             }
@@ -2547,6 +2549,40 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn validate_graph_identity_projection(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        match binding.kind() {
+            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Relationship(relationship) => {
+                if relationship.key.is_some() {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::new(
+                        "INVALID_GRAPH_IDENTITY_PROJECTION",
+                        path,
+                        format!(
+                            "graph identity for relationship variable '{variable}' requires relationship type '{}' to declare a key column",
+                            relationship.relationship_type
+                        ),
+                    )
+                    .into_core_error())
+                }
+            }
+        }
+    }
+
     fn validate_relationship_type_projection(
         &self,
         variable: &str,
@@ -2719,6 +2755,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Predicate(_)
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
+            | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::RelationshipType { .. } => {
                 self.infer_atomic_scalar_type(expression, &path)
             }
@@ -2757,6 +2794,10 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::ElementId { variable } => {
                 self.validate_element_id_projection(variable, path)?;
+                Ok(ScalarType::String)
+            }
+            ScalarExpression::GraphIdentity { variable } => {
+                self.validate_graph_identity_projection(variable, path)?;
                 Ok(ScalarType::String)
             }
             ScalarExpression::RelationshipType {

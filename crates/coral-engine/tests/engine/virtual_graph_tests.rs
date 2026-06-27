@@ -394,6 +394,46 @@ async fn cypher_static_node_label_alternatives_count_node_after_union() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_count_distinct_node_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN count(DISTINCT owner) AS owners",
+    )
+    .await
+    .expect("static label alternatives with outer count(DISTINCT node) should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(DISTINCT \"__coral_agg_0\") AS \"owners\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("'node:Person:'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("'node:Team:'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owners": 6})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_collect_property_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

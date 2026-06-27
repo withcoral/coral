@@ -155,6 +155,12 @@ pub enum ScalarExpression {
         /// Graph variable.
         variable: String,
     },
+    /// Internal label/type-qualified graph identity for cross-label distinct
+    /// aggregation.
+    GraphIdentity {
+        /// Graph variable.
+        variable: String,
+    },
     /// Static type of a relationship variable, preserving null for unmatched
     /// optional relationships.
     RelationshipType {

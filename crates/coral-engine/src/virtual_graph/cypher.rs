@@ -50,6 +50,7 @@ struct CompiledRelationship {
 }
 
 const MAX_STATIC_LABEL_TYPE_ALTERNATIVE_BRANCHES: usize = 64;
+const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 
 #[derive(Debug, Clone)]
 enum StaticLabelTypeAlternativeSite {
@@ -654,12 +655,10 @@ fn compile_static_alternative_outer_aggregate_item(
                 ));
             }
             if function.distinct {
-                return Err(unsupported(
-                    format!("{path}.return.items[{index}].expression.distinct"),
-                    "static label/type alternatives with count(DISTINCT variable) require label-aware graph identity projection and are not supported yet",
-                ));
+                graph_identity_function_expression_for_variable(&variable, function)
+            } else {
+                id_function_expression_for_variable(&variable, function)
             }
-            id_function_expression_for_variable(&variable, function)
         }
     };
     Ok(Some(StaticAlternativeOuterProjectionItem::Aggregate {
@@ -674,14 +673,29 @@ fn compile_static_alternative_outer_aggregate_item(
     }))
 }
 
+fn graph_identity_function_expression_for_variable(
+    variable: &str,
+    source_function: &FunctionInvocation,
+) -> Expression {
+    function_expression_for_variable(INTERNAL_GRAPH_IDENTITY_FUNCTION, variable, source_function)
+}
+
 fn id_function_expression_for_variable(
+    variable: &str,
+    source_function: &FunctionInvocation,
+) -> Expression {
+    function_expression_for_variable("id", variable, source_function)
+}
+
+fn function_expression_for_variable(
+    function_name: &str,
     variable: &str,
     source_function: &FunctionInvocation,
 ) -> Expression {
     let span = source_function.span;
     Expression::FunctionCall(FunctionInvocation {
         name: vec![SymbolicName {
-            name: "id".to_string(),
+            name: function_name.to_string(),
             span,
         }],
         distinct: false,
@@ -2677,6 +2691,7 @@ fn rename_non_unary_scalar_expression_variables(
         }
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
+        | ScalarExpression::GraphIdentity { variable }
         | ScalarExpression::RelationshipType { variable, .. } => {
             rename_string(variable, renames);
         }
@@ -3102,6 +3117,7 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         }
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
+        | ScalarExpression::GraphIdentity { variable }
         | ScalarExpression::RelationshipType { variable, .. } => {
             reject_ignored_path_variable(variable, state, path)
         }
@@ -3204,6 +3220,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Predicate(_)
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
         }
@@ -4425,6 +4442,9 @@ fn compile_projection(
         }
         Expression::FunctionCall(function) if is_element_id_function(function) => {
             compile_element_id_projection(function, item, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_internal_graph_identity_function(function) => {
+            compile_internal_graph_identity_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_type_function(function) => {
             compile_type_projection(function, item, path, plan, context)
@@ -5686,6 +5706,35 @@ fn compile_element_id_projection(
     })
 }
 
+fn compile_internal_graph_identity_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "internal graph identity requires exactly one graph variable argument",
+        context,
+    )?;
+    if !plan_uses_variable(plan, &variable) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            format!("internal graph identity argument '{variable}' is not a bound graph variable"),
+        ));
+    }
+    Ok(Projection::Expression {
+        expression: ScalarExpression::GraphIdentity { variable },
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "graphIdentity".to_string(), variable_name),
+    })
+}
+
 fn compile_type_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
@@ -6303,6 +6352,13 @@ fn is_element_id_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("elementId")
+    )
+}
+
+fn is_internal_graph_identity_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name == INTERNAL_GRAPH_IDENTITY_FUNCTION
     )
 }
 
@@ -9096,14 +9152,37 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_label_alternatives_with_distinct_count_node_projection() {
-        let error = compile_cypher_query(
+    fn compiles_static_label_alternatives_with_distinct_count_node_projection() {
+        let query = compile_cypher_query(
             "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
              RETURN count(DISTINCT entity) AS owners",
         )
-        .expect_err("distinct graph variable counts need label-aware graph identities");
+        .expect("distinct graph variable counts should compile through graph identity");
 
-        assert!(error.to_string().contains("label-aware graph identity"));
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::GraphIdentity {
+                    variable: "entity".to_string(),
+                },
+                alias: "__coral_agg_0".to_string(),
+            }]
+        );
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![GraphUnionOuterProjectionItem::Aggregate {
+                    function: AggregateFunction::Count,
+                    source: "__coral_agg_0".to_string(),
+                    distinct: true,
+                    alias: "owners".to_string(),
+                }],
+                group_by: Vec::new(),
+            })
+        );
     }
 
     #[test]

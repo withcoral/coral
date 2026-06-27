@@ -1537,6 +1537,21 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_binding_graph_identity_ref(&self, variable: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let prefix = match binding.kind() {
+            ValidatedBindingKind::Node(node) => format!("node:{}:", node.label),
+            ValidatedBindingKind::Relationship(relationship) => {
+                format!("relationship:{}:", relationship.relationship_type)
+            }
+        };
+        let key = self.render_binding_key_ref(variable)?;
+        Ok(format!(
+            "CASE WHEN {key} IS NULL THEN NULL ELSE concat({}, CAST({key} AS VARCHAR)) END",
+            render_literal(&Literal::String(prefix))
+        ))
+    }
+
     fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
         let binding = self.validated.binding(&property.variable)?;
         let column = match binding.kind() {
@@ -1568,6 +1583,9 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Key { variable } => self.render_binding_key_ref(variable),
             ScalarExpression::ElementId { variable } => {
                 self.render_binding_element_id_ref(variable)
+            }
+            ScalarExpression::GraphIdentity { variable } => {
+                self.render_binding_graph_identity_ref(variable)
             }
             ScalarExpression::RelationshipType {
                 variable,
