@@ -6618,19 +6618,104 @@ fn single_static_label(
     path: impl Into<String>,
 ) -> Result<String, CoreError> {
     let path = path.into();
-    let [label] = labels else {
+    if labels.is_empty() {
         return Err(unsupported(
             path,
-            "exactly one static label or relationship type is required",
+            "exactly one positive static label or relationship type is required",
         ));
-    };
-    let LabelExpression::Static(name) = label else {
+    }
+
+    let mut required = BTreeSet::new();
+    let mut forbidden = BTreeSet::new();
+    for (index, label) in labels.iter().enumerate() {
+        collect_static_label_requirements(
+            label,
+            &mut required,
+            &mut forbidden,
+            format!("{path}[{index}]"),
+        )?;
+    }
+
+    let mut required_labels = required.iter();
+    let Some(label) = required_labels.next() else {
         return Err(unsupported(
             path,
-            "dynamic and compound label expressions are not supported yet",
+            "node and relationship patterns require exactly one positive static label or relationship type",
         ));
     };
-    Ok(name.name.clone())
+    if required_labels.next().is_some() {
+        return Err(unsupported(
+            path,
+            "node and relationship patterns require exactly one positive static label or relationship type",
+        ));
+    }
+    if forbidden.contains(label) {
+        return Err(unsupported(
+            path,
+            "contradictory label expressions cannot be represented by one Coral mapping",
+        ));
+    }
+    Ok((*label).clone())
+}
+
+fn collect_static_label_requirements(
+    expression: &LabelExpression,
+    required: &mut BTreeSet<String>,
+    forbidden: &mut BTreeSet<String>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match expression {
+        LabelExpression::Static(name) => {
+            required.insert(name.name.clone());
+            Ok(())
+        }
+        LabelExpression::Dynamic { .. } => Err(unsupported(
+            path,
+            "dynamic label expressions are not supported yet",
+        )),
+        LabelExpression::Or { .. } => Err(unsupported(
+            path,
+            "label/type alternatives require union planning and are not supported yet",
+        )),
+        LabelExpression::And { lhs, rhs, .. } => {
+            collect_static_label_requirements(lhs, required, forbidden, format!("{path}.lhs"))?;
+            collect_static_label_requirements(rhs, required, forbidden, format!("{path}.rhs"))
+        }
+        LabelExpression::Not { inner, .. } => {
+            collect_static_label_exclusion(inner, forbidden, format!("{path}.inner"))
+        }
+        LabelExpression::Group { inner, .. } => {
+            collect_static_label_requirements(inner, required, forbidden, path)
+        }
+    }
+}
+
+fn collect_static_label_exclusion(
+    expression: &LabelExpression,
+    forbidden: &mut BTreeSet<String>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match expression {
+        LabelExpression::Static(name) => {
+            forbidden.insert(name.name.clone());
+            Ok(())
+        }
+        LabelExpression::Group { inner, .. } => {
+            collect_static_label_exclusion(inner, forbidden, path)
+        }
+        LabelExpression::Dynamic { .. } => Err(unsupported(
+            path,
+            "dynamic label expressions are not supported yet",
+        )),
+        LabelExpression::And { .. } | LabelExpression::Or { .. } | LabelExpression::Not { .. } => {
+            Err(unsupported(
+                path,
+                "negated compound label expressions are not supported yet",
+            ))
+        }
+    }
 }
 
 fn optional_single_static_label(
@@ -11131,6 +11216,39 @@ mod tests {
     }
 
     #[test]
+    fn compiles_static_label_expression_patterns() {
+        let plan = compile_cypher(
+            "MATCH (person:Person&!Team)-[owns:OWNS&!DEPENDS_ON]->(service:Service&!Team) \
+             RETURN person.name AS owner, service.name AS service",
+        )
+        .expect("static label expression patterns should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn rejects_unlabeled_anonymous_node_patterns() {
         assert_unsupported("MATCH ()-[:DEPENDS_ON]->(target:Service) RETURN target.name");
     }
@@ -11141,6 +11259,17 @@ mod tests {
             "MATCH (source:Service)-[:DEPENDS_ON]->(target:Service), \
                    (source:Person)-[:OWNS]->(target) \
              RETURN target.name",
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_label_expression_patterns() {
+        assert_unsupported("MATCH (service:Service|Team) RETURN service.name");
+        assert_unsupported("MATCH (service:Service&Team) RETURN service.name");
+        assert_unsupported("MATCH (service:Service&!Service) RETURN service.name");
+        assert_unsupported("MATCH (service:!Team) RETURN service.name");
+        assert_unsupported(
+            "MATCH (person:Person)-[:OWNS|DEPENDS_ON]->(service:Service) RETURN service.name",
         );
     }
 
