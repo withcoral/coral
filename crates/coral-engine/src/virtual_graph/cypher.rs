@@ -1161,56 +1161,23 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_labels_function(function) => {
             compile_labels_order_expression(function, path, plan, context)
         }
-        Expression::FunctionCall(function) if is_coalesce_function(function) => {
-            compile_coalesce_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_string_function(function) => {
-            compile_to_string_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_integer_function(function) => {
-            compile_to_integer_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_float_function(function) => {
-            compile_to_float_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
-            compile_to_boolean_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_lower_function(function) => {
-            compile_to_lower_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_upper_function(function) => {
-            compile_to_upper_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_trim_function(function) => {
-            compile_trim_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_ltrim_function(function) => {
-            compile_ltrim_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_rtrim_function(function) => {
-            compile_rtrim_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_replace_function(function) => {
-            compile_replace_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_character_length_function(function) => {
-            compile_character_length_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_substring_function(function) => {
-            compile_substring_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_left_function(function) => {
-            compile_left_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_right_function(function) => {
-            compile_right_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_reverse_function(function) => {
-            compile_reverse_order_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
-            aggregate_order_expression_for_projection(function, projections, path, context)
+        Expression::FunctionCall(function) => {
+            if let Some(expression) =
+                compile_scalar_function_expression(function, path.clone(), context)?
+            {
+                return Ok(OrderExpression::Scalar(expression));
+            }
+            if compile_aggregate_function(function).is_some() {
+                return aggregate_order_expression_for_projection(
+                    function,
+                    projections,
+                    path,
+                    context,
+                );
+            }
+            Ok(OrderExpression::Property(compile_property_ref(
+                expression, path,
+            )?))
         }
         _ => Ok(OrderExpression::Property(compile_property_ref(
             expression, path,
@@ -1481,64 +1448,23 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_keys_function(function) => {
             compile_keys_projection(function, item, path, context)
         }
-        Expression::FunctionCall(function) if is_coalesce_function(function) => {
-            compile_coalesce_projection(function, item, path, context)
+        Expression::FunctionCall(function) => {
+            if let Some(projection) =
+                compile_scalar_function_projection(function, item, path.clone(), context)?
+            {
+                return Ok(projection);
+            }
+            if compile_aggregate_function(function).is_some() {
+                return compile_aggregate_projection(function, item, path, context);
+            }
+            Err(unsupported(
+                format!("{path}.expression"),
+                format!(
+                    "RETURN function '{}' is not supported yet",
+                    qualified_function_name(function)
+                ),
+            ))
         }
-        Expression::FunctionCall(function) if is_to_string_function(function) => {
-            compile_to_string_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_integer_function(function) => {
-            compile_to_integer_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_float_function(function) => {
-            compile_to_float_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
-            compile_to_boolean_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_lower_function(function) => {
-            compile_to_lower_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_upper_function(function) => {
-            compile_to_upper_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_trim_function(function) => {
-            compile_trim_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_ltrim_function(function) => {
-            compile_ltrim_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_rtrim_function(function) => {
-            compile_rtrim_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_replace_function(function) => {
-            compile_replace_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_character_length_function(function) => {
-            compile_character_length_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_substring_function(function) => {
-            compile_substring_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_left_function(function) => {
-            compile_left_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_right_function(function) => {
-            compile_right_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if is_reverse_function(function) => {
-            compile_reverse_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
-            compile_aggregate_projection(function, item, path, context)
-        }
-        Expression::FunctionCall(function) => Err(unsupported(
-            format!("{path}.expression"),
-            format!(
-                "RETURN function '{}' is not supported yet",
-                qualified_function_name(function)
-            ),
-        )),
         expression => Ok(Projection::Property {
             property: compile_property_ref(expression, format!("{path}.expression"))?,
             alias: item.alias.as_ref().map(variable_name),
@@ -1569,26 +1495,6 @@ fn compile_literal_projection(
                 .map_or_else(|| "list".to_string(), variable_name),
         }),
     }
-}
-
-fn compile_coalesce_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_coalesce_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "coalesce".to_string(), variable_name),
-    })
 }
 
 fn compile_arithmetic_projection(
@@ -1626,304 +1532,32 @@ fn compile_case_projection(
     })
 }
 
-fn compile_to_string_projection(
+fn compile_scalar_function_projection(
     function: &FunctionInvocation,
     item: &ProjectionItem,
     path: impl Into<String>,
     context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
+) -> Result<Option<Projection>, CoreError> {
     let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_string_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
+    let Some(expression) =
+        compile_scalar_function_expression(function, format!("{path}.expression"), context)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Projection::Expression {
+        expression,
         alias: item
             .alias
             .as_ref()
-            .map_or_else(|| "toString".to_string(), variable_name),
-    })
+            .map_or_else(|| default_scalar_function_alias(function), variable_name),
+    }))
 }
 
-fn compile_to_integer_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_integer_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "toInteger".to_string(), variable_name),
-    })
-}
-
-fn compile_to_float_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_float_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "toFloat".to_string(), variable_name),
-    })
-}
-
-fn compile_to_boolean_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_boolean_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "toBoolean".to_string(), variable_name),
-    })
-}
-
-fn compile_to_lower_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_lower_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "toLower".to_string(), variable_name),
-    })
-}
-
-fn compile_to_upper_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_to_upper_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "toUpper".to_string(), variable_name),
-    })
-}
-
-fn compile_trim_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_trim_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "trim".to_string(), variable_name),
-    })
-}
-
-fn compile_ltrim_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_ltrim_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "lTrim".to_string(), variable_name),
-    })
-}
-
-fn compile_rtrim_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_rtrim_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "rTrim".to_string(), variable_name),
-    })
-}
-
-fn compile_replace_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_replace_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "replace".to_string(), variable_name),
-    })
-}
-
-fn compile_character_length_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_character_length_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "size".to_string(), variable_name),
-    })
-}
-
-fn compile_substring_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_substring_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "substring".to_string(), variable_name),
-    })
-}
-
-fn compile_left_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_left_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "left".to_string(), variable_name),
-    })
-}
-
-fn compile_right_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_right_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "right".to_string(), variable_name),
-    })
-}
-
-fn compile_reverse_projection(
-    function: &FunctionInvocation,
-    item: &ProjectionItem,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Projection, CoreError> {
-    let path = path.into();
-    Ok(Projection::Expression {
-        expression: compile_reverse_scalar_expression(
-            function,
-            format!("{path}.expression"),
-            context,
-        )?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "reverse".to_string(), variable_name),
-    })
+fn default_scalar_function_alias(function: &FunctionInvocation) -> String {
+    if is_character_length_function(function) {
+        return "size".to_string();
+    }
+    qualified_function_name(function)
 }
 
 fn compile_coalesce_scalar_expression(
@@ -2227,6 +1861,50 @@ fn compile_two_scalar_function_arguments(
     ))
 }
 
+fn compile_scalar_function_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let expression = if is_coalesce_function(function) {
+        compile_coalesce_scalar_expression(function, path.clone(), context)?
+    } else if is_to_string_function(function) {
+        compile_to_string_scalar_expression(function, path.clone(), context)?
+    } else if is_to_integer_function(function) {
+        compile_to_integer_scalar_expression(function, path.clone(), context)?
+    } else if is_to_float_function(function) {
+        compile_to_float_scalar_expression(function, path.clone(), context)?
+    } else if is_to_boolean_function(function) {
+        compile_to_boolean_scalar_expression(function, path.clone(), context)?
+    } else if is_to_lower_function(function) {
+        compile_to_lower_scalar_expression(function, path.clone(), context)?
+    } else if is_to_upper_function(function) {
+        compile_to_upper_scalar_expression(function, path.clone(), context)?
+    } else if is_trim_function(function) {
+        compile_trim_scalar_expression(function, path.clone(), context)?
+    } else if is_ltrim_function(function) {
+        compile_ltrim_scalar_expression(function, path.clone(), context)?
+    } else if is_rtrim_function(function) {
+        compile_rtrim_scalar_expression(function, path.clone(), context)?
+    } else if is_replace_function(function) {
+        compile_replace_scalar_expression(function, path.clone(), context)?
+    } else if is_character_length_function(function) {
+        compile_character_length_scalar_expression(function, path.clone(), context)?
+    } else if is_substring_function(function) {
+        compile_substring_scalar_expression(function, path.clone(), context)?
+    } else if is_left_function(function) {
+        compile_left_scalar_expression(function, path.clone(), context)?
+    } else if is_right_function(function) {
+        compile_right_scalar_expression(function, path.clone(), context)?
+    } else if is_reverse_function(function) {
+        compile_reverse_scalar_expression(function, path, context)?
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(expression))
+}
+
 fn compile_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -2255,61 +1933,17 @@ fn compile_scalar_expression(
             )?),
         }),
         Expression::Case(case) => compile_case_scalar_expression(case, path, context),
-        Expression::FunctionCall(function) if is_coalesce_function(function) => {
-            compile_coalesce_scalar_expression(function, path, context)
+        Expression::FunctionCall(function) => {
+            compile_scalar_function_expression(function, path.clone(), context)?.ok_or_else(|| {
+                unsupported(
+                    path,
+                    format!(
+                        "scalar function '{}' is not supported here",
+                        qualified_function_name(function)
+                    ),
+                )
+            })
         }
-        Expression::FunctionCall(function) if is_to_string_function(function) => {
-            compile_to_string_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_integer_function(function) => {
-            compile_to_integer_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_float_function(function) => {
-            compile_to_float_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
-            compile_to_boolean_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_lower_function(function) => {
-            compile_to_lower_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_to_upper_function(function) => {
-            compile_to_upper_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_trim_function(function) => {
-            compile_trim_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_ltrim_function(function) => {
-            compile_ltrim_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_rtrim_function(function) => {
-            compile_rtrim_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_replace_function(function) => {
-            compile_replace_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_character_length_function(function) => {
-            compile_character_length_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_substring_function(function) => {
-            compile_substring_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_left_function(function) => {
-            compile_left_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_right_function(function) => {
-            compile_right_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) if is_reverse_function(function) => {
-            compile_reverse_scalar_expression(function, path, context)
-        }
-        Expression::FunctionCall(function) => Err(unsupported(
-            path,
-            format!(
-                "scalar function '{}' is not supported here",
-                qualified_function_name(function)
-            ),
-        )),
         _ => Err(unsupported(
             path,
             "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
@@ -2481,14 +2115,6 @@ fn compile_labels_order_expression(
     Ok(OrderExpression::NodeLabels { variable, label })
 }
 
-fn compile_coalesce_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_coalesce_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
 fn compile_arithmetic_order_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -2505,126 +2131,6 @@ fn compile_case_order_expression(
     compile_case_scalar_expression(case, path, context).map(OrderExpression::Scalar)
 }
 
-fn compile_to_string_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_string_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_to_integer_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_integer_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_to_float_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_float_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_to_boolean_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_boolean_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_to_lower_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_lower_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_to_upper_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_to_upper_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_trim_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_trim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_ltrim_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_ltrim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_rtrim_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_rtrim_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_replace_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_replace_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_character_length_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_character_length_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_substring_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_substring_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_left_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_left_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_right_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_right_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
-fn compile_reverse_order_expression(
-    function: &FunctionInvocation,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<OrderExpression, CoreError> {
-    compile_reverse_scalar_expression(function, path, context).map(OrderExpression::Scalar)
-}
-
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -2635,58 +2141,13 @@ fn compile_optional_predicate_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_optional_predicate_scalar_expression(inner, path, context)
         }
-        Expression::FunctionCall(function) if is_coalesce_function(function) => Ok(Some(
-            compile_coalesce_scalar_expression(function, path, context)?,
-        )),
         Expression::BinaryOp { .. } => {
             Ok(Some(compile_scalar_expression(expression, path, context)?))
         }
         Expression::Case(case) => Ok(Some(compile_case_scalar_expression(case, path, context)?)),
-        Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
-            compile_to_string_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_to_integer_function(function) => Ok(Some(
-            compile_to_integer_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_to_float_function(function) => Ok(Some(
-            compile_to_float_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_to_boolean_function(function) => Ok(Some(
-            compile_to_boolean_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_to_lower_function(function) => Ok(Some(
-            compile_to_lower_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_to_upper_function(function) => Ok(Some(
-            compile_to_upper_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_trim_function(function) => Ok(Some(
-            compile_trim_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_ltrim_function(function) => Ok(Some(
-            compile_ltrim_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_rtrim_function(function) => Ok(Some(
-            compile_rtrim_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_replace_function(function) => Ok(Some(
-            compile_replace_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_character_length_function(function) => Ok(Some(
-            compile_character_length_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_substring_function(function) => Ok(Some(
-            compile_substring_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_left_function(function) => Ok(Some(
-            compile_left_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_right_function(function) => Ok(Some(
-            compile_right_scalar_expression(function, path, context)?,
-        )),
-        Expression::FunctionCall(function) if is_reverse_function(function) => Ok(Some(
-            compile_reverse_scalar_expression(function, path, context)?,
-        )),
+        Expression::FunctionCall(function) => {
+            compile_scalar_function_expression(function, path, context)
+        }
         _ => Ok(None),
     }
 }
@@ -2699,91 +2160,20 @@ fn compile_scalar_predicate_rhs(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_scalar_predicate_rhs(inner, path, context),
-        Expression::FunctionCall(function) if is_coalesce_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_coalesce_scalar_expression(function, path, context)?,
-            ))
-        }
         Expression::BinaryOp { .. } => Ok(ScalarPredicateRhs::Expression(
             compile_scalar_expression(expression, path, context)?,
         )),
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
             compile_case_scalar_expression(case, path, context)?,
         )),
-        Expression::FunctionCall(function) if is_to_string_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_string_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_to_integer_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_integer_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_to_float_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_float_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_boolean_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_to_lower_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_lower_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_to_upper_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_to_upper_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_trim_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_trim_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_ltrim_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_ltrim_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_rtrim_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_rtrim_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_replace_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_replace_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_character_length_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_character_length_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_substring_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_substring_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_left_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_left_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_right_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_right_scalar_expression(function, path, context)?,
-            ))
-        }
-        Expression::FunctionCall(function) if is_reverse_function(function) => {
-            Ok(ScalarPredicateRhs::Expression(
-                compile_reverse_scalar_expression(function, path, context)?,
-            ))
+        Expression::FunctionCall(function) => {
+            match compile_scalar_function_expression(function, path.clone(), context)? {
+                Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
+                None => Err(unsupported(
+                    path,
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), or reverse() expressions",
+                )),
+            }
         }
         Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
             ScalarExpression::Property(compile_property_ref(expression, path)?),
