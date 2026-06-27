@@ -1096,6 +1096,15 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_order_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_integer_function(function) => {
+            compile_to_integer_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_float_function(function) => {
+            compile_to_float_order_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
+            compile_to_boolean_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if is_to_lower_function(function) => {
             compile_to_lower_order_expression(function, path, context)
         }
@@ -1387,6 +1396,15 @@ fn compile_projection(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_projection(function, item, path, context)
         }
+        Expression::FunctionCall(function) if is_to_integer_function(function) => {
+            compile_to_integer_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_float_function(function) => {
+            compile_to_float_projection(function, item, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
+            compile_to_boolean_projection(function, item, path, context)
+        }
         Expression::FunctionCall(function) if is_to_lower_function(function) => {
             compile_to_lower_projection(function, item, path, context)
         }
@@ -1484,6 +1502,66 @@ fn compile_to_string_projection(
             .alias
             .as_ref()
             .map_or_else(|| "toString".to_string(), variable_name),
+    })
+}
+
+fn compile_to_integer_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_integer_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toInteger".to_string(), variable_name),
+    })
+}
+
+fn compile_to_float_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_float_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toFloat".to_string(), variable_name),
+    })
+}
+
+fn compile_to_boolean_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_to_boolean_scalar_expression(
+            function,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "toBoolean".to_string(), variable_name),
     })
 }
 
@@ -1642,6 +1720,48 @@ fn compile_to_string_scalar_expression(
     })
 }
 
+fn compile_to_integer_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToInteger {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toInteger",
+            context,
+        )?),
+    })
+}
+
+fn compile_to_float_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToFloat {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "toFloat", context,
+        )?),
+    })
+}
+
+fn compile_to_boolean_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::ToBoolean {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function,
+            path,
+            "toBoolean",
+            context,
+        )?),
+    })
+}
+
 fn compile_to_lower_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -1769,6 +1889,15 @@ fn compile_scalar_expression(
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             compile_to_string_scalar_expression(function, path, context)
         }
+        Expression::FunctionCall(function) if is_to_integer_function(function) => {
+            compile_to_integer_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_float_function(function) => {
+            compile_to_float_scalar_expression(function, path, context)
+        }
+        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
+            compile_to_boolean_scalar_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if is_to_lower_function(function) => {
             compile_to_lower_scalar_expression(function, path, context)
         }
@@ -1796,7 +1925,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
     }
 }
@@ -1981,6 +2110,30 @@ fn compile_to_string_order_expression(
     compile_to_string_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_to_integer_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_integer_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_to_float_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_float_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
+fn compile_to_boolean_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_to_boolean_scalar_expression(function, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_to_lower_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2045,6 +2198,15 @@ fn compile_optional_predicate_scalar_expression(
         Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
             compile_to_string_scalar_expression(function, path, context)?,
         )),
+        Expression::FunctionCall(function) if is_to_integer_function(function) => Ok(Some(
+            compile_to_integer_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_to_float_function(function) => Ok(Some(
+            compile_to_float_scalar_expression(function, path, context)?,
+        )),
+        Expression::FunctionCall(function) if is_to_boolean_function(function) => Ok(Some(
+            compile_to_boolean_scalar_expression(function, path, context)?,
+        )),
         Expression::FunctionCall(function) if is_to_lower_function(function) => Ok(Some(
             compile_to_lower_scalar_expression(function, path, context)?,
         )),
@@ -2085,6 +2247,21 @@ fn compile_scalar_predicate_rhs(
                 compile_to_string_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::FunctionCall(function) if is_to_integer_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_integer_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_to_float_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_float_scalar_expression(function, path, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_to_boolean_function(function) => {
+            Ok(ScalarPredicateRhs::Expression(
+                compile_to_boolean_scalar_expression(function, path, context)?,
+            ))
+        }
         Expression::FunctionCall(function) if is_to_lower_function(function) => {
             Ok(ScalarPredicateRhs::Expression(
                 compile_to_lower_scalar_expression(function, path, context)?,
@@ -2123,7 +2300,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
     }
 }
@@ -2384,6 +2561,27 @@ fn is_to_string_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toString")
+    )
+}
+
+fn is_to_integer_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toInteger")
+    )
+}
+
+fn is_to_float_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toFloat")
+    )
+}
+
+fn is_to_boolean_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("toBoolean")
     )
 }
 
@@ -5434,6 +5632,64 @@ mod tests {
             plan.order_by.as_slice(),
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::Replace { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_scalar_cast_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE toInteger(service.id) = 10 \
+             RETURN toFloat(service.risk) AS risk_float, \
+                    toBoolean(service.active) AS active_bool \
+             ORDER BY toInteger(service.id)",
+        )
+        .expect("scalar cast expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::ToInteger {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "id".to_string(),
+                    })),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(
+                    10
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::ToFloat {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                    },
+                    alias: "risk_float".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::ToBoolean {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "active".to_string(),
+                        })),
+                    },
+                    alias: "active_bool".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::ToInteger { .. }),
                 direction: OrderDirection::Ascending,
             }]
         ));

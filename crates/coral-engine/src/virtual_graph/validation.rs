@@ -795,6 +795,9 @@ impl<'a> GraphPlanValidator<'a> {
                 }
             }
             ScalarExpression::ToString { expression }
+            | ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToBoolean { expression }
             | ScalarExpression::ToLower { expression }
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
@@ -1016,6 +1019,9 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(())
             }
             ScalarExpression::ToString { expression }
+            | ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToBoolean { expression }
             | ScalarExpression::ToLower { expression }
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
@@ -2126,6 +2132,9 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(())
             }
             ScalarExpression::ToString { expression }
+            | ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToBoolean { expression }
             | ScalarExpression::ToLower { expression }
             | ScalarExpression::ToUpper { expression }
             | ScalarExpression::Trim { expression }
