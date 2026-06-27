@@ -105,10 +105,10 @@ impl<'a> PredicateCompileMode<'a> {
     fn unsupported_predicate_message(self) -> &'static str {
         match self {
             Self::Graph { .. } => {
-                "WHERE only supports graph property, id(), elementId(), labels(), keys(), and supported scalar predicates combined with AND, OR, XOR, and NOT"
+                "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
             Self::CaseWhen => {
-                "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), boolean literals, and AND/OR/XOR/NOT"
+                "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
             }
         }
     }
@@ -2965,6 +2965,13 @@ fn is_exists_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+fn is_empty_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("isEmpty")
+    )
+}
+
 fn is_id_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
@@ -3374,6 +3381,11 @@ fn compile_predicate_expression_in_mode(
         Expression::FunctionCall(function) if is_exists_function(function) => Ok(
             PredicateExpression::Comparison(compile_exists_predicate(function, path)?),
         ),
+        Expression::FunctionCall(function) if is_empty_function(function) => {
+            Ok(PredicateExpression::ScalarComparison(
+                compile_is_empty_predicate(function, path, context)?,
+            ))
+        }
         Expression::PropertyLookup { .. } => {
             Ok(PredicateExpression::Comparison(PropertyPredicate {
                 property: compile_property_ref(expression, path)?,
@@ -3431,6 +3443,31 @@ fn compile_exists_predicate(
         property: compile_property_ref(argument, format!("{path}.arguments[0]"))?,
         operator: ComparisonOperator::NotEqual,
         rhs: PredicateRhs::Literal(Literal::Null),
+    })
+}
+
+fn compile_is_empty_predicate(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarPredicate, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "isEmpty() supports exactly one scalar string argument",
+        ));
+    };
+    Ok(ScalarPredicate {
+        lhs: ScalarExpression::CharacterLength {
+            expression: Box::new(compile_scalar_expression(
+                argument,
+                format!("{path}.arguments[0]"),
+                context,
+            )?),
+        },
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
     })
 }
 
@@ -6593,6 +6630,61 @@ mod tests {
     }
 
     #[test]
+    fn compiles_is_empty_string_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE isEmpty(trim(service.tier)) OR NOT isEmpty(service.name) \
+             RETURN service.name",
+        )
+        .expect("isEmpty predicates should compile");
+
+        assert!(plan.predicates.is_empty());
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::Or { left, right })
+                if matches!(
+                    left.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::CharacterLength { expression },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+                    }) if matches!(expression.as_ref(), ScalarExpression::Trim { .. })
+                ) && matches!(
+                    right.as_ref(),
+                    PredicateExpression::Not { expression }
+                        if matches!(
+                            expression.as_ref(),
+                            PredicateExpression::ScalarComparison(ScalarPredicate {
+                                lhs: ScalarExpression::CharacterLength { expression },
+                                operator: ComparisonOperator::Equal,
+                                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+                            }) if matches!(
+                                expression.as_ref(),
+                                ScalarExpression::Property(PropertyRef { property, .. }) if property == "name"
+                            )
+                        )
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_is_empty_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE isEmpty(service.name, service.tier) \
+             RETURN service.name",
+        )
+        .expect_err("isEmpty() requires one argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("isEmpty() supports exactly one scalar string argument"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_substring_with_unsupported_arity() {
         let error = compile_cypher(
             "MATCH (service:Service) \
@@ -7449,6 +7541,39 @@ mod tests {
                 when: PredicateExpression::Xor { .. },
                 ..
             }]
+        ));
+    }
+
+    #[test]
+    fn compiles_is_empty_inside_searched_case_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN CASE \
+                      WHEN isEmpty(trim(service.tier)) THEN 'empty' \
+                      ELSE 'present' \
+                    END AS tier_state",
+        )
+        .expect("searched CASE isEmpty predicates should compile");
+
+        let [
+            Projection::Expression {
+                expression: ScalarExpression::Case { alternatives, .. },
+                ..
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        assert!(matches!(
+            alternatives.as_slice(),
+            [ScalarCaseAlternative {
+                when: PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::CharacterLength { expression },
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+                }),
+                ..
+            }] if matches!(expression.as_ref(), ScalarExpression::Trim { .. })
         ));
     }
 

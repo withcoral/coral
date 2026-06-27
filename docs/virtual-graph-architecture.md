@@ -111,7 +111,8 @@ The supported foundation subset is intentionally narrow:
   DataFusion `CAST`, nullable scalar casts lowered to `TRY_CAST`, string case
   conversion, whitespace trimming, `replace`, character length via `size`,
   `char_length`, and `character_length`, and zero-based `substring` lowered
-  to DataFusion `SUBSTRING`, plus `left`, `right`, `reverse`, numeric
+  to DataFusion `SUBSTRING`, scalar-string `isEmpty(expr)` predicates lowered
+  to `char_length(expr) = 0`, plus `left`, `right`, `reverse`, numeric
   `abs`, `ceil`, `floor`, `round`, `sqrt`, `sign`, `exp`, `log`, `log10`,
   constants `pi` and `e`, and trigonometric `sin`, `cos`, `tan`, `cot`,
   `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, and `haversin`;
