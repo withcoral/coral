@@ -39,15 +39,17 @@ coral source add --file <path-to-manifest>
 | `OPENSEARCH_USERNAME` | variable | yes | Basic authentication username |
 | `OPENSEARCH_PASSWORD` | secret | yes | Basic authentication password |
 
+Coral authenticates with HTTP Basic auth. Use a read-scoped account where possible.
+
 ---
 
 # Tables Overview
 
-| Table | API Endpoint | Required Filters | Pagination |
+| Table | API Endpoint | Filters | Pagination |
 |---|---|---|---|
-| `nodes` | `GET /_cat/nodes` | — | None (returns JSON array response) |
-| `indices` | `GET /_cat/indices` | — | None (fetches full CAT index listing) |
-| `snapshots` | `GET /_snapshot/{repository}/_all` | `repository` | None (maps snapshot array for a specific repository) |
+| `nodes` | `GET /_cat/nodes` | — | None (JSON array response) |
+| `indices` | `GET /_cat/indices[/{index}]` | optional pushdown: `index`, `health` | None (CAT listing) |
+| `snapshots` | `GET /_snapshot/{repository}/_all` | **required:** `repository` | None (maps the `snapshots` array) |
 
 ---
 
@@ -71,12 +73,24 @@ Runtime node telemetry and cluster topology metadata.
 
 ## opensearch.indices
 
-Index catalog sizing and shard health telemetry.
+Index catalog with sizing and shard-health telemetry.
+
+### Pushdown filters
+
+These are sent to the OpenSearch CAT API so the cluster filters the response **before** it reaches Coral:
+
+| Filter | Pushdown | Description |
+|---|---|---|
+| `index` | request path `/_cat/indices/{index}` | Index name or pattern, e.g. `logs-*` |
+| `health` | query `health=` | Restrict to `green`, `yellow`, or `red` |
+
+Without these filters the source fetches the full CAT index listing and any other `WHERE` predicates are applied locally by Coral.
 
 | Column | Type | Description |
 |---|---|---|
+| `index` | Utf8 | Index name/pattern pushdown filter (virtual) |
 | `index_name` | Utf8 | Index identifier |
-| `health` | Utf8 | Shard allocation health state |
+| `health` | Utf8 | Shard allocation health state (also a pushdown filter) |
 | `status` | Utf8 | Index lifecycle status (`open` or `closed`) |
 | `doc_count` | Int64 | Indexed document count |
 | `store_size` | Utf8 | Total storage footprint used by the index |
@@ -85,16 +99,16 @@ Index catalog sizing and shard health telemetry.
 
 ## opensearch.snapshots
 
-Snapshot registry and backup lifecycle metadata.
+Snapshot lifecycle metadata for a specific backup repository.
 
-> Queries against this table require an explicit repository filter.
+> Queries against this table **require** a `repository` filter; it is used in the request path (`/_snapshot/{repository}/_all`). OpenSearch snapshot objects do not contain a repository field, so the `repository` column is derived from the required filter rather than read from each row.
 
 | Column | Type | Description |
 |---|---|---|
-| `repository` | Utf8 | Snapshot repository identifier |
+| `repository` | Utf8 | Repository the snapshots belong to (from the required filter) |
 | `snapshot_name` | Utf8 | Snapshot name |
-| `state` | Utf8 | Snapshot execution state |
-| `version` | Utf8 | OpenSearch version compatibility |
+| `state` | Utf8 | Snapshot execution state (e.g., SUCCESS, FAILED, IN_PROGRESS) |
+| `version` | Utf8 | OpenSearch version that produced the snapshot |
 | `start_time` | Utf8 | Snapshot start timestamp |
 
 ---
@@ -104,44 +118,35 @@ Snapshot registry and backup lifecycle metadata.
 ## Audit High Resource Utilization Nodes
 
 ```sql
-SELECT
-  node_name,
-  role,
-  cluster_manager_status,
-  cpu_percent,
-  heap_percent
+SELECT node_name, role, cluster_manager_status, cpu_percent, heap_percent
 FROM opensearch.nodes
 WHERE cpu_percent > 80
    OR heap_percent > 85
 ORDER BY cpu_percent DESC;
 ```
 
----
-
-## Track Unhealthy Index Allocations
+## Track Unhealthy Index Allocations (health pushed down)
 
 ```sql
-SELECT
-  index_name,
-  health,
-  status,
-  doc_count,
-  store_size
+SELECT index_name, health, status, doc_count, store_size
 FROM opensearch.indices
-WHERE health <> 'green'
+WHERE health = 'yellow'
 ORDER BY doc_count DESC;
 ```
 
----
+## Inspect a Specific Index Pattern (index pushed down to the path)
+
+```sql
+SELECT index_name, health, doc_count
+FROM opensearch.indices
+WHERE index = 'logs-*'
+ORDER BY index_name;
+```
 
 ## Retrieve Repository Snapshots
 
 ```sql
-SELECT
-  repository,
-  snapshot_name,
-  state,
-  start_time
+SELECT repository, snapshot_name, state, start_time
 FROM opensearch.snapshots
 WHERE repository = 's3-cold-backup'
 ORDER BY start_time DESC;
@@ -174,11 +179,15 @@ export OPENSEARCH_PASSWORD=your_secure_password
 
 coral source add --file sources/community/opensearch/manifest.yaml
 coral source test opensearch
+coral sql "SELECT index_name, health FROM opensearch.indices WHERE health = 'green' LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test opensearch`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test opensearch
@@ -194,23 +203,16 @@ $ coral source test opensearch
   1 declared · 1 passed · 0 failed
 
 ✓ SELECT node_name, role FROM opensearch.nodes LIMIT 1
-
-+-----------+------+
-| node_name | role |
-+-----------+------+
-| openser-1 | dimr |
-+-----------+------+
-
-1 row
+  1 row
 ```
 
 ---
 
 # Limitations
 
-- Read-only retrieval scope
-- Does not expose document search execution APIs (`/_search`)
-- Does not support index mutation or cluster administration operations
-- `_cat/indices` returns the complete upstream index inventory before Coral SQL filters are applied
-- Node queries explicitly pin CAT response headers using the `h=` selector for compatibility across OpenSearch versions
-- Snapshot queries require an explicit repository filter because OpenSearch snapshot responses do not embed repository identifiers in nested snapshot objects
+- Read-only retrieval scope.
+- Does not expose document search execution APIs (`/_search`).
+- Does not support index mutation or cluster administration operations.
+- `indices` supports `index` and `health` pushdown to the CAT API; other predicates are filtered locally after the CAT listing is fetched.
+- Node queries pin CAT response headers via the `h=` selector for compatibility across OpenSearch versions.
+- `snapshots` requires an explicit `repository` filter because OpenSearch snapshot responses do not embed a repository field; the `repository` column echoes the requested repository.

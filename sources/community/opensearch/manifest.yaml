@@ -63,12 +63,12 @@ tables:
       - name: role
         type: Utf8
         nullable: true
-        description: Explicit node roles allocated within the cluster topology.
+        description: Node roles allocated within the cluster topology.
         expr: {kind: path, path: ["node.role"]}
       - name: cluster_manager_status
         type: Utf8
         nullable: true
-        description: Indicates if the node is currently elected as the active cluster coordinator (*, -, or m).
+        description: Indicates if the node is the active cluster manager (*, -, or m).
         expr: {kind: path, path: [cluster_manager]}
       - name: heap_percent
         type: Int64
@@ -78,7 +78,7 @@ tables:
       - name: ram_percent
         type: Int64
         nullable: true
-        description: System-level physical RAM utilization percentage.
+        description: System physical RAM utilization percentage.
         expr: {kind: path, path: ["ram.percent"]}
       - name: cpu_percent
         type: Int64
@@ -87,7 +87,14 @@ tables:
         expr: {kind: path, path: [cpu]}
 
   - name: indices
-    description: Catalog of indices managed inside the storage layer containing sizing and health telemetry.
+    description: Catalog of indices with sizing and shard-health telemetry.
+    filters:
+      - name: index
+        required: false
+        description: Index name or pattern, pushed to the CAT path (e.g., 'logs-*').
+      - name: health
+        required: false
+        description: Health filter pushed to the CAT API (green, yellow, or red).
     request:
       method: GET
       path: /_cat/indices
@@ -95,39 +102,65 @@ tables:
         - name: format
           from: literal
           value: json
+        - name: health
+          from: filter
+          key: health
+    requests:
+      - when_filters:
+          - index
+        method: GET
+        path: "/_cat/indices/{{filter.index}}"
+        query:
+          - name: format
+            from: literal
+            value: json
+          - name: health
+            from: filter
+            key: health
     response:
       row_strategy: direct
     pagination:
       mode: none
     columns:
+      - name: index
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Index name/pattern pushdown filter, applied to the CAT request path.
+        expr: {kind: from_filter, key: index}
       - name: index_name
         type: Utf8
         nullable: false
-        description: Target key namespace identifying the index structure.
+        description: Name of the index.
         expr: {kind: path, path: [index]}
       - name: health
         type: Utf8
         nullable: true
-        description: Health cluster status state of shard allocations (green, yellow, red).
+        description: Shard allocation health (green, yellow, red). Also a pushdown filter.
         expr: {kind: path, path: [health]}
       - name: status
         type: Utf8
         nullable: true
-        description: Operational opening lifecycle phase of the index data stream (open or closed).
+        description: Index lifecycle status (open or closed).
         expr: {kind: path, path: [status]}
       - name: doc_count
         type: Int64
         nullable: true
-        description: Cumulative integer count of valid searchable records indexed.
+        description: Count of searchable documents indexed.
         expr: {kind: path, path: ["docs.count"]}
       - name: store_size
         type: Utf8
         nullable: true
-        description: Comprehensive physical storage footprint consumption for primary and replica spaces.
+        description: Total storage footprint for primary and replica shards.
         expr: {kind: path, path: ["store.size"]}
 
   - name: snapshots
-    description: Administrative registry tracking the lifecycle states of cold data cluster backups.
+    description: Snapshot lifecycle metadata for a specific backup repository.
+    filters:
+      - name: repository
+        type: Utf8
+        required: true
+        description: Snapshot repository to query (required; used in the request path).
     request:
       method: GET
       path: "/_snapshot/{{filter.repository}}/_all"
@@ -136,34 +169,29 @@ tables:
       rows_path: [snapshots]
     pagination:
       mode: none
-    filters:
-      - name: repository
-        type: Utf8
-        required: true
-        description: Target backup repository namespace identifier.
     columns:
       - name: repository
         type: Utf8
         nullable: false
-        description: Destination backup repository registration namespace matching request scope.
-        expr: {kind: filter, name: repository}
+        description: Repository the snapshots belong to (derived from the required filter).
+        expr: {kind: from_filter, key: repository}
       - name: snapshot_name
         type: Utf8
         nullable: false
-        description: Unique user-defined backup verification identifier.
+        description: Snapshot identifier.
         expr: {kind: path, path: [snapshot]}
       - name: state
         type: Utf8
         nullable: true
-        description: Final snapshot execution state (e.g., SUCCESS, FAILED).
+        description: Snapshot execution state (e.g., SUCCESS, FAILED, IN_PROGRESS).
         expr: {kind: path, path: [state]}
       - name: version
         type: Utf8
         nullable: true
-        description: OpenSearch instance core version engine marking backup execution compatibility.
+        description: OpenSearch version that produced the snapshot.
         expr: {kind: path, path: [version]}
       - name: start_time
         type: Utf8
         nullable: true
-        description: Absolute date timestamp denoting when the cluster pipeline task launched.
+        description: Snapshot start timestamp (ISO-8601 string from the API).
         expr: {kind: path, path: [start_time]}
