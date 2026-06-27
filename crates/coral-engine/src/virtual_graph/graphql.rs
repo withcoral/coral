@@ -666,6 +666,8 @@ fn graphql_property_aggregate_field(name: &str) -> Option<GraphqlPropertyAggrega
         "_sumDistinct" => (AggregateFunction::Sum, true),
         "_avg" => (AggregateFunction::Avg, false),
         "_avgDistinct" => (AggregateFunction::Avg, true),
+        "_median" => (AggregateFunction::Median, false),
+        "_medianDistinct" => (AggregateFunction::Median, true),
         "_stDev" => (AggregateFunction::StdDev, false),
         "_stDevP" => (AggregateFunction::StdDevP, false),
         "_min" => (AggregateFunction::Min, false),
@@ -3466,6 +3468,8 @@ mod tests {
                 populationRisk: _stDevP(field: risk)
                 distinctTotalRisk: _sumDistinct(field: risk)
                 distinctAverageRisk: _avgDistinct(field: risk)
+                medianRisk: _median(field: risk)
+                distinctMedianRisk: _medianDistinct(field: risk)
               }
             }
             ",
@@ -3510,6 +3514,24 @@ mod tests {
                     }),
                     distinct: true,
                     alias: "distinctAverageRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Median,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "medianRisk".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Median,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "distinctMedianRisk".to_string(),
                 },
             ]
         );
@@ -5738,6 +5760,8 @@ nodes:
         assert!(sdl.contains("  _avg(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _sumDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _avgDistinct(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _median(field: PersonAggregateField!): CoralGraphValue"));
+        assert!(sdl.contains("  _medianDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _stDev(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _stDevP(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
@@ -5789,6 +5813,31 @@ nodes:
 
         let error = graphql_schema_sdl_for_graph(&graph)
             .expect_err("reserved GraphQL property names should be rejected");
+
+        assert!(
+            error.to_string().contains("reserved GraphQL virtual field"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_schema_sdl_for_reserved_aggregate_property_names() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: reserved_aggregate_property
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      _median: risk_score
+",
+        )
+        .expect("graph should parse");
+
+        let error = graphql_schema_sdl_for_graph(&graph)
+            .expect_err("reserved GraphQL aggregate property names should be rejected");
 
         assert!(
             error.to_string().contains("reserved GraphQL virtual field"),

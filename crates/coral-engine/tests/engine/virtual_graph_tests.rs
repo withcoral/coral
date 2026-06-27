@@ -803,6 +803,8 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
             populationRisk: _stDevP(field: risk)
             distinctTotalRisk: _sumDistinct(field: risk)
             distinctAverageRisk: _avgDistinct(field: risk)
+            medianRisk: _median(field: risk)
+            distinctMedianRisk: _medianDistinct(field: risk)
           }
         }
         "#,
@@ -824,6 +826,13 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
         "{}",
         graph_execution.translated_sql()
     );
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("MEDIAN(\"n0\".\"risk_score\") AS \"medianRisk\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
 
     let sql_execution = CoralQuery::execute_sql(
         std::slice::from_ref(&source),
@@ -831,7 +840,9 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
         "SELECT STDDEV_SAMP(risk_score) AS \"sampleRisk\", \
                 STDDEV_POP(risk_score) AS \"populationRisk\", \
                 SUM(DISTINCT risk_score) AS \"distinctTotalRisk\", \
-                AVG(DISTINCT risk_score) AS \"distinctAverageRisk\" \
+                AVG(DISTINCT risk_score) AS \"distinctAverageRisk\", \
+                MEDIAN(risk_score) AS \"medianRisk\", \
+                MEDIAN(DISTINCT risk_score) AS \"distinctMedianRisk\" \
          FROM ops.services \
          WHERE tier = 'prod'",
     )
@@ -849,6 +860,8 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
     assert_close(row["populationRisk"].as_f64().unwrap(), 0.2);
     assert_close(row["distinctTotalRisk"].as_f64().unwrap(), 1.4);
     assert_close(row["distinctAverageRisk"].as_f64().unwrap(), 0.7);
+    assert_close(row["medianRisk"].as_f64().unwrap(), 0.7);
+    assert_close(row["distinctMedianRisk"].as_f64().unwrap(), 0.7);
 }
 
 #[tokio::test]

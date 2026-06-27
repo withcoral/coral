@@ -356,6 +356,16 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
         .expect("writing GraphQL SDL to string should not fail");
         writeln!(
             sdl,
+            "  _median(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _medianDistinct(field: {aggregate_field_type}!): CoralGraphValue"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
             "  _stDev(field: {aggregate_field_type}!): CoralGraphValue"
         )
         .expect("writing GraphQL SDL to string should not fail");
@@ -763,7 +773,20 @@ fn validate_graphql_node_property_name(
     let path = path.into();
     if matches!(
         name,
-        "_count" | "_countDistinct" | "_sum" | "_avg" | "_min" | "_max"
+        "_count"
+            | "_countDistinct"
+            | "_collect"
+            | "_collectDistinct"
+            | "_sum"
+            | "_sumDistinct"
+            | "_avg"
+            | "_avgDistinct"
+            | "_median"
+            | "_medianDistinct"
+            | "_stDev"
+            | "_stDevP"
+            | "_min"
+            | "_max"
     ) {
         return Err(Diagnostic::new(
             "UNSUPPORTED_GRAPHQL_SCHEMA",
