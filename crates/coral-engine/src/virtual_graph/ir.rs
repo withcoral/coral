@@ -183,6 +183,13 @@ pub enum Projection {
         /// Output alias.
         alias: String,
     },
+    /// Project a literal list value.
+    LiteralList {
+        /// Literal list elements.
+        literals: Vec<Literal>,
+        /// Output alias.
+        alias: String,
+    },
     /// Project `COUNT(*)`.
     CountAll {
         /// Output alias.

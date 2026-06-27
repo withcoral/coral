@@ -469,6 +469,12 @@ impl<'a> GraphPlanValidator<'a> {
                     )?;
                 }
                 Projection::Literal { .. } | Projection::CountAll { .. } => {}
+                Projection::LiteralList { literals, .. } => {
+                    Self::validate_literal_list_projection(
+                        literals,
+                        format!("projections[{index}].literals"),
+                    )?;
+                }
                 Projection::Aggregate {
                     function, target, ..
                 } => {
@@ -924,6 +930,7 @@ impl<'a> GraphPlanValidator<'a> {
                 | Projection::PropertyKeys { .. }
                 | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
+                | Projection::LiteralList { .. }
                 | Projection::CountAll { .. }
                 | Projection::Aggregate { .. } => None,
             })
@@ -1114,6 +1121,10 @@ impl<'a> GraphPlanValidator<'a> {
                     ..
                 }
                 | Projection::Literal {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::LiteralList {
                     alias: projection_alias,
                     ..
                 }
@@ -1778,6 +1789,51 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn validate_literal_list_projection(
+        literals: &[Literal],
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if literals.is_empty() {
+            return Err(Diagnostic::new(
+                "INVALID_LITERAL_LIST_PROJECTION",
+                path,
+                "literal list projections require at least one element",
+            )
+            .into_core_error());
+        }
+
+        let mut expected = None;
+        for literal in literals {
+            let Some(kind) = literal_list_element_kind(literal) else {
+                continue;
+            };
+            match expected {
+                Some(expected) if expected != kind => {
+                    return Err(Diagnostic::new(
+                        "INVALID_LITERAL_LIST_PROJECTION",
+                        path,
+                        "literal list projections require all non-null elements to have the same type",
+                    )
+                    .into_core_error());
+                }
+                Some(_) => {}
+                None => expected = Some(kind),
+            }
+        }
+
+        if expected.is_none() {
+            return Err(Diagnostic::new(
+                "INVALID_LITERAL_LIST_PROJECTION",
+                path,
+                "literal list projections require at least one non-null element",
+            )
+            .into_core_error());
+        }
+
+        Ok(())
+    }
+
     fn validate_property_ref(
         &self,
         property: &PropertyRef,
@@ -1988,6 +2044,24 @@ fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), Core
         );
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiteralListElementKind {
+    String,
+    Integer,
+    Float,
+    Boolean,
+}
+
+fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind> {
+    match literal {
+        Literal::String(_) => Some(LiteralListElementKind::String),
+        Literal::Integer(_) => Some(LiteralListElementKind::Integer),
+        Literal::Float(_) => Some(LiteralListElementKind::Float),
+        Literal::Boolean(_) => Some(LiteralListElementKind::Boolean),
+        Literal::Null => None,
+    }
 }
 
 fn aggregate_function_name(function: AggregateFunction) -> &'static str {
@@ -2369,6 +2443,34 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("keyed relationship aggregate target should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_ambiguous_literal_list_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+
+        for literals in [
+            Vec::new(),
+            vec![Literal::Null],
+            vec![Literal::Integer(1), Literal::String("prod".to_string())],
+        ] {
+            let mut plan = ownership_plan();
+            plan.projections = vec![Projection::LiteralList {
+                literals,
+                alias: "values".to_string(),
+            }];
+
+            let error = graph
+                .validate_graph_plan(&plan)
+                .expect_err("ambiguous literal list projection should fail validation");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("INVALID_LITERAL_LIST_PROJECTION"),
+                "{error:?}"
+            );
+        }
     }
 
     #[test]

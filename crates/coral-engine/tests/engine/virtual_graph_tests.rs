@@ -1035,6 +1035,48 @@ async fn cypher_literal_projections_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_literal_list_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_tiers".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("prod".to_string()),
+            GraphLiteral::String("dev".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         RETURN service.name AS service, ['prod', 'critical'] AS tags, $selected_tiers AS selected_tiers",
+        &parameters,
+    )
+    .await
+    .expect("literal list projection query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('prod', 'critical') AS \"tags\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "tags": ["prod", "critical"],
+            "selected_tiers": ["prod", "dev"],
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_parameters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

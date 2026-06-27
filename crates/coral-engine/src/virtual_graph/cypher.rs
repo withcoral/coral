@@ -362,6 +362,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::LiteralList {
+            alias: projection_alias,
+            ..
+        }
         | Projection::CountAll {
             alias: projection_alias,
         }
@@ -441,6 +445,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
+        | Projection::LiteralList { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
     }
@@ -1272,6 +1277,10 @@ fn projection_order_expression_for_alias(
                 alias: projection_alias,
                 ..
             }
+            | Projection::LiteralList {
+                alias: projection_alias,
+                ..
+            }
             | Projection::Aggregate {
                 alias: projection_alias,
                 ..
@@ -1319,7 +1328,7 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
-        expression if is_literal_expression(expression) => {
+        expression if is_literal_projection_expression(expression) => {
             compile_literal_projection(expression, item, path, context)
         }
         Expression::FunctionCall(function) if is_id_function(function) => {
@@ -1361,13 +1370,62 @@ fn compile_literal_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    Ok(Projection::Literal {
-        literal: compile_literal(expression, format!("{path}.expression"), context)?,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "literal".to_string(), variable_name),
-    })
+    match compile_projection_literal(expression, format!("{path}.expression"), context)? {
+        ProjectionLiteral::Scalar(literal) => Ok(Projection::Literal {
+            literal,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "literal".to_string(), variable_name),
+        }),
+        ProjectionLiteral::List(literals) => Ok(Projection::LiteralList {
+            literals,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "list".to_string(), variable_name),
+        }),
+    }
+}
+
+enum ProjectionLiteral {
+    Scalar(Literal),
+    List(Vec<Literal>),
+}
+
+fn compile_projection_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ProjectionLiteral, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_projection_literal(inner, path, context),
+        Expression::Literal(CypherLiteral::List(list)) => {
+            let literals = list
+                .elements
+                .iter()
+                .enumerate()
+                .map(|(index, expression)| {
+                    compile_literal(expression, format!("{path}[{index}]"), context)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            validate_literal_list_projection(&literals, path)?;
+            Ok(ProjectionLiteral::List(literals))
+        }
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::Literal(value) => {
+                    Ok(ProjectionLiteral::Scalar(value.clone()))
+                }
+                CypherParameterValue::List(values) => {
+                    validate_literal_list_projection(values, path)?;
+                    Ok(ProjectionLiteral::List(values.clone()))
+                }
+            }
+        }
+        _ => compile_literal(expression, path, context).map(ProjectionLiteral::Scalar),
+    }
 }
 
 fn compile_id_projection(
@@ -2894,9 +2952,80 @@ fn compile_literal(
     }
 }
 
+fn validate_literal_list_projection(
+    literals: &[Literal],
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    if literals.is_empty() {
+        return Err(unsupported(
+            path,
+            "literal list projections require at least one element",
+        ));
+    }
+
+    let mut expected = None;
+    for literal in literals {
+        let Some(kind) = literal_list_element_kind(literal) else {
+            continue;
+        };
+        match expected {
+            Some(expected) if expected != kind => {
+                return Err(unsupported(
+                    path,
+                    "literal list projections require all non-null elements to have the same type",
+                ));
+            }
+            Some(_) => {}
+            None => expected = Some(kind),
+        }
+    }
+
+    if expected.is_none() {
+        return Err(unsupported(
+            path,
+            "literal list projections require at least one non-null element",
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiteralListElementKind {
+    String,
+    Integer,
+    Float,
+    Boolean,
+}
+
+fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind> {
+    match literal {
+        Literal::String(_) => Some(LiteralListElementKind::String),
+        Literal::Integer(_) => Some(LiteralListElementKind::Integer),
+        Literal::Float(_) => Some(LiteralListElementKind::Float),
+        Literal::Boolean(_) => Some(LiteralListElementKind::Boolean),
+        Literal::Null => None,
+    }
+}
+
+fn is_literal_projection_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_literal_projection_expression(inner),
+        Expression::Literal(_) | Expression::Parameter(_) => true,
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            operand,
+            ..
+        } => is_literal_expression(operand),
+        _ => false,
+    }
+}
+
 fn is_literal_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_expression(inner),
+        Expression::Literal(CypherLiteral::List(_)) => false,
         Expression::Literal(_) | Expression::Parameter(_) => true,
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
@@ -4114,6 +4243,61 @@ mod tests {
     }
 
     #[test]
+    fn compiles_literal_list_projections() {
+        let parameters = BTreeMap::from([(
+            "selected_tiers".to_string(),
+            CypherParameterValue::List(vec![Literal::String("prod".to_string()), Literal::Null]),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             RETURN ['prod', 'dev'] AS tiers, $selected_tiers AS selected_tiers",
+            &parameters,
+        )
+        .expect("literal list projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::LiteralList {
+                    literals: vec![
+                        Literal::String("prod".to_string()),
+                        Literal::String("dev".to_string()),
+                    ],
+                    alias: "tiers".to_string(),
+                },
+                Projection::LiteralList {
+                    literals: vec![Literal::String("prod".to_string()), Literal::Null,],
+                    alias: "selected_tiers".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_literal_list_projections() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) RETURN [] AS values",
+                "at least one element",
+            ),
+            (
+                "MATCH (service:Service) RETURN [null] AS values",
+                "at least one non-null element",
+            ),
+            (
+                "MATCH (service:Service) RETURN [1, 'prod'] AS values",
+                "all non-null elements to have the same type",
+            ),
+        ] {
+            let error = compile_cypher(cypher).expect_err("query should be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn compiles_float_literals() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -4848,19 +5032,17 @@ mod tests {
             "unexpected error: {error}"
         );
 
-        let list_for_literal_projection = BTreeMap::from([(
+        let ambiguous_list_projection = BTreeMap::from([(
             "value".to_string(),
-            CypherParameterValue::List(vec![Literal::String("prod".to_string())]),
+            CypherParameterValue::List(vec![Literal::Null]),
         )]);
         let error = compile_cypher_with_parameters(
             "MATCH (service:Service) RETURN $value AS value",
-            &list_for_literal_projection,
+            &ambiguous_list_projection,
         )
-        .expect_err("list parameter should not bind as literal projection");
+        .expect_err("ambiguous list parameter projection should fail");
         assert!(
-            error
-                .to_string()
-                .contains("list parameters can only be used"),
+            error.to_string().contains("at least one non-null element"),
             "unexpected error: {error}"
         );
     }

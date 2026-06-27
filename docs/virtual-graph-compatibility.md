@@ -33,7 +33,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Numeric aggregate functions | Supported foundation | `SUM`, `AVG`, `MIN`, and `MAX` over mapped graph properties |
 | Grouped aggregate projections | Supported foundation | Property projections become SQL `GROUP BY` keys |
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
-| Literal projections | Supported foundation | String, integer, finite float, boolean, null, and scalar parameter literals can be projected |
+| Literal projections | Supported foundation | String, integer, finite float, boolean, null, scalar parameter literals, and non-empty homogeneous literal/list-parameter values can be projected |
 | Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, `elementId(node)`, `elementId(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types; `elementId` casts mapped keys to strings; optional `type(relationship)` returns null when the relationship is unmatched |
 | Node label projections | Supported foundation | `labels(node)` lowers to a one-element DataFusion list containing the statically mapped node label and preserves null for unmatched optional nodes |
 | Property key projections | Supported foundation | `keys(node)` and `keys(relationship)` lower to a deterministic list of declared graph property names and preserve null for unmatched optional bindings |
@@ -72,7 +72,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Inline node property maps | Supported foundation | Normalized to equality predicates, e.g. `(n:Service {tier: 'prod'})` |
 | Inline relationship property maps | Supported foundation | Anonymous relationships get internal variables for property predicates |
 | `RETURN` property projections | Supported foundation | Optional aliases are supported |
-| `RETURN` literal projections | Supported foundation | Supports string, integer, finite float, boolean, null, and scalar parameter literals |
+| `RETURN` literal projections | Supported foundation | Supports string, integer, finite float, boolean, null, scalar parameters, and non-empty homogeneous literal/list-parameter lists; empty, all-null, and mixed-type lists are rejected |
 | `RETURN DISTINCT` | Supported foundation | Supported for projected rows; `ORDER BY` with `DISTINCT` must use projected properties |
 | `RETURN count(*)` | Supported foundation | Supported as a standalone aggregate projection |
 | `RETURN count(property)` | Supported foundation | Supports `count(property)` and `count(DISTINCT property)` |

@@ -580,6 +580,13 @@ impl<'a> Lowerer<'a> {
                         quote_ident(alias)
                     ));
                 }
+                Projection::LiteralList { literals, alias } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        render_literal_list(literals),
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::CountAll { alias } => {
                     rendered.push(format!("COUNT(*) AS {}", quote_ident(alias)));
                 }
@@ -701,6 +708,7 @@ impl<'a> Lowerer<'a> {
                     expressions.push(self.render_property_keys_ref(variable)?);
                 }
                 Projection::Literal { .. }
+                | Projection::LiteralList { .. }
                 | Projection::CountAll { .. }
                 | Projection::Aggregate { .. } => {}
             }
@@ -1205,6 +1213,7 @@ impl<'a> Lowerer<'a> {
                 ..
             } => self.render_relationship_type_ref(variable, relationship_type),
             Projection::Literal { literal, .. } => Ok(render_literal(literal)),
+            Projection::LiteralList { literals, .. } => Ok(render_literal_list(literals)),
             Projection::CountAll { .. } => Ok("COUNT(*)".to_string()),
             Projection::Aggregate {
                 function,
@@ -1309,6 +1318,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
+        | Projection::LiteralList { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
     }
@@ -1322,6 +1332,15 @@ fn render_literal(literal: &Literal) -> String {
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
     }
+}
+
+fn render_literal_list(literals: &[Literal]) -> String {
+    let values = literals
+        .iter()
+        .map(render_literal)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("make_array({values})")
 }
 
 fn render_like_pattern(operator: ComparisonOperator, value: &str) -> String {
