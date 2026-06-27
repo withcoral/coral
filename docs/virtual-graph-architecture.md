@@ -90,9 +90,9 @@ The supported foundation subset is intentionally narrow:
 - typed Cypher parameters bound through the explicit parameter API, where
   scalar parameters are accepted in literal positions and list parameters are
   accepted as `IN` right-hand sides;
-- `id(node)`, `id(keyedRelationship)`, `type(relationship)`, and
-  `labels(node)` in projections and ordering, with optional relationship and
-  node function projections preserving null for unmatched optional bindings;
+- `id(node)`, `id(keyedRelationship)`, `type(relationship)`, `labels(node)`,
+  and `keys(variable)` in projections, with optional relationship and node
+  function projections preserving null for unmatched optional bindings;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped

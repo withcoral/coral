@@ -157,6 +157,13 @@ pub enum Projection {
         /// Output alias.
         alias: String,
     },
+    /// Project the statically declared property keys for a graph variable.
+    PropertyKeys {
+        /// Graph variable.
+        variable: String,
+        /// Output alias.
+        alias: String,
+    },
     /// Project a literal value.
     Literal {
         /// Literal to project.

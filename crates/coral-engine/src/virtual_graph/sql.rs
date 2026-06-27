@@ -547,6 +547,13 @@ impl<'a> Lowerer<'a> {
                         quote_ident(alias)
                     ));
                 }
+                Projection::PropertyKeys { variable, alias } => {
+                    rendered.push(format!(
+                        "{} AS {}",
+                        self.render_property_keys_ref(variable)?,
+                        quote_ident(alias)
+                    ));
+                }
                 Projection::RelationshipType {
                     variable,
                     relationship_type,
@@ -644,93 +651,50 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_group_by(&self) -> Result<String, CoreError> {
-        if !self
-            .validated
-            .plan()
-            .projections
-            .iter()
-            .any(Projection::is_aggregate)
-        {
+        if !self.plan_has_aggregate_projection() {
             return Ok(String::new());
         }
 
-        let properties = self
-            .validated
-            .plan()
-            .projections
-            .iter()
-            .filter_map(|projection| match projection {
-                Projection::Property { property, .. } => Some(property),
-                Projection::Key { .. }
-                | Projection::NodeLabels { .. }
-                | Projection::RelationshipType { .. }
-                | Projection::Literal { .. }
-                | Projection::CountAll { .. }
-                | Projection::Aggregate { .. } => None,
-            })
-            .map(|property| self.render_property_ref(property))
-            .chain(
-                self.validated
-                    .plan()
-                    .projections
-                    .iter()
-                    .filter_map(|projection| match projection {
-                        Projection::Key { variable, .. } => Some(variable),
-                        Projection::Property { .. }
-                        | Projection::NodeLabels { .. }
-                        | Projection::RelationshipType { .. }
-                        | Projection::Literal { .. }
-                        | Projection::CountAll { .. }
-                        | Projection::Aggregate { .. } => None,
-                    })
-                    .map(|variable| self.render_binding_key_ref(variable)),
-            )
-            .chain(
-                self.validated
-                    .plan()
-                    .projections
-                    .iter()
-                    .filter_map(|projection| match projection {
-                        Projection::RelationshipType {
-                            variable,
-                            relationship_type,
-                            ..
-                        } => Some((variable, relationship_type)),
-                        Projection::Property { .. }
-                        | Projection::Key { .. }
-                        | Projection::NodeLabels { .. }
-                        | Projection::Literal { .. }
-                        | Projection::CountAll { .. }
-                        | Projection::Aggregate { .. } => None,
-                    })
-                    .map(|(variable, relationship_type)| {
-                        self.render_relationship_type_ref(variable, relationship_type)
-                    }),
-            )
-            .chain(
-                self.validated
-                    .plan()
-                    .projections
-                    .iter()
-                    .filter_map(|projection| match projection {
-                        Projection::NodeLabels {
-                            variable, label, ..
-                        } => Some((variable, label)),
-                        Projection::Property { .. }
-                        | Projection::Key { .. }
-                        | Projection::RelationshipType { .. }
-                        | Projection::Literal { .. }
-                        | Projection::CountAll { .. }
-                        | Projection::Aggregate { .. } => None,
-                    })
-                    .map(|(variable, label)| self.render_node_labels_ref(variable, label)),
-            )
-            .collect::<Result<Vec<_>, _>>()?;
-        if properties.is_empty() {
+        let expressions = self.render_group_by_expressions()?;
+        if expressions.is_empty() {
             Ok(String::new())
         } else {
-            Ok(format!(" GROUP BY {}", properties.join(", ")))
+            Ok(format!(" GROUP BY {}", expressions.join(", ")))
         }
+    }
+
+    fn render_group_by_expressions(&self) -> Result<Vec<String>, CoreError> {
+        let mut expressions = Vec::new();
+        for projection in &self.validated.plan().projections {
+            match projection {
+                Projection::Property { property, .. } => {
+                    expressions.push(self.render_property_ref(property)?);
+                }
+                Projection::Key { variable, .. } => {
+                    expressions.push(self.render_binding_key_ref(variable)?);
+                }
+                Projection::RelationshipType {
+                    variable,
+                    relationship_type,
+                    ..
+                } => {
+                    expressions
+                        .push(self.render_relationship_type_ref(variable, relationship_type)?);
+                }
+                Projection::NodeLabels {
+                    variable, label, ..
+                } => {
+                    expressions.push(self.render_node_labels_ref(variable, label)?);
+                }
+                Projection::PropertyKeys { variable, .. } => {
+                    expressions.push(self.render_property_keys_ref(variable)?);
+                }
+                Projection::Literal { .. }
+                | Projection::CountAll { .. }
+                | Projection::Aggregate { .. } => {}
+            }
+        }
+        Ok(expressions)
     }
 
     fn render_predicate_expression(
@@ -1084,6 +1048,21 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_property_keys_ref(&self, variable: &str) -> Result<String, CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let property_names = match binding.kind() {
+            ValidatedBindingKind::Node(node) => node.properties.keys(),
+            ValidatedBindingKind::Relationship(relationship) => relationship.properties.keys(),
+        }
+        .map(|property| quote_string_literal(property))
+        .collect::<Vec<_>>()
+        .join(", ");
+        let presence = self.render_binding_presence_ref(variable)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({property_names}) END"
+        ))
+    }
+
     fn render_relationship_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
         let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
@@ -1120,6 +1099,7 @@ impl<'a> Lowerer<'a> {
             Projection::NodeLabels {
                 variable, label, ..
             } => self.render_node_labels_ref(variable, label),
+            Projection::PropertyKeys { variable, .. } => self.render_property_keys_ref(variable),
             Projection::RelationshipType {
                 variable,
                 relationship_type,
@@ -1219,6 +1199,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
         | Projection::NodeLabels { alias, .. }
+        | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
@@ -1615,7 +1596,7 @@ relationships:
     }
 
     #[test]
-    fn lower_graph_plan_renders_key_and_relationship_type_projections() {
+    fn lower_graph_plan_renders_identity_and_static_function_projections() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
         plan.relationships
@@ -1632,6 +1613,10 @@ relationships:
                 label: "Person".to_string(),
                 alias: "person_labels".to_string(),
             },
+            Projection::PropertyKeys {
+                variable: "person".to_string(),
+                alias: "person_keys".to_string(),
+            },
             Projection::Key {
                 variable: "owns".to_string(),
                 alias: "ownership_id".to_string(),
@@ -1641,15 +1626,19 @@ relationships:
                 relationship_type: "OWNS".to_string(),
                 alias: "relationship_type".to_string(),
             },
+            Projection::PropertyKeys {
+                variable: "owns".to_string(),
+                alias: "relationship_keys".to_string(),
+            },
         ];
 
         let translation = graph
             .lower_graph_plan(&plan)
-            .expect("key and relationship type projections should lower");
+            .expect("identity and static function projections should lower");
 
         assert_eq!(
             translation.sql(),
-            "SELECT \"n0\".\"id\" AS \"person_id\", CASE WHEN \"n0\".\"id\" IS NULL THEN NULL ELSE make_array('Person') END AS \"person_labels\", \"r0\".\"ownership_id\" AS \"ownership_id\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\" \
+            "SELECT \"n0\".\"id\" AS \"person_id\", CASE WHEN \"n0\".\"id\" IS NULL THEN NULL ELSE make_array('Person') END AS \"person_labels\", CASE WHEN \"n0\".\"id\" IS NULL THEN NULL ELSE make_array('name', 'team') END AS \"person_keys\", \"r0\".\"ownership_id\" AS \"ownership_id\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE 'OWNS' END AS \"relationship_type\", CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL ELSE make_array('since') END AS \"relationship_keys\" \
              FROM \"ops\".\"people\" AS \"n0\" \
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \

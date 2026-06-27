@@ -444,6 +444,12 @@ impl<'a> GraphPlanValidator<'a> {
                         format!("projections[{index}].variable"),
                     )?;
                 }
+                Projection::PropertyKeys { variable, .. } => {
+                    self.validate_property_keys_projection(
+                        variable,
+                        format!("projections[{index}].variable"),
+                    )?;
+                }
                 Projection::RelationshipType {
                     variable,
                     relationship_type,
@@ -861,6 +867,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Projection::Property { property, .. } => Some(property),
                 Projection::Key { .. }
                 | Projection::NodeLabels { .. }
+                | Projection::PropertyKeys { .. }
                 | Projection::RelationshipType { .. }
                 | Projection::Literal { .. }
                 | Projection::CountAll { .. }
@@ -1029,6 +1036,10 @@ impl<'a> GraphPlanValidator<'a> {
                     ..
                 }
                 | Projection::NodeLabels {
+                    alias: projection_alias,
+                    ..
+                }
+                | Projection::PropertyKeys {
                     alias: projection_alias,
                     ..
                 }
@@ -1356,6 +1367,23 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error());
         }
         Ok(())
+    }
+
+    fn validate_property_keys_projection(
+        &self,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        validate_variable(path.clone(), variable)?;
+        self.bindings.get(variable).map(|_| ()).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path,
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })
     }
 
     fn validate_key_projection(
@@ -2080,6 +2108,26 @@ relationships:
             error.to_string().contains("INVALID_LABELS_PROJECTION"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_property_keys_projections() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![
+            Projection::PropertyKeys {
+                variable: "person".to_string(),
+                alias: "person_keys".to_string(),
+            },
+            Projection::PropertyKeys {
+                variable: "owns".to_string(),
+                alias: "ownership_keys".to_string(),
+            },
+        ];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("property keys projections should validate");
     }
 
     #[test]

@@ -346,6 +346,10 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
             alias: projection_alias,
             ..
         }
+        | Projection::PropertyKeys {
+            alias: projection_alias,
+            ..
+        }
         | Projection::RelationshipType {
             alias: projection_alias,
             ..
@@ -429,6 +433,7 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         Projection::Property { alias, .. } => alias.as_deref(),
         Projection::Key { alias, .. }
         | Projection::NodeLabels { alias, .. }
+        | Projection::PropertyKeys { alias, .. }
         | Projection::RelationshipType { alias, .. }
         | Projection::Literal { alias, .. }
         | Projection::CountAll { alias }
@@ -1230,6 +1235,14 @@ fn projection_order_expression_for_alias(
                 alias: projection_alias,
                 ..
             }
+            | Projection::PropertyKeys {
+                alias: projection_alias,
+                ..
+            }
+            | Projection::RelationshipType {
+                alias: projection_alias,
+                ..
+            }
             | Projection::Literal {
                 alias: projection_alias,
                 ..
@@ -1289,6 +1302,9 @@ fn compile_projection(
         }
         Expression::FunctionCall(function) if is_labels_function(function) => {
             compile_labels_projection(function, item, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_keys_function(function) => {
+            compile_keys_projection(function, item, path, context)
         }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             compile_aggregate_projection(function, item, path, context)
@@ -1410,6 +1426,28 @@ fn compile_labels_order_expression(
         context,
     )?;
     Ok(OrderExpression::NodeLabels { variable, label })
+}
+
+fn compile_keys_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        "keys() supports exactly one graph variable argument",
+        context,
+    )?;
+    Ok(Projection::PropertyKeys {
+        variable,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "keys".to_string(), variable_name),
+    })
 }
 
 fn compile_node_function_target(
@@ -1618,6 +1656,13 @@ fn is_labels_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("labels")
+    )
+}
+
+fn is_keys_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("keys")
     )
 }
 
@@ -3354,6 +3399,29 @@ mod tests {
         assert!(
             error.to_string().contains("labels() argument 'owns'"),
             "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compiles_keys_projection() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN keys(person) AS person_keys, keys(owns) AS ownership_keys",
+        )
+        .expect("keys() projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::PropertyKeys {
+                    variable: "person".to_string(),
+                    alias: "person_keys".to_string(),
+                },
+                Projection::PropertyKeys {
+                    variable: "owns".to_string(),
+                    alias: "ownership_keys".to_string(),
+                },
+            ]
         );
     }
 

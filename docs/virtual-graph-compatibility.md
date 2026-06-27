@@ -35,6 +35,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Distinct projections | Supported foundation | `SELECT DISTINCT` over projected rows |
 | Identity projections | Supported foundation | `id(node)`, `id(keyedRelationship)`, and `type(relationship)` lower through mapped keys and fixed relationship types; optional `type(relationship)` returns null when the relationship is unmatched |
 | Node label projections | Supported foundation | `labels(node)` lowers to a one-element DataFusion list containing the statically mapped node label and preserves null for unmatched optional nodes |
+| Property key projections | Supported foundation | `keys(node)` and `keys(relationship)` lower to a deterministic list of declared graph property names and preserve null for unmatched optional bindings |
 | Identity predicates | Supported foundation | `WHERE id(...)` compares mapped keys; `WHERE type(r)` is folded from the fixed relationship type |
 | Ordering, skip, and limit | Supported foundation | Property order keys, identity order keys, direct projected aggregate expressions, projection aliases including aggregate aliases, row offset, and row limit |
 | Execute/explain wrappers | Supported foundation | Preserves translated SQL and diagnostics |
@@ -78,6 +79,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | `RETURN collect(property)` | Supported foundation | Supports property collection with optional `DISTINCT`; collecting nodes, relationships, or paths is rejected until graph values are modeled |
 | `RETURN id(...)` / `type(r)` | Supported foundation | Projects mapped keys and fixed relationship types; optional relationship types preserve nulls |
 | `RETURN labels(node)` | Supported foundation | Projects the statically mapped label as a one-element list via DataFusion `make_array` |
+| `RETURN keys(variable)` | Supported foundation | Projects declared property keys for node and relationship variables via DataFusion `make_array`; identity keys are included only when declared as graph properties |
 | `RETURN sum/avg/min/max(property)` | Supported foundation | Numeric aggregate projections over mapped properties |
 | `RETURN property, count(...)` | Supported foundation | Uses Cypher-style implicit grouping over projected properties |
 | `ORDER BY`, `SKIP`, and `LIMIT` | Supported foundation | Property order keys, identity expressions, direct aggregate expressions that match `RETURN` projections, projection aliases including aggregate aliases, and non-negative integer offsets/limits |
