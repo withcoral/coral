@@ -93,8 +93,9 @@ The supported foundation subset is intentionally narrow:
   maps placed in the join scope; optional plans still require mandatory
   bindings to stay anchored to the first component;
 - non-materialized fixed-length path-variable bindings, including nullable
-  `length(path)` over named optional relationships via the presence-gated
-  scalar expression IR;
+  `length(path)` over optional relationships via the presence-gated scalar
+  expression IR and compiler-generated internal relationship bindings when an
+  anonymous optional path needs a presence gate;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
 - directed, reverse, and undirected typed relationships;

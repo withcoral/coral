@@ -10,8 +10,9 @@ use decypher::ast::expr::{
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
-    LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternPart, Properties,
-    Quantifier, RangeLiteral, RelationshipDirection as CypherRelationshipDirection,
+    LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternElementChain,
+    PatternPart, Properties, Quantifier, RangeLiteral,
+    RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
 use decypher::ast::query::{
@@ -138,6 +139,12 @@ struct PathBinding {
     length: usize,
     optional: bool,
     presence_variable: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingPathBinding {
+    name: String,
+    length: usize,
 }
 
 #[derive(Debug, Default)]
@@ -4355,11 +4362,10 @@ fn compile_pattern_part_into(
     state: &mut CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
-    validate_ignored_path_variable(
+    let pending_path_binding = validate_path_variable_binding(
         pattern_part,
         plan,
         state,
-        optional,
         format!("match.pattern.parts[{part_index}]"),
     )?;
 
@@ -4377,81 +4383,222 @@ fn compile_pattern_part_into(
         format!("match.pattern.parts[{part_index}].nodes[0]"),
         context,
     )?;
-    let mut previous_variable = start_node.variable.clone();
+    let previous_variable = start_node.variable.clone();
     plan.predicates.extend(start_node.predicates);
     if let Some(pattern) = start_node.pattern {
         mark_graph_variable_in_scope(state, &pattern.variable);
         plan.nodes.push(pattern);
     }
-    let mut previous_label = start_node.label.clone();
+    let force_optional_path_presence = optional && pending_path_binding.is_some();
+    let mut chain_state = PathChainCompileState {
+        previous_variable,
+        previous_label: start_node.label,
+        path_presence_variable: None,
+        hidden_path_presence_variables: Vec::new(),
+    };
 
     for (chain_index, chain) in chains.iter().enumerate() {
-        let node_path = format!(
-            "match.pattern.parts[{part_index}].nodes[{}]",
-            chain_index + 1
+        compile_path_chain_into(
+            chain,
+            PathChainCompileOptions {
+                part_index,
+                chain_index,
+                total_chains: chains.len(),
+                optional,
+                force_optional_path_presence,
+            },
+            &mut chain_state,
+            plan,
+            state,
+            context,
+        )?;
+    }
+
+    if let Some(pending) = pending_path_binding {
+        state
+            .hidden_graph_variables
+            .extend(chain_state.hidden_path_presence_variables);
+        bind_path_variable(
+            state,
+            pending,
+            optional,
+            optional
+                .then_some(chain_state.path_presence_variable)
+                .flatten(),
         );
-        let next_node = compile_node(
-            &chain.node,
-            plan,
-            fresh_internal_node_variable(plan, part_index, chain_index + 1),
-            node_path,
-            context,
-        )?;
-        let next_variable = next_node.variable.clone();
-        let next_label = next_node.label.clone();
-        let relationship_index = plan.relationships.len();
-        let relationship_path =
-            format!("match.pattern.parts[{part_index}].relationships[{chain_index}]");
-        let relationship = compile_relationship(
-            &chain.relationship,
-            (&previous_variable, &next_variable),
-            relationship_index,
-            plan,
-            relationship_path,
-            context,
-        )?;
-        plan.predicates.extend(next_node.predicates);
-        if let Some(pattern) = next_node.pattern {
-            mark_graph_variable_in_scope(state, &pattern.variable);
-            plan.nodes.push(pattern);
-        }
-        if relationship.length == 1 {
-            plan.predicates.extend(relationship.predicates);
-            if let Some(variable) = relationship.pattern.variable.as_deref() {
-                mark_graph_variable_in_scope(state, variable);
-            }
-            if optional {
-                plan.optional_relationships.push(relationship_index);
-            }
-            plan.relationships.push(relationship.pattern);
-        } else {
-            if previous_label != next_label {
-                return Err(unsupported(
-                    format!("match.pattern.parts[{part_index}].relationships[{chain_index}]"),
-                    "fixed-length relationship ranges greater than 1 currently require same-label endpoints so Coral can infer intermediate node mappings",
-                ));
-            }
-            append_fixed_length_relationship(
-                plan,
-                state,
-                &relationship.pattern,
-                &relationship.predicates,
-                relationship.length,
-                &FixedLengthExpansion {
-                    part_index,
-                    chain_index,
-                    left_variable: &previous_variable,
-                    right_variable: &next_variable,
-                    node_label: &previous_label,
-                    optional,
-                },
-            );
-        }
-        previous_variable = next_variable;
-        previous_label = next_label;
     }
 
     Ok(())
+}
+
+struct PathChainCompileState {
+    previous_variable: String,
+    previous_label: String,
+    path_presence_variable: Option<String>,
+    hidden_path_presence_variables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PathChainCompileOptions {
+    part_index: usize,
+    chain_index: usize,
+    total_chains: usize,
+    optional: bool,
+    force_optional_path_presence: bool,
+}
+
+fn compile_path_chain_into(
+    chain: &PatternElementChain,
+    options: PathChainCompileOptions,
+    chain_state: &mut PathChainCompileState,
+    plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    let node_path = format!(
+        "match.pattern.parts[{}].nodes[{}]",
+        options.part_index,
+        options.chain_index + 1
+    );
+    let next_node = compile_node(
+        &chain.node,
+        plan,
+        fresh_internal_node_variable(plan, options.part_index, options.chain_index + 1),
+        node_path,
+        context,
+    )?;
+    let next_variable = next_node.variable.clone();
+    let next_label = next_node.label.clone();
+    let relationship_index = plan.relationships.len();
+    let relationship_path = format!(
+        "match.pattern.parts[{}].relationships[{}]",
+        options.part_index, options.chain_index
+    );
+    let force_relationship_variable =
+        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
+    let relationship = compile_relationship(
+        &chain.relationship,
+        (&chain_state.previous_variable, &next_variable),
+        relationship_index,
+        plan,
+        relationship_path,
+        force_relationship_variable,
+        context,
+    )?;
+    plan.predicates.extend(next_node.predicates);
+    if let Some(pattern) = next_node.pattern {
+        mark_graph_variable_in_scope(state, &pattern.variable);
+        plan.nodes.push(pattern);
+    }
+    if relationship.length == 1 {
+        append_single_relationship(
+            relationship,
+            relationship_index,
+            options,
+            plan,
+            state,
+            chain_state,
+        );
+    } else {
+        append_repeated_relationship(
+            &relationship,
+            &next_variable,
+            &next_label,
+            options,
+            plan,
+            state,
+            chain_state,
+        )?;
+    }
+    chain_state.previous_variable = next_variable;
+    chain_state.previous_label = next_label;
+    Ok(())
+}
+
+fn append_single_relationship(
+    relationship: CompiledRelationship,
+    relationship_index: usize,
+    options: PathChainCompileOptions,
+    plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
+    chain_state: &mut PathChainCompileState,
+) {
+    let force_relationship_variable =
+        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
+    plan.predicates.extend(relationship.predicates);
+    let relationship_variable = relationship.pattern.variable.clone();
+    if let Some(variable) = relationship.pattern.variable.as_deref() {
+        mark_graph_variable_in_scope(state, variable);
+    }
+    if options.optional {
+        plan.optional_relationships.push(relationship_index);
+    }
+    plan.relationships.push(relationship.pattern);
+    if force_relationship_variable && let Some(variable) = relationship_variable {
+        record_path_presence_variable(chain_state, variable);
+    }
+}
+
+fn append_repeated_relationship(
+    relationship: &CompiledRelationship,
+    next_variable: &str,
+    next_label: &str,
+    options: PathChainCompileOptions,
+    plan: &mut GraphPlan,
+    state: &mut CypherCompileState,
+    chain_state: &mut PathChainCompileState,
+) -> Result<(), CoreError> {
+    let force_relationship_variable =
+        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
+    if chain_state.previous_label != next_label {
+        return Err(unsupported(
+            format!(
+                "match.pattern.parts[{}].relationships[{}]",
+                options.part_index, options.chain_index
+            ),
+            "fixed-length relationship ranges greater than 1 currently require same-label endpoints so Coral can infer intermediate node mappings",
+        ));
+    }
+    let relationship_variables = append_fixed_length_relationship(
+        plan,
+        state,
+        &relationship.pattern,
+        &relationship.predicates,
+        relationship.length,
+        &FixedLengthExpansion {
+            part_index: options.part_index,
+            chain_index: options.chain_index,
+            left_variable: &chain_state.previous_variable,
+            right_variable: next_variable,
+            node_label: &chain_state.previous_label,
+            optional: options.optional,
+        },
+    );
+    if force_relationship_variable {
+        record_path_presence_variables(chain_state, relationship_variables);
+    }
+    Ok(())
+}
+
+fn record_path_presence_variables(
+    chain_state: &mut PathChainCompileState,
+    relationship_variables: Vec<String>,
+) {
+    if let Some(variable) = relationship_variables.last() {
+        chain_state.path_presence_variable = Some(variable.clone());
+    }
+    chain_state.hidden_path_presence_variables.extend(
+        relationship_variables
+            .into_iter()
+            .filter(|variable| variable.starts_with("__coral_")),
+    );
+}
+
+fn record_path_presence_variable(chain_state: &mut PathChainCompileState, variable: String) {
+    chain_state.path_presence_variable = Some(variable.clone());
+    if variable.starts_with("__coral_") {
+        chain_state.hidden_path_presence_variables.push(variable);
+    }
 }
 
 struct FixedLengthExpansion<'a> {
@@ -4470,8 +4617,9 @@ fn append_fixed_length_relationship(
     predicates: &[PropertyPredicate],
     length: usize,
     expansion: &FixedLengthExpansion<'_>,
-) {
+) -> Vec<String> {
     let mut left = expansion.left_variable.to_string();
+    let mut relationship_variables = Vec::new();
     for hop in 1..=length {
         let right = if hop == length {
             expansion.right_variable.to_string()
@@ -4504,6 +4652,7 @@ fn append_fixed_length_relationship(
                 rebind_property_predicate_variable(predicate, template_variable, hop_variable)
             }));
             mark_graph_variable_in_scope(state, hop_variable);
+            relationship_variables.push(hop_variable.to_string());
         }
         if expansion.optional {
             plan.optional_relationships.push(relationship_index);
@@ -4511,6 +4660,7 @@ fn append_fixed_length_relationship(
         plan.relationships.push(pattern);
         left = right;
     }
+    relationship_variables
 }
 
 fn rebind_property_predicate_variable(
@@ -4525,13 +4675,12 @@ fn rebind_property_predicate_variable(
     predicate
 }
 
-fn validate_ignored_path_variable(
+fn validate_path_variable_binding(
     pattern_part: &PatternPart,
     plan: &GraphPlan,
-    state: &mut CypherCompileState,
-    optional: bool,
+    state: &CypherCompileState,
     path: impl Into<String>,
-) -> Result<(), CoreError> {
+) -> Result<Option<PendingPathBinding>, CoreError> {
     let path = path.into();
     let anonymous_variables = anonymous_pattern_variables(pattern_part);
     if let Some(conflict) = anonymous_variables
@@ -4545,7 +4694,7 @@ fn validate_ignored_path_variable(
     }
 
     let Some(variable) = pattern_part.variable.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     let name = validate_variable(variable)?;
     if plan_uses_variable(plan, &name)
@@ -4558,45 +4707,23 @@ fn validate_ignored_path_variable(
         ));
     }
     let length = path_pattern_length(pattern_part, &path)?;
-    let presence_variable = optional_path_presence_variable(pattern_part, optional, &path)?;
+    Ok(Some(PendingPathBinding { name, length }))
+}
+
+fn bind_path_variable(
+    state: &mut CypherCompileState,
+    pending: PendingPathBinding,
+    optional: bool,
+    presence_variable: Option<String>,
+) {
     state.path_variables.insert(
-        name,
+        pending.name,
         PathBinding {
-            length,
+            length: pending.length,
             optional,
             presence_variable,
         },
     );
-    Ok(())
-}
-
-fn optional_path_presence_variable(
-    pattern_part: &PatternPart,
-    optional: bool,
-    path: &str,
-) -> Result<Option<String>, CoreError> {
-    if !optional {
-        return Ok(None);
-    }
-    let PatternElement::Path { chains, .. } = &pattern_part.anonymous.element else {
-        return Ok(None);
-    };
-    let Some(chain) = chains.last() else {
-        return Ok(None);
-    };
-    chain
-        .relationship
-        .detail
-        .as_ref()
-        .and_then(|detail| detail.variable.as_ref())
-        .map(validate_variable)
-        .transpose()
-        .map_err(|error| {
-            unsupported(
-                format!("{path}.anonymous.relationships"),
-                format!("invalid optional path presence relationship variable: {error}"),
-            )
-        })
 }
 
 fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, CoreError> {
@@ -4759,6 +4886,7 @@ fn compile_relationship(
     index: usize,
     plan: &GraphPlan,
     path: impl Into<String>,
+    force_variable: bool,
     context: &CypherCompileContext,
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
@@ -4797,10 +4925,8 @@ fn compile_relationship(
         .map(validate_variable)
         .transpose()?
         .or_else(|| {
-            detail
-                .properties
-                .as_ref()
-                .map(|_| fresh_internal_relationship_variable(plan, right, index))
+            (force_variable || detail.properties.is_some())
+                .then(|| fresh_internal_relationship_variable(plan, right, index))
         });
     let predicates = match (&detail.properties, &variable) {
         (Some(properties), Some(variable)) => {
@@ -5593,7 +5719,7 @@ fn compile_path_length_scalar_expression(
         let Some(presence_variable) = binding.presence_variable.clone() else {
             return Err(unsupported(
                 format!("{arguments_path}[0]"),
-                "length() over an OPTIONAL MATCH path requires the path's final relationship to be named so null-preserving path length can be gated",
+                "length() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path length can be gated",
             ));
         };
         return Ok(presence_gate_scalar_expression(
@@ -12142,19 +12268,71 @@ mod tests {
     }
 
     #[test]
-    fn rejects_length_over_anonymous_optional_path_variable() {
-        let error = compile_cypher(
+    fn compiles_length_over_anonymous_optional_path_variable() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              OPTIONAL MATCH path = (service)-[:DEPENDS_ON]->(target:Service) \
-             RETURN service.name AS service, length(path) AS path_length",
+             RETURN service.name AS service, length(path) AS path_length \
+             ORDER BY length(path)",
         )
-        .expect_err("anonymous optional path length should reject without a presence variable");
+        .expect("anonymous optional path length should compile with an internal presence variable");
+
+        let presence_variable = plan
+            .relationships
+            .first()
+            .expect("anonymous optional relationship should compile")
+            .variable
+            .as_ref()
+            .expect("anonymous optional relationship should receive an internal variable")
+            .clone();
+        assert!(presence_variable.starts_with("__coral_rel_"));
+        let expected = ScalarExpression::PresenceGated {
+            presence_variable,
+            expression: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        };
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: expected.clone(),
+                alias: "path_length".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn anonymous_optional_path_presence_bindings_stay_hidden_from_with_scope() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[:DEPENDS_ON]->(target:Service) \
+             WITH service \
+             RETURN service.name AS service",
+        )
+        .expect("transparent WITH should not require generated optional path bindings");
 
         assert!(
-            error
-                .to_string()
-                .contains("requires the path's final relationship to be named"),
-            "{error}"
+            plan.relationships
+                .iter()
+                .filter_map(|relationship| relationship.variable.as_deref())
+                .any(|variable| variable.starts_with("__coral_rel_")),
+            "anonymous optional path should still have an internal presence binding"
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }]
         );
     }
 

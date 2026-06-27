@@ -1077,7 +1077,7 @@ async fn cypher_path_length_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
-async fn cypher_named_optional_path_length_preserves_unmatched_nulls() {
+async fn cypher_anonymous_optional_path_length_preserves_unmatched_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
@@ -1088,12 +1088,12 @@ async fn cypher_named_optional_path_length_preserves_unmatched_nulls() {
         test_runtime(),
         &graph,
         "MATCH (source:Service) \
-         OPTIONAL MATCH path = (source)-[dependency:DEPENDS_ON]->(target:Service) \
+         OPTIONAL MATCH path = (source)-[:DEPENDS_ON]->(target:Service) \
          RETURN source.name AS source, target.name AS target, length(path) AS hops \
          ORDER BY source, target",
     )
     .await
-    .expect("named optional path length query should execute");
+    .expect("anonymous optional path length query should execute");
 
     assert!(
         execution.translated_sql().contains("CASE WHEN")
