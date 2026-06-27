@@ -1802,6 +1802,81 @@ async fn cypher_count_subqueries_support_uncorrelated_relationship_matches() {
 }
 
 #[tokio::test]
+async fn cypher_count_subqueries_support_scoped_scalar_property_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team) \
+         RETURN team.name AS team, \
+                COUNT { MATCH (service:Service) WHERE service.active = false } AS inactive_services, \
+                COUNT { MATCH (service:Service) WHERE service.risk > 0.8 } AS high_risk_services \
+         ORDER BY team",
+    )
+    .await
+    .expect("Cypher COUNT subquery scoped scalar predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_count_n0\".\"risk_score\" > 0.8"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"team": "analytics", "inactive_services": 2, "high_risk_services": 2}),
+            json!({"team": "infra", "inactive_services": 2, "high_risk_services": 2}),
+            json!({"team": "platform", "inactive_services": 2, "high_risk_services": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_scoped_scalar_property_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+           WHERE dependency.risk < 0.3 \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS subquery scoped scalar predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"risk_score\" < 0.3"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
