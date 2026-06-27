@@ -818,6 +818,18 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_scalar_expression_variables(left, variables);
                 Self::collect_scalar_expression_variables(right, variables);
             }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                for alternative in alternatives {
+                    Self::collect_predicate_expression_variables(&alternative.when, variables);
+                    Self::collect_scalar_expression_variables(&alternative.then, variables);
+                }
+                if let Some(else_expression) = else_expression {
+                    Self::collect_scalar_expression_variables(else_expression, variables);
+                }
+            }
         }
     }
 
@@ -1069,6 +1081,31 @@ impl<'a> GraphPlanValidator<'a> {
                     optional_variables,
                     format!("{path}.right"),
                 )
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                for (index, alternative) in alternatives.iter().enumerate() {
+                    Self::validate_predicate_expression_not_optional(
+                        &alternative.when,
+                        optional_variables,
+                        format!("{path}.alternatives[{index}].when"),
+                    )?;
+                    Self::validate_scalar_expression_not_optional(
+                        &alternative.then,
+                        optional_variables,
+                        format!("{path}.alternatives[{index}].then"),
+                    )?;
+                }
+                if let Some(else_expression) = else_expression {
+                    Self::validate_scalar_expression_not_optional(
+                        else_expression,
+                        optional_variables,
+                        format!("{path}.else"),
+                    )?;
+                }
+                Ok(())
             }
         }
     }
@@ -2170,6 +2207,33 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Arithmetic { left, right, .. } => {
                 self.validate_scalar_expression(left, format!("{path}.left"))?;
                 self.validate_scalar_expression(right, format!("{path}.right"))
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                if alternatives.is_empty() {
+                    return Err(Diagnostic::new(
+                        "INVALID_SCALAR_EXPRESSION",
+                        path,
+                        "CASE expressions require at least one WHEN/THEN alternative",
+                    )
+                    .into_core_error());
+                }
+                for (index, alternative) in alternatives.iter().enumerate() {
+                    self.validate_predicate_expression(
+                        &alternative.when,
+                        format!("{path}.alternatives[{index}].when"),
+                    )?;
+                    self.validate_scalar_expression(
+                        &alternative.then,
+                        format!("{path}.alternatives[{index}].then"),
+                    )?;
+                }
+                if let Some(else_expression) = else_expression {
+                    self.validate_scalar_expression(else_expression, format!("{path}.else"))?;
+                }
+                Ok(())
             }
         }
     }

@@ -1431,6 +1431,31 @@ impl<'a> Lowerer<'a> {
                 render_arithmetic_operator(*operator),
                 self.render_scalar_expression(right)?
             )),
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                let mut sql = String::from("CASE");
+                for alternative in alternatives {
+                    write!(
+                        &mut sql,
+                        " WHEN {} THEN {}",
+                        self.render_predicate_expression(&alternative.when)?,
+                        self.render_scalar_expression(&alternative.then)?
+                    )
+                    .map_err(|error| CoreError::internal(error.to_string()))?;
+                }
+                if let Some(else_expression) = else_expression {
+                    write!(
+                        &mut sql,
+                        " ELSE {}",
+                        self.render_scalar_expression(else_expression)?
+                    )
+                    .map_err(|error| CoreError::internal(error.to_string()))?;
+                }
+                sql.push_str(" END");
+                Ok(sql)
+            }
         }
     }
 }

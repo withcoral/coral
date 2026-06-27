@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
-    BinaryOperator as CypherBinaryOperator, ComparisonOperator as CypherComparisonOperator,
-    Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral,
-    Parameter as CypherParameter, UnaryOperator,
+    BinaryOperator as CypherBinaryOperator, CaseExpression,
+    ComparisonOperator as CypherComparisonOperator, Expression, FunctionInvocation,
+    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, UnaryOperator,
 };
 use decypher::ast::names::Variable;
 use decypher::ast::pattern::{
@@ -28,7 +28,8 @@ use super::ir::{
     OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
     PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
     ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -1081,6 +1082,7 @@ fn compile_order_expression(
         Expression::BinaryOp { .. } => {
             compile_arithmetic_order_expression(expression, path, context)
         }
+        Expression::Case(case) => compile_case_order_expression(case, path, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
@@ -1382,6 +1384,7 @@ fn compile_projection(
             compile_arithmetic_projection(item, path, context)
         }
         Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, context),
+        Expression::Case(case) => compile_case_projection(case, item, path, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
@@ -1508,6 +1511,22 @@ fn compile_arithmetic_projection(
             .alias
             .as_ref()
             .map_or_else(|| "expression".to_string(), variable_name),
+    })
+}
+
+fn compile_case_projection(
+    case: &CaseExpression,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_case_scalar_expression(case, format!("{path}.expression"), context)?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "case".to_string(), variable_name),
     })
 }
 
@@ -1922,6 +1941,7 @@ fn compile_scalar_expression(
                 context,
             )?),
         }),
+        Expression::Case(case) => compile_case_scalar_expression(case, path, context),
         Expression::FunctionCall(function) if is_coalesce_function(function) => {
             compile_coalesce_scalar_expression(function, path, context)
         }
@@ -2149,6 +2169,14 @@ fn compile_arithmetic_order_expression(
     compile_scalar_expression(expression, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_case_order_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_case_scalar_expression(case, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_to_string_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2245,6 +2273,7 @@ fn compile_optional_predicate_scalar_expression(
         Expression::BinaryOp { .. } => {
             Ok(Some(compile_scalar_expression(expression, path, context)?))
         }
+        Expression::Case(case) => Ok(Some(compile_case_scalar_expression(case, path, context)?)),
         Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
             compile_to_string_scalar_expression(function, path, context)?,
         )),
@@ -2294,6 +2323,9 @@ fn compile_scalar_predicate_rhs(
         }
         Expression::BinaryOp { .. } => Ok(ScalarPredicateRhs::Expression(
             compile_scalar_expression(expression, path, context)?,
+        )),
+        Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
+            compile_case_scalar_expression(case, path, context)?,
         )),
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             Ok(ScalarPredicateRhs::Expression(
@@ -2379,6 +2411,340 @@ fn compile_arithmetic_operator(
             ))
         }
     }
+}
+
+fn compile_case_scalar_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if case.scrutinee.is_some() {
+        return Err(unsupported(
+            format!("{path}.scrutinee"),
+            "generic CASE expressions are not supported yet; use searched CASE WHEN predicates",
+        ));
+    }
+    if case.alternatives.is_empty() {
+        return Err(unsupported(
+            format!("{path}.alternatives"),
+            "CASE expressions require at least one WHEN/THEN alternative",
+        ));
+    }
+
+    let alternatives = case
+        .alternatives
+        .iter()
+        .enumerate()
+        .map(|(index, alternative)| {
+            Ok(ScalarCaseAlternative {
+                when: compile_case_predicate_expression(
+                    &alternative.when,
+                    format!("{path}.alternatives[{index}].when"),
+                    context,
+                )?,
+                then: compile_scalar_expression(
+                    &alternative.then,
+                    format!("{path}.alternatives[{index}].then"),
+                    context,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let else_expression = case
+        .default
+        .as_ref()
+        .map(|expression| {
+            compile_scalar_expression(expression, format!("{path}.default"), context).map(Box::new)
+        })
+        .transpose()?;
+
+    Ok(ScalarExpression::Case {
+        alternatives,
+        else_expression,
+    })
+}
+
+fn compile_case_predicate_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_case_predicate_expression(inner, path, context),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::And,
+            lhs,
+            rhs,
+            ..
+        } => Ok(PredicateExpression::And {
+            left: Box::new(compile_case_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
+            right: Box::new(compile_case_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+                context,
+            )?),
+        }),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Or,
+            lhs,
+            rhs,
+            ..
+        } => Ok(PredicateExpression::Or {
+            left: Box::new(compile_case_predicate_expression(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
+            right: Box::new(compile_case_predicate_expression(
+                rhs,
+                format!("{path}.rhs"),
+                context,
+            )?),
+        }),
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Xor,
+            ..
+        } => Err(unsupported(path, "CASE WHEN XOR is not supported yet")),
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            operand,
+            ..
+        } => Ok(PredicateExpression::Not {
+            expression: Box::new(compile_case_predicate_expression(
+                operand,
+                format!("{path}.operand"),
+                context,
+            )?),
+        }),
+        Expression::Comparison { lhs, operators, .. } => {
+            compile_case_comparison_expression(lhs, operators.as_slice(), path, context)
+        }
+        Expression::In { lhs, rhs, .. } => compile_case_in_predicate(lhs, rhs, path, context),
+        Expression::Literal(CypherLiteral::Boolean(value)) => {
+            Ok(PredicateExpression::Boolean(*value))
+        }
+        Expression::IsNull {
+            operand, negated, ..
+        } => compile_case_null_predicate(operand, *negated, path, context),
+        Expression::FunctionCall(function) if is_exists_function(function) => Ok(
+            PredicateExpression::Comparison(compile_exists_predicate(function, path)?),
+        ),
+        Expression::PropertyLookup { .. } => {
+            Ok(PredicateExpression::Comparison(PropertyPredicate {
+                property: compile_property_ref(expression, path)?,
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::Boolean(true)),
+            }))
+        }
+        _ => Err(unsupported(
+            path,
+            "CASE WHEN predicates support property/scalar comparisons, IN literal lists, null checks, exists(property), boolean literals, and AND/OR/NOT",
+        )),
+    }
+}
+
+fn compile_case_comparison_expression(
+    lhs: &Expression,
+    operators: &[(CypherComparisonOperator, Box<Expression>)],
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    if operators.is_empty() {
+        return Err(unsupported(path, "comparison must include an operator"));
+    }
+
+    let (prefix, mut current_lhs) =
+        compile_case_comparison_prefix(lhs, format!("{path}.lhs"), context)?;
+    let mut expression = prefix;
+    for (index, (operator, rhs)) in operators.iter().enumerate() {
+        let predicate = compile_binary_case_comparison(
+            current_lhs,
+            *operator,
+            rhs,
+            format!("{path}.operators[{index}]"),
+            context,
+        )?;
+        expression = Some(append_expression_conjunct(expression, predicate));
+        current_lhs = rhs;
+    }
+
+    expression.ok_or_else(|| CoreError::internal("CASE comparison expression was empty"))
+}
+
+fn compile_case_comparison_prefix<'a>(
+    expression: &'a Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<(Option<PredicateExpression>, &'a Expression), CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_case_comparison_prefix(inner, path, context),
+        Expression::Comparison { lhs, operators, .. } => Ok((
+            Some(compile_case_comparison_expression(
+                lhs,
+                operators.as_slice(),
+                path,
+                context,
+            )?),
+            terminal_comparison_operand(lhs, operators.as_slice()),
+        )),
+        _ => Ok((None, expression)),
+    }
+}
+
+fn compile_binary_case_comparison(
+    lhs: &Expression,
+    operator: CypherComparisonOperator,
+    rhs: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let operator = compile_comparison_operator(operator, format!("{path}.operator"))?;
+    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator,
+            rhs: compile_case_predicate_rhs(rhs, format!("{path}.rhs"), context)?,
+        }));
+    }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator,
+            rhs: compile_scalar_predicate_rhs(rhs, format!("{path}.rhs"), context)?,
+        }));
+    }
+    if let Some(property) = compile_optional_property_ref(rhs, format!("{path}.rhs"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: PredicateRhs::Literal(compile_literal(lhs, format!("{path}.lhs"), context)?),
+        }));
+    }
+    if let Some(rhs) =
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: rhs,
+            operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+            rhs: compile_scalar_predicate_rhs(lhs, format!("{path}.lhs"), context)?,
+        }));
+    }
+    if is_literal_expression(lhs) && is_literal_expression(rhs) {
+        let lhs = compile_literal(lhs, format!("{path}.lhs"), context)?;
+        let rhs = compile_literal(rhs, format!("{path}.rhs"), context)?;
+        return Ok(PredicateExpression::Boolean(
+            evaluate_literal_only_comparison(&lhs, operator, &rhs, path)?,
+        ));
+    }
+
+    Err(unsupported(
+        path,
+        "CASE WHEN comparisons must include at least one variable.property or supported scalar expression operand",
+    ))
+}
+
+fn compile_case_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateRhs, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_case_predicate_rhs(inner, path, context),
+        Expression::PropertyLookup { .. } => Ok(PredicateRhs::Property(compile_property_ref(
+            expression, path,
+        )?)),
+        expression if is_literal_expression(expression) => Ok(PredicateRhs::Literal(
+            compile_literal(expression, path, context)?,
+        )),
+        _ => Err(unsupported(
+            path,
+            "CASE WHEN property comparisons support property, scalar literal, and scalar parameter right-hand sides",
+        )),
+    }
+}
+
+fn compile_case_in_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
+    if let Some(property) = compile_optional_property_ref(lhs, format!("{path}.lhs"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::List(literals),
+        }));
+    }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator: ComparisonOperator::In,
+            rhs: ScalarPredicateRhs::List(literals),
+        }));
+    }
+    if is_literal_expression(lhs) {
+        let literal = compile_literal(lhs, format!("{path}.lhs"), context)?;
+        return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
+            &literal, &literals, path,
+        )?));
+    }
+
+    Err(unsupported(
+        format!("{path}.lhs"),
+        "CASE WHEN IN predicates require variable.property or supported scalar expression left-hand sides",
+    ))
+}
+
+fn compile_case_null_predicate(
+    operand: &Expression,
+    negated: bool,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let operator = if negated {
+        ComparisonOperator::NotEqual
+    } else {
+        ComparisonOperator::Equal
+    };
+    if let Some(property) = compile_optional_property_ref(operand, format!("{path}.operand"))? {
+        return Ok(PredicateExpression::Comparison(PropertyPredicate {
+            property,
+            operator,
+            rhs: PredicateRhs::Literal(Literal::Null),
+        }));
+    }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(operand, format!("{path}.operand"), context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+        }));
+    }
+
+    Err(unsupported(
+        format!("{path}.operand"),
+        "CASE WHEN null checks require variable.property or supported scalar expression operands",
+    ))
 }
 
 fn compile_keys_projection(
@@ -5842,6 +6208,83 @@ mod tests {
                 direction: OrderDirection::Ascending,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_searched_case_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN CASE \
+                      WHEN service.risk >= 0.75 THEN 'high' \
+                      WHEN service.active AND service.tier = 'prod' THEN 'watch' \
+                      ELSE 'normal' \
+                    END AS risk_band \
+             ORDER BY CASE WHEN service.active THEN 0 ELSE 1 END",
+        )
+        .expect("searched CASE scalar expressions should compile");
+
+        let [
+            Projection::Expression {
+                expression:
+                    ScalarExpression::Case {
+                        alternatives,
+                        else_expression,
+                    },
+                alias,
+            },
+        ] = plan.projections.as_slice()
+        else {
+            panic!("expected CASE expression projection");
+        };
+        assert_eq!(alias, "risk_band");
+        let [high_alternative, watch_alternative] = alternatives.as_slice() else {
+            panic!("expected two CASE alternatives");
+        };
+        assert!(matches!(
+            &high_alternative.when,
+            PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef { variable, property },
+                operator: ComparisonOperator::GreaterThanOrEqual,
+                rhs: PredicateRhs::Literal(Literal::Float(_)),
+            }) if variable == "service" && property == "risk"
+        ));
+        assert_eq!(
+            high_alternative.then,
+            ScalarExpression::Literal(Literal::String("high".to_string()))
+        );
+        assert!(matches!(
+            &watch_alternative.when,
+            PredicateExpression::And { .. }
+        ));
+        assert_eq!(
+            else_expression.as_deref(),
+            Some(&ScalarExpression::Literal(Literal::String(
+                "normal".to_string()
+            )))
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_generic_case_scalar_expressions() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN CASE service.tier WHEN 'prod' THEN 'production' ELSE 'other' END AS tier",
+        )
+        .expect_err("generic CASE should be rejected until equality semantics are modeled");
+
+        assert!(
+            error
+                .to_string()
+                .contains("generic CASE expressions are not supported yet"),
+            "{error}"
+        );
     }
 
     #[test]

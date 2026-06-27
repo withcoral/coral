@@ -209,6 +209,13 @@ pub enum ScalarExpression {
         /// Right operand.
         right: Box<ScalarExpression>,
     },
+    /// Searched CASE expression.
+    Case {
+        /// Ordered WHEN/THEN alternatives.
+        alternatives: Vec<ScalarCaseAlternative>,
+        /// Optional ELSE fallback.
+        else_expression: Option<Box<ScalarExpression>>,
+    },
 }
 
 /// Numeric binary arithmetic operator.
@@ -224,6 +231,15 @@ pub enum ArithmeticOperator {
     Divide,
     /// Modulo.
     Modulo,
+}
+
+/// One searched CASE WHEN/THEN branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScalarCaseAlternative {
+    /// Predicate tested by the WHEN clause.
+    pub when: PredicateExpression,
+    /// Scalar expression returned by the THEN clause.
+    pub then: ScalarExpression,
 }
 
 /// Projection in the shared graph IR.
