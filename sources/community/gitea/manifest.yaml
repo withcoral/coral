@@ -45,19 +45,17 @@ tables:
         - name: q
           from: filter
           key: query
-        - name: limit
-          from: pagination
-          key: limit
-        - name: page
-          from: pagination
-          key: page
     response:
       row_strategy: direct
-      root_key: data
+      rows_path: [data]
     pagination:
       mode: page
-      page_key: page
-      limit_key: limit
+      page_start: 1
+      page_param: page
+      page_size:
+        query_param: limit
+        default: 50
+        max: 50
     columns:
       - name: query
         type: Utf8
@@ -129,19 +127,16 @@ tables:
     request:
       method: GET
       path: /user/orgs
-      query:
-        - name: limit
-          from: pagination
-          key: limit
-        - name: page
-          from: pagination
-          key: page
     response:
       row_strategy: direct
     pagination:
       mode: page
-      page_key: page
-      limit_key: limit
+      page_start: 1
+      page_param: page
+      page_size:
+        query_param: limit
+        default: 50
+        max: 50
     columns:
       - name: id
         type: Int64
@@ -179,7 +174,21 @@ tables:
     filters:
       - name: query
         required: false
+      - name: sort
+        required: false
+      - name: order
+        required: false
+      - name: visibility
+        required: false
+      - name: is_active
+        required: false
       - name: is_admin
+        required: false
+      - name: is_restricted
+        required: false
+      - name: is_2fa_enabled
+        required: false
+      - name: is_prohibit_login
         required: false
     request:
       method: GET
@@ -188,34 +197,65 @@ tables:
         - name: q
           from: filter
           key: query
-        - name: admins
+        - name: sort
           from: filter
+          key: sort
+        - name: order
+          from: filter
+          key: order
+        - name: visibility
+          from: filter
+          key: visibility
+        - name: is_active
+          from: filter_bool
+          key: is_active
+        - name: is_admin
+          from: filter_bool
           key: is_admin
-        - name: limit
-          from: pagination
-          key: limit
-        - name: page
-          from: pagination
-          key: page
+        - name: is_restricted
+          from: filter_bool
+          key: is_restricted
+        - name: is_2fa_enabled
+          from: filter_bool
+          key: is_2fa_enabled
+        - name: is_prohibit_login
+          from: filter_bool
+          key: is_prohibit_login
     response:
       row_strategy: direct
     pagination:
       mode: page
-      page_key: page
-      limit_key: limit
+      page_start: 1
+      page_param: page
+      page_size:
+        query_param: limit
+        default: 50
+        max: 50
     columns:
       - name: query
         type: Utf8
         nullable: true
         virtual: true
-        description: User search query filter.
+        description: User search query filter (matches username, full name, or email).
         expr: {kind: from_filter, key: query}
-      - name: is_admin_filter
+      - name: sort
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort attribute filter (name, created, updated, id). Default name.
+        expr: {kind: from_filter, key: sort}
+      - name: order
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Sort order filter (asc or desc).
+        expr: {kind: from_filter, key: order}
+      - name: is_2fa_enabled
         type: Boolean
         nullable: true
         virtual: true
-        description: Filter limiting results to administrator accounts.
-        expr: {kind: from_filter, key: is_admin}
+        description: Filter limiting results to users with two-factor auth enabled.
+        expr: {kind: from_filter, key: is_2fa_enabled}
       - name: id
         type: Int64
         nullable: false
@@ -236,11 +276,31 @@ tables:
         nullable: true
         description: Email address configured on the profile.
         expr: {kind: path, path: [email]}
+      - name: visibility
+        type: Utf8
+        nullable: true
+        description: Account visibility (public, limited, or private). Also a pushdown filter.
+        expr: {kind: path, path: [visibility]}
       - name: is_admin
         type: Boolean
         nullable: true
-        description: Whether this user has server-wide administrative rights.
+        description: Whether this user has server-wide administrative rights. Also a pushdown filter.
         expr: {kind: path, path: [is_admin]}
+      - name: is_active
+        type: Boolean
+        nullable: true
+        description: Whether the account is active. Also a pushdown filter.
+        expr: {kind: path, path: [active]}
+      - name: is_restricted
+        type: Boolean
+        nullable: true
+        description: Whether the account is restricted. Also a pushdown filter.
+        expr: {kind: path, path: [restricted]}
+      - name: is_prohibit_login
+        type: Boolean
+        nullable: true
+        description: Whether the account is prohibited from logging in. Also a pushdown filter.
+        expr: {kind: path, path: [prohibit_login]}
       - name: last_login
         type: Timestamp
         nullable: true
@@ -249,3 +309,11 @@ tables:
           kind: format_timestamp
           input: iso8601
           expr: {kind: path, path: [last_login]}
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Timestamp tracking when the account was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr: {kind: path, path: [created]}
