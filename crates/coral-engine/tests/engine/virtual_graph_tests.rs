@@ -394,6 +394,30 @@ async fn cypher_multihop_paths_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_anonymous_labeled_nodes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (:Service {tier: 'prod'})-[:DEPENDS_ON {criticality: 'runtime'}]->(dependency:Service) \
+         RETURN dependency.name AS dependency \
+         ORDER BY dependency",
+    )
+    .await
+    .expect("anonymous labeled node query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"dependency": "deployments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_transparent_with_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

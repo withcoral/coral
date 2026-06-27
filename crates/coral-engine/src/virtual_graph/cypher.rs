@@ -849,6 +849,7 @@ fn compile_match_into(
         let start_node = compile_node(
             start,
             plan,
+            fresh_internal_node_variable(plan, part_index, 0),
             format!("match.pattern.parts[{part_index}].nodes[0]"),
             context,
         )?;
@@ -863,7 +864,13 @@ fn compile_match_into(
                 "match.pattern.parts[{part_index}].nodes[{}]",
                 chain_index + 1
             );
-            let next_node = compile_node(&chain.node, plan, node_path, context)?;
+            let next_node = compile_node(
+                &chain.node,
+                plan,
+                fresh_internal_node_variable(plan, part_index, chain_index + 1),
+                node_path,
+                context,
+            )?;
             let next_variable = next_node.variable.clone();
             let relationship_index = plan.relationships.len();
             let relationship_path =
@@ -918,12 +925,23 @@ fn node_pattern_uses_bound_variable(
 fn compile_node(
     pattern: &CypherNodePattern,
     plan: &GraphPlan,
+    anonymous_variable: String,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<CompiledNode, CoreError> {
     let path = path.into();
-    let variable = required_variable(pattern.variable.as_ref(), format!("{path}.variable"))?;
+    let is_anonymous = pattern.variable.is_none();
+    let variable = match pattern.variable.as_ref() {
+        Some(variable) => validate_variable(variable)?,
+        None => anonymous_variable,
+    };
     let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
+    if is_anonymous && label.is_none() {
+        return Err(unsupported(
+            format!("{path}.labels"),
+            "anonymous node patterns require exactly one static label",
+        ));
+    }
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
         |properties| {
@@ -4451,16 +4469,6 @@ fn invert_comparison_operator(
     }
 }
 
-fn required_variable(
-    variable: Option<&Variable>,
-    path: impl Into<String>,
-) -> Result<String, CoreError> {
-    variable
-        .map(validate_variable)
-        .transpose()?
-        .ok_or_else(|| unsupported(path, "node variables are required"))
-}
-
 fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
     let name = variable_name(variable);
     if name.starts_with("__coral_") {
@@ -4470,6 +4478,21 @@ fn validate_variable(variable: &Variable) -> Result<String, CoreError> {
         ));
     }
     Ok(name)
+}
+
+fn fresh_internal_node_variable(plan: &GraphPlan, part_index: usize, node_index: usize) -> String {
+    let mut suffix = 0;
+    loop {
+        let candidate = if suffix == 0 {
+            format!("__coral_node_{part_index}_{node_index}")
+        } else {
+            format!("__coral_node_{part_index}_{node_index}_{suffix}")
+        };
+        if !plan_uses_variable(plan, &candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn fresh_internal_relationship_variable(
@@ -7460,6 +7483,45 @@ mod tests {
     #[test]
     fn rejects_unlabeled_first_node_binding() {
         assert_unsupported("MATCH (source)-[:DEPENDS_ON]->(target:Service) RETURN target.name");
+    }
+
+    #[test]
+    fn compiles_anonymous_labeled_node_patterns() {
+        let plan = compile_cypher(
+            "MATCH (:Service {tier: 'prod'})-[:DEPENDS_ON]->(target:Service) \
+             RETURN target.name",
+        )
+        .expect("anonymous labeled node pattern should compile");
+
+        assert_eq!(plan.nodes.len(), 2);
+        let anonymous_node = plan.nodes.first().expect("anonymous node should exist");
+        let target_node = plan.nodes.get(1).expect("target node should exist");
+        let relationship = plan
+            .relationships
+            .first()
+            .expect("relationship should exist");
+        let anonymous_variable = &anonymous_node.variable;
+        assert!(anonymous_variable.starts_with("__coral_node_"));
+        assert_eq!(anonymous_node.label, "Service");
+        assert_eq!(target_node.variable, "target");
+        assert_eq!(relationship.left, anonymous_variable.as_str());
+        assert_eq!(relationship.right, "target");
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: anonymous_variable.clone(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_unlabeled_anonymous_node_patterns() {
+        assert_unsupported("MATCH ()-[:DEPENDS_ON]->(target:Service) RETURN target.name");
     }
 
     #[test]

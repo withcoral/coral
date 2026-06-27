@@ -52,7 +52,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Cypher parser | Supported foundation | `decypher` AST frontend compiles to shared IR, not directly to SQL |
 | Single `MATCH ... RETURN` | Supported foundation | One non-optional MATCH clause with one or more connected pattern parts |
 | Comma-separated `MATCH` patterns | Supported foundation | Supported when parts are connected by reused node variables |
-| Labeled node patterns | Supported foundation | Requires named node variables; first binding needs exactly one static label, repeated bindings may omit the label |
+| Labeled node patterns | Supported foundation | Named node variables are supported; anonymous node patterns are supported when they declare exactly one static label; first named binding needs exactly one static label and repeated named bindings may omit the label |
 | Typed directed relationships | Supported foundation | Requires one static relationship type |
 | Undirected relationships | Supported foundation | Lowers to orientation-aware joins; same-label relationships use disjunctive endpoint conditions; inverse overloaded mappings that both match are rejected as ambiguous |
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
