@@ -1149,6 +1149,13 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::RelationshipType { variable, .. } => {
                 variables.insert(variable.as_str());
             }
+            ScalarExpression::PresenceGated {
+                presence_variable,
+                expression,
+            } => {
+                variables.insert(presence_variable.as_str());
+                Self::collect_scalar_expression_variables(expression, variables);
+            }
             ScalarExpression::Coalesce { expressions } => {
                 for expression in expressions {
                     Self::collect_scalar_expression_variables(expression, variables);
@@ -1607,6 +1614,21 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::GraphPresence { variable }
             | ScalarExpression::RelationshipType { variable, .. } => {
                 Self::validate_variable_not_optional(variable, optional_variables, path)
+            }
+            ScalarExpression::PresenceGated {
+                presence_variable,
+                expression,
+            } => {
+                Self::validate_variable_not_optional(
+                    presence_variable,
+                    optional_variables,
+                    format!("{path}.presence_variable"),
+                )?;
+                Self::validate_scalar_expression_not_optional(
+                    expression,
+                    optional_variables,
+                    format!("{path}.expression"),
+                )
             }
             ScalarExpression::Coalesce { expressions } => {
                 Self::validate_coalesce_expression_not_optional(
@@ -3667,6 +3689,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::PresenceGated { .. }
             | ScalarExpression::RelationshipType { .. } => {
                 self.infer_atomic_scalar_type(expression, &path)
             }
@@ -3718,6 +3741,13 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::GraphPresence { variable } => {
                 self.validate_graph_presence_projection(variable, path)?;
                 Ok(ScalarType::String)
+            }
+            ScalarExpression::PresenceGated {
+                presence_variable,
+                expression,
+            } => {
+                self.validate_graph_presence_projection(presence_variable, path)?;
+                self.infer_scalar_expression_type(expression, format!("{path}.expression"))
             }
             ScalarExpression::RelationshipType {
                 variable,

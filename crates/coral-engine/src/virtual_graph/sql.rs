@@ -2652,17 +2652,16 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::GraphPresence { variable } => {
                 self.render_binding_graph_presence_ref(variable)
             }
+            ScalarExpression::PresenceGated {
+                presence_variable,
+                expression,
+            } => self.render_presence_gated_scalar_expression(presence_variable, expression),
             ScalarExpression::RelationshipType {
                 variable,
                 relationship_type,
             } => self.render_relationship_type_ref(variable, relationship_type),
             ScalarExpression::Coalesce { expressions } => {
-                let rendered = expressions
-                    .iter()
-                    .map(|expression| self.render_scalar_expression(expression))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(", ");
-                Ok(format!("COALESCE({rendered})"))
+                self.render_coalesce_expression(expressions)
             }
             ScalarExpression::NullIf { expression, value } => Ok(format!(
                 "NULLIF({}, {})",
@@ -2730,6 +2729,18 @@ impl<'a> Lowerer<'a> {
                 else_expression,
             } => self.render_case_expression(alternatives, else_expression.as_deref()),
         }
+    }
+
+    fn render_coalesce_expression(
+        &self,
+        expressions: &[ScalarExpression],
+    ) -> Result<String, CoreError> {
+        let rendered = expressions
+            .iter()
+            .map(|expression| self.render_scalar_expression(expression))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(", ");
+        Ok(format!("COALESCE({rendered})"))
     }
 
     fn render_simple_scalar_expression(
@@ -2999,6 +3010,18 @@ impl<'a> Lowerer<'a> {
         }
         sql.push_str(" END");
         Ok(sql)
+    }
+
+    fn render_presence_gated_scalar_expression(
+        &self,
+        presence_variable: &str,
+        expression: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        let presence = self.render_binding_presence_ref(presence_variable)?;
+        let expression = self.render_scalar_expression(expression)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE {expression} END"
+        ))
     }
 }
 

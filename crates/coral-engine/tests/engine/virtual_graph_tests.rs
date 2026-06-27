@@ -8215,6 +8215,55 @@ async fn cypher_element_id_scalar_expressions_preserve_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_optional_relationship_endpoint_values_preserve_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN service.name AS service, \
+                coalesce(startNode(dependency).name, 'missing') AS source, \
+                endNode(dependency).name AS dependency, \
+                coalesce(elementId(endNode(dependency)), 'missing') AS dependency_id, \
+                CASE WHEN startNode(dependency) IS NULL THEN 'missing' ELSE 'present' END AS source_presence \
+         ORDER BY service, coalesce(endNode(dependency).name, 'zzzz')",
+    )
+    .await
+    .expect("optional endpoint values should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n0\".\"service_name\" END"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"service_name\" END"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "source": "billing-api", "dependency": "deployments", "dependency_id": "20", "source_presence": "present"}),
+            json!({"service": "billing-api", "source": "billing-api", "dependency": "experiments", "dependency_id": "30", "source_presence": "present"}),
+            json!({"service": "deployments", "source": "deployments", "dependency": "experiments", "dependency_id": "30", "source_presence": "present"}),
+            json!({"service": "experiments", "source": "missing", "dependency_id": "missing", "source_presence": "missing"}),
+            json!({"service": "legacy-sync", "source": "missing", "dependency_id": "missing", "source_presence": "missing"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_labels_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

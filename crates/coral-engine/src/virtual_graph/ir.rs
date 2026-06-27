@@ -180,6 +180,15 @@ pub enum ScalarExpression {
         /// Graph variable.
         variable: String,
     },
+    /// Return `expression` only when `presence_variable` is bound. This is used
+    /// for values derived from optional relationships where the endpoint node
+    /// may itself be a mandatory anchor.
+    PresenceGated {
+        /// Graph variable whose binding controls nullability.
+        presence_variable: String,
+        /// Scalar expression to return when the presence variable is bound.
+        expression: Box<ScalarExpression>,
+    },
     /// Static type of a relationship variable, preserving null for unmatched
     /// optional relationships.
     RelationshipType {
