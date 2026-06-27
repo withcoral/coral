@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use graphql_parser::query::{
-    Definition, Field, OperationDefinition, Selection, SelectionSet, Value, VariableDefinition,
+    Definition, Directive, Field, FragmentDefinition, FragmentSpread, InlineFragment,
+    OperationDefinition, Selection, SelectionSet, TypeCondition, Value, VariableDefinition,
     parse_query,
 };
 use ordered_float::OrderedFloat;
@@ -25,19 +26,22 @@ pub enum GraphqlVariableValue {
     List(Vec<Literal>),
 }
 
-struct GraphqlCompileContext<'a> {
-    variables: &'a BTreeMap<String, GraphqlVariableValue>,
+struct GraphqlCompileContext<'variables, 'query> {
+    variables: &'variables BTreeMap<String, GraphqlVariableValue>,
     declared_variables: BTreeSet<String>,
+    fragments: BTreeMap<String, FragmentDefinition<'query, String>>,
 }
 
-impl<'a> GraphqlCompileContext<'a> {
+impl<'variables, 'query> GraphqlCompileContext<'variables, 'query> {
     fn new(
-        variables: &'a BTreeMap<String, GraphqlVariableValue>,
+        variables: &'variables BTreeMap<String, GraphqlVariableValue>,
         declared_variables: BTreeSet<String>,
+        fragments: BTreeMap<String, FragmentDefinition<'query, String>>,
     ) -> Self {
         Self {
             variables,
             declared_variables,
+            fragments,
         }
     }
 
@@ -138,35 +142,65 @@ fn compile_document(
     graph: Option<&Declaration>,
     variables: &BTreeMap<String, GraphqlVariableValue>,
 ) -> Result<GraphPlan, CoreError> {
-    let [definition] = document.definitions.as_slice() else {
-        return Err(unsupported(
+    let mut operation = None;
+    let mut fragments = BTreeMap::new();
+    for (index, definition) in document.definitions.iter().enumerate() {
+        match definition {
+            Definition::Operation(next_operation) => {
+                if operation.replace(next_operation).is_some() {
+                    return Err(unsupported(
+                        format!("query.definitions[{index}]"),
+                        "GraphQL virtual graph queries must contain exactly one operation",
+                    ));
+                }
+            }
+            Definition::Fragment(fragment) => {
+                if !fragment.directives.is_empty() {
+                    return Err(unsupported(
+                        format!("query.definitions[{index}].directives"),
+                        "GraphQL fragment definition directives are not supported yet",
+                    ));
+                }
+                if fragments
+                    .insert(fragment.name.clone(), fragment.clone())
+                    .is_some()
+                {
+                    return Err(unsupported(
+                        format!("query.definitions[{index}].name"),
+                        format!(
+                            "GraphQL fragment '{}' is defined more than once",
+                            fragment.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    let operation = operation.ok_or_else(|| {
+        unsupported(
             "query",
             "GraphQL virtual graph queries must contain exactly one operation",
-        ));
-    };
-    match definition {
-        Definition::Operation(operation) => compile_operation(operation, graph, variables),
-        Definition::Fragment(_) => Err(unsupported(
-            "query.definitions[0]",
-            "GraphQL fragments are not supported yet",
-        )),
-    }
+        )
+    })?;
+    compile_operation(operation, graph, variables, fragments)
 }
 
-fn compile_operation(
-    operation: &OperationDefinition<'_, String>,
+fn compile_operation<'query>(
+    operation: &OperationDefinition<'query, String>,
     graph: Option<&Declaration>,
     variables: &BTreeMap<String, GraphqlVariableValue>,
+    fragments: BTreeMap<String, FragmentDefinition<'query, String>>,
 ) -> Result<GraphPlan, CoreError> {
     match operation {
         OperationDefinition::SelectionSet(selection_set) => {
-            let context = GraphqlCompileContext::new(variables, BTreeSet::new());
+            let context = GraphqlCompileContext::new(variables, BTreeSet::new(), fragments);
             compile_root_selection_set(selection_set, graph, "query.selectionSet", &context)
         }
         OperationDefinition::Query(query) => {
             let context = GraphqlCompileContext::new(
                 variables,
                 compile_variable_definitions(&query.variable_definitions)?,
+                fragments,
             );
             if !query.directives.is_empty() {
                 return Err(unsupported(
@@ -214,43 +248,41 @@ fn compile_root_selection_set(
     selection_set: &SelectionSet<'_, String>,
     graph: Option<&Declaration>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
-    let [selection] = selection_set.items.as_slice() else {
+    let mut root_fields = Vec::new();
+    for (index, selection) in selection_set.items.iter().enumerate() {
+        let Selection::Field(field) = selection else {
+            return Err(unsupported(
+                format!("{path}.items[{index}]"),
+                "GraphQL fragments are not supported at the root selection yet",
+            ));
+        };
+        if selection_is_included(
+            &field.directives,
+            format!("{path}.items[{index}].directives"),
+            context,
+        )? {
+            root_fields.push((index, field));
+        }
+    }
+    let [(index, root)] = root_fields.as_slice() else {
         return Err(unsupported(
             path,
-            "GraphQL virtual graph queries must select exactly one root node field",
+            "GraphQL virtual graph queries must select exactly one included root node field",
         ));
     };
-    let Selection::Field(root) = selection else {
-        return Err(unsupported(
-            format!("{path}.items[0]"),
-            "GraphQL fragments are not supported yet",
-        ));
-    };
-    compile_root_field(root, graph, format!("{path}.items[0]"), context)
+    compile_root_field(root, graph, format!("{path}.items[{index}]"), context)
 }
 
 fn compile_root_field(
     root: &Field<'_, String>,
     graph: Option<&Declaration>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
-    if !root.directives.is_empty() {
-        return Err(unsupported(
-            format!("{path}.directives"),
-            "GraphQL field directives are not supported yet",
-        ));
-    }
-    if root.alias.is_some() {
-        return Err(unsupported(
-            format!("{path}.alias"),
-            "GraphQL root field aliases are not supported yet",
-        ));
-    }
     if root.selection_set.items.is_empty() {
         return Err(unsupported(
             format!("{path}.selectionSet"),
@@ -289,6 +321,7 @@ fn compile_root_field(
         },
         format!("{path}.selectionSet"),
         context,
+        &mut Vec::new(),
     )?;
 
     for (index, (name, value)) in root.arguments.iter().enumerate() {
@@ -300,6 +333,13 @@ fn compile_root_field(
             format!("{path}.arguments[{index}]"),
             context,
         )?;
+    }
+
+    if plan.projections.is_empty() {
+        return Err(unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL root node fields must select at least one included property",
+        ));
     }
 
     Ok(plan)
@@ -319,56 +359,202 @@ fn compile_selection_set_into_plan(
     selection_set: &SelectionSet<'_, String>,
     context: &NodeContext,
     path: impl Into<String>,
-    compile_context: &GraphqlCompileContext<'_>,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     for (index, selection) in selection_set.items.iter().enumerate() {
-        let Selection::Field(field) = selection else {
-            return Err(unsupported(
-                format!("{path}.items[{index}]"),
-                "GraphQL fragments are not supported yet",
-            ));
-        };
-        if !field.directives.is_empty() {
-            return Err(unsupported(
-                format!("{path}.items[{index}].directives"),
-                "GraphQL field directives are not supported",
-            ));
-        }
-        if field.name == "_edge" {
-            compile_edge_field(plan, field, context, format!("{path}.items[{index}]"))?;
-        } else if field.selection_set.items.is_empty() {
-            if !field.arguments.is_empty() {
-                return Err(unsupported(
-                    format!("{path}.items[{index}].arguments"),
-                    "GraphQL property field arguments are not supported",
-                ));
+        let item_path = format!("{path}.items[{index}]");
+        match selection {
+            Selection::Field(field) => {
+                if !selection_is_included(
+                    &field.directives,
+                    format!("{item_path}.directives"),
+                    compile_context,
+                )? {
+                    continue;
+                }
+                if field.name == "_edge" {
+                    compile_edge_field(plan, field, context, &item_path, compile_context)?;
+                } else if field.selection_set.items.is_empty() {
+                    compile_property_field(plan, field, context, &item_path)?;
+                } else {
+                    let graph = graph.ok_or_else(|| {
+                        unsupported(
+                            format!("{item_path}.selectionSet"),
+                            "GraphQL relationship nesting requires a graph declaration",
+                        )
+                    })?;
+                    compile_relationship_field(
+                        plan,
+                        graph,
+                        context,
+                        field,
+                        &item_path,
+                        compile_context,
+                        fragment_stack,
+                    )?;
+                }
             }
-            plan.projections.push(Projection::Property {
-                property: PropertyRef {
-                    variable: context.variable.clone(),
-                    property: field.name.clone(),
-                },
-                alias: Some(projection_alias(field, context)),
-            });
-        } else {
-            let graph = graph.ok_or_else(|| {
-                unsupported(
-                    format!("{path}.items[{index}].selectionSet"),
-                    "GraphQL relationship nesting requires a graph declaration",
-                )
-            })?;
-            compile_relationship_field(
+            Selection::FragmentSpread(spread) => compile_fragment_spread(
                 plan,
                 graph,
                 context,
-                field,
-                format!("{path}.items[{index}]"),
+                spread,
+                &item_path,
                 compile_context,
-            )?;
+                fragment_stack,
+            )?,
+            Selection::InlineFragment(fragment) => compile_inline_fragment(
+                plan,
+                graph,
+                context,
+                fragment,
+                &item_path,
+                compile_context,
+                fragment_stack,
+            )?,
         }
     }
     Ok(())
+}
+
+fn compile_property_field(
+    plan: &mut GraphPlan,
+    field: &Field<'_, String>,
+    context: &NodeContext,
+    path: &str,
+) -> Result<(), CoreError> {
+    if !field.arguments.is_empty() {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "GraphQL property field arguments are not supported",
+        ));
+    }
+    if field.name == "__typename" {
+        push_graphql_projection(
+            plan,
+            Projection::Literal {
+                literal: Literal::String(context.label.clone()),
+                alias: projection_alias(field, context),
+            },
+            path,
+        )?;
+        return Ok(());
+    }
+    push_graphql_projection(
+        plan,
+        Projection::Property {
+            property: PropertyRef {
+                variable: context.variable.clone(),
+                property: field.name.clone(),
+            },
+            alias: Some(projection_alias(field, context)),
+        },
+        path,
+    )
+}
+
+fn compile_fragment_spread(
+    plan: &mut GraphPlan,
+    graph: Option<&Declaration>,
+    context: &NodeContext,
+    spread: &FragmentSpread<'_, String>,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    if !selection_is_included(
+        &spread.directives,
+        format!("{path}.directives"),
+        compile_context,
+    )? {
+        return Ok(());
+    }
+    let fragment = compile_context
+        .fragments
+        .get(&spread.fragment_name)
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.name"),
+                format!("unknown GraphQL fragment '{}'", spread.fragment_name),
+            )
+        })?;
+    ensure_fragment_type_condition(
+        Some(&fragment.type_condition),
+        context,
+        format!("{path}.typeCondition"),
+    )?;
+    if fragment_stack.contains(&spread.fragment_name) {
+        return Err(unsupported(
+            format!("{path}.name"),
+            format!("GraphQL fragment '{}' forms a cycle", spread.fragment_name),
+        ));
+    }
+    fragment_stack.push(spread.fragment_name.clone());
+    let result = compile_selection_set_into_plan(
+        plan,
+        graph,
+        &fragment.selection_set,
+        context,
+        format!("fragment.{}.selectionSet", fragment.name),
+        compile_context,
+        fragment_stack,
+    );
+    fragment_stack.pop();
+    result
+}
+
+fn compile_inline_fragment(
+    plan: &mut GraphPlan,
+    graph: Option<&Declaration>,
+    context: &NodeContext,
+    fragment: &InlineFragment<'_, String>,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<(), CoreError> {
+    if !selection_is_included(
+        &fragment.directives,
+        format!("{path}.directives"),
+        compile_context,
+    )? {
+        return Ok(());
+    }
+    ensure_fragment_type_condition(
+        fragment.type_condition.as_ref(),
+        context,
+        format!("{path}.typeCondition"),
+    )?;
+    compile_selection_set_into_plan(
+        plan,
+        graph,
+        &fragment.selection_set,
+        context,
+        format!("{path}.selectionSet"),
+        compile_context,
+        fragment_stack,
+    )
+}
+
+fn ensure_fragment_type_condition(
+    type_condition: Option<&TypeCondition<'_, String>>,
+    context: &NodeContext,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let Some(TypeCondition::On(label)) = type_condition else {
+        return Ok(());
+    };
+    if label == &context.label {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        format!(
+            "GraphQL fragment type condition '{label}' must match graph label '{}'",
+            context.label
+        ),
+    ))
 }
 
 fn compile_relationship_field(
@@ -377,7 +563,8 @@ fn compile_relationship_field(
     source: &NodeContext,
     field: &Field<'_, String>,
     path: impl Into<String>,
-    compile_context: &GraphqlCompileContext<'_>,
+    compile_context: &GraphqlCompileContext<'_, '_>,
+    fragment_stack: &mut Vec<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     let (direction, relationship_type, endpoint_argument) =
@@ -408,11 +595,13 @@ fn compile_relationship_field(
         .arguments
         .iter()
         .any(|(name, _)| name == "relationshipWhere")
-        || field
-            .selection_set
-            .items
-            .iter()
-            .any(selection_is_edge_field);
+        || relationship_selection_needs_edge_variable(
+            &field.selection_set,
+            &target_label,
+            compile_context,
+            format!("{path}.selectionSet"),
+            &mut Vec::new(),
+        )?;
     let relationship_variable = needs_relationship_variable
         .then(|| relationship_variable_for_field(field, relationship_index));
     let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
@@ -451,6 +640,7 @@ fn compile_relationship_field(
         },
         format!("{path}.selectionSet"),
         compile_context,
+        fragment_stack,
     )
 }
 
@@ -461,7 +651,7 @@ fn compile_relationship_field_arguments(
     target_variable: &str,
     relationship_variable: Option<&str>,
     path: &str,
-    compile_context: &GraphqlCompileContext<'_>,
+    compile_context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<(), CoreError> {
     for (index, (name, value)) in field.arguments.iter().enumerate() {
         let argument_path = format!("{path}.arguments[{index}]");
@@ -515,9 +705,9 @@ fn compile_edge_field(
     plan: &mut GraphPlan,
     field: &Field<'_, String>,
     context: &NodeContext,
-    path: impl Into<String>,
+    path: &str,
+    compile_context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<(), CoreError> {
-    let path = path.into();
     if field.selection_set.items.is_empty() {
         return Err(unsupported(
             format!("{path}.selectionSet"),
@@ -532,7 +722,7 @@ fn compile_edge_field(
     }
     let edge_variable = context.edge_variable.as_deref().ok_or_else(|| {
         unsupported(
-            path.clone(),
+            path,
             "GraphQL _edge selections are only valid inside relationship fields",
         )
     })?;
@@ -543,16 +733,17 @@ fn compile_edge_field(
                 "GraphQL fragments are not supported inside _edge selections",
             ));
         };
+        if !selection_is_included(
+            &property.directives,
+            format!("{path}.selectionSet.items[{index}].directives"),
+            compile_context,
+        )? {
+            continue;
+        }
         if !property.arguments.is_empty() {
             return Err(unsupported(
                 format!("{path}.selectionSet.items[{index}].arguments"),
                 "GraphQL _edge property arguments are not supported",
-            ));
-        }
-        if !property.directives.is_empty() {
-            return Err(unsupported(
-                format!("{path}.selectionSet.items[{index}].directives"),
-                "GraphQL _edge property directives are not supported",
             ));
         }
         if !property.selection_set.items.is_empty() {
@@ -561,13 +752,23 @@ fn compile_edge_field(
                 "GraphQL _edge properties must be scalar fields",
             ));
         }
-        plan.projections.push(Projection::Property {
-            property: PropertyRef {
-                variable: edge_variable.to_string(),
-                property: property.name.clone(),
+        if property.name == "__typename" {
+            return Err(unsupported(
+                format!("{path}.selectionSet.items[{index}].name"),
+                "GraphQL __typename is only supported on node selections",
+            ));
+        }
+        push_graphql_projection(
+            plan,
+            Projection::Property {
+                property: PropertyRef {
+                    variable: edge_variable.to_string(),
+                    property: property.name.clone(),
+                },
+                alias: Some(edge_projection_alias(property, edge_variable)),
             },
-            alias: Some(edge_projection_alias(property, edge_variable)),
-        });
+            &format!("{path}.selectionSet.items[{index}]"),
+        )?;
     }
     Ok(())
 }
@@ -616,7 +817,7 @@ fn compile_relationship_target_label(
     field: &Field<'_, String>,
     endpoint_argument: &str,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     let mut target_label = None;
@@ -733,8 +934,216 @@ fn edge_projection_alias(field: &Field<'_, String>, edge_variable: &str) -> Stri
         .unwrap_or_else(|| format!("{edge_variable}_{}", field.name))
 }
 
-fn selection_is_edge_field(selection: &Selection<'_, String>) -> bool {
-    matches!(selection, Selection::Field(field) if field.name == "_edge")
+fn selection_is_included(
+    directives: &[Directive<'_, String>],
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    let mut included = true;
+    let mut seen_directives = BTreeSet::new();
+    for (index, directive) in directives.iter().enumerate() {
+        let directive_path = format!("{path}[{index}]");
+        if !seen_directives.insert(directive.name.clone()) {
+            return Err(unsupported(
+                format!("{directive_path}.name"),
+                format!("GraphQL directive '@{}' is repeated", directive.name),
+            ));
+        }
+        match directive.name.as_str() {
+            "include" => {
+                if !compile_directive_if_argument(directive, &directive_path, context)? {
+                    included = false;
+                }
+            }
+            "skip" => {
+                if compile_directive_if_argument(directive, &directive_path, context)? {
+                    included = false;
+                }
+            }
+            _ => {
+                return Err(unsupported(
+                    format!("{directive_path}.name"),
+                    format!("unsupported GraphQL directive '@{}'", directive.name),
+                ));
+            }
+        }
+    }
+    Ok(included)
+}
+
+fn compile_directive_if_argument(
+    directive: &Directive<'_, String>,
+    path: &str,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<bool, CoreError> {
+    let [(name, value)] = directive.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "GraphQL @{} directive requires exactly one 'if' argument",
+                directive.name
+            ),
+        ));
+    };
+    if name != "if" {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!(
+                "GraphQL @{} directive requires an 'if' argument",
+                directive.name
+            ),
+        ));
+    }
+    compile_boolean(
+        value,
+        format!("{path}.arguments.if"),
+        &format!("@{} if argument", directive.name),
+        context,
+    )
+}
+
+fn relationship_selection_needs_edge_variable(
+    selection_set: &SelectionSet<'_, String>,
+    target_label: &str,
+    context: &GraphqlCompileContext<'_, '_>,
+    path: impl Into<String>,
+    fragment_stack: &mut Vec<String>,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    for (index, selection) in selection_set.items.iter().enumerate() {
+        let item_path = format!("{path}.items[{index}]");
+        match selection {
+            Selection::Field(field) => {
+                if !selection_is_included(
+                    &field.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    continue;
+                }
+                if field.name == "_edge" {
+                    return Ok(true);
+                }
+            }
+            Selection::FragmentSpread(spread) => {
+                if !selection_is_included(
+                    &spread.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    continue;
+                }
+                let fragment = context
+                    .fragments
+                    .get(&spread.fragment_name)
+                    .ok_or_else(|| {
+                        unsupported(
+                            format!("{item_path}.name"),
+                            format!("unknown GraphQL fragment '{}'", spread.fragment_name),
+                        )
+                    })?;
+                ensure_fragment_type_condition(
+                    Some(&fragment.type_condition),
+                    &NodeContext {
+                        variable: String::new(),
+                        label: target_label.to_string(),
+                        is_root: false,
+                        edge_variable: None,
+                    },
+                    format!("{item_path}.typeCondition"),
+                )?;
+                if fragment_stack.contains(&spread.fragment_name) {
+                    return Err(unsupported(
+                        format!("{item_path}.name"),
+                        format!("GraphQL fragment '{}' forms a cycle", spread.fragment_name),
+                    ));
+                }
+                fragment_stack.push(spread.fragment_name.clone());
+                let needs_edge = relationship_selection_needs_edge_variable(
+                    &fragment.selection_set,
+                    target_label,
+                    context,
+                    format!("fragment.{}.selectionSet", fragment.name),
+                    fragment_stack,
+                );
+                fragment_stack.pop();
+                if needs_edge? {
+                    return Ok(true);
+                }
+            }
+            Selection::InlineFragment(fragment) => {
+                if !selection_is_included(
+                    &fragment.directives,
+                    format!("{item_path}.directives"),
+                    context,
+                )? {
+                    continue;
+                }
+                ensure_fragment_type_condition(
+                    fragment.type_condition.as_ref(),
+                    &NodeContext {
+                        variable: String::new(),
+                        label: target_label.to_string(),
+                        is_root: false,
+                        edge_variable: None,
+                    },
+                    format!("{item_path}.typeCondition"),
+                )?;
+                if relationship_selection_needs_edge_variable(
+                    &fragment.selection_set,
+                    target_label,
+                    context,
+                    format!("{item_path}.selectionSet"),
+                    fragment_stack,
+                )? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn push_graphql_projection(
+    plan: &mut GraphPlan,
+    projection: Projection,
+    path: &str,
+) -> Result<(), CoreError> {
+    let alias = graphql_projection_alias(&projection).ok_or_else(|| {
+        CoreError::internal("GraphQL projection without an output alias reached frontend")
+    })?;
+    if let Some(existing) = plan
+        .projections
+        .iter()
+        .find(|existing| graphql_projection_alias(existing).as_deref() == Some(alias.as_str()))
+    {
+        if existing == &projection {
+            return Ok(());
+        }
+        return Err(unsupported(
+            format!("{path}.alias"),
+            format!("GraphQL response alias '{alias}' selects conflicting fields"),
+        ));
+    }
+    plan.projections.push(projection);
+    Ok(())
+}
+
+fn graphql_projection_alias(projection: &Projection) -> Option<String> {
+    match projection {
+        Projection::Property { alias, .. } => alias.clone(),
+        Projection::Key { alias, .. }
+        | Projection::ElementId { alias, .. }
+        | Projection::RelationshipType { alias, .. }
+        | Projection::NodeLabels { alias, .. }
+        | Projection::PropertyKeys { alias, .. }
+        | Projection::Literal { alias, .. }
+        | Projection::LiteralList { alias, .. }
+        | Projection::Expression { alias, .. }
+        | Projection::CountAll { alias }
+        | Projection::Aggregate { alias, .. } => Some(alias.clone()),
+    }
 }
 
 fn relationship_variable_for_field(field: &Field<'_, String>, index: usize) -> String {
@@ -750,7 +1159,7 @@ fn compile_root_argument(
     name: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     match name {
@@ -789,7 +1198,7 @@ fn compile_where_argument(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     if matches!(value, Value::Variable(_)) {
@@ -848,7 +1257,7 @@ fn compile_where_boolean_operator(
     operator: GraphqlBooleanOperator,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     match operator {
@@ -928,7 +1337,7 @@ fn compile_where_property_conditions(
     property: &str,
     condition: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     if matches!(condition, Value::Variable(_)) {
@@ -1052,7 +1461,7 @@ fn compile_where_operator(
     operator: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<PropertyPredicate, CoreError> {
     let path = path.into();
     let property = PropertyRef {
@@ -1138,7 +1547,7 @@ fn compile_order_by_argument(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Vec<OrderKey>, CoreError> {
     let path = path.into();
     match value {
@@ -1163,7 +1572,7 @@ fn compile_order_by_object(
     variable: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<OrderKey, CoreError> {
     let path = path.into();
     let Value::Object(object) = value else {
@@ -1198,7 +1607,7 @@ fn compile_order_by_object(
 fn compile_order_direction(
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<OrderDirection, CoreError> {
     let path = path.into();
     let direction = compile_name_value(value, path.clone(), context)?;
@@ -1215,7 +1624,7 @@ fn compile_order_direction(
 fn compile_literal(
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     match value {
@@ -1247,7 +1656,7 @@ fn compile_literal(
 fn compile_regex_literal(
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     let literal = compile_literal(value, path.clone(), context)?;
@@ -1265,7 +1674,7 @@ fn compile_regex_literal(
 fn compile_literal_list(
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<Vec<Literal>, CoreError> {
     let path = path.into();
     if let Value::Variable(variable) = value {
@@ -1294,7 +1703,7 @@ fn compile_non_negative_u64(
     value: &Value<'_, String>,
     path: impl Into<String>,
     name: &str,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<u64, CoreError> {
     let path = path.into();
     if let Value::Variable(variable) = value {
@@ -1334,7 +1743,7 @@ fn compile_boolean(
     value: &Value<'_, String>,
     path: impl Into<String>,
     name: &str,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<bool, CoreError> {
     let path = path.into();
     if let Value::Variable(variable) = value {
@@ -1360,7 +1769,7 @@ fn compile_boolean(
 fn compile_name_value(
     value: &Value<'_, String>,
     path: impl Into<String>,
-    context: &GraphqlCompileContext<'_>,
+    context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     match value {
@@ -1464,6 +1873,65 @@ mod tests {
         );
         assert_eq!(plan.limit, Some(10));
         assert_eq!(plan.skip, Some(2));
+    }
+
+    #[test]
+    fn compiles_root_alias_typename_and_directives() {
+        let variables = BTreeMap::from([
+            (
+                "withRisk".to_string(),
+                GraphqlVariableValue::Literal(Literal::Boolean(true)),
+            ),
+            (
+                "skipTier".to_string(),
+                GraphqlVariableValue::Literal(Literal::Boolean(true)),
+            ),
+        ]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($withRisk: Boolean!, $skipTier: Boolean!) {
+              services: Service {
+                __typename
+                name
+                risk @include(if: $withRisk)
+                tier @skip(if: $skipTier)
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL root aliases, typename, and directives should compile");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Literal {
+                    literal: Literal::String("Service".to_string()),
+                    alias: "__typename".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    },
+                    alias: Some("risk".to_string()),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1709,6 +2177,97 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_named_and_inline_fragments() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                __typename
+                ...ServiceFields
+                ... on Service {
+                  __typename
+                  serviceTier: tier
+                }
+              }
+            }
+
+            fragment ServiceFields on Service {
+              __typename
+              serviceName: name
+            }
+            ",
+        )
+        .expect("GraphQL named and inline fragments should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Literal {
+                    literal: Literal::String("Service".to_string()),
+                    alias: "__typename".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("serviceName".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("serviceTier".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_graphql_edge_fields_inside_fragments() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                owner: name
+                out_OWNS(to: Service) {
+                  service: name
+                  ...OwnershipEdge
+                }
+              }
+            }
+
+            fragment OwnershipEdge on Service {
+              _edge { source }
+            }
+            ",
+        )
+        .expect("GraphQL _edge inside fragments should compile");
+
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern {
+                variable: Some(variable),
+                ..
+            }] if variable == "relationship0"
+        ));
+        assert!(plan.projections.iter().any(|projection| {
+            matches!(
+                projection,
+                Projection::Property {
+                    property: PropertyRef { variable, property },
+                    alias: Some(alias),
+                } if variable == "relationship0"
+                    && property == "source"
+                    && alias == "relationship0_source"
+            )
+        }));
+    }
+
+    #[test]
     fn rejects_graphql_xor_with_wrong_arity() {
         for query in [
             r#"
@@ -1781,6 +2340,124 @@ mod tests {
                 .contains("GraphQL regex filters require a string literal"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn rejects_conflicting_graphql_response_aliases() {
+        let error = compile_graphql(
+            r"
+            {
+              Service {
+                value: name
+                value: tier
+              }
+            }
+            ",
+        )
+        .expect_err("conflicting GraphQL response aliases should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("response alias 'value' selects conflicting fields"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_fragment_cycles() {
+        let error = compile_graphql(
+            r"
+            query {
+              Service { ...A }
+            }
+
+            fragment A on Service { ...B }
+            fragment B on Service { ...A }
+            ",
+        )
+        .expect_err("fragment cycles should fail");
+
+        assert!(error.to_string().contains("forms a cycle"), "{error}");
+    }
+
+    #[test]
+    fn rejects_graphql_fragment_type_mismatches() {
+        let error = compile_graphql(
+            r"
+            query {
+              Service { ...PersonFields }
+            }
+
+            fragment PersonFields on Person { name }
+            ",
+        )
+        .expect_err("fragment type mismatches should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must match graph label 'Service'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_graphql_directives() {
+        let error = compile_graphql(
+            r"
+            {
+              Service { name @defer }
+            }
+            ",
+        )
+        .expect_err("unknown GraphQL directives should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported GraphQL directive '@defer'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_graphql_directives() {
+        for (query, message) in [
+            (
+                r"
+                {
+                  Service { name @include(unless: true) }
+                }
+                ",
+                "requires an 'if' argument",
+            ),
+            (
+                r"
+                {
+                  Service { name @include(if: true) @include(if: false) }
+                }
+                ",
+                "directive '@include' is repeated",
+            ),
+            (
+                r"
+                query Services($includeName: String!) {
+                  Service { name @include(if: $includeName) }
+                }
+                ",
+                "must be a boolean",
+            ),
+        ] {
+            let variables = BTreeMap::from([(
+                "includeName".to_string(),
+                GraphqlVariableValue::Literal(Literal::String("yes".to_string())),
+            )]);
+            let error = compile_graphql_with_variables(query, &variables)
+                .expect_err("invalid GraphQL directive should fail");
+
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     #[test]

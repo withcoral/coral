@@ -365,6 +365,67 @@ async fn graphql_regex_and_xor_filters_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_generated_client_shape_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([
+        (
+            "includeTier".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+        ),
+        (
+            "skipRisk".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($includeTier: Boolean!, $skipRisk: Boolean!) {
+          services: Service(
+            orderBy: [{ field: name, direction: ASC }]
+            limit: 2
+          ) {
+            __typename
+            ...ServiceFields
+            ... on Service {
+              tier @include(if: $includeTier)
+              risk @skip(if: $skipRisk)
+            }
+          }
+        }
+
+        fragment ServiceFields on Service {
+          service: name
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("generated-client-shaped GraphQL query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'Service' AS \"__typename\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"__typename": "Service", "service": "billing-api", "tier": "prod"}),
+            json!({"__typename": "Service", "service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -148,8 +148,16 @@ shared graph IR and let validation, catalog checks, SQL lowering, and execution
 remain separate. The supported slice is intentionally graph-query oriented:
 
 - exactly one query operation or anonymous selection set;
-- exactly one root field whose name is the graph node label;
+- exactly one included root field whose field name is the graph node label;
+- root field aliases, which are accepted for generated-client compatibility but
+  do not change Coral's flat tabular result shape;
 - scalar property selections with optional GraphQL aliases;
+- node-level `__typename`, lowered as a static literal projection of the graph
+  node label;
+- named and inline fragments on node selections when their type condition
+  matches the current graph label;
+- `@include(if:)` and `@skip(if:)` on fields, fragment spreads, and inline
+  fragments, with boolean literals or typed boolean variables;
 - root `where` object predicates over selected node properties, including
   regex filters plus `and`, `or`, `xor`, and `not` boolean filter composition;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
@@ -173,6 +181,9 @@ relationship properties are flattened into the tabular result set; GraphQL
 object materialization is intentionally out of scope for the DataFusion
 execution path.
 
-Fragments, directives, variable defaults, object-level variables, mutations,
-subscriptions, nested row modifiers, and optional GraphQL traversals are
-rejected with GraphQL-specific diagnostics until their IR contracts are defined.
+Conflicting response aliases are rejected before SQL lowering; exact duplicate
+projections, such as repeated `__typename` through fragments, are suppressed.
+Fragment definition directives, operation directives, unknown directives,
+variable defaults, object-level variables, mutations, subscriptions, nested row
+modifiers, and optional GraphQL traversals are rejected with GraphQL-specific
+diagnostics until their IR contracts are defined.
