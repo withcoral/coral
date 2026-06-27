@@ -778,6 +778,75 @@ async fn graphql_flat_aggregate_fields_match_equivalent_sql() {
 }
 
 #[tokio::test]
+async fn graphql_collect_aggregate_fields_match_equivalent_sql() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let graph_execution = CoralQuery::execute_graphql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service(
+            where: { tier: { isNotNull: true } }
+            orderBy: [{ field: tier, direction: ASC }]
+          ) {
+            tier
+            serviceNames: _collect(field: name)
+            uniqueTiers: _collectDistinct(field: tier)
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL collect aggregate fields should execute");
+
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("ARRAY_AGG(\"n0\".\"service_name\") AS \"serviceNames\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT tier, \
+                ARRAY_AGG(service_name) AS \"serviceNames\", \
+                ARRAY_AGG(DISTINCT tier) AS \"uniqueTiers\" \
+         FROM ops.services \
+         WHERE tier IS NOT NULL \
+         GROUP BY tier \
+         ORDER BY tier ASC",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(graph_execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![
+            json!({
+                "tier": "dev",
+                "serviceNames": ["experiments"],
+                "uniqueTiers": ["dev"]
+            }),
+            json!({
+                "tier": "prod",
+                "serviceNames": ["billing-api", "deployments"],
+                "uniqueTiers": ["prod"]
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_variable_defaults_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

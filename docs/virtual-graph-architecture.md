@@ -168,9 +168,10 @@ remain separate. The supported slice is intentionally graph-query oriented:
   and string element-id projections without overloading user properties named
   `id`;
 - flat aggregate node fields `_count`, `_count(field:)`,
-  `_countDistinct(field:)`, `_sum(field:)`, `_avg(field:)`, `_min(field:)`,
-  and `_max(field:)`, lowered to the shared aggregate IR; selected
-  non-aggregate properties become SQL grouping keys;
+  `_countDistinct(field:)`, `_collect(field:)`, `_collectDistinct(field:)`,
+  `_sum(field:)`, `_avg(field:)`, `_min(field:)`, and `_max(field:)`, lowered
+  to the shared aggregate IR; selected non-aggregate properties become SQL
+  grouping keys;
 - node-level `__typename`, lowered as a static literal projection of the graph
   node label, and edge-level `__typename`, lowered as the static relationship
   type;

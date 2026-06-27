@@ -326,6 +326,16 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
             .expect("writing GraphQL SDL to string should not fail");
         writeln!(
             sdl,
+            "  _collect(field: {aggregate_field_type}!): [CoralGraphValue!]"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
+            "  _collectDistinct(field: {aggregate_field_type}!): [CoralGraphValue!]"
+        )
+        .expect("writing GraphQL SDL to string should not fail");
+        writeln!(
+            sdl,
             "  _sum(field: {aggregate_field_type}!): CoralGraphValue"
         )
         .expect("writing GraphQL SDL to string should not fail");

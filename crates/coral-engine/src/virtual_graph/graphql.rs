@@ -650,7 +650,14 @@ fn compile_property_field(
 fn is_node_aggregate_field(name: &str) -> bool {
     matches!(
         name,
-        "_count" | "_countDistinct" | "_sum" | "_avg" | "_min" | "_max"
+        "_count"
+            | "_countDistinct"
+            | "_collect"
+            | "_collectDistinct"
+            | "_sum"
+            | "_avg"
+            | "_min"
+            | "_max"
     )
 }
 
@@ -679,6 +686,24 @@ fn compile_node_aggregate_field(
             path,
             compile_context,
             AggregateFunction::Count,
+            true,
+            alias,
+        )?,
+        "_collect" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Collect,
+            false,
+            alias,
+        )?,
+        "_collectDistinct" => compile_property_aggregate_field(
+            field,
+            context,
+            path,
+            compile_context,
+            AggregateFunction::Collect,
             true,
             alias,
         )?,
@@ -3466,6 +3491,45 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_collect_aggregate_fields() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                serviceNames: _collect(field: name)
+                uniqueTiers: _collectDistinct(field: tier)
+              }
+            }
+            ",
+        )
+        .expect("GraphQL collect aggregate fields should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: AggregateFunction::Collect,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "serviceNames".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Collect,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    distinct: true,
+                    alias: "uniqueTiers".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_graphql_string_filters_on_raw_identity_fields() {
         let error = compile_graphql(
             r#"
@@ -5642,6 +5706,10 @@ nodes:
         assert!(sdl.contains("enum PersonAggregateField {"));
         assert!(sdl.contains("  _count(field: PersonAggregateField): Int"));
         assert!(sdl.contains("  _countDistinct(field: PersonAggregateField!): Int"));
+        assert!(sdl.contains("  _collect(field: PersonAggregateField!): [CoralGraphValue!]"));
+        assert!(
+            sdl.contains("  _collectDistinct(field: PersonAggregateField!): [CoralGraphValue!]")
+        );
         assert!(sdl.contains("  _avg(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
             "out_OWNS(to: PersonOutOWNSToLabel!, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
