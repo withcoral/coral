@@ -1056,6 +1056,9 @@ impl<'a> GraphPlanValidator<'a> {
                 relationship_type,
                 format!("{path}.variable"),
             ),
+            OrderExpression::Scalar(expression) => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))
+            }
             OrderExpression::Literal(_) => Ok(()),
             OrderExpression::ProjectionAlias(alias) => {
                 if self.projection_alias_exists(alias) {
@@ -1115,6 +1118,17 @@ impl<'a> GraphPlanValidator<'a> {
             OrderExpression::Literal(literal) => {
                 self.plan.projections.iter().any(|projection| {
                     matches!(projection, Projection::Literal { literal: projected, .. } if projected == literal)
+                })
+            }
+            OrderExpression::Scalar(expression) => {
+                self.plan.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        Projection::Expression {
+                            expression: projected,
+                            ..
+                        } if projected == expression
+                    )
                 })
             }
             OrderExpression::ProjectionAlias(alias) => self.projection_alias_exists(alias),

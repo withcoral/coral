@@ -1101,6 +1101,7 @@ impl<'a> Lowerer<'a> {
                 variable,
                 relationship_type,
             } => self.render_relationship_type_ref(variable, relationship_type),
+            OrderExpression::Scalar(expression) => self.render_scalar_expression(expression),
             OrderExpression::Literal(literal) => Ok(render_literal(literal)),
             OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         }

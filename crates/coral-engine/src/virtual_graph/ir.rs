@@ -431,6 +431,8 @@ pub enum OrderExpression {
         /// Static graph node label.
         label: String,
     },
+    /// Order by a scalar expression.
+    Scalar(ScalarExpression),
     /// Order by a literal value.
     Literal(Literal),
     /// Order by a projected output alias.

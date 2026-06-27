@@ -1090,6 +1090,9 @@ fn compile_order_expression(
         Expression::FunctionCall(function) if is_labels_function(function) => {
             compile_labels_order_expression(function, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_coalesce_order_expression(function, path, context)
+        }
         Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
             aggregate_order_expression_for_projection(function, projections, path, context)
         }
@@ -1638,6 +1641,14 @@ fn compile_labels_order_expression(
         context,
     )?;
     Ok(OrderExpression::NodeLabels { variable, label })
+}
+
+fn compile_coalesce_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_coalesce_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
 fn compile_keys_projection(
@@ -4644,6 +4655,32 @@ mod tests {
                     ],
                 },
                 alias: "owner_team".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_order_by_coalesce_expression() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY coalesce(service.tier, 'unassigned') DESC",
+        )
+        .expect("coalesce order expression should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Coalesce {
+                    expressions: vec![
+                        ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        }),
+                        ScalarExpression::Literal(Literal::String("unassigned".to_string())),
+                    ],
+                }),
+                direction: OrderDirection::Descending,
             }]
         );
     }
