@@ -1003,6 +1003,44 @@ async fn cypher_exact_fixed_relationship_ranges_execute_as_repeated_hops() {
 }
 
 #[tokio::test]
+async fn cypher_exact_gql_relationship_quantifiers_execute_as_repeated_hops() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON]->{2}(target:Service) \
+         RETURN source.name AS source, target.name AS target, length(path) AS hops \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("exact GQL relationship quantifier query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .matches("JOIN \"ops\".\"service_dependencies\"")
+            .count()
+            >= 2,
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("2 AS \"hops\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"source": "billing-api", "target": "experiments", "hops": 2})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_path_length_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -1028,6 +1066,40 @@ async fn cypher_path_length_executes_against_synthetic_sources() {
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![json!({"source": "billing-api", "target": "experiments", "hops": 2})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_bounded_gql_relationship_quantifiers_expand_to_union_all() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON]->{1,2}(target:Service) \
+         RETURN source.name AS source, target.name AS target, length(path) AS hops \
+         ORDER BY source, target, hops",
+    )
+    .await
+    .expect("bounded GQL relationship quantifier query should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments", "hops": 1}),
+            json!({"source": "billing-api", "target": "experiments", "hops": 1}),
+            json!({"source": "billing-api", "target": "experiments", "hops": 2}),
+            json!({"source": "deployments", "target": "experiments", "hops": 1}),
+        ]
     );
 }
 
