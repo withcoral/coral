@@ -33,6 +33,15 @@ macro_rules! unary_scalar_expression_pattern {
             | ScalarExpression::Exp { .. }
             | ScalarExpression::Log { .. }
             | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Sin { .. }
+            | ScalarExpression::Cos { .. }
+            | ScalarExpression::Tan { .. }
+            | ScalarExpression::Cot { .. }
+            | ScalarExpression::Asin { .. }
+            | ScalarExpression::Acos { .. }
+            | ScalarExpression::Atan { .. }
+            | ScalarExpression::Degrees { .. }
+            | ScalarExpression::Radians { .. }
             | ScalarExpression::Negate { .. }
     };
 }
@@ -862,6 +871,10 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_scalar_expression_variables(left, variables);
                 Self::collect_scalar_expression_variables(right, variables);
             }
+            ScalarExpression::Atan2 { y, x } => {
+                Self::collect_scalar_expression_variables(y, variables);
+                Self::collect_scalar_expression_variables(x, variables);
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -898,6 +911,15 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Exp { expression }
             | ScalarExpression::Log { expression }
             | ScalarExpression::Log10 { expression }
+            | ScalarExpression::Sin { expression }
+            | ScalarExpression::Cos { expression }
+            | ScalarExpression::Tan { expression }
+            | ScalarExpression::Cot { expression }
+            | ScalarExpression::Asin { expression }
+            | ScalarExpression::Acos { expression }
+            | ScalarExpression::Atan { expression }
+            | ScalarExpression::Degrees { expression }
+            | ScalarExpression::Radians { expression }
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,
         }
@@ -1163,6 +1185,18 @@ impl<'a> GraphPlanValidator<'a> {
                     right,
                     optional_variables,
                     format!("{path}.right"),
+                )
+            }
+            ScalarExpression::Atan2 { y, x } => {
+                Self::validate_scalar_expression_not_optional(
+                    y,
+                    optional_variables,
+                    format!("{path}.y"),
+                )?;
+                Self::validate_scalar_expression_not_optional(
+                    x,
+                    optional_variables,
+                    format!("{path}.x"),
                 )
             }
             ScalarExpression::Case {
@@ -2430,6 +2464,10 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Arithmetic { left, right, .. } => {
                 self.validate_scalar_expression(left, format!("{path}.left"))?;
                 self.validate_scalar_expression(right, format!("{path}.right"))
+            }
+            ScalarExpression::Atan2 { y, x } => {
+                self.validate_scalar_expression(y, format!("{path}.y"))?;
+                self.validate_scalar_expression(x, format!("{path}.x"))
             }
             ScalarExpression::Case {
                 alternatives,

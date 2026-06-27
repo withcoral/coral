@@ -1950,6 +1950,67 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
 }
 
 #[tokio::test]
+async fn cypher_trigonometric_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         WHERE sin(service.risk) >= 0 AND cot(1.0) > 0 \
+         RETURN service.name AS service, \
+                sin(0.0) AS zero_sin, \
+                cos(0.0) AS one_cos, \
+                tan(0.0) AS zero_tan, \
+                asin(0.0) AS zero_asin, \
+                acos(1.0) AS zero_acos, \
+                atan(0.0) AS zero_atan, \
+                atan2(0.0, 1.0) AS zero_atan2, \
+                degrees(0.0) AS zero_degrees, \
+                radians(0.0) AS zero_radians",
+    )
+    .await
+    .expect("trigonometric scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("sin(\"n0\".\"risk_score\") >= 0"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("cot(1) > 0"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("atan2(0, 1)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "experiments",
+            "zero_sin": 0.0,
+            "one_cos": 1.0,
+            "zero_tan": 0.0,
+            "zero_asin": 0.0,
+            "zero_acos": 0.0,
+            "zero_atan": 0.0,
+            "zero_atan2": 0.0,
+            "zero_degrees": 0.0,
+            "zero_radians": 0.0,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_unary_negation_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

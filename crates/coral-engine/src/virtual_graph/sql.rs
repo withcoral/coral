@@ -1378,6 +1378,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_scalar_expression(&self, expression: &ScalarExpression) -> Result<String, CoreError> {
+        if let Some(rendered) = self.render_simple_scalar_expression(expression)? {
+            return Ok(rendered);
+        }
+
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
@@ -1389,84 +1393,52 @@ impl<'a> Lowerer<'a> {
                     .join(", ");
                 Ok(format!("COALESCE({rendered})"))
             }
-            ScalarExpression::ToString { expression } => {
-                self.render_cast_expression(expression, "VARCHAR")
-            }
-            ScalarExpression::ToInteger { expression } => {
-                self.render_cast_expression(expression, "BIGINT")
-            }
-            ScalarExpression::ToFloat { expression } => {
-                self.render_cast_expression(expression, "DOUBLE")
-            }
-            ScalarExpression::ToBoolean { expression } => {
-                self.render_cast_expression(expression, "BOOLEAN")
-            }
-            ScalarExpression::ToLower { expression } => {
-                self.render_unary_function_expression("LOWER", expression)
-            }
-            ScalarExpression::ToUpper { expression } => {
-                self.render_unary_function_expression("UPPER", expression)
-            }
-            ScalarExpression::Trim { expression } => {
-                self.render_unary_function_expression("TRIM", expression)
-            }
-            ScalarExpression::LTrim { expression } => {
-                self.render_unary_function_expression("LTRIM", expression)
-            }
-            ScalarExpression::RTrim { expression } => {
-                self.render_unary_function_expression("RTRIM", expression)
+            ScalarExpression::ToString { .. }
+            | ScalarExpression::ToInteger { .. }
+            | ScalarExpression::ToFloat { .. }
+            | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToLower { .. }
+            | ScalarExpression::ToUpper { .. }
+            | ScalarExpression::Trim { .. }
+            | ScalarExpression::LTrim { .. }
+            | ScalarExpression::RTrim { .. }
+            | ScalarExpression::CharacterLength { .. }
+            | ScalarExpression::Left { .. }
+            | ScalarExpression::Right { .. }
+            | ScalarExpression::Reverse { .. }
+            | ScalarExpression::Abs { .. }
+            | ScalarExpression::Ceil { .. }
+            | ScalarExpression::Floor { .. }
+            | ScalarExpression::Sqrt { .. }
+            | ScalarExpression::Sign { .. }
+            | ScalarExpression::Exp { .. }
+            | ScalarExpression::Log { .. }
+            | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Sin { .. }
+            | ScalarExpression::Cos { .. }
+            | ScalarExpression::Tan { .. }
+            | ScalarExpression::Cot { .. }
+            | ScalarExpression::Asin { .. }
+            | ScalarExpression::Acos { .. }
+            | ScalarExpression::Atan { .. }
+            | ScalarExpression::Atan2 { .. }
+            | ScalarExpression::Degrees { .. }
+            | ScalarExpression::Radians { .. }
+            | ScalarExpression::Negate { .. } => {
+                unreachable!("simple scalar expressions handled above")
             }
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
             } => self.render_replace_expression(expression, search, replacement),
-            ScalarExpression::CharacterLength { expression } => {
-                self.render_unary_function_expression("character_length", expression)
-            }
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
             } => self.render_substring_expression(expression, start, length.as_deref()),
-            ScalarExpression::Left { expression, count } => {
-                self.render_binary_function_expression("left", expression, count)
-            }
-            ScalarExpression::Right { expression, count } => {
-                self.render_binary_function_expression("right", expression, count)
-            }
-            ScalarExpression::Reverse { expression } => {
-                self.render_unary_function_expression("reverse", expression)
-            }
-            ScalarExpression::Abs { expression } => {
-                self.render_unary_function_expression("abs", expression)
-            }
-            ScalarExpression::Ceil { expression } => {
-                self.render_unary_function_expression("ceil", expression)
-            }
-            ScalarExpression::Floor { expression } => {
-                self.render_unary_function_expression("floor", expression)
-            }
             ScalarExpression::Round { expression, places } => {
                 self.render_round_expression(expression, places.as_deref())
-            }
-            ScalarExpression::Sqrt { expression } => {
-                self.render_unary_function_expression("sqrt", expression)
-            }
-            ScalarExpression::Sign { expression } => {
-                self.render_unary_function_expression("signum", expression)
-            }
-            ScalarExpression::Exp { expression } => {
-                self.render_unary_function_expression("exp", expression)
-            }
-            ScalarExpression::Log { expression } => {
-                self.render_unary_function_expression("ln", expression)
-            }
-            ScalarExpression::Log10 { expression } => {
-                self.render_unary_function_expression("log10", expression)
-            }
-            ScalarExpression::Negate { expression } => {
-                Ok(format!("-({})", self.render_scalar_expression(expression)?))
             }
             ScalarExpression::Arithmetic {
                 operator,
@@ -1477,6 +1449,112 @@ impl<'a> Lowerer<'a> {
                 alternatives,
                 else_expression,
             } => self.render_case_expression(alternatives, else_expression.as_deref()),
+        }
+    }
+
+    fn render_simple_scalar_expression(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::ToString { expression } => {
+                self.render_cast_expression(expression, "VARCHAR").map(Some)
+            }
+            ScalarExpression::ToInteger { expression } => {
+                self.render_cast_expression(expression, "BIGINT").map(Some)
+            }
+            ScalarExpression::ToFloat { expression } => {
+                self.render_cast_expression(expression, "DOUBLE").map(Some)
+            }
+            ScalarExpression::ToBoolean { expression } => {
+                self.render_cast_expression(expression, "BOOLEAN").map(Some)
+            }
+            ScalarExpression::ToLower { expression } => self
+                .render_unary_function_expression("LOWER", expression)
+                .map(Some),
+            ScalarExpression::ToUpper { expression } => self
+                .render_unary_function_expression("UPPER", expression)
+                .map(Some),
+            ScalarExpression::Trim { expression } => self
+                .render_unary_function_expression("TRIM", expression)
+                .map(Some),
+            ScalarExpression::LTrim { expression } => self
+                .render_unary_function_expression("LTRIM", expression)
+                .map(Some),
+            ScalarExpression::RTrim { expression } => self
+                .render_unary_function_expression("RTRIM", expression)
+                .map(Some),
+            ScalarExpression::CharacterLength { expression } => self
+                .render_unary_function_expression("character_length", expression)
+                .map(Some),
+            ScalarExpression::Left { expression, count } => self
+                .render_binary_function_expression("left", expression, count)
+                .map(Some),
+            ScalarExpression::Right { expression, count } => self
+                .render_binary_function_expression("right", expression, count)
+                .map(Some),
+            ScalarExpression::Reverse { expression } => self
+                .render_unary_function_expression("reverse", expression)
+                .map(Some),
+            ScalarExpression::Abs { expression } => self
+                .render_unary_function_expression("abs", expression)
+                .map(Some),
+            ScalarExpression::Ceil { expression } => self
+                .render_unary_function_expression("ceil", expression)
+                .map(Some),
+            ScalarExpression::Floor { expression } => self
+                .render_unary_function_expression("floor", expression)
+                .map(Some),
+            ScalarExpression::Sqrt { expression } => self
+                .render_unary_function_expression("sqrt", expression)
+                .map(Some),
+            ScalarExpression::Sign { expression } => self
+                .render_unary_function_expression("signum", expression)
+                .map(Some),
+            ScalarExpression::Exp { expression } => self
+                .render_unary_function_expression("exp", expression)
+                .map(Some),
+            ScalarExpression::Log { expression } => self
+                .render_unary_function_expression("ln", expression)
+                .map(Some),
+            ScalarExpression::Log10 { expression } => self
+                .render_unary_function_expression("log10", expression)
+                .map(Some),
+            ScalarExpression::Sin { expression } => self
+                .render_unary_function_expression("sin", expression)
+                .map(Some),
+            ScalarExpression::Cos { expression } => self
+                .render_unary_function_expression("cos", expression)
+                .map(Some),
+            ScalarExpression::Tan { expression } => self
+                .render_unary_function_expression("tan", expression)
+                .map(Some),
+            ScalarExpression::Cot { expression } => self
+                .render_unary_function_expression("cot", expression)
+                .map(Some),
+            ScalarExpression::Asin { expression } => self
+                .render_unary_function_expression("asin", expression)
+                .map(Some),
+            ScalarExpression::Acos { expression } => self
+                .render_unary_function_expression("acos", expression)
+                .map(Some),
+            ScalarExpression::Atan { expression } => self
+                .render_unary_function_expression("atan", expression)
+                .map(Some),
+            ScalarExpression::Atan2 { y, x } => self
+                .render_binary_function_expression("atan2", y, x)
+                .map(Some),
+            ScalarExpression::Degrees { expression } => self
+                .render_unary_function_expression("degrees", expression)
+                .map(Some),
+            ScalarExpression::Radians { expression } => self
+                .render_unary_function_expression("radians", expression)
+                .map(Some),
+            ScalarExpression::Negate { expression } => Ok(Some(format!(
+                "-({})",
+                self.render_scalar_expression(expression)?
+            ))),
+            _ => Ok(None),
         }
     }
 
@@ -3250,6 +3328,137 @@ relationships: []
     }
 
     #[test]
+    fn lower_graph_plan_renders_unary_trigonometric_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            expression_projection(
+                "risk_sin",
+                ScalarExpression::Sin {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "risk_cos",
+                ScalarExpression::Cos {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "risk_tan",
+                ScalarExpression::Tan {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "risk_cot",
+                ScalarExpression::Cot {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "half_asin",
+                ScalarExpression::Asin {
+                    expression: Box::new(float_literal(0.5)),
+                },
+            ),
+            expression_projection(
+                "one_acos",
+                ScalarExpression::Acos {
+                    expression: Box::new(float_literal(1.0)),
+                },
+            ),
+            expression_projection(
+                "risk_atan",
+                ScalarExpression::Atan {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+        ];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Sin {
+                expression: Box::new(service_risk_expression()),
+            },
+            operator: ComparisonOperator::GreaterThanOrEqual,
+            rhs: ScalarPredicateRhs::Expression(integer_literal(0)),
+        }));
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("unary trigonometric scalar expressions should lower");
+
+        for expected in [
+            "sin(\"n1\".\"risk_score\") AS \"risk_sin\"",
+            "cos(\"n1\".\"risk_score\") AS \"risk_cos\"",
+            "tan(\"n1\".\"risk_score\") AS \"risk_tan\"",
+            "cot(\"n1\".\"risk_score\") AS \"risk_cot\"",
+            "asin(0.5) AS \"half_asin\"",
+            "acos(1) AS \"one_acos\"",
+            "atan(\"n1\".\"risk_score\") AS \"risk_atan\"",
+            "WHERE sin(\"n1\".\"risk_score\") >= 0",
+        ] {
+            assert!(
+                translation.sql().contains(expected),
+                "{}",
+                translation.sql()
+            );
+        }
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_atan2_and_angle_conversion_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            expression_projection(
+                "risk_atan2",
+                ScalarExpression::Atan2 {
+                    y: Box::new(service_risk_expression()),
+                    x: Box::new(integer_literal(1)),
+                },
+            ),
+            expression_projection(
+                "risk_degrees",
+                ScalarExpression::Degrees {
+                    expression: Box::new(service_risk_expression()),
+                },
+            ),
+            expression_projection(
+                "pi_radians",
+                ScalarExpression::Radians {
+                    expression: Box::new(float_literal(180.0)),
+                },
+            ),
+        ];
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Atan2 {
+                y: Box::new(service_risk_expression()),
+                x: Box::new(integer_literal(1)),
+            }),
+            direction: OrderDirection::Ascending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("angle conversion scalar expressions should lower");
+
+        for expected in [
+            "atan2(\"n1\".\"risk_score\", 1) AS \"risk_atan2\"",
+            "degrees(\"n1\".\"risk_score\") AS \"risk_degrees\"",
+            "radians(180) AS \"pi_radians\"",
+            "ORDER BY atan2(\"n1\".\"risk_score\", 1) ASC",
+        ] {
+            assert!(
+                translation.sql().contains(expected),
+                "{}",
+                translation.sql()
+            );
+        }
+    }
+
+    #[test]
     fn lower_graph_plan_renders_unary_negation_scalar_expressions() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
@@ -4057,5 +4266,20 @@ relationships: []
             variable: "service".to_string(),
             property: "name".to_string(),
         })
+    }
+
+    fn integer_literal(value: i64) -> ScalarExpression {
+        ScalarExpression::Literal(Literal::Integer(value))
+    }
+
+    fn float_literal(value: f64) -> ScalarExpression {
+        ScalarExpression::Literal(Literal::Float(ordered_float::OrderedFloat(value)))
+    }
+
+    fn expression_projection(alias: &str, expression: ScalarExpression) -> Projection {
+        Projection::Expression {
+            expression,
+            alias: alias.to_string(),
+        }
     }
 }

@@ -1985,6 +1985,126 @@ fn compile_log10_scalar_expression(
     })
 }
 
+fn compile_sin_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Sin {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "sin", context,
+        )?),
+    })
+}
+
+fn compile_cos_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Cos {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "cos", context,
+        )?),
+    })
+}
+
+fn compile_tan_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Tan {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "tan", context,
+        )?),
+    })
+}
+
+fn compile_cot_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Cot {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "cot", context,
+        )?),
+    })
+}
+
+fn compile_asin_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Asin {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "asin", context,
+        )?),
+    })
+}
+
+fn compile_acos_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Acos {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "acos", context,
+        )?),
+    })
+}
+
+fn compile_atan_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Atan {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "atan", context,
+        )?),
+    })
+}
+
+fn compile_atan2_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (y, x) = compile_two_scalar_function_arguments(function, path, "atan2", context)?;
+    Ok(ScalarExpression::Atan2 {
+        y: Box::new(y),
+        x: Box::new(x),
+    })
+}
+
+fn compile_degrees_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Degrees {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "degrees", context,
+        )?),
+    })
+}
+
+fn compile_radians_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::Radians {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "radians", context,
+        )?),
+    })
+}
+
 fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2075,7 +2195,27 @@ fn compile_scalar_function_expression(
     } else if is_log_function(function) {
         compile_log_scalar_expression(function, path.clone(), context)?
     } else if is_log10_function(function) {
-        compile_log10_scalar_expression(function, path, context)?
+        compile_log10_scalar_expression(function, path.clone(), context)?
+    } else if is_sin_function(function) {
+        compile_sin_scalar_expression(function, path.clone(), context)?
+    } else if is_cos_function(function) {
+        compile_cos_scalar_expression(function, path.clone(), context)?
+    } else if is_tan_function(function) {
+        compile_tan_scalar_expression(function, path.clone(), context)?
+    } else if is_cot_function(function) {
+        compile_cot_scalar_expression(function, path.clone(), context)?
+    } else if is_asin_function(function) {
+        compile_asin_scalar_expression(function, path.clone(), context)?
+    } else if is_acos_function(function) {
+        compile_acos_scalar_expression(function, path.clone(), context)?
+    } else if is_atan_function(function) {
+        compile_atan_scalar_expression(function, path.clone(), context)?
+    } else if is_atan2_function(function) {
+        compile_atan2_scalar_expression(function, path.clone(), context)?
+    } else if is_degrees_function(function) {
+        compile_degrees_scalar_expression(function, path.clone(), context)?
+    } else if is_radians_function(function) {
+        compile_radians_scalar_expression(function, path, context)?
     } else {
         return Ok(None);
     };
@@ -2134,7 +2274,7 @@ fn compile_scalar_expression(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
         )),
     }
 }
@@ -2392,7 +2532,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
                 )),
             }
         }
@@ -2404,7 +2544,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), or log10() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), or radians() expressions",
         )),
     }
 }
@@ -2907,6 +3047,76 @@ fn is_log10_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("log10")
+    )
+}
+
+fn is_sin_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("sin")
+    )
+}
+
+fn is_cos_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("cos")
+    )
+}
+
+fn is_tan_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("tan")
+    )
+}
+
+fn is_cot_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("cot")
+    )
+}
+
+fn is_asin_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("asin")
+    )
+}
+
+fn is_acos_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("acos")
+    )
+}
+
+fn is_atan_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("atan")
+    )
+}
+
+fn is_atan2_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("atan2")
+    )
+}
+
+fn is_degrees_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("degrees")
+    )
+}
+
+fn is_radians_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("radians")
     )
 }
 
@@ -6413,6 +6623,130 @@ mod tests {
             let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
             assert!(
                 error.to_string().contains("requires exactly one argument"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn compiles_trigonometric_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE sin(service.risk) >= 0 AND atan2(service.risk, 1.0) < 1.0 \
+             RETURN sin(service.risk) AS risk_sin, \
+                    cos(service.risk) AS risk_cos, \
+                    tan(service.risk) AS risk_tan, \
+                    cot(service.risk) AS risk_cot, \
+                    asin(0.5) AS half_asin, \
+                    acos(1.0) AS one_acos, \
+                    atan(service.risk) AS risk_atan, \
+                    atan2(service.risk, 1.0) AS risk_atan2, \
+                    degrees(service.risk) AS risk_degrees, \
+                    radians(180.0) AS pi_radians \
+             ORDER BY radians(degrees(service.risk))",
+        )
+        .expect("trigonometric scalar functions should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::And { left, right })
+                if matches!(
+                    left.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Sin { .. },
+                        operator: ComparisonOperator::GreaterThanOrEqual,
+                        ..
+                    })
+                ) && matches!(
+                    right.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Atan2 { .. },
+                        operator: ComparisonOperator::LessThan,
+                        ..
+                    })
+                )
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Sin { .. },
+                    alias
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Cos { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Tan { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Cot { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Asin { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Acos { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Atan { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Atan2 { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Degrees { .. },
+                    ..
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Radians { .. },
+                    ..
+                },
+            ] if alias == "risk_sin"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Radians { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_trigonometric_scalars_with_unsupported_arity() {
+        for cypher in [
+            "MATCH (service:Service) RETURN sin() AS value",
+            "MATCH (service:Service) RETURN cos(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN tan() AS value",
+            "MATCH (service:Service) RETURN cot(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN asin() AS value",
+            "MATCH (service:Service) RETURN acos(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN atan() AS value",
+            "MATCH (service:Service) RETURN degrees(service.risk, 1) AS value",
+            "MATCH (service:Service) RETURN radians() AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
+            assert!(
+                error.to_string().contains("requires exactly one argument"),
+                "{error}"
+            );
+        }
+
+        for cypher in [
+            "MATCH (service:Service) RETURN atan2(service.risk) AS value",
+            "MATCH (service:Service) RETURN atan2(service.risk, 1, 2) AS value",
+        ] {
+            let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
+            assert!(
+                error.to_string().contains("requires exactly two arguments"),
                 "{error}"
             );
         }

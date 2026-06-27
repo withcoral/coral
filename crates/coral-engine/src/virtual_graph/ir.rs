@@ -281,6 +281,58 @@ pub enum ScalarExpression {
         /// Inner expression.
         expression: Box<ScalarExpression>,
     },
+    /// Sine of a numeric scalar expression in radians.
+    Sin {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Cosine of a numeric scalar expression in radians.
+    Cos {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Tangent of a numeric scalar expression in radians.
+    Tan {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Cotangent of a numeric scalar expression in radians.
+    Cot {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Arc sine of a numeric scalar expression.
+    Asin {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Arc cosine of a numeric scalar expression.
+    Acos {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Arc tangent of a numeric scalar expression.
+    Atan {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Arc tangent of `y / x`, preserving quadrant.
+    Atan2 {
+        /// Y coordinate expression.
+        y: Box<ScalarExpression>,
+        /// X coordinate expression.
+        x: Box<ScalarExpression>,
+    },
+    /// Convert radians to degrees.
+    Degrees {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
+    /// Convert degrees to radians.
+    Radians {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
     /// Negate a numeric scalar expression.
     Negate {
         /// Inner expression to negate.
