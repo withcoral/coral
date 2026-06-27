@@ -180,15 +180,27 @@ impl CypherCompileContext {
 
 #[derive(Clone, Copy)]
 enum PredicateCompileMode<'a> {
-    Graph { plan: &'a GraphPlan },
-    CaseWhen { plan: Option<&'a GraphPlan> },
+    Graph {
+        plan: &'a GraphPlan,
+        path_state: Option<&'a CypherCompileState>,
+    },
+    CaseWhen {
+        plan: Option<&'a GraphPlan>,
+    },
 }
 
 impl<'a> PredicateCompileMode<'a> {
     fn graph_plan(self) -> Option<&'a GraphPlan> {
         match self {
-            Self::Graph { plan } => Some(plan),
+            Self::Graph { plan, .. } => Some(plan),
             Self::CaseWhen { plan } => plan,
+        }
+    }
+
+    fn path_state(self) -> Option<&'a CypherCompileState> {
+        match self {
+            Self::Graph { path_state, .. } => path_state,
+            Self::CaseWhen { .. } => None,
         }
     }
 
@@ -238,14 +250,14 @@ impl<'a> PredicateCompileMode<'a> {
 
     fn graph_metadata_plan(self) -> Option<&'a GraphPlan> {
         match self {
-            Self::Graph { plan } => Some(plan),
+            Self::Graph { plan, .. } => Some(plan),
             Self::CaseWhen { .. } => None,
         }
     }
 
     fn static_metadata_plan(self) -> Option<&'a GraphPlan> {
         match self {
-            Self::Graph { plan } => Some(plan),
+            Self::Graph { plan, .. } => Some(plan),
             Self::CaseWhen { plan } => plan,
         }
     }
@@ -3971,10 +3983,11 @@ fn compile_reading_clauses_into(
                         .where_clause
                         .as_ref()
                         .map(|where_clause| {
-                            compile_predicate_expression(
+                            compile_predicate_expression_with_path_state(
                                 where_clause,
                                 format!("{path}[{index}].where"),
                                 plan,
+                                Some(state),
                                 context,
                             )
                         })
@@ -3987,10 +4000,11 @@ fn compile_reading_clauses_into(
                         format!("{path}[{index}]"),
                     )?;
                 } else if let Some(where_clause) = &match_clause.where_clause {
-                    let predicate = compile_predicate_expression(
+                    let predicate = compile_predicate_expression_with_path_state(
                         where_clause,
                         format!("{path}[{index}].where"),
                         plan,
+                        Some(state),
                         context,
                     )?;
                     append_predicate_expression(predicate, plan);
@@ -6659,13 +6673,19 @@ fn compile_optional_predicate_scalar_expression(
 fn compile_scalar_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarPredicateRhs, CoreError> {
     let path = path.into();
+    if let Some(expression) =
+        compile_optional_path_length_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        return Ok(ScalarPredicateRhs::Expression(expression));
+    }
+    let plan = mode.static_metadata_plan();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_scalar_predicate_rhs(inner, path, plan, context)
+            compile_scalar_predicate_rhs(inner, path, mode, context)
         }
         Expression::BinaryOp { .. }
         | Expression::UnaryOp {
@@ -6703,6 +6723,28 @@ fn compile_scalar_predicate_rhs(
             "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
+}
+
+fn compile_optional_path_length_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let function = match expression {
+        Expression::Parenthesized(inner) => {
+            return compile_optional_path_length_scalar_expression(inner, path, mode, context);
+        }
+        Expression::FunctionCall(function) if is_length_function(function) => function,
+        _ => return Ok(None),
+    };
+    let Some(state) = mode.path_state() else {
+        return Ok(None);
+    };
+    let length =
+        compile_path_length_literal(function, format!("{path}.arguments"), state, context)?;
+    Ok(Some(ScalarExpression::Literal(Literal::Integer(length))))
 }
 
 fn compile_arithmetic_operator(
@@ -7555,10 +7597,20 @@ fn compile_predicate_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
+    compile_predicate_expression_with_path_state(expression, path, plan, None, context)
+}
+
+fn compile_predicate_expression_with_path_state(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
     compile_predicate_expression_in_mode(
         expression,
         path,
-        PredicateCompileMode::Graph { plan },
+        PredicateCompileMode::Graph { plan, path_state },
         context,
     )
 }
@@ -8199,6 +8251,17 @@ fn compile_optional_scalar_binary_comparison(
     mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
+    if let Some(lhs) =
+        compile_optional_path_length_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
+        return Ok(Some(PredicateExpression::ScalarComparison(
+            ScalarPredicate {
+                lhs,
+                operator,
+                rhs: compile_scalar_predicate_rhs(rhs, format!("{path}.rhs"), mode, context)?,
+            },
+        )));
+    }
     if let Some(lhs) = compile_optional_predicate_scalar_expression(
         lhs,
         format!("{path}.lhs"),
@@ -8209,12 +8272,18 @@ fn compile_optional_scalar_binary_comparison(
             ScalarPredicate {
                 lhs,
                 operator,
-                rhs: compile_scalar_predicate_rhs(
-                    rhs,
-                    format!("{path}.rhs"),
-                    mode.static_metadata_plan(),
-                    context,
-                )?,
+                rhs: compile_scalar_predicate_rhs(rhs, format!("{path}.rhs"), mode, context)?,
+            },
+        )));
+    }
+    if let Some(rhs) =
+        compile_optional_path_length_scalar_expression(rhs, format!("{path}.rhs"), mode, context)?
+    {
+        return Ok(Some(PredicateExpression::ScalarComparison(
+            ScalarPredicate {
+                lhs: rhs,
+                operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
+                rhs: compile_scalar_predicate_rhs(lhs, format!("{path}.lhs"), mode, context)?,
             },
         )));
     }
@@ -8231,12 +8300,7 @@ fn compile_optional_scalar_binary_comparison(
         ScalarPredicate {
             lhs: rhs,
             operator: invert_comparison_operator(operator, format!("{path}.operator"))?,
-            rhs: compile_scalar_predicate_rhs(
-                lhs,
-                format!("{path}.lhs"),
-                mode.static_metadata_plan(),
-                context,
-            )?,
+            rhs: compile_scalar_predicate_rhs(lhs, format!("{path}.lhs"), mode, context)?,
         },
     )))
 }
@@ -8351,6 +8415,15 @@ fn compile_in_predicate(
         }
     }
     let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
+    if let Some(lhs) =
+        compile_optional_path_length_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator: ComparisonOperator::In,
+            rhs: ScalarPredicateRhs::List(literals),
+        }));
+    }
     if let Some(property) =
         compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
     {
@@ -8598,6 +8671,16 @@ fn compile_predicate_rhs(
     context: &CypherCompileContext,
 ) -> Result<PredicateRhs, CoreError> {
     let path = path.into();
+    if let Some(expression) =
+        compile_optional_path_length_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        let ScalarExpression::Literal(literal) = expression else {
+            return Err(CoreError::internal(
+                "path length scalar expression was not lowered to a literal",
+            ));
+        };
+        return Ok(PredicateRhs::Literal(literal));
+    }
     match expression {
         Expression::Parenthesized(inner) => compile_predicate_rhs(inner, path, mode, context),
         Expression::PropertyLookup { .. } => Ok(PredicateRhs::Property(compile_property_ref(
@@ -8689,6 +8772,18 @@ fn compile_null_predicate(
                 },
             ));
         }
+    }
+    if let Some(lhs) = compile_optional_path_length_scalar_expression(
+        operand,
+        format!("{path}.operand"),
+        mode,
+        context,
+    )? {
+        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs,
+            operator,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+        }));
     }
     if let Some(lhs) = compile_optional_predicate_scalar_expression(
         operand,
@@ -8839,7 +8934,10 @@ fn compile_predicate_literal(
     compile_predicate_literal_in_mode(
         expression,
         path,
-        PredicateCompileMode::Graph { plan },
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: None,
+        },
         context,
     )
 }
@@ -10643,6 +10741,34 @@ mod tests {
     }
 
     #[test]
+    fn compiles_path_length_predicates() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             WHERE length(path) = 2 AND length(path) IN [1, 2] \
+             RETURN source.name AS source, target.name AS target",
+        )
+        .expect("path length predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(2)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(2)
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(2)),
+                    operator: ComparisonOperator::In,
+                    rhs: ScalarPredicateRhs::List(vec![Literal::Integer(1), Literal::Integer(2),]),
+                })),
+            })
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_path_length_projection() {
         let plan = compile_cypher(
             "MATCH path = (source:Service)-[:DEPENDS_ON]->{2}(target:Service) \
@@ -10680,6 +10806,7 @@ mod tests {
     fn rejects_length_over_non_path_variable() {
         for cypher in [
             "MATCH (service:Service) RETURN length(service) AS length",
+            "MATCH (service:Service) WHERE length(service) = 1 RETURN service.name AS service",
             "MATCH (service:Service) RETURN service.name AS service ORDER BY length(service)",
         ] {
             let error = compile_cypher(cypher)

@@ -1085,6 +1085,22 @@ async fn cypher_bounded_variable_length_ranges_expand_to_union_all() {
         ]
     );
 
+    let filtered_execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         WHERE length(path) = 2 \
+         RETURN source.name AS source, target.name AS target",
+    )
+    .await
+    .expect("bounded range path length predicate should execute");
+
+    assert_eq!(
+        execution_to_rows(filtered_execution.execution()),
+        vec![json!({"source": "billing-api", "target": "experiments"})]
+    );
+
     let count_execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
