@@ -17,7 +17,7 @@ inputs:
           oauth:
             flow:
               type: authorization_code
-              pkce: required
+              pkce: disabled
             redirect_uri: "http://127.0.0.1:0/oauth/callback"
             redirect_uri_port_mode: random
             endpoints:
@@ -59,22 +59,26 @@ auth:
 
 tables:
   - name: activities
-    description: "Athlete's activity history — runs, rides, swims. Ordered by most recent. Use before/after filters (epoch seconds) to narrow the date range."
+    description: >-
+      Athlete's activity history — runs, rides, swims. Ordered by most recent.
+      Use before/after filters (epoch seconds) to narrow the date range.
     fetch_limit_default: 200
     filters:
       - name: before
+        type: Int64
         description: "Epoch timestamp — only return activities before this time."
       - name: after
+        type: Int64
         description: "Epoch timestamp — only return activities after this time."
     request:
       path: "/athlete/activities"
       method: GET
       query:
         - name: before
-          from: filter
+          from: filter_int
           key: before
         - name: after
-          from: filter
+          from: filter_int
           key: after
     pagination:
       mode: page
