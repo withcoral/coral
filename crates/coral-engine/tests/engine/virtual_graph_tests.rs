@@ -8310,6 +8310,45 @@ async fn cypher_optional_relationship_endpoint_aggregates_count_only_matched_row
 }
 
 #[tokio::test]
+async fn cypher_optional_relationship_endpoint_property_aggregates_ignore_unmatched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN count(endNode(dependency).name) AS named_dependencies, \
+                sum(endNode(dependency).risk) AS dependency_risk",
+    )
+    .await
+    .expect("optional endpoint property aggregate values should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COUNT(CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"service_name\" END) AS \"named_dependencies\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "SUM(CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"risk_score\" END) AS \"dependency_risk\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"named_dependencies": 3, "dependency_risk": 1.0})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_relationship_endpoint_metadata_preserves_optional_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

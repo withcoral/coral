@@ -711,6 +711,12 @@ fn compile_static_alternative_outer_aggregate_item(
             };
             argument.clone()
         }
+        AggregateTarget::PresenceGatedProperty { .. } => {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}].expression.arguments"),
+                "pattern alternatives do not support optional relationship endpoint property aggregates yet",
+            ));
+        }
         AggregateTarget::VariableKey { variable } => {
             if function_kind != AggregateFunction::Count {
                 return Err(unsupported(
@@ -3091,6 +3097,13 @@ fn rename_aggregate_target_variables(
 ) {
     match target {
         AggregateTarget::Property(property) => rename_property_ref_variables(property, renames),
+        AggregateTarget::PresenceGatedProperty {
+            property,
+            presence_variable,
+        } => {
+            rename_property_ref_variables(property, renames);
+            rename_string(presence_variable, renames);
+        }
         AggregateTarget::VariableKey { variable } => rename_string(variable, renames),
         AggregateTarget::PresenceGatedVariableKey {
             variable,
@@ -3461,6 +3474,17 @@ fn reject_ignored_path_variable_references_in_aggregate_target(
     match target {
         AggregateTarget::Property(property) => {
             reject_ignored_path_variable_property_ref(property, state, path)
+        }
+        AggregateTarget::PresenceGatedProperty {
+            property,
+            presence_variable,
+        } => {
+            reject_ignored_path_variable_property_ref(property, state, format!("{path}.property"))?;
+            reject_ignored_path_variable(
+                presence_variable,
+                state,
+                format!("{path}.presence_variable"),
+            )
         }
         AggregateTarget::VariableKey { variable } => {
             reject_ignored_path_variable(variable, state, path)
@@ -7657,9 +7681,20 @@ fn compile_aggregate_target(
                 },
             })
         }
-        _ => Ok(AggregateTarget::Property(compile_property_ref(
-            expression, path, plan, context,
-        )?)),
+        _ => {
+            if let Some(plan) = plan
+                && let Some((property, presence_variable, _)) =
+                    compile_optional_endpoint_property_ref(expression, path.clone(), plan, context)?
+            {
+                return Ok(AggregateTarget::PresenceGatedProperty {
+                    property,
+                    presence_variable,
+                });
+            }
+            Ok(AggregateTarget::Property(compile_property_ref(
+                expression, path, plan, context,
+            )?))
+        }
     }
 }
 
@@ -10233,14 +10268,35 @@ fn compile_optional_endpoint_property_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<Option<(ScalarExpression, String)>, CoreError> {
     let path = path.into();
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
+    let Some((property, presence_variable, output_name)) =
+        compile_optional_endpoint_property_ref(expression, path, plan, context)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((
+        presence_gate_scalar_expression(
+            Some(presence_variable),
+            ScalarExpression::Property(property),
+        ),
+        output_name,
+    )))
+}
+
+fn compile_optional_endpoint_property_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<(PropertyRef, String, String)>, CoreError> {
+    let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_optional_endpoint_property_scalar_expression(inner, path, plan, context)
+            compile_optional_endpoint_property_ref(inner, path, plan, context)
         }
         Expression::PropertyLookup { base, property, .. } => {
-            let Some(plan) = plan else {
-                return Ok(None);
-            };
             let Some(endpoint) = compile_optional_relationship_endpoint_ref_from_expression(
                 base,
                 format!("{path}.base"),
@@ -10255,13 +10311,11 @@ fn compile_optional_endpoint_property_scalar_expression(
             };
             let output_name = format!("{}_{}", endpoint.variable, property.name.name);
             Ok(Some((
-                presence_gate_scalar_expression(
-                    Some(presence_variable),
-                    ScalarExpression::Property(PropertyRef {
-                        variable: endpoint.variable,
-                        property: property.name.name.clone(),
-                    }),
-                ),
+                PropertyRef {
+                    variable: endpoint.variable,
+                    property: property.name.name.clone(),
+                },
+                presence_variable,
                 output_name,
             )))
         }
@@ -13082,6 +13136,47 @@ mod tests {
                 distinct: false,
                 alias: "sources".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_relationship_endpoint_property_aggregates_on_optional_relationships() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN count(endNode(dependency).name) AS named_dependencies, \
+                    sum(endNode(dependency).risk) AS dependency_risk",
+        )
+        .expect("optional relationship endpoint property aggregates should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::PresenceGatedProperty {
+                        property: PropertyRef {
+                            variable: "dependency_service".to_string(),
+                            property: "name".to_string(),
+                        },
+                        presence_variable: "dependency".to_string(),
+                    },
+                    distinct: false,
+                    alias: "named_dependencies".to_string(),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Sum,
+                    target: AggregateTarget::PresenceGatedProperty {
+                        property: PropertyRef {
+                            variable: "dependency_service".to_string(),
+                            property: "risk".to_string(),
+                        },
+                        presence_variable: "dependency".to_string(),
+                    },
+                    distinct: false,
+                    alias: "dependency_risk".to_string(),
+                },
+            ]
         );
     }
 

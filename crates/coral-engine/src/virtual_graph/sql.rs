@@ -2435,6 +2435,16 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         match target {
             AggregateTarget::Property(property) => self.render_property_ref(property),
+            AggregateTarget::PresenceGatedProperty {
+                property,
+                presence_variable,
+            } => {
+                let presence = self.render_binding_presence_ref(presence_variable)?;
+                let property = self.render_property_ref(property)?;
+                Ok(format!(
+                    "CASE WHEN {presence} IS NULL THEN NULL ELSE {property} END"
+                ))
+            }
             AggregateTarget::VariableKey { variable } => {
                 if function == AggregateFunction::Count {
                     self.render_binding_presence_ref(variable)

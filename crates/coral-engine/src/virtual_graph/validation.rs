@@ -3299,6 +3299,24 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_property_ref(property, path.clone())?;
                 self.validate_aggregate_property_type(function, property, path)
             }
+            AggregateTarget::PresenceGatedProperty {
+                property,
+                presence_variable,
+            } => {
+                self.validate_property_ref(property, format!("{path}.property"))?;
+                validate_variable(format!("{path}.presence_variable"), presence_variable)?;
+                self.bindings
+                    .get(presence_variable.as_str())
+                    .ok_or_else(|| {
+                        Diagnostic::new(
+                            "UNKNOWN_VARIABLE",
+                            format!("{path}.presence_variable"),
+                            format!("unknown graph variable '{presence_variable}'"),
+                        )
+                        .into_core_error()
+                    })?;
+                self.validate_aggregate_property_type(function, property, path)
+            }
             AggregateTarget::VariableKey { variable } => {
                 if function != AggregateFunction::Count {
                     return Err(Diagnostic::new(
@@ -3395,7 +3413,10 @@ impl<'a> GraphPlanValidator<'a> {
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP => Ok(ScalarType::Float),
             AggregateFunction::Min | AggregateFunction::Max => match target {
-                AggregateTarget::Property(property) => self.property_ref_scalar_type(property),
+                AggregateTarget::Property(property)
+                | AggregateTarget::PresenceGatedProperty { property, .. } => {
+                    self.property_ref_scalar_type(property)
+                }
                 AggregateTarget::VariableKey { .. }
                 | AggregateTarget::PresenceGatedVariableKey { .. } => Ok(ScalarType::Unknown),
             },

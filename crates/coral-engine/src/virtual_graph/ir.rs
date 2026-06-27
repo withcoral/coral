@@ -638,6 +638,13 @@ pub enum AggregateFunction {
 pub enum AggregateTarget {
     /// Aggregate a graph property.
     Property(PropertyRef),
+    /// Aggregate a graph property only when another graph binding is present.
+    PresenceGatedProperty {
+        /// Graph property to aggregate.
+        property: PropertyRef,
+        /// Graph variable whose binding controls nullability.
+        presence_variable: String,
+    },
     /// Aggregate a graph variable by its mapped stable key column.
     VariableKey {
         /// Graph variable to aggregate.
