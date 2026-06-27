@@ -1432,6 +1432,74 @@ async fn cypher_scalar_cast_expressions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.id + 5 >= 25 \
+         RETURN service.name AS service, \
+                (service.id * 2) AS double_id, \
+                toInteger(service.id / 10) AS id_bucket, \
+                service.id % 20 AS id_mod \
+         ORDER BY service.id - 5",
+    )
+    .await
+    .expect("arithmetic scalar expression query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("(\"n0\".\"id\" + 5) >= 25"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("(\"n0\".\"id\" * 2) AS \"double_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST((\"n0\".\"id\" / 10) AS BIGINT) AS \"id_bucket\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "deployments",
+                "double_id": 40,
+                "id_bucket": 2,
+                "id_mod": 0,
+            }),
+            json!({
+                "service": "experiments",
+                "double_id": 60,
+                "id_bucket": 3,
+                "id_mod": 10,
+            }),
+            json!({
+                "service": "legacy-sync",
+                "double_id": 80,
+                "id_bucket": 4,
+                "id_mod": 0,
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_string_case_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

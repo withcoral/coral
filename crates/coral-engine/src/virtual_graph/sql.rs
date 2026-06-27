@@ -4,9 +4,9 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
+    ElementIdPredicate, GraphPlan, KeyPredicate, Literal, OrderDirection, OrderExpression,
+    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyRef, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
@@ -1421,6 +1421,16 @@ impl<'a> Lowerer<'a> {
                 self.render_scalar_expression(search)?,
                 self.render_scalar_expression(replacement)?
             )),
+            ScalarExpression::Arithmetic {
+                operator,
+                left,
+                right,
+            } => Ok(format!(
+                "({} {} {})",
+                self.render_scalar_expression(left)?,
+                render_arithmetic_operator(*operator),
+                self.render_scalar_expression(right)?
+            )),
         }
     }
 }
@@ -1472,6 +1482,16 @@ fn projection_output_alias(projection: &Projection) -> Option<&str> {
         | Projection::Expression { alias, .. }
         | Projection::CountAll { alias }
         | Projection::Aggregate { alias, .. } => Some(alias),
+    }
+}
+
+fn render_arithmetic_operator(operator: ArithmeticOperator) -> &'static str {
+    match operator {
+        ArithmeticOperator::Add => "+",
+        ArithmeticOperator::Subtract => "-",
+        ArithmeticOperator::Multiply => "*",
+        ArithmeticOperator::Divide => "/",
+        ArithmeticOperator::Modulo => "%",
     }
 }
 

@@ -814,6 +814,10 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::collect_scalar_expression_variables(search, variables);
                 Self::collect_scalar_expression_variables(replacement, variables);
             }
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                Self::collect_scalar_expression_variables(left, variables);
+                Self::collect_scalar_expression_variables(right, variables);
+            }
         }
     }
 
@@ -1052,6 +1056,18 @@ impl<'a> GraphPlanValidator<'a> {
                     replacement,
                     optional_variables,
                     format!("{path}.replacement"),
+                )
+            }
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                Self::validate_scalar_expression_not_optional(
+                    left,
+                    optional_variables,
+                    format!("{path}.left"),
+                )?;
+                Self::validate_scalar_expression_not_optional(
+                    right,
+                    optional_variables,
+                    format!("{path}.right"),
                 )
             }
         }
@@ -2150,6 +2166,10 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))?;
                 self.validate_scalar_expression(search, format!("{path}.search"))?;
                 self.validate_scalar_expression(replacement, format!("{path}.replacement"))
+            }
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                self.validate_scalar_expression(left, format!("{path}.left"))?;
+                self.validate_scalar_expression(right, format!("{path}.right"))
             }
         }
     }

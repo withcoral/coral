@@ -200,6 +200,30 @@ pub enum ScalarExpression {
         /// Replacement expression.
         replacement: Box<ScalarExpression>,
     },
+    /// Numeric binary arithmetic over scalar expressions.
+    Arithmetic {
+        /// Arithmetic operator.
+        operator: ArithmeticOperator,
+        /// Left operand.
+        left: Box<ScalarExpression>,
+        /// Right operand.
+        right: Box<ScalarExpression>,
+    },
+}
+
+/// Numeric binary arithmetic operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithmeticOperator {
+    /// Addition.
+    Add,
+    /// Subtraction.
+    Subtract,
+    /// Multiplication.
+    Multiply,
+    /// Division.
+    Divide,
+    /// Modulo.
+    Modulo,
 }
 
 /// Projection in the shared graph IR.

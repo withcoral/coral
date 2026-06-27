@@ -23,12 +23,12 @@ use ordered_float::OrderedFloat;
 
 use super::diagnostic::Diagnostic;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator, Direction,
+    ElementIdPredicate, GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -1078,6 +1078,9 @@ fn compile_order_expression(
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
+        Expression::BinaryOp { .. } => {
+            compile_arithmetic_order_expression(expression, path, context)
+        }
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
@@ -1375,6 +1378,10 @@ fn compile_projection(
         expression if is_literal_projection_expression(expression) => {
             compile_literal_projection(expression, item, path, context)
         }
+        Expression::Parenthesized(inner) if is_arithmetic_expression(inner) => {
+            compile_arithmetic_projection(item, path, context)
+        }
+        Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
@@ -1482,6 +1489,25 @@ fn compile_coalesce_projection(
             .alias
             .as_ref()
             .map_or_else(|| "coalesce".to_string(), variable_name),
+    })
+}
+
+fn compile_arithmetic_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_scalar_expression(
+            &item.expression,
+            format!("{path}.expression"),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "expression".to_string(), variable_name),
     })
 }
 
@@ -1883,6 +1909,19 @@ fn compile_scalar_expression(
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
+        Expression::BinaryOp { op, lhs, rhs, .. } => Ok(ScalarExpression::Arithmetic {
+            operator: compile_arithmetic_operator(*op, format!("{path}.operator"))?,
+            left: Box::new(compile_scalar_expression(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
+            right: Box::new(compile_scalar_expression(
+                rhs,
+                format!("{path}.rhs"),
+                context,
+            )?),
+        }),
         Expression::FunctionCall(function) if is_coalesce_function(function) => {
             compile_coalesce_scalar_expression(function, path, context)
         }
@@ -1925,7 +1964,7 @@ fn compile_scalar_expression(
         )),
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
     }
 }
@@ -2102,6 +2141,14 @@ fn compile_coalesce_order_expression(
     compile_coalesce_scalar_expression(function, path, context).map(OrderExpression::Scalar)
 }
 
+fn compile_arithmetic_order_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_scalar_expression(expression, path, context).map(OrderExpression::Scalar)
+}
+
 fn compile_to_string_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -2195,6 +2242,9 @@ fn compile_optional_predicate_scalar_expression(
         Expression::FunctionCall(function) if is_coalesce_function(function) => Ok(Some(
             compile_coalesce_scalar_expression(function, path, context)?,
         )),
+        Expression::BinaryOp { .. } => {
+            Ok(Some(compile_scalar_expression(expression, path, context)?))
+        }
         Expression::FunctionCall(function) if is_to_string_function(function) => Ok(Some(
             compile_to_string_scalar_expression(function, path, context)?,
         )),
@@ -2242,6 +2292,9 @@ fn compile_scalar_predicate_rhs(
                 compile_coalesce_scalar_expression(function, path, context)?,
             ))
         }
+        Expression::BinaryOp { .. } => Ok(ScalarPredicateRhs::Expression(
+            compile_scalar_expression(expression, path, context)?,
+        )),
         Expression::FunctionCall(function) if is_to_string_function(function) => {
             Ok(ScalarPredicateRhs::Expression(
                 compile_to_string_scalar_expression(function, path, context)?,
@@ -2300,8 +2353,31 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, nested coalesce(), toString(), toInteger(), toFloat(), toBoolean(), toLower(), toUpper(), trim(), lTrim(), rTrim(), or replace() expressions",
         )),
+    }
+}
+
+fn compile_arithmetic_operator(
+    operator: CypherBinaryOperator,
+    path: impl Into<String>,
+) -> Result<ArithmeticOperator, CoreError> {
+    match operator {
+        CypherBinaryOperator::Add => Ok(ArithmeticOperator::Add),
+        CypherBinaryOperator::Subtract => Ok(ArithmeticOperator::Subtract),
+        CypherBinaryOperator::Multiply => Ok(ArithmeticOperator::Multiply),
+        CypherBinaryOperator::Divide => Ok(ArithmeticOperator::Divide),
+        CypherBinaryOperator::Modulo => Ok(ArithmeticOperator::Modulo),
+        CypherBinaryOperator::Power => Err(unsupported(
+            path,
+            "power arithmetic expressions are not supported yet",
+        )),
+        CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor => {
+            Err(unsupported(
+                path,
+                "boolean operators are not scalar arithmetic expressions",
+            ))
+        }
     }
 }
 
@@ -3226,7 +3302,7 @@ fn compile_binary_comparison(
 
     Err(unsupported(
         path,
-        "comparisons must include at least one variable.property, id(variable), elementId(variable), type(relationship), or coalesce(...) operand",
+        "comparisons must include at least one variable.property, id(variable), elementId(variable), type(relationship), or supported scalar expression operand",
     ))
 }
 
@@ -4097,6 +4173,22 @@ fn is_literal_expression(expression: &Expression) -> bool {
             operand,
             ..
         } => is_literal_expression(operand),
+        _ => false,
+    }
+}
+
+fn is_arithmetic_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_arithmetic_expression(inner),
+        Expression::BinaryOp { op, .. } => matches!(
+            op,
+            CypherBinaryOperator::Add
+                | CypherBinaryOperator::Subtract
+                | CypherBinaryOperator::Multiply
+                | CypherBinaryOperator::Divide
+                | CypherBinaryOperator::Modulo
+                | CypherBinaryOperator::Power
+        ),
         _ => false,
     }
 }
@@ -5690,6 +5782,63 @@ mod tests {
             plan.order_by.as_slice(),
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::ToInteger { .. }),
+                direction: OrderDirection::Ascending,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_arithmetic_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.risk * 100 >= 50 \
+             RETURN service.risk * 100 + 1 AS risk_points \
+             ORDER BY service.id % 20",
+        )
+        .expect("arithmetic scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Multiply,
+                    left: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                    right: Box::new(ScalarExpression::Literal(Literal::Integer(100))),
+                },
+                operator: ComparisonOperator::GreaterThanOrEqual,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(
+                    50
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Multiply,
+                        left: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        })),
+                        right: Box::new(ScalarExpression::Literal(Literal::Integer(100))),
+                    }),
+                    right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                },
+                alias: "risk_points".to_string(),
+            }]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Modulo,
+                    ..
+                }),
                 direction: OrderDirection::Ascending,
             }]
         ));
