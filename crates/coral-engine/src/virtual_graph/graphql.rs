@@ -1920,6 +1920,48 @@ fn append_conjunctive_property_expression(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphqlWhereOperator {
+    Comparison(ComparisonOperator),
+    RegexMatch,
+    In,
+    IsNull,
+}
+
+fn classify_graphql_where_operator(operator: &str) -> Option<GraphqlWhereOperator> {
+    match operator {
+        "eq" | "equals" => Some(GraphqlWhereOperator::Comparison(ComparisonOperator::Equal)),
+        "ne" | "neq" | "notEq" | "notEqual" | "notEquals" => Some(
+            GraphqlWhereOperator::Comparison(ComparisonOperator::NotEqual),
+        ),
+        "gt" | "greaterThan" => Some(GraphqlWhereOperator::Comparison(
+            ComparisonOperator::GreaterThan,
+        )),
+        "gte" | "ge" | "greaterThanEqual" | "greaterThanOrEqual" => Some(
+            GraphqlWhereOperator::Comparison(ComparisonOperator::GreaterThanOrEqual),
+        ),
+        "lt" | "lessThan" => Some(GraphqlWhereOperator::Comparison(
+            ComparisonOperator::LessThan,
+        )),
+        "lte" | "le" | "lessThanEqual" | "lessThanOrEqual" => Some(
+            GraphqlWhereOperator::Comparison(ComparisonOperator::LessThanOrEqual),
+        ),
+        "startsWith" | "starts_with" => Some(GraphqlWhereOperator::Comparison(
+            ComparisonOperator::StartsWith,
+        )),
+        "endsWith" | "ends_with" => Some(GraphqlWhereOperator::Comparison(
+            ComparisonOperator::EndsWith,
+        )),
+        "contains" => Some(GraphqlWhereOperator::Comparison(
+            ComparisonOperator::Contains,
+        )),
+        "matches" | "regex" => Some(GraphqlWhereOperator::RegexMatch),
+        "in" => Some(GraphqlWhereOperator::In),
+        "isNull" | "is_null" => Some(GraphqlWhereOperator::IsNull),
+        _ => None,
+    }
+}
+
 fn compile_where_operator(
     variable: &str,
     property: &str,
@@ -1933,63 +1975,23 @@ fn compile_where_operator(
         variable: variable.to_string(),
         property: property.to_string(),
     };
-    match operator {
-        "eq" => Ok(PropertyPredicate {
+    match classify_graphql_where_operator(operator) {
+        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(PropertyPredicate {
             property,
-            operator: ComparisonOperator::Equal,
+            operator,
             rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
         }),
-        "ne" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::NotEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "gt" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::GreaterThan,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "gte" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::GreaterThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "lt" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::LessThan,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "lte" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::LessThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "startsWith" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::StartsWith,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "endsWith" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::EndsWith,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "contains" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::Contains,
-            rhs: PredicateRhs::Literal(compile_literal(value, path, context)?),
-        }),
-        "matches" | "regex" => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::RegexMatch) => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::RegexMatch,
             rhs: PredicateRhs::Literal(compile_regex_literal(value, path, context)?),
         }),
-        "in" => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::In) => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::In,
             rhs: PredicateRhs::List(compile_literal_list(value, path, context)?),
         }),
-        "isNull" => {
+        Some(GraphqlWhereOperator::IsNull) => {
             let is_null = compile_boolean(value, path, "isNull", context)?;
             Ok(PropertyPredicate {
                 property,
@@ -2001,7 +2003,7 @@ fn compile_where_operator(
                 rhs: PredicateRhs::Literal(Literal::Null),
             })
         }
-        _ => Err(unsupported(
+        None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
         )),
@@ -2020,63 +2022,23 @@ fn compile_where_variable_operator(
         variable: variable.to_string(),
         property: property.to_string(),
     };
-    match operator {
-        "eq" => Ok(PropertyPredicate {
+    match classify_graphql_where_operator(operator) {
+        Some(GraphqlWhereOperator::Comparison(operator)) => Ok(PropertyPredicate {
             property,
-            operator: ComparisonOperator::Equal,
+            operator,
             rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
         }),
-        "ne" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::NotEqual,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "gt" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::GreaterThan,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "gte" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::GreaterThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "lt" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::LessThan,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "lte" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::LessThanOrEqual,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "startsWith" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::StartsWith,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "endsWith" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::EndsWith,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "contains" => Ok(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::Contains,
-            rhs: PredicateRhs::Literal(compile_variable_literal(value, path)?),
-        }),
-        "matches" | "regex" => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::RegexMatch) => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::RegexMatch,
             rhs: PredicateRhs::Literal(compile_variable_regex_literal(value, path)?),
         }),
-        "in" => Ok(PropertyPredicate {
+        Some(GraphqlWhereOperator::In) => Ok(PropertyPredicate {
             property,
             operator: ComparisonOperator::In,
             rhs: PredicateRhs::List(compile_variable_literal_list(value, path)?),
         }),
-        "isNull" => {
+        Some(GraphqlWhereOperator::IsNull) => {
             let is_null = compile_variable_boolean(value, path, "isNull")?;
             Ok(PropertyPredicate {
                 property,
@@ -2088,7 +2050,7 @@ fn compile_where_variable_operator(
                 rhs: PredicateRhs::Literal(Literal::Null),
             })
         }
-        _ => Err(unsupported(
+        None => Err(unsupported(
             path,
             format!("unsupported GraphQL where operator '{operator}'"),
         )),
@@ -2820,6 +2782,52 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_filter_operator_aliases() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(
+                where: {
+                  tier: { equals: "prod" }
+                  name: { notEquals: "legacy-sync", starts_with: "billing" }
+                  risk: { greaterThanOrEqual: 0.5, lessThanOrEqual: 0.95 }
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL filter operator aliases should compile");
+
+        assert_eq!(plan.predicates.len(), 5);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "tier"
+                && predicate.operator == ComparisonOperator::Equal
+                && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && predicate.operator == ComparisonOperator::NotEqual
+                && predicate.rhs
+                    == PredicateRhs::Literal(Literal::String("legacy-sync".to_string()))
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && predicate.operator == ComparisonOperator::StartsWith
+                && predicate.rhs == PredicateRhs::Literal(Literal::String("billing".to_string()))
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "risk"
+                && predicate.operator == ComparisonOperator::GreaterThanOrEqual
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "risk"
+                && predicate.operator == ComparisonOperator::LessThanOrEqual
+        }));
+    }
+
+    #[test]
     fn compiles_root_query_with_variables() {
         let variables = BTreeMap::from([
             (
@@ -2961,6 +2969,68 @@ mod tests {
                     &predicate.rhs,
                     PredicateRhs::List(values) if values.len() == 2
                 )
+        }));
+    }
+
+    #[test]
+    fn compiles_root_query_with_object_where_variable_operator_aliases() {
+        let variables = BTreeMap::from([(
+            "filter".to_string(),
+            variable_object([
+                (
+                    "tier",
+                    variable_object([(
+                        "equals",
+                        GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+                    )]),
+                ),
+                (
+                    "name",
+                    variable_object([(
+                        "neq",
+                        GraphqlVariableValue::Literal(Literal::String("legacy-sync".to_string())),
+                    )]),
+                ),
+                (
+                    "risk",
+                    variable_object([
+                        (
+                            "greaterThan",
+                            GraphqlVariableValue::Literal(Literal::Float(OrderedFloat(0.25))),
+                        ),
+                        (
+                            "lessThanOrEqual",
+                            GraphqlVariableValue::Literal(Literal::Float(OrderedFloat(0.95))),
+                        ),
+                    ]),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($filter: ServiceWhere!) {
+              Service(where: $filter) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL object where variable operator aliases should compile");
+
+        assert_eq!(plan.predicates.len(), 4);
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "tier" && predicate.operator == ComparisonOperator::Equal
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "name"
+                && predicate.operator == ComparisonOperator::NotEqual
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "risk"
+                && predicate.operator == ComparisonOperator::GreaterThan
+        }));
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.property == "risk"
+                && predicate.operator == ComparisonOperator::LessThanOrEqual
         }));
     }
 

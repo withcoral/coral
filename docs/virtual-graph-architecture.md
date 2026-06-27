@@ -161,7 +161,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
 - `@include(if:)` and `@skip(if:)` on fields, fragment spreads, and inline
   fragments, with boolean literals or typed boolean variables;
 - root `where` object predicates over selected node properties, including
-  regex filters plus `and`, `or`, `xor`, and `not` boolean filter composition;
+  equality, inequality, range, string, regex, list-membership, and null filters
+  plus generated-client-friendly operator aliases, with `and`, `or`, `xor`, and
+  `not` boolean filter composition;
 - `orderBy` object or list of objects using property fields and `ASC` / `DESC`;
 - integer `limit`, `offset` / `skip`, and boolean `distinct` root arguments;
 - typed GraphQL variables bound through the explicit variable API in supported

@@ -670,6 +670,58 @@ async fn graphql_regex_and_xor_filters_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_filter_operator_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: {
+              tier: { equals: "prod" }
+              name: { starts_with: "billing", notEqual: "legacy-sync" }
+              risk: { ge: 0.5, lessThanOrEqual: 0.95 }
+            }
+          ) {
+            service: name
+            risk
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL filter operator alias query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" LIKE 'billing%' ESCAPE '\\'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'")
+            && execution
+                .translated_sql()
+                .contains("\"n0\".\"risk_score\" <= 0.95"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api", "risk": 0.9})]
+    );
+}
+
+#[tokio::test]
 async fn graphql_generated_client_shape_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
