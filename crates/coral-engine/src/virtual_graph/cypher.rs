@@ -2306,10 +2306,7 @@ fn compile_arithmetic_operator(
         CypherBinaryOperator::Multiply => Ok(ArithmeticOperator::Multiply),
         CypherBinaryOperator::Divide => Ok(ArithmeticOperator::Divide),
         CypherBinaryOperator::Modulo => Ok(ArithmeticOperator::Modulo),
-        CypherBinaryOperator::Power => Err(unsupported(
-            path,
-            "power arithmetic expressions are not supported yet",
-        )),
+        CypherBinaryOperator::Power => Ok(ArithmeticOperator::Power),
         CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor => {
             Err(unsupported(
                 path,
@@ -6173,7 +6170,8 @@ mod tests {
         let plan = compile_cypher(
             "MATCH (service:Service) \
              WHERE service.risk * 100 >= 50 \
-             RETURN service.risk * 100 + 1 AS risk_points \
+             RETURN service.risk * 100 + 1 AS risk_points, \
+                    service.risk ^ 2 AS risk_squared \
              ORDER BY service.id % 20",
         )
         .expect("arithmetic scalar expressions should compile");
@@ -6197,21 +6195,34 @@ mod tests {
         );
         assert_eq!(
             plan.projections,
-            vec![Projection::Expression {
-                expression: ScalarExpression::Arithmetic {
-                    operator: ArithmeticOperator::Add,
-                    left: Box::new(ScalarExpression::Arithmetic {
-                        operator: ArithmeticOperator::Multiply,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Add,
+                        left: Box::new(ScalarExpression::Arithmetic {
+                            operator: ArithmeticOperator::Multiply,
+                            left: Box::new(ScalarExpression::Property(PropertyRef {
+                                variable: "service".to_string(),
+                                property: "risk".to_string(),
+                            })),
+                            right: Box::new(ScalarExpression::Literal(Literal::Integer(100))),
+                        }),
+                        right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                    },
+                    alias: "risk_points".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Power,
                         left: Box::new(ScalarExpression::Property(PropertyRef {
                             variable: "service".to_string(),
                             property: "risk".to_string(),
                         })),
-                        right: Box::new(ScalarExpression::Literal(Literal::Integer(100))),
-                    }),
-                    right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                        right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+                    },
+                    alias: "risk_squared".to_string(),
                 },
-                alias: "risk_points".to_string(),
-            }]
+            ]
         );
         assert!(matches!(
             plan.order_by.as_slice(),

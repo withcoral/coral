@@ -1447,7 +1447,8 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
          RETURN service.name AS service, \
                 (service.id * 2) AS double_id, \
                 toInteger(service.id / 10) AS id_bucket, \
-                service.id % 20 AS id_mod \
+                service.id % 20 AS id_mod, \
+                service.risk ^ 2 AS risk_squared \
          ORDER BY service.id - 5",
     )
     .await
@@ -1474,6 +1475,13 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("power(\"n0\".\"risk_score\", 2) AS \"risk_squared\""),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
@@ -1482,18 +1490,21 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
                 "double_id": 40,
                 "id_bucket": 2,
                 "id_mod": 0,
+                "risk_squared": 0.25,
             }),
             json!({
                 "service": "experiments",
                 "double_id": 60,
                 "id_bucket": 3,
                 "id_mod": 10,
+                "risk_squared": 0.0625,
             }),
             json!({
                 "service": "legacy-sync",
                 "double_id": 80,
                 "id_bucket": 4,
                 "id_mod": 0,
+                "risk_squared": 0.9025,
             }),
         ]
     );

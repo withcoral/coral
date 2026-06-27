@@ -100,12 +100,13 @@ The supported foundation subset is intentionally narrow:
   mapped labels and relationship types;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE`;
-- scalar string and conversion expressions in projections, predicates, and
-  ordering, including unary numeric negation, `coalesce`, scalar casts, string case conversion,
-  whitespace trimming, `replace`, character length via `size`, `char_length`,
-  and `character_length`, and zero-based `substring` lowered to DataFusion
-  `SUBSTRING`, plus `left`, `right`, `reverse`, and numeric `abs`, `ceil`,
-  `floor`, and `round`;
+- scalar string, numeric, and conversion expressions in projections,
+  predicates, and ordering, including arithmetic `+`, `-`, `*`, `/`, `%`,
+  and `^`, unary numeric negation, `coalesce`, scalar casts, string case
+  conversion, whitespace trimming, `replace`, character length via `size`,
+  `char_length`, and `character_length`, and zero-based `substring` lowered
+  to DataFusion `SUBSTRING`, plus `left`, `right`, `reverse`, and numeric
+  `abs`, `ceil`, `floor`, and `round`;
 - inline node property maps normalized to equality predicates;
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;

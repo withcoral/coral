@@ -1443,12 +1443,7 @@ impl<'a> Lowerer<'a> {
                 operator,
                 left,
                 right,
-            } => Ok(format!(
-                "({} {} {})",
-                self.render_scalar_expression(left)?,
-                render_arithmetic_operator(*operator),
-                self.render_scalar_expression(right)?
-            )),
+            } => self.render_arithmetic_expression(*operator, left, right),
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -1517,6 +1512,23 @@ impl<'a> Lowerer<'a> {
         Ok(format!(
             "round({expression_sql}, {})",
             self.render_scalar_expression(places)?
+        ))
+    }
+
+    fn render_arithmetic_expression(
+        &self,
+        operator: ArithmeticOperator,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        let left = self.render_scalar_expression(left)?;
+        let right = self.render_scalar_expression(right)?;
+        if operator == ArithmeticOperator::Power {
+            return Ok(format!("power({left}, {right})"));
+        }
+        Ok(format!(
+            "({left} {} {right})",
+            render_arithmetic_operator(operator)
         ))
     }
 
@@ -1624,6 +1636,7 @@ fn render_arithmetic_operator(operator: ArithmeticOperator) -> &'static str {
         ArithmeticOperator::Multiply => "*",
         ArithmeticOperator::Divide => "/",
         ArithmeticOperator::Modulo => "%",
+        ArithmeticOperator::Power => unreachable!("power arithmetic lowers as a function"),
     }
 }
 
@@ -3118,6 +3131,75 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY -(\"n1\".\"risk_score\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_power_arithmetic_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Power,
+                left: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+                right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            },
+            alias: "risk_squared".to_string(),
+        }];
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Power,
+                left: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+                right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            },
+            operator: ComparisonOperator::GreaterThan,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Float(
+                ordered_float::OrderedFloat(0.5),
+            ))),
+        }));
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Power,
+                left: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                })),
+                right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            }),
+            direction: OrderDirection::Descending,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("power arithmetic expressions should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("SELECT power(\"n1\".\"risk_score\", 2) AS \"risk_squared\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("WHERE power(\"n1\".\"risk_score\", 2) > 0.5"),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY power(\"n1\".\"risk_score\", 2) DESC"),
             "{}",
             translation.sql()
         );

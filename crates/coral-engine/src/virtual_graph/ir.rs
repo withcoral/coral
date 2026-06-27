@@ -292,6 +292,8 @@ pub enum ArithmeticOperator {
     Divide,
     /// Modulo.
     Modulo,
+    /// Exponentiation.
+    Power,
 }
 
 /// One searched CASE WHEN/THEN branch.
