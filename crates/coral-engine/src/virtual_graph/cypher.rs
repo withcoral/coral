@@ -497,9 +497,12 @@ fn apply_terminal_return_projection_aliases(
     projections: &mut [Projection],
 ) -> Result<(), CoreError> {
     if return_clause.star {
+        if return_clause.items.is_empty() {
+            return Ok(());
+        }
         return Err(unsupported(
             "final_part.return.star",
-            "RETURN * after WITH requires scoped query planning and is not supported yet",
+            "RETURN * mixed with explicit projections after WITH requires scoped query planning and is not supported yet",
         ));
     }
     if return_clause.items.len() != projections.len() {
@@ -7157,6 +7160,54 @@ mod tests {
     }
 
     #[test]
+    fn compiles_terminal_with_return_star_alias_passthrough() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service.tier AS tier, count(service) AS services \
+             RETURN * \
+             ORDER BY services DESC, tier",
+        )
+        .expect("terminal WITH RETURN * should pass through scalar aliases");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: AggregateFunction::Count,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("services".to_string()),
+                    direction: OrderDirection::Descending,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_scalar_where_alias_predicates() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[:OWNS]->(service:Service) \
@@ -10655,6 +10706,9 @@ mod tests {
         );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service RETURN service ORDER BY service.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS service RETURN *, service",
         );
         assert_unsupported(
             "MATCH (service:Service) WITH service.name AS service ORDER BY service RETURN service ORDER BY service",
