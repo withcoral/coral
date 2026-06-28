@@ -15352,10 +15352,15 @@ fn evaluate_literal_comparison(
         | ComparisonOperator::GreaterThanOrEqual
         | ComparisonOperator::LessThan
         | ComparisonOperator::LessThanOrEqual => {
-            let Some(ordering) = compare_numeric_literals(lhs, rhs, path.clone())? else {
+            let ordering = if let Some(ordering) = compare_numeric_literals(lhs, rhs, path.clone())?
+            {
+                ordering
+            } else if let (Literal::String(lhs), Literal::String(rhs)) = (lhs, rhs) {
+                lhs.cmp(rhs)
+            } else {
                 return Err(unsupported(
                     path,
-                    "ordered literal comparisons require numeric operands",
+                    "ordered literal comparisons require numeric or string operands",
                 ));
             };
             match operator {
@@ -20960,7 +20965,9 @@ relationships:
              RETURN [k IN keys(service) WHERE k STARTS WITH 't'] AS starts_with_t, \
                     [k IN keys(service) WHERE k ENDS WITH 'e'] AS ends_with_e, \
                     [k IN ['billing', 'deployments', 'experiments'] WHERE k CONTAINS 'ing'] AS contains_ing, \
-                    [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t",
+                    [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t, \
+                    [k IN keys(service) WHERE k > 'risk'] AS after_risk, \
+                    [k IN keys(service) WHERE k <= 'name'] AS through_name",
         )
         .expect("static list comprehension string filters should compile");
 
@@ -20995,7 +21002,44 @@ relationships:
                     },
                     alias: "regex_t".to_string(),
                 },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "after_risk".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("name".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "through_name".to_string(),
+                },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_collection_string_ordering_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE any(key IN keys(service) WHERE key > 'team') \
+             RETURN all(key IN keys(service) WHERE key >= 'name') AS keys_after_name",
+        )
+        .expect("static collection string ordering predicates should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Predicate(Box::new(PredicateExpression::Boolean(
+                    true
+                ))),
+                alias: "keys_after_name".to_string(),
+            }]
         );
     }
 

@@ -10346,7 +10346,9 @@ async fn cypher_static_list_comprehension_string_filters_execute_against_synthet
                 [k IN keys(service) WHERE k STARTS WITH 't'] AS starts_with_t, \
                 [k IN keys(service) WHERE k ENDS WITH 'e'] AS ends_with_e, \
                 [k IN keys(service) WHERE k CONTAINS 'is'] AS contains_is, \
-                [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t \
+                [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t, \
+                [k IN keys(service) WHERE k > 'risk'] AS after_risk, \
+                [k IN keys(service) WHERE k <= 'name'] AS through_name \
          ORDER BY owner, service",
     )
     .await
@@ -10362,9 +10364,9 @@ async fn cypher_static_list_comprehension_string_filters_execute_against_synthet
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"], "after_risk": ["team", "tier"], "through_name": ["active", "id", "name"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"], "after_risk": ["team", "tier"], "through_name": ["active", "id", "name"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"], "after_risk": ["team", "tier"], "through_name": ["active", "id", "name"]}),
         ]
     );
 }
@@ -10482,13 +10484,15 @@ async fn cypher_static_list_quantifier_predicates_execute_against_synthetic_sour
         "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
          WHERE all(key IN keys(service) WHERE key <> 'deprecated') \
            AND any(key IN tail(keys(service)) WHERE key = 'tier') \
+           AND any(key IN keys(service) WHERE key > 'team') \
            AND none(label IN labels(service) WHERE label = 'Team') \
            AND single(key IN ['name', 'tier', 'risk'] WHERE key STARTS WITH 'r') \
            AND any(key IN $selected_keys WHERE key IN keys(service)) \
          RETURN person.name AS owner, \
                 service.name AS service, \
                 all(key IN keys(service) WHERE key <> 'deprecated') AS keys_declared, \
-                any(label IN labels(service) WHERE label = 'Service') AS has_service_label \
+                any(label IN labels(service) WHERE label = 'Service') AS has_service_label, \
+                single(key IN keys(service) WHERE key < 'id') AS single_key_before_id \
          ORDER BY owner, service",
         &parameters,
     )
@@ -10498,9 +10502,9 @@ async fn cypher_static_list_quantifier_predicates_execute_against_synthetic_sour
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "keys_declared": true, "has_service_label": true}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "keys_declared": true, "has_service_label": true}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "keys_declared": true, "has_service_label": true}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "keys_declared": true, "has_service_label": true, "single_key_before_id": true}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "keys_declared": true, "has_service_label": true, "single_key_before_id": true}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "keys_declared": true, "has_service_label": true, "single_key_before_id": true}),
         ]
     );
 }
