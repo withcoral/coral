@@ -2245,12 +2245,12 @@ fn filter_bounded_relationship_range_alternatives(
         return Ok(normal_bounded_relationship_range_alternatives(alternatives));
     };
     let direction = relationship_pattern_direction(relationship.direction);
+    let adjacency = fixed_length_label_adjacency(graph, &relationship_type, direction);
     let mut feasible = Vec::new();
     for length in alternatives {
         if feasible_fixed_relationship_length(
-            graph,
             &relationship_type,
-            direction,
+            &adjacency,
             &start_label,
             &end_label,
             length,
@@ -2332,9 +2332,8 @@ fn relationship_pattern_direction(direction: CypherRelationshipDirection) -> Dir
 }
 
 fn feasible_fixed_relationship_length(
-    graph: &Declaration,
     relationship_type: &str,
-    direction: Direction,
+    adjacency: &BTreeMap<String, BTreeSet<String>>,
     start_label: &str,
     end_label: &str,
     length: usize,
@@ -2343,14 +2342,8 @@ fn feasible_fixed_relationship_length(
     if length == 0 {
         return Ok(start_label == end_label);
     }
-    let sequences = fixed_length_label_sequences(
-        graph,
-        relationship_type,
-        direction,
-        start_label,
-        end_label,
-        length,
-    );
+    let sequences =
+        fixed_length_label_sequences_with_adjacency(adjacency, start_label, end_label, length);
     match sequences.len() {
         0 => Ok(false),
         1 => Ok(true),
@@ -5080,10 +5073,19 @@ fn fixed_length_label_sequences(
     length: usize,
 ) -> Vec<Vec<String>> {
     let adjacency = fixed_length_label_adjacency(graph, relationship_type, direction);
+    fixed_length_label_sequences_with_adjacency(&adjacency, start_label, end_label, length)
+}
+
+fn fixed_length_label_sequences_with_adjacency(
+    adjacency: &BTreeMap<String, BTreeSet<String>>,
+    start_label: &str,
+    end_label: &str,
+    length: usize,
+) -> Vec<Vec<String>> {
     let mut sequences = Vec::new();
     let mut current = vec![start_label.to_string()];
     collect_fixed_length_label_sequences(
-        &adjacency,
+        adjacency,
         end_label,
         length,
         &mut current,
