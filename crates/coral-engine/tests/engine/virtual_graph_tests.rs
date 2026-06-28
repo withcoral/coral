@@ -1334,6 +1334,47 @@ async fn cypher_path_metadata_arithmetic_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_path_metadata_scalar_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         WHERE coalesce(size(path), 0) = 2 \
+         RETURN source.name AS source, target.name AS target, \
+                coalesce(length(path), 0) AS hops, \
+                toString(size(path)) AS hops_text, \
+                CASE WHEN length(path) = 2 THEN size(path) ELSE 0 END AS case_hops \
+         ORDER BY coalesce(size(path), 0), source, target",
+    )
+    .await
+    .expect("path metadata scalar functions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(2, 0) AS \"hops\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "source": "billing-api",
+            "target": "experiments",
+            "hops": 2,
+            "hops_text": "2",
+            "case_hops": 2,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_anonymous_optional_path_length_preserves_unmatched_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

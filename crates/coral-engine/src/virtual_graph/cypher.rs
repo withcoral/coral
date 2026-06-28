@@ -6114,7 +6114,7 @@ fn compile_order_expression_after_metadata_list_index(
             path,
         ),
         Expression::Case(case) => {
-            compile_case_order_expression(case, path, projections, plan, context)
+            compile_case_order_expression(case, path, projections, plan, state, context)
         }
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
@@ -6143,9 +6143,13 @@ fn compile_order_expression_after_metadata_list_index(
             )? {
                 return Ok(expression);
             }
-            if let Some(expression) =
-                compile_scalar_function_expression_with_plan(function, path.clone(), plan, context)?
-            {
+            if let Some(expression) = compile_scalar_function_expression_with_path_state(
+                function,
+                path.clone(),
+                plan,
+                Some(state),
+                context,
+            )? {
                 return compile_scalar_order_expression(expression, projections, path);
             }
             if compile_aggregate_function(function).is_some() {
@@ -7181,7 +7185,7 @@ fn compile_projection(
             }
             compile_arithmetic_projection(item, path, plan, state, context)
         }
-        Expression::Case(case) => compile_case_projection(case, item, path, plan, context),
+        Expression::Case(case) => compile_case_projection(case, item, path, plan, state, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
         }
@@ -7236,7 +7240,7 @@ fn compile_other_function_projection(
         return Ok(projection);
     }
     if let Some(projection) =
-        compile_scalar_function_projection(function, item, path.clone(), plan, context)?
+        compile_scalar_function_projection(function, item, path.clone(), plan, state, context)?
     {
         return Ok(projection);
     }
@@ -7642,13 +7646,15 @@ fn compile_case_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let expression = compile_case_scalar_expression_with_plan(
+    let expression = compile_case_scalar_expression_with_path_state(
         case,
         format!("{path}.expression"),
         plan,
+        Some(state),
         context,
     )?;
     validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
@@ -7666,13 +7672,15 @@ fn compile_scalar_function_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<Option<Projection>, CoreError> {
     let path = path.into();
-    let Some(expression) = compile_scalar_function_expression_with_plan(
+    let Some(expression) = compile_scalar_function_expression_with_path_state(
         function,
         format!("{path}.expression"),
         plan,
+        Some(state),
         context,
     )?
     else {
@@ -7712,7 +7720,7 @@ fn default_scalar_function_alias(function: &FunctionInvocation) -> String {
 fn compile_coalesce_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
@@ -7727,10 +7735,10 @@ fn compile_coalesce_scalar_expression(
         .iter()
         .enumerate()
         .map(|(index, expression)| {
-            compile_scalar_expression_in_mode(
+            compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.arguments[{index}]"),
-                plan,
+                mode,
                 context,
             )
         })
@@ -7741,11 +7749,11 @@ fn compile_coalesce_scalar_expression(
 fn compile_null_if_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let (expression, value) =
-        compile_two_scalar_function_arguments(function, path, "nullIf", plan, context)?;
+        compile_two_scalar_function_arguments(function, path, "nullIf", mode, context)?;
     Ok(ScalarExpression::NullIf {
         expression: Box::new(expression),
         value: Box::new(value),
@@ -7755,12 +7763,12 @@ fn compile_null_if_scalar_expression(
 fn compile_to_string_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToString {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "toString", plan, context,
+            function, path, "toString", mode, context,
         )?),
     })
 }
@@ -7768,7 +7776,7 @@ fn compile_to_string_scalar_expression(
 fn compile_to_integer_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToInteger {
@@ -7776,7 +7784,7 @@ fn compile_to_integer_scalar_expression(
             function,
             path,
             "toInteger",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7785,12 +7793,12 @@ fn compile_to_integer_scalar_expression(
 fn compile_to_float_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToFloat {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "toFloat", plan, context,
+            function, path, "toFloat", mode, context,
         )?),
     })
 }
@@ -7798,7 +7806,7 @@ fn compile_to_float_scalar_expression(
 fn compile_to_boolean_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToBoolean {
@@ -7806,7 +7814,7 @@ fn compile_to_boolean_scalar_expression(
             function,
             path,
             "toBoolean",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7815,7 +7823,7 @@ fn compile_to_boolean_scalar_expression(
 fn compile_to_string_or_null_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToStringOrNull {
@@ -7823,7 +7831,7 @@ fn compile_to_string_or_null_scalar_expression(
             function,
             path,
             "toStringOrNull",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7832,7 +7840,7 @@ fn compile_to_string_or_null_scalar_expression(
 fn compile_to_integer_or_null_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToIntegerOrNull {
@@ -7840,7 +7848,7 @@ fn compile_to_integer_or_null_scalar_expression(
             function,
             path,
             "toIntegerOrNull",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7849,7 +7857,7 @@ fn compile_to_integer_or_null_scalar_expression(
 fn compile_to_float_or_null_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToFloatOrNull {
@@ -7857,7 +7865,7 @@ fn compile_to_float_or_null_scalar_expression(
             function,
             path,
             "toFloatOrNull",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7866,7 +7874,7 @@ fn compile_to_float_or_null_scalar_expression(
 fn compile_to_boolean_or_null_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::ToBooleanOrNull {
@@ -7874,7 +7882,7 @@ fn compile_to_boolean_or_null_scalar_expression(
             function,
             path,
             "toBooleanOrNull",
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7883,7 +7891,7 @@ fn compile_to_boolean_or_null_scalar_expression(
 fn compile_to_lower_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let function_name = single_segment_function_name(function).unwrap_or("toLower");
@@ -7892,7 +7900,7 @@ fn compile_to_lower_scalar_expression(
             function,
             path,
             function_name,
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7901,7 +7909,7 @@ fn compile_to_lower_scalar_expression(
 fn compile_to_upper_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let function_name = single_segment_function_name(function).unwrap_or("toUpper");
@@ -7910,7 +7918,7 @@ fn compile_to_upper_scalar_expression(
             function,
             path,
             function_name,
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7919,7 +7927,7 @@ fn compile_to_upper_scalar_expression(
 fn compile_trim_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let function_name = single_segment_function_name(function).unwrap_or("trim");
@@ -7928,7 +7936,7 @@ fn compile_trim_scalar_expression(
             function,
             path,
             function_name,
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7937,12 +7945,12 @@ fn compile_trim_scalar_expression(
 fn compile_ltrim_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::LTrim {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "lTrim", plan, context,
+            function, path, "lTrim", mode, context,
         )?),
     })
 }
@@ -7950,12 +7958,12 @@ fn compile_ltrim_scalar_expression(
 fn compile_rtrim_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::RTrim {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "rTrim", plan, context,
+            function, path, "rTrim", mode, context,
         )?),
     })
 }
@@ -7963,7 +7971,7 @@ fn compile_rtrim_scalar_expression(
 fn compile_replace_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
@@ -7974,22 +7982,22 @@ fn compile_replace_scalar_expression(
         ));
     };
     Ok(ScalarExpression::Replace {
-        expression: Box::new(compile_scalar_expression_in_mode(
+        expression: Box::new(compile_scalar_expression_in_predicate_mode(
             expression,
             format!("{path}.arguments[0]"),
-            plan,
+            mode,
             context,
         )?),
-        search: Box::new(compile_scalar_expression_in_mode(
+        search: Box::new(compile_scalar_expression_in_predicate_mode(
             search,
             format!("{path}.arguments[1]"),
-            plan,
+            mode,
             context,
         )?),
-        replacement: Box::new(compile_scalar_expression_in_mode(
+        replacement: Box::new(compile_scalar_expression_in_predicate_mode(
             replacement,
             format!("{path}.arguments[2]"),
-            plan,
+            mode,
             context,
         )?),
     })
@@ -7998,10 +8006,11 @@ fn compile_replace_scalar_expression(
 fn compile_character_length_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
@@ -8042,7 +8051,7 @@ fn compile_character_length_scalar_expression(
             function,
             path,
             function_name.as_str(),
-            plan,
+            mode,
             context,
         )?),
     })
@@ -8142,43 +8151,43 @@ fn list_length_scalar_expression(length: usize) -> Result<ScalarExpression, Core
 fn compile_substring_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     match function.arguments.as_slice() {
         [expression, start] => Ok(ScalarExpression::Substring {
-            expression: Box::new(compile_scalar_expression_in_mode(
+            expression: Box::new(compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.arguments[0]"),
-                plan,
+                mode,
                 context,
             )?),
-            start: Box::new(compile_scalar_expression_in_mode(
+            start: Box::new(compile_scalar_expression_in_predicate_mode(
                 start,
                 format!("{path}.arguments[1]"),
-                plan,
+                mode,
                 context,
             )?),
             length: None,
         }),
         [expression, start, length] => Ok(ScalarExpression::Substring {
-            expression: Box::new(compile_scalar_expression_in_mode(
+            expression: Box::new(compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.arguments[0]"),
-                plan,
+                mode,
                 context,
             )?),
-            start: Box::new(compile_scalar_expression_in_mode(
+            start: Box::new(compile_scalar_expression_in_predicate_mode(
                 start,
                 format!("{path}.arguments[1]"),
-                plan,
+                mode,
                 context,
             )?),
-            length: Some(Box::new(compile_scalar_expression_in_mode(
+            length: Some(Box::new(compile_scalar_expression_in_predicate_mode(
                 length,
                 format!("{path}.arguments[2]"),
-                plan,
+                mode,
                 context,
             )?)),
         }),
@@ -8192,11 +8201,11 @@ fn compile_substring_scalar_expression(
 fn compile_left_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let (expression, count) =
-        compile_two_scalar_function_arguments(function, path, "left", plan, context)?;
+        compile_two_scalar_function_arguments(function, path, "left", mode, context)?;
     Ok(ScalarExpression::Left {
         expression: Box::new(expression),
         count: Box::new(count),
@@ -8206,11 +8215,11 @@ fn compile_left_scalar_expression(
 fn compile_right_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let (expression, count) =
-        compile_two_scalar_function_arguments(function, path, "right", plan, context)?;
+        compile_two_scalar_function_arguments(function, path, "right", mode, context)?;
     Ok(ScalarExpression::Right {
         expression: Box::new(expression),
         count: Box::new(count),
@@ -8220,10 +8229,11 @@ fn compile_right_scalar_expression(
 fn compile_reverse_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
@@ -8238,10 +8248,10 @@ fn compile_reverse_scalar_expression(
         return static_list_value_scalar_expression(value, argument_path);
     }
     Ok(ScalarExpression::Reverse {
-        expression: Box::new(compile_scalar_expression_in_mode(
+        expression: Box::new(compile_scalar_expression_in_predicate_mode(
             argument,
             format!("{path}.arguments[0]"),
-            plan,
+            mode,
             context,
         )?),
     })
@@ -8250,12 +8260,12 @@ fn compile_reverse_scalar_expression(
 fn compile_abs_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Abs {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "abs", plan, context,
+            function, path, "abs", mode, context,
         )?),
     })
 }
@@ -8263,12 +8273,12 @@ fn compile_abs_scalar_expression(
 fn compile_ceil_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Ceil {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "ceil", plan, context,
+            function, path, "ceil", mode, context,
         )?),
     })
 }
@@ -8276,12 +8286,12 @@ fn compile_ceil_scalar_expression(
 fn compile_floor_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Floor {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "floor", plan, context,
+            function, path, "floor", mode, context,
         )?),
     })
 }
@@ -8289,31 +8299,31 @@ fn compile_floor_scalar_expression(
 fn compile_round_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     match function.arguments.as_slice() {
         [expression] => Ok(ScalarExpression::Round {
-            expression: Box::new(compile_scalar_expression_in_mode(
+            expression: Box::new(compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.arguments[0]"),
-                plan,
+                mode,
                 context,
             )?),
             places: None,
         }),
         [expression, places] => Ok(ScalarExpression::Round {
-            expression: Box::new(compile_scalar_expression_in_mode(
+            expression: Box::new(compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.arguments[0]"),
-                plan,
+                mode,
                 context,
             )?),
-            places: Some(Box::new(compile_scalar_expression_in_mode(
+            places: Some(Box::new(compile_scalar_expression_in_predicate_mode(
                 places,
                 format!("{path}.arguments[1]"),
-                plan,
+                mode,
                 context,
             )?)),
         }),
@@ -8327,12 +8337,12 @@ fn compile_round_scalar_expression(
 fn compile_sqrt_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Sqrt {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "sqrt", plan, context,
+            function, path, "sqrt", mode, context,
         )?),
     })
 }
@@ -8340,12 +8350,12 @@ fn compile_sqrt_scalar_expression(
 fn compile_sign_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Sign {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "sign", plan, context,
+            function, path, "sign", mode, context,
         )?),
     })
 }
@@ -8353,12 +8363,12 @@ fn compile_sign_scalar_expression(
 fn compile_exp_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Exp {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "exp", plan, context,
+            function, path, "exp", mode, context,
         )?),
     })
 }
@@ -8366,12 +8376,12 @@ fn compile_exp_scalar_expression(
 fn compile_log_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Log {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "log", plan, context,
+            function, path, "log", mode, context,
         )?),
     })
 }
@@ -8379,12 +8389,12 @@ fn compile_log_scalar_expression(
 fn compile_log10_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Log10 {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "log10", plan, context,
+            function, path, "log10", mode, context,
         )?),
     })
 }
@@ -8412,12 +8422,12 @@ fn compile_e_scalar_expression(
 fn compile_sin_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Sin {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "sin", plan, context,
+            function, path, "sin", mode, context,
         )?),
     })
 }
@@ -8425,12 +8435,12 @@ fn compile_sin_scalar_expression(
 fn compile_cos_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Cos {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "cos", plan, context,
+            function, path, "cos", mode, context,
         )?),
     })
 }
@@ -8438,12 +8448,12 @@ fn compile_cos_scalar_expression(
 fn compile_tan_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Tan {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "tan", plan, context,
+            function, path, "tan", mode, context,
         )?),
     })
 }
@@ -8451,12 +8461,12 @@ fn compile_tan_scalar_expression(
 fn compile_cot_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Cot {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "cot", plan, context,
+            function, path, "cot", mode, context,
         )?),
     })
 }
@@ -8464,12 +8474,12 @@ fn compile_cot_scalar_expression(
 fn compile_asin_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Asin {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "asin", plan, context,
+            function, path, "asin", mode, context,
         )?),
     })
 }
@@ -8477,12 +8487,12 @@ fn compile_asin_scalar_expression(
 fn compile_acos_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Acos {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "acos", plan, context,
+            function, path, "acos", mode, context,
         )?),
     })
 }
@@ -8490,12 +8500,12 @@ fn compile_acos_scalar_expression(
 fn compile_atan_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Atan {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "atan", plan, context,
+            function, path, "atan", mode, context,
         )?),
     })
 }
@@ -8503,10 +8513,10 @@ fn compile_atan_scalar_expression(
 fn compile_atan2_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
-    let (y, x) = compile_two_scalar_function_arguments(function, path, "atan2", plan, context)?;
+    let (y, x) = compile_two_scalar_function_arguments(function, path, "atan2", mode, context)?;
     Ok(ScalarExpression::Atan2 {
         y: Box::new(y),
         x: Box::new(x),
@@ -8516,12 +8526,12 @@ fn compile_atan2_scalar_expression(
 fn compile_degrees_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Degrees {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "degrees", plan, context,
+            function, path, "degrees", mode, context,
         )?),
     })
 }
@@ -8529,12 +8539,12 @@ fn compile_degrees_scalar_expression(
 fn compile_radians_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(ScalarExpression::Radians {
         expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "radians", plan, context,
+            function, path, "radians", mode, context,
         )?),
     })
 }
@@ -8542,11 +8552,11 @@ fn compile_radians_scalar_expression(
 fn compile_haversin_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     Ok(haversin_expression(
-        compile_single_scalar_function_argument(function, path, "haversin", plan, context)?,
+        compile_single_scalar_function_argument(function, path, "haversin", mode, context)?,
     ))
 }
 
@@ -8583,7 +8593,7 @@ fn compile_single_scalar_function_argument(
     function: &FunctionInvocation,
     path: impl Into<String>,
     function_name: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
@@ -8593,7 +8603,12 @@ fn compile_single_scalar_function_argument(
             format!("{function_name}() requires exactly one argument"),
         ));
     };
-    compile_scalar_expression_in_mode(argument, format!("{path}.arguments[0]"), plan, context)
+    compile_scalar_expression_in_predicate_mode(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
+        context,
+    )
 }
 
 fn single_segment_function_name(function: &FunctionInvocation) -> Option<&str> {
@@ -8607,7 +8622,7 @@ fn compile_two_scalar_function_arguments(
     function: &FunctionInvocation,
     path: impl Into<String>,
     function_name: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<(ScalarExpression, ScalarExpression), CoreError> {
     let path = path.into();
@@ -8618,27 +8633,44 @@ fn compile_two_scalar_function_arguments(
         ));
     };
     Ok((
-        compile_scalar_expression_in_mode(left, format!("{path}.arguments[0]"), plan, context)?,
-        compile_scalar_expression_in_mode(right, format!("{path}.arguments[1]"), plan, context)?,
+        compile_scalar_expression_in_predicate_mode(
+            left,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?,
+        compile_scalar_expression_in_predicate_mode(
+            right,
+            format!("{path}.arguments[1]"),
+            mode,
+            context,
+        )?,
     ))
 }
 
-fn compile_scalar_function_expression_with_plan(
+fn compile_scalar_function_expression_with_path_state(
     function: &FunctionInvocation,
     path: impl Into<String>,
     plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
-    compile_scalar_function_expression_in_mode(function, path, Some(plan), context)
+    compile_scalar_function_expression_in_mode(
+        function,
+        path,
+        PredicateCompileMode::Graph { plan, path_state },
+        context,
+    )
 }
 
 fn compile_scalar_function_expression_in_mode(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     if is_id_function(function) {
         match plan {
             Some(plan) => {
@@ -8672,52 +8704,53 @@ fn compile_scalar_function_expression_in_mode(
             )),
         }
     } else if let Some(expression) =
-        compile_core_scalar_function_expression(function, &path, plan, context)?
+        compile_core_scalar_function_expression(function, &path, mode, context)?
     {
         Ok(Some(expression))
     } else {
-        compile_numeric_scalar_function_expression(function, &path, plan, context)
+        compile_numeric_scalar_function_expression(function, &path, mode, context)
     }
 }
 
 fn compile_core_scalar_function_expression(
     function: &FunctionInvocation,
     path: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
+    let plan = mode.static_metadata_plan();
     let expression = if is_coalesce_function(function) {
-        compile_coalesce_scalar_expression(function, path, plan, context)?
+        compile_coalesce_scalar_expression(function, path, mode, context)?
     } else if is_null_if_function(function) {
-        compile_null_if_scalar_expression(function, path, plan, context)?
+        compile_null_if_scalar_expression(function, path, mode, context)?
     } else if is_to_string_function(function) {
-        compile_to_string_scalar_expression(function, path, plan, context)?
+        compile_to_string_scalar_expression(function, path, mode, context)?
     } else if is_to_integer_function(function) {
-        compile_to_integer_scalar_expression(function, path, plan, context)?
+        compile_to_integer_scalar_expression(function, path, mode, context)?
     } else if is_to_float_function(function) {
-        compile_to_float_scalar_expression(function, path, plan, context)?
+        compile_to_float_scalar_expression(function, path, mode, context)?
     } else if is_to_boolean_function(function) {
-        compile_to_boolean_scalar_expression(function, path, plan, context)?
+        compile_to_boolean_scalar_expression(function, path, mode, context)?
     } else if is_to_string_or_null_function(function) {
-        compile_to_string_or_null_scalar_expression(function, path, plan, context)?
+        compile_to_string_or_null_scalar_expression(function, path, mode, context)?
     } else if is_to_integer_or_null_function(function) {
-        compile_to_integer_or_null_scalar_expression(function, path, plan, context)?
+        compile_to_integer_or_null_scalar_expression(function, path, mode, context)?
     } else if is_to_float_or_null_function(function) {
-        compile_to_float_or_null_scalar_expression(function, path, plan, context)?
+        compile_to_float_or_null_scalar_expression(function, path, mode, context)?
     } else if is_to_boolean_or_null_function(function) {
-        compile_to_boolean_or_null_scalar_expression(function, path, plan, context)?
+        compile_to_boolean_or_null_scalar_expression(function, path, mode, context)?
     } else if is_to_lower_function(function) {
-        compile_to_lower_scalar_expression(function, path, plan, context)?
+        compile_to_lower_scalar_expression(function, path, mode, context)?
     } else if is_to_upper_function(function) {
-        compile_to_upper_scalar_expression(function, path, plan, context)?
+        compile_to_upper_scalar_expression(function, path, mode, context)?
     } else if is_trim_function(function) {
-        compile_trim_scalar_expression(function, path, plan, context)?
+        compile_trim_scalar_expression(function, path, mode, context)?
     } else if is_ltrim_function(function) {
-        compile_ltrim_scalar_expression(function, path, plan, context)?
+        compile_ltrim_scalar_expression(function, path, mode, context)?
     } else if is_rtrim_function(function) {
-        compile_rtrim_scalar_expression(function, path, plan, context)?
+        compile_rtrim_scalar_expression(function, path, mode, context)?
     } else if is_replace_function(function) {
-        compile_replace_scalar_expression(function, path, plan, context)?
+        compile_replace_scalar_expression(function, path, mode, context)?
     } else if is_head_function(function) {
         compile_static_list_endpoint_scalar_expression(
             function,
@@ -8737,15 +8770,15 @@ fn compile_core_scalar_function_expression(
     } else if is_tail_function(function) {
         compile_static_list_tail_scalar_expression(function, path, plan, context)?
     } else if is_character_length_function(function) {
-        compile_character_length_scalar_expression(function, path, plan, context)?
+        compile_character_length_scalar_expression(function, path, mode, context)?
     } else if is_substring_function(function) {
-        compile_substring_scalar_expression(function, path, plan, context)?
+        compile_substring_scalar_expression(function, path, mode, context)?
     } else if is_left_function(function) {
-        compile_left_scalar_expression(function, path, plan, context)?
+        compile_left_scalar_expression(function, path, mode, context)?
     } else if is_right_function(function) {
-        compile_right_scalar_expression(function, path, plan, context)?
+        compile_right_scalar_expression(function, path, mode, context)?
     } else if is_reverse_function(function) {
-        compile_reverse_scalar_expression(function, path, plan, context)?
+        compile_reverse_scalar_expression(function, path, mode, context)?
     } else {
         return Ok(None);
     };
@@ -8833,53 +8866,53 @@ fn compile_static_list_tail_scalar_expression(
 fn compile_numeric_scalar_function_expression(
     function: &FunctionInvocation,
     path: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let expression = if is_abs_function(function) {
-        compile_abs_scalar_expression(function, path, plan, context)?
+        compile_abs_scalar_expression(function, path, mode, context)?
     } else if is_ceil_function(function) {
-        compile_ceil_scalar_expression(function, path, plan, context)?
+        compile_ceil_scalar_expression(function, path, mode, context)?
     } else if is_floor_function(function) {
-        compile_floor_scalar_expression(function, path, plan, context)?
+        compile_floor_scalar_expression(function, path, mode, context)?
     } else if is_round_function(function) {
-        compile_round_scalar_expression(function, path, plan, context)?
+        compile_round_scalar_expression(function, path, mode, context)?
     } else if is_sqrt_function(function) {
-        compile_sqrt_scalar_expression(function, path, plan, context)?
+        compile_sqrt_scalar_expression(function, path, mode, context)?
     } else if is_sign_function(function) {
-        compile_sign_scalar_expression(function, path, plan, context)?
+        compile_sign_scalar_expression(function, path, mode, context)?
     } else if is_exp_function(function) {
-        compile_exp_scalar_expression(function, path, plan, context)?
+        compile_exp_scalar_expression(function, path, mode, context)?
     } else if is_log_function(function) {
-        compile_log_scalar_expression(function, path, plan, context)?
+        compile_log_scalar_expression(function, path, mode, context)?
     } else if is_log10_function(function) {
-        compile_log10_scalar_expression(function, path, plan, context)?
+        compile_log10_scalar_expression(function, path, mode, context)?
     } else if is_pi_function(function) {
         compile_pi_scalar_expression(function, path)?
     } else if is_e_function(function) {
         compile_e_scalar_expression(function, path)?
     } else if is_sin_function(function) {
-        compile_sin_scalar_expression(function, path, plan, context)?
+        compile_sin_scalar_expression(function, path, mode, context)?
     } else if is_cos_function(function) {
-        compile_cos_scalar_expression(function, path, plan, context)?
+        compile_cos_scalar_expression(function, path, mode, context)?
     } else if is_tan_function(function) {
-        compile_tan_scalar_expression(function, path, plan, context)?
+        compile_tan_scalar_expression(function, path, mode, context)?
     } else if is_cot_function(function) {
-        compile_cot_scalar_expression(function, path, plan, context)?
+        compile_cot_scalar_expression(function, path, mode, context)?
     } else if is_asin_function(function) {
-        compile_asin_scalar_expression(function, path, plan, context)?
+        compile_asin_scalar_expression(function, path, mode, context)?
     } else if is_acos_function(function) {
-        compile_acos_scalar_expression(function, path, plan, context)?
+        compile_acos_scalar_expression(function, path, mode, context)?
     } else if is_atan_function(function) {
-        compile_atan_scalar_expression(function, path, plan, context)?
+        compile_atan_scalar_expression(function, path, mode, context)?
     } else if is_atan2_function(function) {
-        compile_atan2_scalar_expression(function, path, plan, context)?
+        compile_atan2_scalar_expression(function, path, mode, context)?
     } else if is_degrees_function(function) {
-        compile_degrees_scalar_expression(function, path, plan, context)?
+        compile_degrees_scalar_expression(function, path, mode, context)?
     } else if is_radians_function(function) {
-        compile_radians_scalar_expression(function, path, plan, context)?
+        compile_radians_scalar_expression(function, path, mode, context)?
     } else if is_haversin_function(function) {
-        compile_haversin_scalar_expression(function, path, plan, context)?
+        compile_haversin_scalar_expression(function, path, mode, context)?
     } else {
         return Ok(None);
     };
@@ -9026,7 +9059,7 @@ fn compile_scalar_expression_in_predicate_mode(
             )? {
                 return Ok(expression);
             }
-            compile_scalar_function_expression_in_mode(function, path.clone(), plan, context)?
+            compile_scalar_function_expression_in_mode(function, path.clone(), mode, context)?
                 .ok_or_else(|| {
                     unsupported(
                         path,
@@ -9394,11 +9427,18 @@ fn compile_case_order_expression(
     path: impl Into<String>,
     projections: &[Projection],
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     compile_scalar_order_expression(
-        compile_case_scalar_expression_with_plan(case, path.clone(), plan, context)?,
+        compile_case_scalar_expression_with_path_state(
+            case,
+            path.clone(),
+            plan,
+            Some(state),
+            context,
+        )?,
         projections,
         path,
     )
@@ -9544,7 +9584,7 @@ fn compile_optional_predicate_scalar_expression(
         }
         Expression::FunctionCall(function) if is_type_function(function) => Ok(None),
         Expression::FunctionCall(function) => {
-            compile_scalar_function_expression_in_mode(function, path, plan, context)
+            compile_scalar_function_expression_in_mode(function, path, mode, context)
         }
         _ => Ok(None),
     }
@@ -9577,18 +9617,13 @@ fn compile_scalar_predicate_rhs(
             compile_scalar_expression_in_predicate_mode(expression, path, mode, context)?,
         )),
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
-            compile_case_scalar_expression_in_mode(
-                case,
-                path,
-                PredicateCompileMode::CaseWhen { plan },
-                context,
-            )?,
+            compile_case_scalar_expression_in_mode(case, path, mode, context)?,
         )),
         Expression::CountSubquery(count) => Ok(ScalarPredicateRhs::Expression(
             compile_count_subquery_scalar_expression(count, path, plan, context)?,
         )),
         Expression::FunctionCall(function) => {
-            match compile_scalar_function_expression_in_mode(function, path.clone(), plan, context)?
+            match compile_scalar_function_expression_in_mode(function, path.clone(), mode, context)?
             {
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
@@ -9664,16 +9699,17 @@ fn compile_arithmetic_operator(
     }
 }
 
-fn compile_case_scalar_expression_with_plan(
+fn compile_case_scalar_expression_with_path_state(
     case: &CaseExpression,
     path: impl Into<String>,
     plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     compile_case_scalar_expression_in_mode(
         case,
         path,
-        PredicateCompileMode::CaseWhen { plan: Some(plan) },
+        PredicateCompileMode::Graph { plan, path_state },
         context,
     )
 }
@@ -9716,10 +9752,10 @@ fn compile_case_scalar_expression_in_mode(
             };
             Ok(ScalarCaseAlternative {
                 when,
-                then: compile_scalar_expression_in_mode(
+                then: compile_scalar_expression_in_predicate_mode(
                     &alternative.then,
                     format!("{path}.alternatives[{index}].then"),
-                    mode.static_metadata_plan(),
+                    mode,
                     context,
                 )?,
             })
@@ -9729,10 +9765,10 @@ fn compile_case_scalar_expression_in_mode(
         .default
         .as_ref()
         .map(|expression| {
-            compile_scalar_expression_in_mode(
+            compile_scalar_expression_in_predicate_mode(
                 expression,
                 format!("{path}.default"),
-                mode.static_metadata_plan(),
+                mode,
                 context,
             )
             .map(Box::new)
@@ -15941,6 +15977,85 @@ relationships:
             plan.order_by,
             vec![OrderKey {
                 expression: OrderExpression::Scalar(depth),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_path_metadata_inside_scalar_functions_and_case() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             WHERE coalesce(size(path), 0) = 2 \
+             RETURN coalesce(length(path), 0) AS hops, \
+                    toString(size(path)) AS hops_text, \
+                    CASE WHEN length(path) = 2 THEN size(path) ELSE 0 END AS case_hops \
+             ORDER BY coalesce(size(path), 0) DESC",
+        )
+        .expect("path metadata should compose inside scalar functions and CASE");
+
+        let path_length = ScalarExpression::Literal(Literal::Integer(2));
+        let coalesced_length = ScalarExpression::Coalesce {
+            expressions: vec![
+                path_length.clone(),
+                ScalarExpression::Literal(Literal::Integer(0)),
+            ],
+        };
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: coalesced_length.clone(),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(2))),
+            }))
+        );
+        assert_eq!(
+            plan.projections.first(),
+            Some(&Projection::Expression {
+                expression: coalesced_length.clone(),
+                alias: "hops".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(path_length.clone()),
+                },
+                alias: "hops_text".to_string(),
+            })
+        );
+        assert!(matches!(
+            plan.projections.get(2),
+            Some(Projection::Expression {
+                expression: ScalarExpression::Case {
+                    alternatives,
+                    else_expression,
+                },
+                alias,
+            }) if alias == "case_hops"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        when: PredicateExpression::ScalarComparison(ScalarPredicate {
+                            lhs,
+                            operator: ComparisonOperator::Equal,
+                            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                                Literal::Integer(2),
+                            )),
+                        }),
+                        then,
+                    }] if lhs == &path_length && then == &path_length
+                )
+                && else_expression.as_deref()
+                    == Some(&ScalarExpression::Literal(Literal::Integer(0)))
+        ));
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(coalesced_length),
                 direction: OrderDirection::Descending,
                 nulls: None,
             }]
