@@ -1135,7 +1135,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Property(property) => {
                 variables.insert(property.variable.as_str());
             }
-            ScalarExpression::Literal(_) => {}
+            ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => {}
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
@@ -1603,7 +1603,7 @@ impl<'a> GraphPlanValidator<'a> {
                 optional_variables,
                 format!("{path}.variable"),
             ),
-            ScalarExpression::Literal(_) => Ok(()),
+            ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => Ok(()),
             ScalarExpression::Predicate(predicate) => {
                 Self::validate_predicate_expression_not_optional(
                     predicate,
@@ -3765,6 +3765,7 @@ impl<'a> GraphPlanValidator<'a> {
         match expression {
             ScalarExpression::Property(_)
             | ScalarExpression::Literal(_)
+            | ScalarExpression::LiteralList { .. }
             | ScalarExpression::Predicate(_)
             | ScalarExpression::CountSubquery { .. }
             | ScalarExpression::Key { .. }
@@ -3802,6 +3803,10 @@ impl<'a> GraphPlanValidator<'a> {
                 self.property_ref_scalar_type(property)
             }
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
+            ScalarExpression::LiteralList { literals } => {
+                Self::validate_literal_list_projection(literals, path)?;
+                Ok(ScalarType::Other)
+            }
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)?;
                 Ok(ScalarType::Boolean)

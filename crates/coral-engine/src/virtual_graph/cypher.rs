@@ -149,6 +149,12 @@ impl MetadataListRef {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetadataListValue {
+    value: GraphValueRef,
+    literals: Vec<Literal>,
+}
+
 #[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
@@ -3352,7 +3358,7 @@ fn rename_non_unary_scalar_expression_variables(
 ) {
     match expression {
         ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
-        ScalarExpression::Literal(_) => {}
+        ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => {}
         ScalarExpression::Predicate(predicate) => {
             rename_predicate_expression_variables(predicate, renames);
         }
@@ -3814,7 +3820,7 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Property(property) => {
             reject_ignored_path_variable_property_ref(property, state, path)
         }
-        ScalarExpression::Literal(_) => Ok(()),
+        ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => Ok(()),
         ScalarExpression::Predicate(predicate) => {
             reject_ignored_path_variable_references_in_predicate(predicate, state, path)
         }
@@ -3930,6 +3936,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
     match expression {
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
         | ScalarExpression::Predicate(_)
         | ScalarExpression::CountSubquery { .. }
         | ScalarExpression::Key { .. }
@@ -5565,6 +5572,17 @@ fn compile_order_expression(
             )? {
                 return compile_scalar_order_expression(expression, projections, path);
             }
+            if is_list_slice_expression(expression)
+                && let Some(value) =
+                    compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
+            {
+                validate_literal_list_projection(&value.literals, path.clone())?;
+                return compile_scalar_order_expression(
+                    metadata_list_value_scalar_expression(value, plan)?,
+                    projections,
+                    path,
+                );
+            }
             compile_order_expression_after_metadata_list_index(
                 expression,
                 projections,
@@ -5781,6 +5799,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ),
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -6107,6 +6126,22 @@ fn presence_gate_scalar_expression(
     }
 }
 
+fn metadata_list_value_scalar_expression(
+    value: MetadataListValue,
+    plan: &GraphPlan,
+) -> Result<ScalarExpression, CoreError> {
+    let presence_variable = match value.value.presence_variable {
+        Some(variable) => Some(variable),
+        None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
+    };
+    Ok(presence_gate_scalar_expression(
+        presence_variable,
+        ScalarExpression::LiteralList {
+            literals: value.literals,
+        },
+    ))
+}
+
 fn compile_type_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -6364,6 +6399,11 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map_or(output_name, variable_name),
         }));
     }
+    if let Some(projection) =
+        compile_optional_metadata_list_slice_projection(item, path.clone(), plan, context)?
+    {
+        return Ok(Some(projection));
+    }
     if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
         &item.expression,
         format!("{path}.expression"),
@@ -6379,6 +6419,52 @@ fn compile_optional_graph_scalar_projection(
         }));
     }
     Ok(None)
+}
+
+fn compile_optional_metadata_list_slice_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    if !is_list_slice_expression(&item.expression) {
+        return Ok(None);
+    }
+    let Some(value) = compile_optional_metadata_list_value(
+        &item.expression,
+        format!("{path}.expression"),
+        plan,
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    validate_literal_list_projection(&value.literals, format!("{path}.expression"))?;
+    let alias = item
+        .alias
+        .as_ref()
+        .map_or_else(|| "list".to_string(), variable_name);
+    if value.value.presence_variable.is_none()
+        && optional_graph_variable_presence_variable(plan, &value.value.variable)?.is_none()
+    {
+        return Ok(Some(Projection::LiteralList {
+            literals: value.literals,
+            alias,
+        }));
+    }
+    Ok(Some(Projection::Expression {
+        expression: metadata_list_value_scalar_expression(value, plan)?,
+        alias,
+    }))
+}
+
+fn is_list_slice_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_list_slice_expression(inner),
+        Expression::ListSlice { .. } => true,
+        _ => false,
+    }
 }
 
 fn compile_path_length_projection(
@@ -6943,25 +7029,18 @@ fn compile_optional_metadata_list_length_scalar_expression(
             compile_optional_metadata_list_length_scalar_expression(inner, path, plan, context)
         }
         expression => {
-            let Some(reference) =
-                compile_optional_metadata_list_ref(expression, path.clone(), plan, context)?
+            let Some(value) =
+                compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
             else {
                 return Ok(None);
             };
-            let actual = compile_metadata_list_actual_literals(
-                &reference,
-                context.graph.as_ref(),
-                plan,
-                path,
-            )?;
-            let value = reference.value();
-            let presence_variable = match value.presence_variable.clone() {
+            let presence_variable = match value.value.presence_variable.clone() {
                 Some(variable) => Some(variable),
-                None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+                None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
             };
             Ok(Some(presence_gate_scalar_expression(
                 presence_variable,
-                list_length_scalar_expression(actual.len())?,
+                list_length_scalar_expression(value.literals.len())?,
             )))
         }
     }
@@ -9782,25 +9861,12 @@ fn compile_is_empty_metadata_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
-    if let Some((value, _)) = compile_optional_labels_ref(expression, path.clone(), plan, context)?
-    {
-        return Ok(Some(metadata_is_empty_scalar_expression(
-            value, false, plan,
-        )?));
-    }
-    let Some(value) = compile_optional_keys_ref(expression, path.clone(), plan, context)? else {
+    let Some(value) = compile_optional_metadata_list_value(expression, path, plan, context)? else {
         return Ok(None);
     };
-    let graph = context.graph.as_ref().ok_or_else(|| {
-        unsupported(
-            path.clone(),
-            "isEmpty(keys(...)) requires a graph declaration so mapped property keys can be inspected",
-        )
-    })?;
-    let property_count = declared_graph_value_property_count(graph, plan, &value, &path)?;
     Ok(Some(metadata_is_empty_scalar_expression(
-        value,
-        property_count == 0,
+        value.value,
+        value.literals.is_empty(),
         plan,
     )?))
 }
@@ -9818,15 +9884,6 @@ fn metadata_is_empty_scalar_expression(
         presence_variable,
         ScalarExpression::Literal(Literal::Boolean(is_empty)),
     ))
-}
-
-fn declared_graph_value_property_count(
-    graph: &Declaration,
-    plan: &GraphPlan,
-    value: &GraphValueRef,
-    path: &str,
-) -> Result<usize, CoreError> {
-    declared_graph_value_property_names(graph, plan, value, path).map(|properties| properties.len())
 }
 
 fn declared_graph_value_property_names(
@@ -10446,40 +10503,28 @@ fn compile_optional_metadata_list_comparison(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
-    if let Some(reference) =
-        compile_optional_metadata_list_ref(lhs, format!("{path}.lhs"), plan, context)?
+    if let Some(actual) =
+        compile_optional_metadata_list_value(lhs, format!("{path}.lhs"), plan, context)?
     {
-        let actual = compile_metadata_list_actual_literals(
-            &reference,
-            context.graph.as_ref(),
-            plan,
-            format!("{path}.lhs"),
-        )?;
         let expected = compile_metadata_literal_list(rhs, format!("{path}.rhs"), context)?;
         return Ok(Some(compile_metadata_literal_list_predicate(
-            reference.value(),
-            &actual,
+            &actual.value,
+            &actual.literals,
             operator,
             &expected,
             path,
             plan,
         )?));
     }
-    let Some(reference) =
-        compile_optional_metadata_list_ref(rhs, format!("{path}.rhs"), plan, context)?
+    let Some(actual) =
+        compile_optional_metadata_list_value(rhs, format!("{path}.rhs"), plan, context)?
     else {
         return Ok(None);
     };
-    let actual = compile_metadata_list_actual_literals(
-        &reference,
-        context.graph.as_ref(),
-        plan,
-        format!("{path}.rhs"),
-    )?;
     let expected = compile_metadata_literal_list(lhs, format!("{path}.lhs"), context)?;
     Ok(Some(compile_metadata_literal_list_predicate(
-        reference.value(),
-        &actual,
+        &actual.value,
+        &actual.literals,
         operator,
         &expected,
         path,
@@ -10516,7 +10561,7 @@ fn compile_metadata_list_actual_literals(
             let graph = graph.ok_or_else(|| {
                 unsupported(
                     path.clone(),
-                    "keys() list predicates require a graph declaration so mapped property keys can be inspected",
+                    "keys() requires a graph declaration so mapped property keys can be inspected",
                 )
             })?;
             declared_graph_value_property_names(graph, plan, value, &path).map(|properties| {
@@ -10525,6 +10570,55 @@ fn compile_metadata_list_actual_literals(
                     .map(Literal::String)
                     .collect::<Vec<_>>()
             })
+        }
+    }
+}
+
+fn compile_optional_metadata_list_value(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<MetadataListValue>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_metadata_list_value(inner, path, plan, context)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            let Some(mut value) =
+                compile_optional_metadata_list_value(list, format!("{path}.list"), plan, context)?
+            else {
+                return Ok(None);
+            };
+            value.literals = compile_list_slice_literals(
+                &value.literals,
+                start.as_deref(),
+                end.as_deref(),
+                path,
+                context,
+                "metadata list slice bounds require integer literals or scalar integer parameters",
+            )?;
+            Ok(Some(value))
+        }
+        expression => {
+            let Some(reference) =
+                compile_optional_metadata_list_ref(expression, path.clone(), plan, context)?
+            else {
+                return Ok(None);
+            };
+            let literals = compile_metadata_list_actual_literals(
+                &reference,
+                context.graph.as_ref(),
+                plan,
+                path,
+            )?;
+            Ok(Some(MetadataListValue {
+                value: reference.value().clone(),
+                literals,
+            }))
         }
     }
 }
@@ -10611,28 +10705,21 @@ fn compile_optional_metadata_list_index_scalar_expression(
             compile_optional_metadata_list_index_scalar_expression(inner, path, plan, context)
         }
         Expression::ListIndex { list, index, .. } => {
-            let Some(reference) =
-                compile_optional_metadata_list_ref(list, format!("{path}.list"), plan, context)?
+            let Some(value) =
+                compile_optional_metadata_list_value(list, format!("{path}.list"), plan, context)?
             else {
                 return Ok(None);
             };
-            let actual = compile_metadata_list_actual_literals(
-                &reference,
-                context.graph.as_ref(),
-                plan,
-                format!("{path}.list"),
-            )?;
             let literal = compile_list_index_literal(
-                &actual,
+                &value.literals,
                 index,
                 &path,
                 context,
                 "metadata list indexes require an integer literal or scalar integer parameter",
             )?;
-            let value = reference.value();
-            let presence_variable = match value.presence_variable.clone() {
+            let presence_variable = match value.value.presence_variable.clone() {
                 Some(variable) => Some(variable),
-                None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+                None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
             };
             Ok(Some(presence_gate_scalar_expression(
                 presence_variable,
@@ -11926,44 +12013,67 @@ fn compile_literal_list_slice(
 ) -> Result<Vec<Literal>, CoreError> {
     let path = path.into();
     let values = compile_literal_list(list, format!("{path}.list"), context)?;
+    compile_list_slice_literals(
+        &values,
+        start,
+        end,
+        path,
+        context,
+        "literal list slice bounds require integer literals or scalar integer parameters",
+    )
+}
+
+fn compile_list_slice_literals(
+    values: &[Literal],
+    start: Option<&Expression>,
+    end: Option<&Expression>,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+    bound_message: &'static str,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
     let len = i64::try_from(values.len())
-        .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
-    let start = compile_literal_list_slice_bound(start, 0, len, format!("{path}.start"), context)?;
-    let end = compile_literal_list_slice_bound(end, len, len, format!("{path}.end"), context)?;
+        .map_err(|error| CoreError::internal(format!("list length overflow: {error}")))?;
+    let start = compile_list_slice_bound(
+        start,
+        0,
+        len,
+        format!("{path}.start"),
+        context,
+        bound_message,
+    )?;
+    let end =
+        compile_list_slice_bound(end, len, len, format!("{path}.end"), context, bound_message)?;
     if start >= end {
         return Ok(Vec::new());
     }
     values
         .get(start..end)
         .map(<[Literal]>::to_vec)
-        .ok_or_else(|| CoreError::internal("literal list slice bounds were invalid after checking"))
+        .ok_or_else(|| CoreError::internal("list slice bounds were invalid after checking"))
 }
 
-fn compile_literal_list_slice_bound(
+fn compile_list_slice_bound(
     bound: Option<&Expression>,
     default: i64,
     len: i64,
     path: impl Into<String>,
     context: &CypherCompileContext,
+    message: &'static str,
 ) -> Result<usize, CoreError> {
     let path = path.into();
     let Some(bound) = bound else {
         return usize::try_from(default).map_err(|error| {
-            CoreError::internal(format!(
-                "literal list default slice bound overflow: {error}"
-            ))
+            CoreError::internal(format!("list default slice bound overflow: {error}"))
         });
     };
     let bound = compile_literal(bound, path.clone(), context)?;
     let Literal::Integer(bound) = bound else {
-        return Err(unsupported(
-            path,
-            "literal list slice bounds require integer literals or scalar integer parameters",
-        ));
+        return Err(unsupported(path, message));
     };
     let normalized = if bound < 0 { len + bound } else { bound };
     usize::try_from(normalized.clamp(0, len))
-        .map_err(|error| CoreError::internal(format!("literal list slice bound overflow: {error}")))
+        .map_err(|error| CoreError::internal(format!("list slice bound overflow: {error}")))
 }
 
 fn compile_literal_list_index(
@@ -15659,6 +15769,109 @@ relationships:
                         ))),
                     },
                     alias: "owner_last_key".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_metadata_list_slice_expressions() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE labels(service)[0..1] = ['Service'] \
+               AND ['since'] = keys(owns)[..1] \
+               AND isEmpty(labels(service)[1..]) \
+             RETURN labels(service)[0..1] AS service_labels, \
+                    keys(service)[1..] AS service_keys_tail, \
+                    keys(owns)[1..][0] AS owns_second_key, \
+                    size(keys(service)[-1..]) AS service_tail_size \
+             ORDER BY keys(service)[0..1]",
+        )
+        .expect("metadata list slices should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::And {
+                    left: Box::new(PredicateExpression::Boolean(true)),
+                    right: Box::new(PredicateExpression::Boolean(true)),
+                }),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Boolean(true)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Boolean(true),
+                    )),
+                })),
+            })
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::LiteralList {
+                    literals: vec![Literal::String("Service".to_string())],
+                    alias: "service_labels".to_string(),
+                },
+                Projection::LiteralList {
+                    literals: vec![Literal::String("tier".to_string())],
+                    alias: "service_keys_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("source".to_string(),)),
+                    alias: "owns_second_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "service_tail_size".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::LiteralList {
+                    literals: vec![Literal::String("name".to_string())],
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_metadata_list_slices_as_presence_gated_lists() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN labels(person)[0..1] AS owner_labels, \
+                    keys(person)[..1] AS owner_first_key",
+        )
+        .expect("optional metadata list slices should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::LiteralList {
+                            literals: vec![Literal::String("Person".to_string())],
+                        }),
+                    },
+                    alias: "owner_labels".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::LiteralList {
+                            literals: vec![Literal::String("name".to_string())],
+                        }),
+                    },
+                    alias: "owner_first_key".to_string(),
                 },
             ]
         );

@@ -2733,6 +2733,7 @@ impl<'a> Lowerer<'a> {
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
+            ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
             ScalarExpression::Predicate(predicate) => {
                 self.render_scalar_predicate_expression(predicate)
             }

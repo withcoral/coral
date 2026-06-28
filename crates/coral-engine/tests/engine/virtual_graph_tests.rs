@@ -9281,6 +9281,96 @@ async fn cypher_metadata_list_indexes_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_metadata_list_slices_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE labels(service)[0..1] = ['Service'] \
+           AND keys(service)[1..3] = ['id', 'name'] \
+           AND isEmpty(labels(service)[1..]) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                labels(service)[0..1] AS service_labels, \
+                keys(service)[1..4] AS service_key_window, \
+                keys(owns)[-1..][0] AS last_ownership_key, \
+                size(keys(service)[-2..]) AS service_key_tail_count, \
+                isEmpty(keys(service)[6..]) AS key_tail_empty \
+         ORDER BY keys(service)[1..3], owner, service",
+    )
+    .await
+    .expect("metadata list slices should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('Service') AS \"service_labels\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('id', 'name', 'risk') AS \"service_key_window\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_labels": ["Service"], "service_key_window": ["id", "name", "risk"], "last_ownership_key": "source", "service_key_tail_count": 2, "key_tail_empty": true}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_labels": ["Service"], "service_key_window": ["id", "name", "risk"], "last_ownership_key": "source", "service_key_tail_count": 2, "key_tail_empty": true}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_labels": ["Service"], "service_key_window": ["id", "name", "risk"], "last_ownership_key": "source", "service_key_tail_count": 2, "key_tail_empty": true}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_metadata_list_slices_preserve_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                labels(person)[0..1] AS owner_labels, \
+                keys(person)[..1] AS owner_first_key \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional metadata list slices should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ELSE make_array('Person') END AS \"owner_labels\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_labels": ["Person"], "owner_first_key": ["name"]}),
+            json!({"service": "deployments", "owner_labels": ["Person"], "owner_first_key": ["name"]}),
+            json!({"service": "experiments", "owner_labels": ["Person"], "owner_first_key": ["name"]}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

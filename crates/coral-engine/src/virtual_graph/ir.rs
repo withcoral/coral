@@ -152,6 +152,11 @@ pub enum ScalarExpression {
     Property(PropertyRef),
     /// A scalar literal.
     Literal(Literal),
+    /// A statically folded literal list value.
+    LiteralList {
+        /// Literal list elements.
+        literals: Vec<Literal>,
+    },
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
     /// Count rows produced by a read-only graph subquery.
