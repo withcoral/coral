@@ -100,6 +100,36 @@ impl Declaration {
             .map(|_| ())
     }
 
+    pub(crate) fn validate_graph_query(&self, query: &GraphQuery) -> Result<(), CoreError> {
+        match query {
+            GraphQuery::Plan(plan) => self.validate_graph_plan(plan).map(|_| ()),
+            GraphQuery::Union(union) => {
+                if union.branches.is_empty() {
+                    return Err(CoreError::internal("graph union had no union branches"));
+                }
+
+                let expected_names = union.first.projection_output_names();
+                let mut merged_types = GraphPlanValidator::new(self, &union.first, None)
+                    .validate_and_infer_projection_scalar_types()?;
+                for (index, branch) in union.branches.iter().enumerate() {
+                    let branch_names = branch.plan.projection_output_names();
+                    validate_union_projection_names(&expected_names, &branch_names, index)?;
+                    let branch_types = GraphPlanValidator::new(self, &branch.plan, None)
+                        .validate_and_infer_projection_scalar_types()?;
+                    validate_union_projection_types(&mut merged_types, &branch_types, index)?;
+                }
+                if let Some(outer_projection) = &union.outer_projection {
+                    validate_union_outer_projection(
+                        outer_projection,
+                        &expected_names,
+                        &merged_types,
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn validate_graph_query_against_catalog(
         &self,
         query: &GraphQuery,

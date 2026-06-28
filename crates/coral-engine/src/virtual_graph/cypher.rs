@@ -577,7 +577,9 @@ pub fn compile_cypher_query_for_graph_with_parameters(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
 ) -> Result<GraphQuery, CoreError> {
-    compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph))
+    let query = compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph))?;
+    graph.validate_graph_query(&query)?;
+    Ok(query)
 }
 
 fn compile_cypher_query_with_optional_graph(
@@ -30232,6 +30234,32 @@ relationships:
                 .contains("found at least 2 possible 2-hop"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn graph_aware_cypher_compile_rejects_unknown_declared_properties() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) RETURN service.missing AS value",
+        )
+        .expect_err("graph-aware Cypher compile should validate declared properties");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error}");
+    }
+
+    #[test]
+    fn graph_aware_cypher_query_compile_validates_union_branches() {
+        let graph = star_test_graph();
+        let error = compile_cypher_query_for_graph(
+            &graph,
+            "MATCH (service:Service) RETURN service.name AS value \
+             UNION ALL \
+             MATCH (service:Service) RETURN service.missing AS value",
+        )
+        .expect_err("graph-aware Cypher query compile should validate union branches");
+
+        assert!(error.to_string().contains("UNKNOWN_PROPERTY"), "{error}");
     }
 
     #[test]
