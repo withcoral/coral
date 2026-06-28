@@ -8648,6 +8648,46 @@ async fn cypher_optional_relationship_endpoint_metadata_preserves_optional_nulls
 }
 
 #[tokio::test]
+async fn cypher_is_empty_endpoint_metadata_preserves_optional_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+         RETURN service.name AS service, \
+                isEmpty(labels(endNode(dependency))) AS dependency_labels_empty, \
+                isEmpty(keys(endNode(dependency))) AS dependency_keys_empty \
+         ORDER BY service, coalesce(endNode(dependency).name, 'zzzz')",
+    )
+    .await
+    .expect("isEmpty endpoint metadata should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE false END = true"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_labels_empty": false, "dependency_keys_empty": false}),
+            json!({"service": "billing-api", "dependency_labels_empty": false, "dependency_keys_empty": false}),
+            json!({"service": "deployments", "dependency_labels_empty": false, "dependency_keys_empty": false}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_relationship_endpoint_metadata_membership_scopes_unmatched_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

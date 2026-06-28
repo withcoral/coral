@@ -120,6 +120,10 @@ The supported foundation subset is intentionally narrow:
 - `id(node)`, `id(keyedRelationship)`, `type(relationship)`, `labels(node)`,
   and `keys(variable)` in projections, with optional relationship and node
   function projections preserving null for unmatched optional bindings;
+- `isEmpty(labels(...))` and declaration-aware `isEmpty(keys(...))` boolean
+  scalar expressions folded from static pattern/declaration metadata, with
+  optional endpoint forms using the same presence-gated scalar IR as endpoint
+  property and identity expressions;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped

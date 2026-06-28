@@ -9339,6 +9339,20 @@ fn compile_is_empty_predicate(
             "isEmpty() supports exactly one scalar string argument",
         ));
     };
+    if let Some(plan) = plan
+        && let Some(expression) = compile_is_empty_metadata_scalar_expression(
+            argument,
+            format!("{path}.arguments[0]"),
+            plan,
+            context,
+        )?
+    {
+        return Ok(ScalarPredicate {
+            lhs: expression,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+        });
+    }
     if let Some(length) = compile_literal_list_length_scalar_expression(
         argument,
         format!("{path}.arguments[0]"),
@@ -9361,6 +9375,175 @@ fn compile_is_empty_predicate(
         },
         operator: ComparisonOperator::Equal,
         rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+    })
+}
+
+fn compile_is_empty_metadata_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    if let Some((value, _)) = compile_optional_labels_ref(expression, path.clone(), plan, context)?
+    {
+        return Ok(Some(metadata_is_empty_scalar_expression(
+            value, false, plan,
+        )?));
+    }
+    let Some(value) = compile_optional_keys_ref(expression, path.clone(), plan, context)? else {
+        return Ok(None);
+    };
+    let graph = context.graph.as_ref().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            "isEmpty(keys(...)) requires a graph declaration so mapped property keys can be inspected",
+        )
+    })?;
+    let property_count = declared_graph_value_property_count(graph, plan, &value, &path)?;
+    Ok(Some(metadata_is_empty_scalar_expression(
+        value,
+        property_count == 0,
+        plan,
+    )?))
+}
+
+fn metadata_is_empty_scalar_expression(
+    value: GraphValueRef,
+    is_empty: bool,
+    plan: &GraphPlan,
+) -> Result<ScalarExpression, CoreError> {
+    let presence_variable = match value.presence_variable {
+        Some(variable) => Some(variable),
+        None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+    };
+    Ok(presence_gate_scalar_expression(
+        presence_variable,
+        ScalarExpression::Literal(Literal::Boolean(is_empty)),
+    ))
+}
+
+fn declared_graph_value_property_count(
+    graph: &Declaration,
+    plan: &GraphPlan,
+    value: &GraphValueRef,
+    path: &str,
+) -> Result<usize, CoreError> {
+    if let Some(node) = plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == value.variable)
+    {
+        let mapping = graph.node(&node.label).ok_or_else(|| {
+            unsupported(
+                path.to_string(),
+                format!(
+                    "isEmpty(keys(...)) could not resolve node label '{}'",
+                    node.label
+                ),
+            )
+        })?;
+        return Ok(mapping.properties.len());
+    }
+
+    let relationship = plan
+        .relationships
+        .iter()
+        .find(|relationship| relationship.variable.as_deref() == Some(value.variable.as_str()))
+        .ok_or_else(|| {
+            unsupported(
+                path.to_string(),
+                format!(
+                    "isEmpty(keys(...)) argument '{}' is not a bound graph variable",
+                    value.variable
+                ),
+            )
+        })?;
+    let node_labels_by_variable = plan
+        .nodes
+        .iter()
+        .map(|node| (node.variable.as_str(), node.label.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let mapping =
+        return_star_relationship_mapping(graph, relationship, &node_labels_by_variable, path)?;
+    Ok(mapping.properties.len())
+}
+
+fn optional_graph_variable_presence_variable(
+    plan: &GraphPlan,
+    variable: &str,
+) -> Result<Option<String>, CoreError> {
+    if plan
+        .relationships
+        .iter()
+        .enumerate()
+        .any(|(index, relationship)| {
+            relationship.variable.as_deref() == Some(variable)
+                && plan.optional_relationships.binary_search(&index).is_ok()
+        })
+    {
+        return Ok(Some(variable.to_string()));
+    }
+    if !plan.nodes.iter().any(|node| node.variable == variable) {
+        return Ok(None);
+    }
+    let mandatory_nodes = mandatory_node_variables(plan)?;
+    Ok((!mandatory_nodes.contains(variable)).then(|| variable.to_string()))
+}
+
+fn mandatory_node_variables(plan: &GraphPlan) -> Result<BTreeSet<&str>, CoreError> {
+    let mut joined_nodes = plan
+        .nodes
+        .iter()
+        .filter(|node| !node_incident_to_optional_relationship(plan, &node.variable))
+        .map(|node| node.variable.as_str())
+        .collect::<BTreeSet<_>>();
+    if joined_nodes.is_empty()
+        && let Some(first_node) = plan.nodes.first()
+    {
+        joined_nodes.insert(first_node.variable.as_str());
+    }
+
+    let mut remaining_relationships = (0..plan.relationships.len())
+        .filter(|index| plan.optional_relationships.binary_search(index).is_err())
+        .collect::<BTreeSet<_>>();
+    while !remaining_relationships.is_empty() {
+        let mut progressed = false;
+        for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal(
+                    "relationship index was out of bounds while finding optional variables",
+                )
+            })?;
+            let left_joined = joined_nodes.contains(pattern.left.as_str());
+            let right_joined = joined_nodes.contains(pattern.right.as_str());
+            if left_joined || right_joined {
+                joined_nodes.insert(pattern.left.as_str());
+                joined_nodes.insert(pattern.right.as_str());
+                remaining_relationships.remove(&index);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            let index = *remaining_relationships
+                .first()
+                .ok_or_else(|| CoreError::internal("remaining relationship set was empty"))?;
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal(
+                    "relationship index was out of bounds while seeding mandatory component",
+                )
+            })?;
+            joined_nodes.insert(pattern.left.as_str());
+        }
+    }
+    Ok(joined_nodes)
+}
+
+fn node_incident_to_optional_relationship(plan: &GraphPlan, variable: &str) -> bool {
+    plan.optional_relationships.iter().any(|index| {
+        plan.relationships.get(*index).is_some_and(|relationship| {
+            relationship.left == variable || relationship.right == variable
+        })
     })
 }
 
@@ -14741,6 +14924,120 @@ relationships:
                 nulls: None,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_is_empty_metadata_as_boolean_scalar_projections() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN isEmpty(labels(service)) AS service_labels_empty, \
+                    isEmpty(keys(service)) AS service_keys_empty, \
+                    isEmpty(keys(owns)) AS ownership_keys_empty \
+             ORDER BY isEmpty(keys(owns))",
+        )
+        .expect("isEmpty metadata scalar projections should compile");
+
+        assert_eq!(plan.projections.len(), 3);
+        assert!(plan.projections.iter().all(|projection| {
+            matches!(
+                projection,
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(_),
+                    ..
+                }
+            )
+        }));
+        let Projection::Expression {
+            expression: ScalarExpression::Predicate(predicate),
+            alias,
+        } = plan
+            .projections
+            .first()
+            .expect("expected labels isEmpty projection")
+        else {
+            panic!("expected labels isEmpty predicate projection");
+        };
+        assert_eq!(alias, "service_labels_empty");
+        assert!(matches!(
+            predicate.as_ref(),
+            PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Literal(Literal::Boolean(false)),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(
+                    true
+                ))),
+            })
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_is_empty_metadata_on_optional_relationship_endpoints() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service) \
+             RETURN isEmpty(labels(startNode(owns))) AS owner_labels_empty, \
+                    isEmpty(keys(startNode(owns))) AS owner_keys_empty \
+             ORDER BY isEmpty(labels(startNode(owns)))",
+        )
+        .expect("optional endpoint isEmpty metadata should compile");
+
+        let Projection::Expression {
+            expression: ScalarExpression::Predicate(predicate),
+            alias,
+        } = plan
+            .projections
+            .first()
+            .expect("expected optional endpoint labels isEmpty projection")
+        else {
+            panic!("expected optional endpoint labels isEmpty projection");
+        };
+        assert_eq!(alias, "owner_labels_empty");
+        assert!(matches!(
+            predicate.as_ref(),
+            PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::PresenceGated {
+                    presence_variable,
+                    expression,
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+            }) if presence_variable == "owns"
+                && matches!(expression.as_ref(), ScalarExpression::Literal(Literal::Boolean(false)))
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_is_empty_keys_without_graph_declaration() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN isEmpty(keys(service)) AS service_keys_empty",
+        )
+        .expect_err("keys metadata emptiness should require graph declaration");
+
+        assert!(
+            error.to_string().contains("requires a graph declaration"),
+            "{error}"
+        );
     }
 
     #[test]
