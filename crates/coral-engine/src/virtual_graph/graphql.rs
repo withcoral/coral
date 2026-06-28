@@ -3233,6 +3233,7 @@ fn compile_order_by_argument(
                 }
                 Ok(order_keys)
             }
+            GraphqlVariableValue::List(values) if values.is_empty() => Ok(Vec::new()),
             GraphqlVariableValue::Literal(_) | GraphqlVariableValue::List(_) => Err(unsupported(
                 path,
                 format!(
@@ -5742,6 +5743,38 @@ mod tests {
             plan.predicate,
             Some(PredicateExpression::Or { .. })
         ));
+    }
+
+    #[test]
+    fn compiles_empty_order_by_list_variable_default_as_no_order_keys() {
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($orders: [ServiceOrder!] = []) {
+              Service(orderBy: $orders) { name }
+            }
+            ",
+            &BTreeMap::new(),
+        )
+        .expect("empty GraphQL orderBy defaults should compile as no-op ordering");
+
+        assert!(plan.order_by.is_empty());
+    }
+
+    #[test]
+    fn compiles_empty_order_by_list_variable_as_no_order_keys() {
+        let variables =
+            BTreeMap::from([("orders".to_string(), GraphqlVariableValue::List(Vec::new()))]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($orders: [ServiceOrder!]!) {
+              Service(orderBy: $orders) { name }
+            }
+            ",
+            &variables,
+        )
+        .expect("empty GraphQL orderBy variables should compile as no-op ordering");
+
+        assert!(plan.order_by.is_empty());
     }
 
     #[test]

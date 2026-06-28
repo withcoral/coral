@@ -4171,6 +4171,36 @@ async fn graphql_object_variable_defaults_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_empty_order_by_default_executes_as_no_ordering() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($order: [ServiceOrder!] = []) {
+          Service(orderBy: $order) {
+            service: name
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL empty orderBy default query should execute");
+
+    assert!(
+        !execution.translated_sql().contains("ORDER BY"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(execution_to_rows(execution.execution()).len(), 4);
+}
+
+#[tokio::test]
 async fn graphql_boolean_root_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
