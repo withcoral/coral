@@ -13,9 +13,9 @@ use super::diagnostic::Diagnostic;
 use super::graphql_aggregate::graphql_property_aggregate_field;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
-    GraphPlan, KeyPredicate, Literal, NodePattern, NullOrder, OrderDirection, OrderExpression,
-    OrderKey, PredicateExpression, PredicateRhs, Projection, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    ExistsPatternPredicate, GraphPlan, KeyPredicate, Literal, NodePattern, NullOrder,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+    PropertyPredicate, PropertyRef, RelationshipPattern,
 };
 use crate::CoreError;
 
@@ -423,17 +423,19 @@ fn compile_root_field(
         limit: None,
     };
 
+    let root_context = NodeContext {
+        variable: variable.clone(),
+        label,
+        is_root: true,
+        edge_variable: None,
+        edge_relationship_type: None,
+    };
+
     compile_selection_set_into_plan(
         &mut plan,
         graph,
         &root.selection_set,
-        &NodeContext {
-            variable: variable.clone(),
-            label,
-            is_root: true,
-            edge_variable: None,
-            edge_relationship_type: None,
-        },
+        &root_context,
         format!("{path}.selectionSet"),
         context,
         &mut Vec::new(),
@@ -442,7 +444,8 @@ fn compile_root_field(
     for (index, (name, value)) in root.arguments.iter().enumerate() {
         compile_root_argument(
             &mut plan,
-            &variable,
+            graph,
+            &root_context,
             name,
             value,
             format!("{path}.arguments[{index}]"),
@@ -508,6 +511,31 @@ struct NodeContext {
     is_root: bool,
     edge_variable: Option<String>,
     edge_relationship_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GraphqlWhereScope<'a> {
+    graph: Option<&'a Declaration>,
+    variable: &'a str,
+    label: Option<&'a str>,
+}
+
+impl<'a> GraphqlWhereScope<'a> {
+    fn node(graph: Option<&'a Declaration>, context: &'a NodeContext) -> Self {
+        Self {
+            graph,
+            variable: &context.variable,
+            label: Some(&context.label),
+        }
+    }
+
+    fn graph_variable(variable: &'a str) -> Self {
+        Self {
+            graph: None,
+            variable,
+            label: None,
+        }
+    }
 }
 
 fn compile_selection_set_into_plan(
@@ -915,15 +943,16 @@ fn compile_relationship_field(
     let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
     let edge_relationship_type = relationship_type.clone();
 
-    compile_relationship_field_arguments(
-        plan,
-        field,
+    let relationship_argument_context = RelationshipFieldArgumentContext {
+        graph,
         endpoint_argument,
-        &target_variable,
-        relationship_variable.as_deref(),
-        &path,
+        target_variable: &target_variable,
+        target_label: &target_label,
+        relationship_variable: relationship_variable.as_deref(),
+        path: &path,
         compile_context,
-    )?;
+    };
+    compile_relationship_field_arguments(plan, field, &relationship_argument_context)?;
 
     plan.nodes.push(NodePattern {
         variable: target_variable.clone(),
@@ -957,40 +986,46 @@ fn compile_relationship_field(
 fn compile_relationship_field_arguments(
     plan: &mut GraphPlan,
     field: &Field<'_, String>,
-    endpoint_argument: &str,
-    target_variable: &str,
-    relationship_variable: Option<&str>,
-    path: &str,
-    compile_context: &GraphqlCompileContext<'_, '_>,
+    context: &RelationshipFieldArgumentContext<'_, '_, '_>,
 ) -> Result<(), CoreError> {
     for (index, (name, value)) in field.arguments.iter().enumerate() {
-        let argument_path = format!("{path}.arguments[{index}]");
+        let argument_path = format!("{}.arguments[{index}]", context.path);
         match name.as_str() {
             "to" | "from" | "label" => {
-                if name != endpoint_argument {
+                if name != context.endpoint_argument {
                     return Err(unsupported(
                         argument_path,
                         format!(
                             "GraphQL relationship field '{}' requires '{}' instead of '{}'",
-                            field.name, endpoint_argument, name
+                            field.name, context.endpoint_argument, name
                         ),
                     ));
                 }
             }
             "where" => append_where_predicate(
                 plan,
-                compile_where_argument(target_variable, value, argument_path, compile_context)?,
+                compile_where_argument(
+                    GraphqlWhereScope {
+                        graph: Some(context.graph),
+                        variable: context.target_variable,
+                        label: Some(context.target_label),
+                    },
+                    value,
+                    argument_path,
+                    context.compile_context,
+                )?,
             ),
             "relationshipWhere" => {
-                let relationship_variable = relationship_variable
+                let relationship_variable = context
+                    .relationship_variable
                     .ok_or_else(|| CoreError::internal("relationshipWhere variable missing"))?;
                 append_where_predicate(
                     plan,
                     compile_where_argument(
-                        relationship_variable,
+                        GraphqlWhereScope::graph_variable(relationship_variable),
                         value,
                         argument_path,
-                        compile_context,
+                        context.compile_context,
                     )?,
                 );
             }
@@ -1009,6 +1044,16 @@ fn compile_relationship_field_arguments(
         }
     }
     Ok(())
+}
+
+struct RelationshipFieldArgumentContext<'a, 'variables, 'query> {
+    graph: &'a Declaration,
+    endpoint_argument: &'a str,
+    target_variable: &'a str,
+    target_label: &'a str,
+    relationship_variable: Option<&'a str>,
+    path: &'a str,
+    compile_context: &'a GraphqlCompileContext<'variables, 'query>,
 }
 
 fn compile_edge_field(
@@ -1729,7 +1774,8 @@ fn relationship_variable_for_field(field: &Field<'_, String>, index: usize) -> S
 
 fn compile_root_argument(
     plan: &mut GraphPlan,
-    variable: &str,
+    graph: Option<&Declaration>,
+    node: &NodeContext,
     name: &str,
     value: &Value<'_, String>,
     path: impl Into<String>,
@@ -1740,13 +1786,17 @@ fn compile_root_argument(
         "where" => {
             append_where_predicate(
                 plan,
-                compile_where_argument(variable, value, path, context)?,
+                compile_where_argument(GraphqlWhereScope::node(graph, node), value, path, context)?,
             );
             Ok(())
         }
         "orderBy" => {
-            plan.order_by
-                .extend(compile_order_by_argument(variable, value, path, context)?);
+            plan.order_by.extend(compile_order_by_argument(
+                &node.variable,
+                value,
+                path,
+                context,
+            )?);
             Ok(())
         }
         "limit" | "first" => {
@@ -1769,7 +1819,7 @@ fn compile_root_argument(
 }
 
 fn compile_where_argument(
-    graph_variable: &str,
+    scope: GraphqlWhereScope<'_>,
     value: &Value<'_, String>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
@@ -1784,7 +1834,7 @@ fn compile_where_argument(
                 format!("GraphQL variable '${variable}' must be an object"),
             ));
         };
-        return compile_where_variable_object(graph_variable, object, path, context);
+        return compile_where_variable_object(scope, object, path, context);
     }
     let Value::Object(properties) = value else {
         return Err(unsupported(path, "GraphQL where must be an object"));
@@ -1793,15 +1843,23 @@ fn compile_where_argument(
     for (property, condition) in properties {
         let next = if let Some(operator) = graphql_boolean_operator(property) {
             compile_where_boolean_operator(
-                graph_variable,
+                scope,
                 operator,
+                condition,
+                format!("{path}.{property}"),
+                context,
+            )?
+        } else if is_graphql_relationship_filter_key(scope, property) {
+            compile_relationship_existence_filter(
+                scope,
+                property,
                 condition,
                 format!("{path}.{property}"),
                 context,
             )?
         } else {
             compile_where_property_conditions(
-                graph_variable,
+                scope.variable,
                 property,
                 condition,
                 format!("{path}.{property}"),
@@ -1814,7 +1872,7 @@ fn compile_where_argument(
 }
 
 fn compile_where_variable_object(
-    graph_variable: &str,
+    scope: GraphqlWhereScope<'_>,
     object: &BTreeMap<String, GraphqlVariableValue>,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
@@ -1824,8 +1882,16 @@ fn compile_where_variable_object(
     for (property, condition) in object {
         let next = if let Some(operator) = graphql_boolean_operator(property) {
             compile_where_variable_boolean_operator(
-                graph_variable,
+                scope,
                 operator,
+                condition,
+                format!("{path}.{property}"),
+                context,
+            )?
+        } else if is_graphql_relationship_filter_key(scope, property) {
+            compile_relationship_existence_filter_variable(
+                scope,
+                property,
                 condition,
                 format!("{path}.{property}"),
                 context,
@@ -1835,14 +1901,14 @@ fn compile_where_variable_object(
             match condition {
                 GraphqlVariableValue::Object(condition_object) => {
                     compile_where_variable_property_conditions(
-                        graph_variable,
+                        scope.variable,
                         property,
                         condition_object,
                         next_path,
                     )?
                 }
                 GraphqlVariableValue::Literal(literal) => Some(compile_where_shorthand_expression(
-                    graph_variable,
+                    scope.variable,
                     property,
                     PredicateRhs::Literal(literal.clone()),
                     next_path,
@@ -1858,6 +1924,378 @@ fn compile_where_variable_object(
         expression = append_optional_and(expression, next);
     }
     Ok(expression)
+}
+
+fn is_graphql_relationship_filter_key(scope: GraphqlWhereScope<'_>, name: &str) -> bool {
+    scope.graph.is_some()
+        && scope.label.is_some()
+        && (name.starts_with("out_") || name.starts_with("in_") || name.starts_with("any_"))
+}
+
+fn compile_relationship_existence_filter(
+    scope: GraphqlWhereScope<'_>,
+    field_name: &str,
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    if let Value::Variable(variable) = value {
+        return compile_relationship_existence_filter_variable(
+            scope,
+            field_name,
+            context.parameter_value(variable, path.clone())?,
+            path,
+            context,
+        );
+    }
+    let Value::Object(arguments) = value else {
+        return Err(unsupported(
+            path,
+            "GraphQL relationship existence filters must be objects",
+        ));
+    };
+    let graph = scope
+        .graph
+        .ok_or_else(|| CoreError::internal("relationship filter graph missing"))?;
+    let source_label = scope
+        .label
+        .ok_or_else(|| CoreError::internal("relationship filter source label missing"))?;
+    let (direction, relationship_type, endpoint_argument) =
+        compile_relationship_field_name(field_name, format!("{path}.name"))?;
+    let endpoint = RelationshipEndpointContext {
+        graph,
+        source_label,
+        relationship_type: &relationship_type,
+        direction,
+        endpoint_argument,
+    };
+
+    let target_label =
+        compile_relationship_filter_target_label(&endpoint, arguments, &path, context)?;
+    let filter_context = RelationshipFilterContext {
+        endpoint,
+        target_label: &target_label,
+        path: &path,
+    };
+    let (target_where, relationship_where) =
+        compile_relationship_filter_predicates(&filter_context, arguments, context)?;
+    Ok(Some(build_relationship_exists_predicate(
+        scope.variable,
+        direction,
+        relationship_type,
+        target_label,
+        target_where,
+        relationship_where,
+    )))
+}
+
+fn compile_relationship_existence_filter_variable(
+    scope: GraphqlWhereScope<'_>,
+    field_name: &str,
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let path = path.into();
+    let GraphqlVariableValue::Object(arguments) = value else {
+        return Err(unsupported(
+            path,
+            "GraphQL relationship existence filter variables must be objects",
+        ));
+    };
+    let graph = scope
+        .graph
+        .ok_or_else(|| CoreError::internal("relationship filter graph missing"))?;
+    let source_label = scope
+        .label
+        .ok_or_else(|| CoreError::internal("relationship filter source label missing"))?;
+    let (direction, relationship_type, endpoint_argument) =
+        compile_relationship_field_name(field_name, format!("{path}.name"))?;
+    let endpoint = RelationshipEndpointContext {
+        graph,
+        source_label,
+        relationship_type: &relationship_type,
+        direction,
+        endpoint_argument,
+    };
+
+    let target_label =
+        compile_relationship_filter_variable_target_label(&endpoint, arguments, &path)?;
+    let filter_context = RelationshipFilterContext {
+        endpoint,
+        target_label: &target_label,
+        path: &path,
+    };
+    let (target_where, relationship_where) =
+        compile_relationship_filter_variable_predicates(&filter_context, arguments, context)?;
+    Ok(Some(build_relationship_exists_predicate(
+        scope.variable,
+        direction,
+        relationship_type,
+        target_label,
+        target_where,
+        relationship_where,
+    )))
+}
+
+fn compile_relationship_filter_target_label(
+    endpoint: &RelationshipEndpointContext<'_>,
+    arguments: &BTreeMap<String, Value<'_, String>>,
+    path: &str,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<String, CoreError> {
+    let mut target_label = None;
+    for (name, value) in arguments {
+        let argument_path = format!("{path}.{name}");
+        match name.as_str() {
+            "to" | "from" | "label" => {
+                if name != endpoint.endpoint_argument {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship filter '{}' requires '{}' instead of '{}'",
+                            endpoint.relationship_type, endpoint.endpoint_argument, name
+                        ),
+                    ));
+                }
+                if target_label.is_some() {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship filter argument '{}' is duplicated",
+                            endpoint.endpoint_argument
+                        ),
+                    ));
+                }
+                target_label = Some(compile_name_value(value, argument_path, context)?);
+            }
+            "where" | "relationshipWhere" => {}
+            _ => {
+                return Err(unsupported(
+                    argument_path,
+                    format!("unsupported GraphQL relationship filter argument '{name}'"),
+                ));
+            }
+        }
+    }
+    match target_label {
+        Some(target_label) => Ok(target_label),
+        None => infer_relationship_target_label(
+            endpoint,
+            format!("{path}.{}", endpoint.endpoint_argument),
+        ),
+    }
+}
+
+fn compile_relationship_filter_variable_target_label(
+    endpoint: &RelationshipEndpointContext<'_>,
+    arguments: &BTreeMap<String, GraphqlVariableValue>,
+    path: &str,
+) -> Result<String, CoreError> {
+    let mut target_label = None;
+    for (name, value) in arguments {
+        let argument_path = format!("{path}.{name}");
+        match name.as_str() {
+            "to" | "from" | "label" => {
+                if name != endpoint.endpoint_argument {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship filter '{}' requires '{}' instead of '{}'",
+                            endpoint.relationship_type, endpoint.endpoint_argument, name
+                        ),
+                    ));
+                }
+                if target_label.is_some() {
+                    return Err(unsupported(
+                        argument_path,
+                        format!(
+                            "GraphQL relationship filter argument '{}' is duplicated",
+                            endpoint.endpoint_argument
+                        ),
+                    ));
+                }
+                target_label = Some(compile_variable_name_value(value, argument_path)?);
+            }
+            "where" | "relationshipWhere" => {}
+            _ => {
+                return Err(unsupported(
+                    argument_path,
+                    format!("unsupported GraphQL relationship filter argument '{name}'"),
+                ));
+            }
+        }
+    }
+    match target_label {
+        Some(target_label) => Ok(target_label),
+        None => infer_relationship_target_label(
+            endpoint,
+            format!("{path}.{}", endpoint.endpoint_argument),
+        ),
+    }
+}
+
+fn compile_relationship_filter_predicates(
+    filter: &RelationshipFilterContext<'_>,
+    arguments: &BTreeMap<String, Value<'_, String>>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<(Option<PredicateExpression>, Option<PredicateExpression>), CoreError> {
+    ensure_node_label(
+        filter.endpoint.graph,
+        filter.target_label,
+        format!("{}.{}", filter.path, filter.endpoint.endpoint_argument),
+    )?;
+    ensure_relationship_mapping(
+        filter.endpoint.graph,
+        filter.endpoint.relationship_type,
+        filter.endpoint.direction,
+        filter.endpoint.source_label,
+        filter.target_label,
+        filter.path,
+    )?;
+    let target_variable = relationship_filter_target_variable(filter.target_label);
+    let relationship_variable = relationship_filter_relationship_variable();
+    let mut target_where = None;
+    let mut relationship_where = None;
+    for (name, value) in arguments {
+        match name.as_str() {
+            "where" => {
+                target_where = compile_where_argument(
+                    GraphqlWhereScope {
+                        graph: Some(filter.endpoint.graph),
+                        variable: &target_variable,
+                        label: Some(filter.target_label),
+                    },
+                    value,
+                    format!("{}.{}", filter.path, name),
+                    context,
+                )?;
+            }
+            "relationshipWhere" => {
+                relationship_where = compile_where_argument(
+                    GraphqlWhereScope::graph_variable(&relationship_variable),
+                    value,
+                    format!("{}.{}", filter.path, name),
+                    context,
+                )?;
+            }
+            "to" | "from" | "label" => {}
+            _ => {
+                unreachable!("relationship filter arguments validated before predicate compilation")
+            }
+        }
+    }
+    Ok((target_where, relationship_where))
+}
+
+fn compile_relationship_filter_variable_predicates(
+    filter: &RelationshipFilterContext<'_>,
+    arguments: &BTreeMap<String, GraphqlVariableValue>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<(Option<PredicateExpression>, Option<PredicateExpression>), CoreError> {
+    ensure_node_label(
+        filter.endpoint.graph,
+        filter.target_label,
+        format!("{}.{}", filter.path, filter.endpoint.endpoint_argument),
+    )?;
+    ensure_relationship_mapping(
+        filter.endpoint.graph,
+        filter.endpoint.relationship_type,
+        filter.endpoint.direction,
+        filter.endpoint.source_label,
+        filter.target_label,
+        filter.path,
+    )?;
+    let target_variable = relationship_filter_target_variable(filter.target_label);
+    let relationship_variable = relationship_filter_relationship_variable();
+    let mut target_where = None;
+    let mut relationship_where = None;
+    for (name, value) in arguments {
+        match name.as_str() {
+            "where" => {
+                let GraphqlVariableValue::Object(object) = value else {
+                    return Err(unsupported(
+                        format!("{}.{}", filter.path, name),
+                        "GraphQL relationship filter where must be an object",
+                    ));
+                };
+                target_where = compile_where_variable_object(
+                    GraphqlWhereScope {
+                        graph: Some(filter.endpoint.graph),
+                        variable: &target_variable,
+                        label: Some(filter.target_label),
+                    },
+                    object,
+                    format!("{}.{}", filter.path, name),
+                    context,
+                )?;
+            }
+            "relationshipWhere" => {
+                let GraphqlVariableValue::Object(object) = value else {
+                    return Err(unsupported(
+                        format!("{}.{}", filter.path, name),
+                        "GraphQL relationship filter relationshipWhere must be an object",
+                    ));
+                };
+                relationship_where = compile_where_variable_object(
+                    GraphqlWhereScope::graph_variable(&relationship_variable),
+                    object,
+                    format!("{}.{}", filter.path, name),
+                    context,
+                )?;
+            }
+            "to" | "from" | "label" => {}
+            _ => {
+                unreachable!("relationship filter arguments validated before predicate compilation")
+            }
+        }
+    }
+    Ok((target_where, relationship_where))
+}
+
+struct RelationshipFilterContext<'a> {
+    endpoint: RelationshipEndpointContext<'a>,
+    target_label: &'a str,
+    path: &'a str,
+}
+
+fn build_relationship_exists_predicate(
+    source_variable: &str,
+    direction: Direction,
+    relationship_type: String,
+    target_label: String,
+    target_where: Option<PredicateExpression>,
+    relationship_where: Option<PredicateExpression>,
+) -> PredicateExpression {
+    let target_variable = relationship_filter_target_variable(&target_label);
+    let relationship_variable = relationship_where
+        .as_ref()
+        .map(|_| relationship_filter_relationship_variable());
+    let predicate = append_optional_and(target_where, relationship_where);
+    PredicateExpression::ExistsPattern(ExistsPatternPredicate {
+        nodes: vec![NodePattern {
+            variable: target_variable.clone(),
+            label: target_label,
+        }],
+        relationships: vec![RelationshipPattern {
+            variable: relationship_variable,
+            relationship_type,
+            left: source_variable.to_string(),
+            direction,
+            right: target_variable,
+        }],
+        predicates: Vec::new(),
+        predicate: predicate.map(Box::new),
+    })
+}
+
+fn relationship_filter_target_variable(label: &str) -> String {
+    format!("graphql_exists_{}", variable_for_label(label))
+}
+
+fn relationship_filter_relationship_variable() -> String {
+    "graphql_exists_relationship".to_string()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1879,7 +2317,7 @@ fn graphql_boolean_operator(name: &str) -> Option<GraphqlBooleanOperator> {
 }
 
 fn compile_where_boolean_operator(
-    graph_variable: &str,
+    scope: GraphqlWhereScope<'_>,
     operator: GraphqlBooleanOperator,
     value: &Value<'_, String>,
     path: impl Into<String>,
@@ -1888,7 +2326,7 @@ fn compile_where_boolean_operator(
     let path = path.into();
     if let Value::Variable(variable) = value {
         return compile_where_variable_boolean_operator(
-            graph_variable,
+            scope,
             operator,
             context.parameter_value(variable, path.clone())?,
             path,
@@ -1911,12 +2349,8 @@ fn compile_where_boolean_operator(
             }
             let mut expression = None;
             for (index, item) in items.iter().enumerate() {
-                let next = compile_where_argument(
-                    graph_variable,
-                    item,
-                    format!("{path}[{index}]"),
-                    context,
-                )?;
+                let next =
+                    compile_where_argument(scope, item, format!("{path}[{index}]"), context)?;
                 expression = match operator {
                     GraphqlBooleanOperator::And => append_optional_and(expression, next),
                     GraphqlBooleanOperator::Or => append_optional_or(expression, next),
@@ -1941,29 +2375,27 @@ fn compile_where_boolean_operator(
                     "GraphQL where xor operator requires exactly two objects",
                 ));
             };
-            let left =
-                compile_where_argument(graph_variable, left_item, format!("{path}[0]"), context)?
-                    .ok_or_else(|| {
+            let left = compile_where_argument(scope, left_item, format!("{path}[0]"), context)?
+                .ok_or_else(|| {
                     unsupported(
                         format!("{path}[0]"),
                         "GraphQL where xor operands must not be empty",
                     )
                 })?;
-            let right =
-                compile_where_argument(graph_variable, right_item, format!("{path}[1]"), context)?
-                    .ok_or_else(|| {
-                        unsupported(
-                            format!("{path}[1]"),
-                            "GraphQL where xor operands must not be empty",
-                        )
-                    })?;
+            let right = compile_where_argument(scope, right_item, format!("{path}[1]"), context)?
+                .ok_or_else(|| {
+                unsupported(
+                    format!("{path}[1]"),
+                    "GraphQL where xor operands must not be empty",
+                )
+            })?;
             Ok(Some(PredicateExpression::Xor {
                 left: Box::new(left),
                 right: Box::new(right),
             }))
         }
         GraphqlBooleanOperator::Not => {
-            let expression = compile_where_argument(graph_variable, value, path.clone(), context)?
+            let expression = compile_where_argument(scope, value, path.clone(), context)?
                 .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
             Ok(Some(PredicateExpression::Not {
                 expression: Box::new(expression),
@@ -1973,7 +2405,7 @@ fn compile_where_boolean_operator(
 }
 
 fn compile_where_variable_boolean_operator(
-    graph_variable: &str,
+    scope: GraphqlWhereScope<'_>,
     operator: GraphqlBooleanOperator,
     value: &GraphqlVariableValue,
     path: impl Into<String>,
@@ -1997,7 +2429,7 @@ fn compile_where_variable_boolean_operator(
             let mut expression = None;
             for (index, item) in items.iter().enumerate() {
                 let next = compile_where_variable_object(
-                    graph_variable,
+                    scope,
                     item,
                     format!("{path}[{index}]"),
                     context,
@@ -2026,30 +2458,22 @@ fn compile_where_variable_boolean_operator(
                     "GraphQL where xor operator requires exactly two objects",
                 ));
             };
-            let left = compile_where_variable_object(
-                graph_variable,
-                left_item,
-                format!("{path}[0]"),
-                context,
-            )?
-            .ok_or_else(|| {
-                unsupported(
-                    format!("{path}[0]"),
-                    "GraphQL where xor operands must not be empty",
-                )
-            })?;
-            let right = compile_where_variable_object(
-                graph_variable,
-                right_item,
-                format!("{path}[1]"),
-                context,
-            )?
-            .ok_or_else(|| {
-                unsupported(
-                    format!("{path}[1]"),
-                    "GraphQL where xor operands must not be empty",
-                )
-            })?;
+            let left =
+                compile_where_variable_object(scope, left_item, format!("{path}[0]"), context)?
+                    .ok_or_else(|| {
+                        unsupported(
+                            format!("{path}[0]"),
+                            "GraphQL where xor operands must not be empty",
+                        )
+                    })?;
+            let right =
+                compile_where_variable_object(scope, right_item, format!("{path}[1]"), context)?
+                    .ok_or_else(|| {
+                        unsupported(
+                            format!("{path}[1]"),
+                            "GraphQL where xor operands must not be empty",
+                        )
+                    })?;
             Ok(Some(PredicateExpression::Xor {
                 left: Box::new(left),
                 right: Box::new(right),
@@ -2060,7 +2484,7 @@ fn compile_where_variable_boolean_operator(
                 return Err(unsupported(path, "GraphQL where not requires an object"));
             };
             let expression =
-                compile_where_variable_object(graph_variable, object, path.clone(), context)?
+                compile_where_variable_object(scope, object, path.clone(), context)?
                     .ok_or_else(|| unsupported(path, "GraphQL where not requires an object"))?;
             Ok(Some(PredicateExpression::Not {
                 expression: Box::new(expression),
@@ -5591,6 +6015,104 @@ nodes:
         assert!(plan.predicates.iter().any(|predicate| {
             predicate.property.variable == "service1" && predicate.property.property == "tier"
         }));
+    }
+
+    #[test]
+    fn compiles_graphql_relationship_existence_filters() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Person(
+                where: {
+                  out_OWNS: {
+                    where: { tier: { eq: "prod" } }
+                    relationshipWhere: { source: { eq: "pagerduty" } }
+                  }
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("GraphQL relationship existence filters should compile");
+
+        assert_eq!(plan.nodes.len(), 1);
+        assert!(plan.relationships.is_empty());
+        let Some(PredicateExpression::ExistsPattern(pattern)) = plan.predicate else {
+            panic!("expected relationship filter to compile as an EXISTS pattern");
+        };
+        assert_eq!(
+            pattern.nodes,
+            vec![NodePattern {
+                variable: "graphql_exists_service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            pattern.relationships,
+            vec![RelationshipPattern {
+                variable: Some("graphql_exists_relationship".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "graphql_exists_service".to_string(),
+            }]
+        );
+        assert!(matches!(
+            pattern.predicate.as_deref(),
+            Some(PredicateExpression::And { .. })
+        ));
+    }
+
+    #[test]
+    fn compiles_graphql_relationship_existence_filter_variables() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let variables = BTreeMap::from([(
+            "ownsFilter".to_string(),
+            variable_object([
+                (
+                    "where",
+                    variable_object([(
+                        "tier",
+                        variable_object([(
+                            "eq",
+                            GraphqlVariableValue::Literal(Literal::String("prod".to_string())),
+                        )]),
+                    )]),
+                ),
+                (
+                    "relationshipWhere",
+                    variable_object([(
+                        "source",
+                        variable_object([(
+                            "eq",
+                            GraphqlVariableValue::Literal(Literal::String("pagerduty".to_string())),
+                        )]),
+                    )]),
+                ),
+            ]),
+        )]);
+        let plan = compile_graphql_for_graph_with_variables(
+            &graph,
+            r"
+            query People($ownsFilter: PersonOutOWNSWhere!) {
+              Person(where: { out_OWNS: $ownsFilter }) {
+                name
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL relationship existence filter variables should compile");
+
+        assert!(plan.relationships.is_empty());
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::ExistsPattern(_))
+        ));
     }
 
     #[test]

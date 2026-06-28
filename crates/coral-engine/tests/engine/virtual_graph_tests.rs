@@ -4412,6 +4412,49 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
 }
 
 #[tokio::test]
+async fn graphql_relationship_existence_filters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person(
+            where: {
+              out_OWNS: {
+                where: { tier: { eq: "prod" } }
+                relationshipWhere: { source: { eq: "pagerduty" } }
+              }
+            }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            owner: name
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("GraphQL relationship existence filter should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("EXISTS (SELECT 1 FROM \"ops\".\"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owner": "Grace Hopper"})]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_infers_unambiguous_endpoint_labels() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

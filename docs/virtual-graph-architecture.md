@@ -374,6 +374,12 @@ remain separate. The supported slice is intentionally graph-query oriented:
   equality, inequality, range, string, regex, list-membership, and null filters
   plus generated-client-friendly operator aliases and negated property filters,
   with `and`, `or`, `xor`, and `not` boolean filter composition;
+- relationship-existence filters inside root or nested node `where` objects,
+  using the same `out_TYPE`, `in_TYPE`, and `any_TYPE` names as traversal
+  fields. For example, `where: { out_OWNS: { to: Service, where: { tier: { eq:
+  "prod" } }, relationshipWhere: { source: { eq: "pagerduty" } } } }` lowers to
+  a scoped `EXISTS` predicate and does not add relationship fields to the
+  selected result shape;
 - reserved `_id` and `_elementId` identity filters and `orderBy` fields, where
   `_id` targets the mapped key and `_elementId` targets the string element id;
 - `orderBy` object or list of objects using property or identity fields and
