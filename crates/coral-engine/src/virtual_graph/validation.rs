@@ -3322,55 +3322,13 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_aggregate_property_type(function, property, path)
             }
             AggregateTarget::VariableKey { variable } => {
-                if function != AggregateFunction::Count {
-                    return Err(Diagnostic::new(
-                        "INVALID_AGGREGATE_TARGET",
-                        path,
-                        format!(
-                            "{}({variable}) requires a graph property argument; only count(variable) can aggregate a graph variable key",
-                            aggregate_function_name(function)
-                        ),
-                    )
-                    .into_core_error());
-                }
-                validate_variable(path.clone(), variable)?;
-                let binding = self.bindings.get(variable.as_str()).ok_or_else(|| {
-                    Diagnostic::new(
-                        "UNKNOWN_VARIABLE",
-                        path.clone(),
-                        format!("unknown graph variable '{variable}'"),
-                    )
-                    .into_core_error()
-                })?;
-                match binding.kind() {
-                    ValidatedBindingKind::Node(_) | ValidatedBindingKind::Relationship(_) => Ok(()),
-                }
+                self.validate_graph_variable_aggregate_target(function, variable, path)
             }
             AggregateTarget::PresenceGatedVariableKey {
                 variable,
                 presence_variable,
             } => {
-                if function != AggregateFunction::Count {
-                    return Err(Diagnostic::new(
-                        "INVALID_AGGREGATE_TARGET",
-                        path,
-                        format!(
-                            "{}({variable}) requires a graph property argument; only count(variable) can aggregate a graph variable key",
-                            aggregate_function_name(function)
-                        ),
-                    )
-                    .into_core_error());
-                }
-                validate_variable(format!("{path}.variable"), variable)?;
                 validate_variable(format!("{path}.presence_variable"), presence_variable)?;
-                let binding = self.bindings.get(variable.as_str()).ok_or_else(|| {
-                    Diagnostic::new(
-                        "UNKNOWN_VARIABLE",
-                        format!("{path}.variable"),
-                        format!("unknown graph variable '{variable}'"),
-                    )
-                    .into_core_error()
-                })?;
                 self.bindings
                     .get(presence_variable.as_str())
                     .ok_or_else(|| {
@@ -3381,11 +3339,43 @@ impl<'a> GraphPlanValidator<'a> {
                         )
                         .into_core_error()
                     })?;
-                match binding.kind() {
-                    ValidatedBindingKind::Node(_) | ValidatedBindingKind::Relationship(_) => Ok(()),
-                }
+                self.validate_graph_variable_aggregate_target(
+                    function,
+                    variable,
+                    format!("{path}.variable"),
+                )
             }
         }
+    }
+
+    fn validate_graph_variable_aggregate_target(
+        &self,
+        function: AggregateFunction,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if !aggregate_function_accepts_graph_variable_key(function) {
+            return Err(Diagnostic::new(
+                "INVALID_AGGREGATE_TARGET",
+                path.clone(),
+                format!(
+                    "{}({variable}) requires a graph property argument; only count(variable) and collect(variable) can aggregate a graph variable key",
+                    aggregate_function_name(function)
+                ),
+            )
+            .into_core_error());
+        }
+        validate_variable(path.clone(), variable)?;
+        let binding = self.bindings.get(variable).ok_or_else(|| {
+            Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path.clone(),
+                format!("unknown graph variable '{variable}'"),
+            )
+            .into_core_error()
+        })?;
+        validate_collect_graph_variable_aggregate_binding(function, variable, binding.kind(), path)
     }
 
     fn validate_aggregate_property_type(
@@ -5042,6 +5032,37 @@ fn aggregate_function_requires_numeric_target(function: AggregateFunction) -> bo
     )
 }
 
+fn aggregate_function_accepts_graph_variable_key(function: AggregateFunction) -> bool {
+    matches!(
+        function,
+        AggregateFunction::Count | AggregateFunction::Collect
+    )
+}
+
+fn validate_collect_graph_variable_aggregate_binding(
+    function: AggregateFunction,
+    variable: &str,
+    binding: &ValidatedBindingKind<'_>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let ValidatedBindingKind::Relationship(relationship) = binding else {
+        return Ok(());
+    };
+    if function == AggregateFunction::Collect && relationship.key.is_none() {
+        return Err(Diagnostic::new(
+            "INVALID_AGGREGATE_TARGET",
+            path,
+            format!(
+                "collect({variable}) requires relationship mapping '{}' to declare a key",
+                relationship.relationship_type
+            ),
+        )
+        .into_core_error());
+    }
+    Ok(())
+}
+
 fn validate_aggregate_scalar_type(
     function: AggregateFunction,
     scalar_type: ScalarType,
@@ -5394,6 +5415,30 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("keyless relationship count target should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_keyless_relationship_collect_targets() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::Collect,
+            target: AggregateTarget::VariableKey {
+                variable: "owns".to_string(),
+            },
+            distinct: false,
+            alias: "ownerships".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("keyless relationship collect target should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("declare a key"), "{error:?}");
     }
 
     #[test]
@@ -6264,7 +6309,7 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_collect_node_aggregate_targets() {
+    fn validate_graph_plan_accepts_collect_node_aggregate_targets() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.projections = vec![Projection::Aggregate {
@@ -6276,14 +6321,9 @@ relationships:
             alias: "services".to_string(),
         }];
 
-        let error = graph
+        graph
             .validate_graph_plan(&plan)
-            .expect_err("collect node aggregate target should fail validation");
-
-        assert!(
-            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
-            "{error:?}"
-        );
+            .expect("collect node aggregate target should validate");
     }
 
     #[test]

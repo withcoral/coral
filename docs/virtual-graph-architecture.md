@@ -257,10 +257,13 @@ The supported foundation subset is intentionally narrow:
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
   `count(DISTINCT relationship)` for keyed mappings, `collect(property)`,
-  `collect(DISTINCT property)` lowered through null-filtered `ARRAY_AGG`
-  with an empty-list fallback, GQL aggregate aliases `collect_list`,
-  `stdev_samp`, and `stdev_pop`, numeric property aggregates, property and
-  identity `ORDER BY`, direct aggregate `ORDER BY` expressions that match
+  `collect(DISTINCT property)`, `collect(node)`, `collect(DISTINCT node)`, and
+  keyed relationship or endpoint collections lowered through null-filtered
+  `ARRAY_AGG` with an empty-list fallback. Graph-variable collection returns
+  mapped stable keys rather than materialized graph objects. GQL aggregate
+  aliases include `collect_list`, `stdev_samp`, and `stdev_pop`; numeric
+  property aggregates, property and identity `ORDER BY`, direct aggregate
+  `ORDER BY` expressions that match
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal

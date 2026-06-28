@@ -12070,13 +12070,22 @@ fn compile_function_aggregate_target(
             plan,
             context,
         ),
-        [] if function_kind == AggregateFunction::Count => {
-            let variable = context.variable_function_argument(function).ok_or_else(|| {
-                unsupported(
-                    format!("{path}.expression.arguments"),
-                    "count() supports exactly one graph property or node variable argument; use count(*) to count rows",
-                )
-            })?;
+        [] if matches!(
+            function_kind,
+            AggregateFunction::Count | AggregateFunction::Collect
+        ) =>
+        {
+            let variable = context
+                .variable_function_argument(function)
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("{path}.expression.arguments"),
+                        format!(
+                            "{}() supports exactly one graph property or graph variable argument",
+                            aggregate_function_name(function_kind)
+                        ),
+                    )
+                })?;
             Ok(AggregateTarget::VariableKey {
                 variable: variable.to_string(),
             })
@@ -28822,6 +28831,47 @@ relationships:
                 direction: OrderDirection::Descending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_collect_graph_variable_projection() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN collect(service) AS service_ids, \
+                    collect(DISTINCT service) AS distinct_service_ids, \
+                    collect(owns) AS ownership_ids",
+        )
+        .expect("collect graph variable query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Collect,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: false,
+                    alias: "service_ids".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Collect,
+                    target: AggregateTarget::VariableKey {
+                        variable: "service".to_string(),
+                    },
+                    distinct: true,
+                    alias: "distinct_service_ids".to_string(),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Collect,
+                    target: AggregateTarget::VariableKey {
+                        variable: "owns".to_string(),
+                    },
+                    distinct: false,
+                    alias: "ownership_ids".to_string(),
+                },
+            ]
         );
     }
 

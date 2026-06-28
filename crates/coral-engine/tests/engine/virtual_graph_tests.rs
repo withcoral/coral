@@ -27,6 +27,13 @@ fn sort_string_array_field(row: &mut Value, field: &str) {
     values.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
 }
 
+fn sort_i64_array_field(row: &mut Value, field: &str) {
+    let Some(values) = row.get_mut(field).and_then(Value::as_array_mut) else {
+        panic!("row should contain array field '{field}': {row}");
+    };
+    values.sort_by_key(Value::as_i64);
+}
+
 #[tokio::test]
 async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
@@ -8452,6 +8459,142 @@ async fn cypher_collect_property_projection_drops_null_values() {
         "tiers",
     );
     assert_eq!(rows, vec![json!({"tiers": ["dev", "prod", "prod"]})]);
+}
+
+#[tokio::test]
+async fn cypher_collect_graph_variable_projection_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN collect(service) AS service_ids, collect(DISTINCT service) AS distinct_service_ids",
+    )
+    .await
+    .expect("collect graph variable Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(ARRAY_AGG(\"n0\".\"id\") FILTER (WHERE (\"n0\".\"id\") IS NOT NULL), make_array()) AS \"service_ids\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(ARRAY_AGG(DISTINCT \"n0\".\"id\") FILTER (WHERE (\"n0\".\"id\") IS NOT NULL), make_array()) AS \"distinct_service_ids\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("collect query should return one row");
+    sort_i64_array_field(row, "service_ids");
+    sort_i64_array_field(row, "distinct_service_ids");
+    assert_eq!(
+        rows,
+        vec![json!({
+            "service_ids": [10, 20, 30, 40],
+            "distinct_service_ids": [10, 20, 30, 40]
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_collect_keyed_relationship_variable_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (:Person)-[owns:OWNS]->(:Service) \
+         RETURN collect(owns) AS ownership_ids, collect(DISTINCT owns) AS distinct_ownership_ids",
+    )
+    .await
+    .expect("collect keyed relationship Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(ARRAY_AGG(\"r0\".\"ownership_id\") FILTER (WHERE (\"r0\".\"ownership_id\") IS NOT NULL), make_array()) AS \"ownership_ids\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(ARRAY_AGG(DISTINCT \"r0\".\"ownership_id\") FILTER (WHERE (\"r0\".\"ownership_id\") IS NOT NULL), make_array()) AS \"distinct_ownership_ids\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("collect query should return one row");
+    sort_i64_array_field(row, "ownership_ids");
+    sort_i64_array_field(row, "distinct_ownership_ids");
+    assert_eq!(
+        rows,
+        vec![json!({
+            "ownership_ids": [100, 200, 300],
+            "distinct_ownership_ids": [100, 200, 300]
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_collect_optional_endpoint_variable_drops_unmatched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+         RETURN service.name AS service, collect(endNode(dependency)) AS dependency_ids \
+         ORDER BY service",
+    )
+    .await
+    .expect("collect optional endpoint Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(ARRAY_AGG(CASE WHEN \"r0\".\"from_service_id\" IS NULL THEN NULL ELSE \"n1\".\"id\" END) FILTER"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_i64_array_field(row, "dependency_ids");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"service": "billing-api", "dependency_ids": [20, 30]}),
+            json!({"service": "deployments", "dependency_ids": [30]}),
+            json!({"service": "experiments", "dependency_ids": []}),
+            json!({"service": "legacy-sync", "dependency_ids": []}),
+        ]
+    );
 }
 
 #[tokio::test]
