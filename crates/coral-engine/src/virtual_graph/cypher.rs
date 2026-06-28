@@ -3285,7 +3285,7 @@ fn apply_transparent_with_scope(
                 "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
             ));
         }
-        return compile_transparent_with_where(with, plan, path, context);
+        return compile_transparent_with_where(with, plan, Some(state), path, context);
     }
     if with.items.is_empty() {
         return Err(unsupported(
@@ -3355,7 +3355,7 @@ fn apply_transparent_with_scope(
         state.out_of_scope_graph_names.remove(&variable);
     }
 
-    let predicate = compile_transparent_with_where(with, plan, path.clone(), context)?;
+    let predicate = compile_transparent_with_where(with, plan, None, path.clone(), context)?;
     reject_ignored_path_variable_references(plan, state, &path)?;
     if let Some(predicate) = predicate.as_ref() {
         reject_ignored_path_variable_references_in_predicate(
@@ -3371,6 +3371,7 @@ fn apply_transparent_with_scope(
 fn compile_transparent_with_where(
     with: &With,
     plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
@@ -3378,7 +3379,13 @@ fn compile_transparent_with_where(
     with.where_clause
         .as_ref()
         .map(|where_clause| {
-            compile_predicate_expression(where_clause, format!("{path}.where"), plan, context)
+            compile_predicate_expression_with_path_state(
+                where_clause,
+                format!("{path}.where"),
+                plan,
+                path_state,
+                context,
+            )
         })
         .transpose()
 }
@@ -16153,6 +16160,53 @@ relationships:
                     alias: "path_size".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_with_star_where_over_path_metadata() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH * WHERE length(path) = 1 AND size(path) = 1 \
+             RETURN person.name AS owner",
+        )
+        .expect("WITH * WHERE should see non-materialized path metadata");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(1)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(1)
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(1)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(1)
+                    )),
+                })),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_explicit_with_where_over_dropped_path_metadata() {
+        let error = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH person, service WHERE length(path) = 1 \
+             RETURN person.name AS owner",
+        )
+        .expect_err("explicit WITH should drop path metadata before WHERE");
+
+        assert!(
+            error
+                .to_string()
+                .contains("supported scalar expression operand"),
+            "{error}"
         );
     }
 

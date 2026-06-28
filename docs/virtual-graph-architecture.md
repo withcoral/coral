@@ -257,7 +257,8 @@ The supported foundation subset is intentionally narrow:
   projections and result schemas remain stable;
 - non-materialized path variable bindings in `MATCH p = (...)`, including
   `WITH *` pass-through when the path is later used only for supported metadata
-  such as `length(path)` or `size(path)` and not as a graph value;
+  such as `length(path)` or `size(path)`, including in `WITH * WHERE`, and not
+  as a graph value;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.

@@ -4581,6 +4581,36 @@ async fn cypher_transparent_with_star_carries_path_metadata() {
 }
 
 #[tokio::test]
+async fn cypher_transparent_with_star_where_filters_path_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         WITH * WHERE length(path) = 2 AND size(path) = 2 \
+         RETURN source.name AS source, target.name AS target, length(path) AS hops \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("WITH * WHERE should filter on path length metadata");
+
+    assert!(
+        execution.translated_sql().contains("2 AS \"hops\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"source": "billing-api", "target": "experiments", "hops": 2})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multiple_match_clauses_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
