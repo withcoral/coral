@@ -3142,6 +3142,34 @@ async fn graphql_root_query_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn graphql_execute_rejects_unknown_graph_declared_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service {
+            missingProperty
+          }
+        }
+        ",
+    )
+    .await
+    .expect_err("unknown graph-declared GraphQL property should fail before execution");
+
+    assert!(
+        error.to_string().contains("UNKNOWN_PROPERTY"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_declaration_root_field_alias_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

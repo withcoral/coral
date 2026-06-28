@@ -163,7 +163,11 @@ fn compile_graphql_document(
     let document = parse_query::<String>(graphql).map_err(|error| {
         Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_document(&document, graph, variables, operation_name)
+    let plan = compile_document(&document, graph, variables, operation_name)?;
+    if let Some(graph) = graph {
+        graph.validate_graph_plan(&plan)?;
+    }
+    Ok(plan)
 }
 
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph
@@ -5979,6 +5983,164 @@ nodes:
     }
 
     #[test]
+    fn graph_aware_graphql_rejects_unknown_selected_properties() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            query {
+              Service {
+                missingProperty
+              }
+            }
+            ",
+        )
+        .expect_err("unknown graph-backed selected property should fail");
+
+        assert!(
+            error.to_string().contains("UNKNOWN_PROPERTY"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn declaration_free_graphql_keeps_open_property_selection() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Service {
+                missingProperty
+              }
+            }
+            ",
+        )
+        .expect("declaration-free GraphQL should keep open property names");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "missingProperty".to_string(),
+                },
+                alias: Some("missingProperty".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_graphql_rejects_unknown_filter_and_order_properties() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        for (query, reason) in [
+            (
+                r#"
+                query {
+                  Service(where: { missingProperty: { eq: "x" } }) {
+                    name
+                  }
+                }
+                "#,
+                "unknown filter property",
+            ),
+            (
+                r"
+                query {
+                  Service(orderBy: [{ field: missingProperty, direction: ASC }]) {
+                    name
+                  }
+                }
+                ",
+                "unknown orderBy property",
+            ),
+        ] {
+            let error = compile_graphql_for_graph(&graph, query).expect_err(reason);
+            assert!(
+                error.to_string().contains("UNKNOWN_PROPERTY"),
+                "unexpected error for {reason}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_aware_graphql_rejects_unknown_variable_filter_properties() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let variables = BTreeMap::from([(
+            "filter".to_string(),
+            variable_object([(
+                "missingProperty",
+                variable_object([(
+                    "eq",
+                    GraphqlVariableValue::Literal(Literal::String("x".to_string())),
+                )]),
+            )]),
+        )]);
+        let error = compile_graphql_for_graph_with_variables(
+            &graph,
+            r"
+            query Services($filter: ServiceWhere!) {
+              Service(where: $filter) {
+                name
+              }
+            }
+            ",
+            &variables,
+        )
+        .expect_err("unknown object-variable filter property should fail");
+
+        assert!(
+            error.to_string().contains("UNKNOWN_PROPERTY"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn graph_aware_graphql_validates_only_selected_operation_properties() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        compile_graphql_for_graph_with_operation_name(
+            &graph,
+            r"
+            query Good {
+              Service {
+                name
+              }
+            }
+
+            query Bad {
+              Service {
+                missingProperty
+              }
+            }
+            ",
+            "Good",
+        )
+        .expect("unselected invalid operation should not be validated");
+
+        let error = compile_graphql_for_graph_with_operation_name(
+            &graph,
+            r"
+            query Good {
+              Service {
+                name
+              }
+            }
+
+            query Bad {
+              Service {
+                missingProperty
+              }
+            }
+            ",
+            "Bad",
+        )
+        .expect_err("selected invalid operation should fail validation");
+
+        assert!(
+            error.to_string().contains("UNKNOWN_PROPERTY"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn declaration_free_graphql_keeps_unknown_root_labels() {
         let plan = compile_graphql(
             r"
@@ -6100,7 +6262,7 @@ nodes:
                   _edge {
                     ...OwnershipEdge
                     ... on OWNS {
-                      ownershipSince: since
+                      ownershipSourceInline: source
                     }
                   }
                 }
@@ -6131,7 +6293,7 @@ nodes:
                 } if kind == "OWNS" && alias == "edgeKind"
             )
         }));
-        for alias in ["ownershipSource", "ownershipSince"] {
+        for alias in ["ownershipSource", "ownershipSourceInline"] {
             assert!(
                 plan.projections.iter().any(|projection| {
                     matches!(
