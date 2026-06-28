@@ -1927,9 +1927,34 @@ fn compile_where_variable_object(
 }
 
 fn is_graphql_relationship_filter_key(scope: GraphqlWhereScope<'_>, name: &str) -> bool {
-    scope.graph.is_some()
-        && scope.label.is_some()
-        && (name.starts_with("out_") || name.starts_with("in_") || name.starts_with("any_"))
+    let Some(graph) = scope.graph else {
+        return false;
+    };
+    let Some(source_label) = scope.label else {
+        return false;
+    };
+    let (direction, relationship_type) = if let Some(relationship_type) = name.strip_prefix("out_")
+    {
+        (Direction::Outgoing, relationship_type)
+    } else if let Some(relationship_type) = name.strip_prefix("in_") {
+        (Direction::Incoming, relationship_type)
+    } else if let Some(relationship_type) = name.strip_prefix("any_") {
+        (Direction::Undirected, relationship_type)
+    } else {
+        return false;
+    };
+    if relationship_type.is_empty() {
+        return false;
+    }
+    graph
+        .relationships_for_type(relationship_type)
+        .any(|relationship| match direction {
+            Direction::Outgoing => relationship.from.label == source_label,
+            Direction::Incoming => relationship.to.label == source_label,
+            Direction::Undirected => {
+                relationship.from.label == source_label || relationship.to.label == source_label
+            }
+        })
 }
 
 fn compile_relationship_existence_filter(
@@ -6112,6 +6137,45 @@ nodes:
         assert!(matches!(
             plan.predicate,
             Some(PredicateExpression::ExistsPattern(_))
+        ));
+    }
+
+    #[test]
+    fn compiles_prefix_named_graphql_where_properties_when_no_relationship_matches() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: prefix_property_test
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+      out_status: out_status
+",
+        )
+        .expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Service(where: { out_status: { eq: "green" } }) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect("prefix-named properties should compile as property filters");
+
+        assert!(plan.relationships.is_empty());
+        assert!(matches!(
+            plan.predicates.as_slice(),
+            [PropertyPredicate {
+                property: PropertyRef { variable, property },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String(value)),
+            }] if variable == "service" && property == "out_status" && value == "green"
         ));
     }
 
