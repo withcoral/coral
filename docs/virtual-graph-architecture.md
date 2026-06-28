@@ -134,10 +134,13 @@ The supported foundation subset is intentionally narrow:
   compile time with out-of-range indexes returning `NULL`;
 - start-inclusive/end-exclusive slice expressions over static `labels(...)`
   and declaration-aware `keys(...)` metadata lists, folded at compile time
-  and preserving optional nulls for nullable bindings;
-- `head(...)` and `last(...)` over literal lists, list parameters, and static
-  metadata lists, folded at compile time with `NULL` for empty matched lists
-  and optional null preservation for nullable graph bindings;
+  and preserving optional nulls for nullable bindings. Empty static slices are
+  carried through the IR as typed folded lists so DataFusion can render typed
+  empty arrays instead of ambiguous `make_array()` values;
+- `head(...)`, `last(...)`, and `tail(...)` over literal lists, list
+  parameters, and static metadata lists, folded at compile time with `NULL` for
+  empty matched lists in `head(...)` / `last(...)`, typed empty-list results for
+  `tail(...)`, and optional null preservation for nullable graph bindings;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - `id(...)`, `type(relationship)`, and static

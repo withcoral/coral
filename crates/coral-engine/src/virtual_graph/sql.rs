@@ -7,12 +7,12 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern,
-    NullOrder, OptionalMatchScope, OrderDirection, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    GraphQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
+    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -2734,6 +2734,10 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
+            ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            } => Ok(render_typed_literal_list(literals, *element_type)),
             ScalarExpression::Predicate(predicate) => {
                 self.render_scalar_predicate_expression(predicate)
             }
@@ -3377,6 +3381,25 @@ fn render_literal_list(literals: &[Literal]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("make_array({values})")
+}
+
+fn render_typed_literal_list(literals: &[Literal], element_type: LiteralListElementType) -> String {
+    if !literals.is_empty() {
+        return render_literal_list(literals);
+    }
+    format!(
+        "array_resize(make_array(CAST(NULL AS {})), 0)",
+        render_literal_list_element_type(element_type)
+    )
+}
+
+fn render_literal_list_element_type(element_type: LiteralListElementType) -> &'static str {
+    match element_type {
+        LiteralListElementType::String => "VARCHAR",
+        LiteralListElementType::Integer => "BIGINT",
+        LiteralListElementType::Float => "DOUBLE",
+        LiteralListElementType::Boolean => "BOOLEAN",
+    }
 }
 
 fn render_like_pattern(operator: ComparisonOperator, value: &str) -> String {

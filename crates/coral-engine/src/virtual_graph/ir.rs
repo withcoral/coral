@@ -71,6 +71,19 @@ pub enum Literal {
     Null,
 }
 
+/// Element type carried by a statically folded list when the list may be empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralListElementType {
+    /// String elements.
+    String,
+    /// Signed integer elements.
+    Integer,
+    /// Floating-point elements.
+    Float,
+    /// Boolean elements.
+    Boolean,
+}
+
 /// Property reference bound to a node or relationship variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyRef {
@@ -156,6 +169,14 @@ pub enum ScalarExpression {
     LiteralList {
         /// Literal list elements.
         literals: Vec<Literal>,
+    },
+    /// A statically folded list value whose element type is known even when
+    /// the list is empty.
+    TypedLiteralList {
+        /// Literal list elements.
+        literals: Vec<Literal>,
+        /// Known non-null element type.
+        element_type: LiteralListElementType,
     },
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),

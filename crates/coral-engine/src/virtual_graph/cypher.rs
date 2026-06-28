@@ -30,12 +30,12 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs,
 };
 use crate::CoreError;
 
@@ -159,6 +159,7 @@ struct MetadataListValue {
 struct StaticListValue {
     presence_variable: Option<String>,
     literals: Vec<Literal>,
+    element_type: Option<LiteralListElementType>,
 }
 
 #[derive(Debug, Clone)]
@@ -3364,7 +3365,9 @@ fn rename_non_unary_scalar_expression_variables(
 ) {
     match expression {
         ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
-        ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => {}
+        ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. } => {}
         ScalarExpression::Predicate(predicate) => {
             rename_predicate_expression_variables(predicate, renames);
         }
@@ -3826,7 +3829,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Property(property) => {
             reject_ignored_path_variable_property_ref(property, state, path)
         }
-        ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => Ok(()),
+        ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. } => Ok(()),
         ScalarExpression::Predicate(predicate) => {
             reject_ignored_path_variable_references_in_predicate(predicate, state, path)
         }
@@ -3943,6 +3948,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
         | ScalarExpression::Predicate(_)
         | ScalarExpression::CountSubquery { .. }
         | ScalarExpression::Key { .. }
@@ -5582,7 +5588,6 @@ fn compile_order_expression(
                 && let Some(value) =
                     compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
             {
-                validate_literal_list_projection(&value.literals, path.clone())?;
                 return compile_scalar_order_expression(
                     metadata_list_value_scalar_expression(value, plan)?,
                     projections,
@@ -5806,6 +5811,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ScalarExpression::Property(_)
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -6142,8 +6148,9 @@ fn metadata_list_value_scalar_expression(
     };
     Ok(presence_gate_scalar_expression(
         presence_variable,
-        ScalarExpression::LiteralList {
+        ScalarExpression::TypedLiteralList {
             literals: value.literals,
+            element_type: LiteralListElementType::String,
         },
     ))
 }
@@ -6169,6 +6176,30 @@ fn compile_optional_static_list_value(
         Expression::Parenthesized(inner) => {
             compile_optional_static_list_value(inner, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_tail_function(function) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    "tail() requires exactly one list argument",
+                ));
+            };
+            let Some(value) = compile_optional_static_list_value(
+                argument,
+                format!("{path}.arguments[0]"),
+                plan,
+                context,
+            )?
+            else {
+                return Err(unsupported(
+                    format!("{path}.arguments[0]"),
+                    "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
+                ));
+            };
+            Ok(Some(tail_static_list_value(
+                value,
+                format!("{path}.arguments[0]"),
+            )?))
+        }
         expression => {
             if let Some(plan) = plan
                 && let Some(value) =
@@ -6177,19 +6208,75 @@ fn compile_optional_static_list_value(
                 return Ok(Some(StaticListValue {
                     presence_variable: metadata_list_presence_variable(&value.value, plan)?,
                     literals: value.literals,
+                    element_type: Some(LiteralListElementType::String),
                 }));
             }
             match expression {
                 Expression::Literal(CypherLiteral::List(_))
                 | Expression::ListSlice { .. }
-                | Expression::Parameter(_) => Ok(Some(StaticListValue {
-                    presence_variable: None,
-                    literals: compile_literal_list(expression, path, context)?,
-                })),
+                | Expression::Parameter(_) => {
+                    let literals = compile_literal_list(expression, path, context)?;
+                    Ok(Some(StaticListValue {
+                        presence_variable: None,
+                        element_type: infer_literal_list_element_type(&literals),
+                        literals,
+                    }))
+                }
                 _ => Ok(None),
             }
         }
     }
+}
+
+fn infer_literal_list_element_type(literals: &[Literal]) -> Option<LiteralListElementType> {
+    let mut expected = None;
+    for literal in literals {
+        let Some(kind) = literal_list_element_kind(literal) else {
+            continue;
+        };
+        match expected {
+            Some(expected) if expected != kind => return None,
+            Some(_) => {}
+            None => expected = Some(kind),
+        }
+    }
+    expected
+}
+
+fn static_list_tail_expression(
+    value: StaticListValue,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let value = tail_static_list_value(value, path)?;
+    let element_type = value
+        .element_type
+        .ok_or_else(|| CoreError::internal("typed tail value lost its element type"))?;
+    Ok(presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::TypedLiteralList {
+            literals: value.literals,
+            element_type,
+        },
+    ))
+}
+
+fn tail_static_list_value(
+    value: StaticListValue,
+    path: impl Into<String>,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let Some(element_type) = value.element_type else {
+        return Err(unsupported(
+            path,
+            "tail() requires a list with a known non-null element type",
+        ));
+    };
+    let literals = value.literals.into_iter().skip(1).collect::<Vec<_>>();
+    Ok(StaticListValue {
+        presence_variable: value.presence_variable,
+        literals,
+        element_type: Some(element_type),
+    })
 }
 
 fn compile_type_order_expression(
@@ -6490,13 +6577,13 @@ fn compile_optional_metadata_list_slice_projection(
     else {
         return Ok(None);
     };
-    validate_literal_list_projection(&value.literals, format!("{path}.expression"))?;
     let alias = item
         .alias
         .as_ref()
         .map_or_else(|| "list".to_string(), variable_name);
     if value.value.presence_variable.is_none()
         && optional_graph_variable_presence_variable(plan, &value.value.variable)?.is_none()
+        && !value.literals.is_empty()
     {
         return Ok(Some(Projection::LiteralList {
             literals: value.literals,
@@ -7055,6 +7142,14 @@ fn compile_character_length_scalar_expression(
     )? {
         return Ok(length);
     }
+    if let Some(length) = compile_static_list_function_length_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )? {
+        return Ok(length);
+    }
     let function_name = qualified_function_name(function);
     Ok(ScalarExpression::CharacterLength {
         expression: Box::new(compile_single_scalar_function_argument(
@@ -7119,6 +7214,37 @@ fn compile_literal_list_length_scalar_expression(
         }
         _ => Ok(None),
     }
+}
+
+fn compile_static_list_function_length_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_static_list_function_length_scalar_expression(inner, path, plan, context)
+        }
+        Expression::FunctionCall(function) if is_tail_function(function) => {
+            let Some(value) = compile_optional_static_list_value(expression, path, plan, context)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(static_list_length_scalar_expression(value)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn static_list_length_scalar_expression(
+    value: StaticListValue,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(presence_gate_scalar_expression(
+        value.presence_variable,
+        list_length_scalar_expression(value.literals.len())?,
+    ))
 }
 
 fn list_length_scalar_expression(length: usize) -> Result<ScalarExpression, CoreError> {
@@ -7705,6 +7831,8 @@ fn compile_core_scalar_function_expression(
             context,
             ListEndpoint::Last,
         )?
+    } else if is_tail_function(function) {
+        compile_static_list_tail_scalar_expression(function, path, plan, context)?
     } else if is_character_length_function(function) {
         compile_character_length_scalar_expression(function, path, plan, context)?
     } else if is_substring_function(function) {
@@ -7769,6 +7897,34 @@ fn compile_static_list_endpoint_scalar_expression(
         value.presence_variable,
         ScalarExpression::Literal(literal),
     ))
+}
+
+fn compile_static_list_tail_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "tail() requires exactly one list argument",
+        ));
+    };
+    let Some(value) = compile_optional_static_list_value(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
+        ));
+    };
+    static_list_tail_expression(value, format!("{path}.arguments[0]"))
 }
 
 fn compile_numeric_scalar_function_expression(
@@ -7928,7 +8084,7 @@ fn compile_scalar_expression_in_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -8412,7 +8568,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
                 )),
             }
         }
@@ -8421,7 +8577,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -9200,6 +9356,13 @@ fn is_last_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+fn is_tail_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("tail")
+    )
+}
+
 fn is_character_length_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
@@ -9962,6 +10125,18 @@ fn compile_is_empty_predicate(
     if let Some(length) = compile_literal_list_length_scalar_expression(
         argument,
         format!("{path}.arguments[0]"),
+        context,
+    )? {
+        return Ok(ScalarPredicate {
+            lhs: length,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+        });
+    }
+    if let Some(length) = compile_static_list_function_length_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
         context,
     )? {
         return Ok(ScalarPredicate {
@@ -12339,20 +12514,12 @@ fn validate_literal_list_projection(
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LiteralListElementKind {
-    String,
-    Integer,
-    Float,
-    Boolean,
-}
-
-fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind> {
+fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementType> {
     match literal {
-        Literal::String(_) => Some(LiteralListElementKind::String),
-        Literal::Integer(_) => Some(LiteralListElementKind::Integer),
-        Literal::Float(_) => Some(LiteralListElementKind::Float),
-        Literal::Boolean(_) => Some(LiteralListElementKind::Boolean),
+        Literal::String(_) => Some(LiteralListElementType::String),
+        Literal::Integer(_) => Some(LiteralListElementType::Integer),
+        Literal::Float(_) => Some(LiteralListElementType::Float),
+        Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
         Literal::Null => None,
     }
 }
@@ -15961,8 +16128,9 @@ relationships:
         assert_eq!(
             plan.order_by,
             vec![OrderKey {
-                expression: OrderExpression::Scalar(ScalarExpression::LiteralList {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
                     literals: vec![Literal::String("name".to_string())],
+                    element_type: LiteralListElementType::String,
                 }),
                 direction: OrderDirection::Ascending,
                 nulls: None,
@@ -15988,8 +16156,9 @@ relationships:
                 Projection::Expression {
                     expression: ScalarExpression::PresenceGated {
                         presence_variable: "person".to_string(),
-                        expression: Box::new(ScalarExpression::LiteralList {
+                        expression: Box::new(ScalarExpression::TypedLiteralList {
                             literals: vec![Literal::String("Person".to_string())],
+                            element_type: LiteralListElementType::String,
                         }),
                     },
                     alias: "owner_labels".to_string(),
@@ -15997,13 +16166,58 @@ relationships:
                 Projection::Expression {
                     expression: ScalarExpression::PresenceGated {
                         presence_variable: "person".to_string(),
-                        expression: Box::new(ScalarExpression::LiteralList {
+                        expression: Box::new(ScalarExpression::TypedLiteralList {
                             literals: vec![Literal::String("name".to_string())],
+                            element_type: LiteralListElementType::String,
                         }),
                     },
                     alias: "owner_first_key".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_empty_metadata_list_slices_as_typed_lists() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN labels(service)[1..] AS label_tail, \
+                    keys(service)[8..] AS key_tail \
+             ORDER BY keys(service)[8..]",
+        )
+        .expect("empty metadata list slices should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: Vec::new(),
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "label_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: Vec::new(),
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "key_tail".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: Vec::new(),
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         );
     }
 
@@ -16063,6 +16277,109 @@ relationships:
                 nulls: None,
             }]
         );
+    }
+
+    #[test]
+    fn compiles_static_list_tail_function() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE head(tail(keys(service))) = 'tier' \
+               AND size(tail(labels(service))) = 0 \
+               AND isEmpty(tail(labels(service))) \
+             RETURN tail(keys(service)) AS service_key_tail, \
+                    tail(labels(service)) AS label_tail, \
+                    tail(['prod', 'critical']) AS literal_tail, \
+                    tail($tiers) AS parameter_tail, \
+                    head(tail($tiers)) AS parameter_tail_head, \
+                    last(tail(keys(service))) AS service_tail_last, \
+                    size(tail(keys(service))) AS service_tail_size \
+             ORDER BY tail(keys(service))",
+            &parameters,
+        )
+        .expect("static tail() list functions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_key_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: Vec::new(),
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "label_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("critical".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "literal_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("dev".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "parameter_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("dev".to_string())),
+                    alias: "parameter_tail_head".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("tier".to_string())),
+                    alias: "service_tail_last".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "service_tail_size".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![Literal::String("tier".to_string())],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_tail_with_ambiguous_list_element_type() {
+        for cypher in [
+            "MATCH (service:Service) RETURN tail([]) AS values",
+            "MATCH (service:Service) RETURN tail([null]) AS values",
+            "MATCH (service:Service) RETURN tail([1, 'prod']) AS values",
+        ] {
+            let error = compile_cypher(cypher).expect_err("ambiguous tail() should be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("tail() requires a list with a known non-null element type"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

@@ -9371,6 +9371,44 @@ async fn cypher_optional_metadata_list_slices_preserve_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_empty_metadata_list_slices_execute_as_typed_lists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                labels(service)[1..] AS label_tail, \
+                keys(service)[10..] AS key_tail \
+         ORDER BY keys(service)[10..], service",
+    )
+    .await
+    .expect("empty metadata list slices should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("array_resize(make_array(CAST(NULL AS VARCHAR)), 0) AS \"label_tail\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "label_tail": [], "key_tail": []}),
+            json!({"service": "deployments", "label_tail": [], "key_tail": []}),
+            json!({"service": "experiments", "label_tail": [], "key_tail": []}),
+            json!({"service": "legacy-sync", "label_tail": [], "key_tail": []}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_endpoint_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -9424,6 +9462,67 @@ async fn cypher_static_list_endpoint_functions_execute_against_synthetic_sources
             json!({"owner": "Ada Lovelace", "service": "billing-api", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
             json!({"owner": "Grace Hopper", "service": "deployments", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
             json!({"owner": "Katherine Johnson", "service": "experiments", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_list_tail_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("name".to_string()),
+            GraphLiteral::String("tier".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE head(tail(keys(service))) = 'id' \
+           AND size(tail(labels(service))) = 0 \
+           AND isEmpty(tail(labels(service))) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                tail(keys(service)) AS service_key_tail, \
+                tail(labels(service)) AS label_tail, \
+                tail($selected_keys) AS selected_tail, \
+                tail(tail($selected_keys)) AS selected_tail_tail, \
+                head(tail($selected_keys)) AS selected_tail_head, \
+                last(tail(keys(service))) AS service_tail_last, \
+                size(tail(keys(service))) AS service_tail_size \
+         ORDER BY tail(keys(service)), owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static tail() list functions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('id', 'name', 'risk', 'team', 'tier') AS \"service_key_tail\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("array_resize(make_array(CAST(NULL AS VARCHAR)), 0) AS \"label_tail\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_key_tail": ["id", "name", "risk", "team", "tier"], "label_tail": [], "selected_tail": ["tier"], "selected_tail_tail": [], "selected_tail_head": "tier", "service_tail_last": "tier", "service_tail_size": 5}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_key_tail": ["id", "name", "risk", "team", "tier"], "label_tail": [], "selected_tail": ["tier"], "selected_tail_tail": [], "selected_tail_head": "tier", "service_tail_last": "tier", "service_tail_size": 5}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_key_tail": ["id", "name", "risk", "team", "tier"], "label_tail": [], "selected_tail": ["tier"], "selected_tail_tail": [], "selected_tail_head": "tier", "service_tail_last": "tier", "service_tail_size": 5}),
         ]
     );
 }

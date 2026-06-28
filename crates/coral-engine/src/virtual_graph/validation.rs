@@ -5,9 +5,9 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
-    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    GraphUnionOuterProjectionItem, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
 };
@@ -1135,7 +1135,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Property(property) => {
                 variables.insert(property.variable.as_str());
             }
-            ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => {}
+            ScalarExpression::Literal(_)
+            | ScalarExpression::LiteralList { .. }
+            | ScalarExpression::TypedLiteralList { .. } => {}
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
@@ -1603,7 +1605,9 @@ impl<'a> GraphPlanValidator<'a> {
                 optional_variables,
                 format!("{path}.variable"),
             ),
-            ScalarExpression::Literal(_) | ScalarExpression::LiteralList { .. } => Ok(()),
+            ScalarExpression::Literal(_)
+            | ScalarExpression::LiteralList { .. }
+            | ScalarExpression::TypedLiteralList { .. } => Ok(()),
             ScalarExpression::Predicate(predicate) => {
                 Self::validate_predicate_expression_not_optional(
                     predicate,
@@ -3747,6 +3751,28 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_typed_literal_list(
+        literals: &[Literal],
+        element_type: LiteralListElementType,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        for literal in literals {
+            let Some(kind) = literal_list_element_kind(literal) else {
+                continue;
+            };
+            if kind != element_type {
+                return Err(Diagnostic::new(
+                    "INVALID_TYPED_LITERAL_LIST",
+                    path,
+                    "typed literal lists require all non-null elements to match the declared element type",
+                )
+                .into_core_error());
+            }
+        }
+        Ok(())
+    }
+
     fn validate_scalar_expression(
         &self,
         expression: &ScalarExpression,
@@ -3766,6 +3792,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Property(_)
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
+            | ScalarExpression::TypedLiteralList { .. }
             | ScalarExpression::Predicate(_)
             | ScalarExpression::CountSubquery { .. }
             | ScalarExpression::Key { .. }
@@ -3805,6 +3832,13 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
             ScalarExpression::LiteralList { literals } => {
                 Self::validate_literal_list_projection(literals, path)?;
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            } => {
+                Self::validate_typed_literal_list(literals, *element_type, path)?;
                 Ok(ScalarType::Other)
             }
             ScalarExpression::Predicate(predicate) => {
@@ -4973,20 +5007,12 @@ fn scalar_type_for_dictionary_data_type(data_type: &str) -> ScalarType {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LiteralListElementKind {
-    String,
-    Integer,
-    Float,
-    Boolean,
-}
-
-fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementKind> {
+fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementType> {
     match literal {
-        Literal::String(_) => Some(LiteralListElementKind::String),
-        Literal::Integer(_) => Some(LiteralListElementKind::Integer),
-        Literal::Float(_) => Some(LiteralListElementKind::Float),
-        Literal::Boolean(_) => Some(LiteralListElementKind::Boolean),
+        Literal::String(_) => Some(LiteralListElementType::String),
+        Literal::Integer(_) => Some(LiteralListElementType::Integer),
+        Literal::Float(_) => Some(LiteralListElementType::Float),
+        Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
         Literal::Null => None,
     }
 }
@@ -5506,6 +5532,45 @@ relationships:
                 "{error:?}"
             );
         }
+    }
+
+    #[test]
+    fn validate_graph_plan_accepts_empty_typed_literal_list_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::TypedLiteralList {
+                literals: Vec::new(),
+                element_type: LiteralListElementType::String,
+            },
+            alias: "values".to_string(),
+        }];
+
+        graph
+            .validate_graph_plan(&plan)
+            .expect("typed empty list expression should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_typed_literal_list_type_mismatches() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression: ScalarExpression::TypedLiteralList {
+                literals: vec![Literal::Integer(1)],
+                element_type: LiteralListElementType::String,
+            },
+            alias: "values".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("typed literal list mismatch should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_TYPED_LITERAL_LIST"),
+            "{error:?}"
+        );
     }
 
     #[test]
