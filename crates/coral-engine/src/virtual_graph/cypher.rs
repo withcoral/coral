@@ -13148,78 +13148,143 @@ fn compile_in_predicate(
             return Ok(predicate);
         }
     }
-    let literals = compile_static_list_in_rhs_literals(
+    let rhs_value = compile_static_list_in_rhs_value(
         rhs,
         format!("{path}.rhs"),
         mode.static_metadata_plan(),
         context,
     )?;
-    if let Some(lhs) =
-        compile_optional_path_length_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
-    {
-        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
-            lhs,
-            operator: ComparisonOperator::In,
-            rhs: ScalarPredicateRhs::List(literals),
-        }));
-    }
-    if let Some(property) =
-        compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
-    {
-        return Ok(PredicateExpression::Comparison(PropertyPredicate {
-            property,
-            operator: ComparisonOperator::In,
-            rhs: PredicateRhs::List(literals),
-        }));
-    }
-    if let Some(plan) = mode.graph_plan() {
-        if let Some(variable) = compile_optional_id_ref(lhs, format!("{path}.lhs"), plan, context)?
-        {
-            return Ok(PredicateExpression::KeyComparison(KeyPredicate {
-                variable,
-                operator: ComparisonOperator::In,
-                rhs: PredicateRhs::List(literals),
-            }));
-        }
-        if let Some(variable) =
-            compile_optional_element_id_ref(lhs, format!("{path}.lhs"), plan, context)?
-        {
-            return Ok(PredicateExpression::ElementIdComparison(
-                ElementIdPredicate {
-                    variable,
-                    operator: ComparisonOperator::In,
-                    rhs: PredicateRhs::List(literals),
-                },
-            ));
-        }
-    }
-    if let Some(lhs) =
-        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
-    {
-        return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
-            lhs,
-            operator: ComparisonOperator::In,
-            rhs: ScalarPredicateRhs::List(literals),
-        }));
+    let presence_variable = rhs_value.presence_variable.clone();
+    let literals = rhs_value.literals;
+    if let Some(predicate) = compile_dynamic_static_list_in_predicate(
+        lhs,
+        &literals,
+        presence_variable.clone(),
+        &path,
+        mode,
+        context,
+    )? {
+        return Ok(predicate);
     }
     if let Some(plan) = mode.static_metadata_plan()
         && contains_type_function(lhs)
     {
         let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
-        return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
-            &literal, &literals, path,
-        )?));
+        return Ok(presence_gate_static_list_in_literal_predicate(
+            evaluate_literal_in_list(&literal, &literals, path)?,
+            presence_variable,
+        ));
     }
     if is_literal_expression(lhs) {
         let literal = compile_literal(lhs, format!("{path}.lhs"), context)?;
-        return Ok(PredicateExpression::Boolean(evaluate_literal_in_list(
-            &literal, &literals, path,
-        )?));
+        return Ok(presence_gate_static_list_in_literal_predicate(
+            evaluate_literal_in_list(&literal, &literals, path)?,
+            presence_variable,
+        ));
     }
     Err(unsupported(
         format!("{path}.lhs"),
         mode.unsupported_in_message(),
     ))
+}
+
+fn compile_dynamic_static_list_in_predicate(
+    lhs: &Expression,
+    literals: &[Literal],
+    presence_variable: Option<String>,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if let Some(lhs) =
+        compile_optional_path_length_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
+        return Ok(Some(presence_gate_optional_static_list_in_predicate(
+            PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs,
+                operator: ComparisonOperator::In,
+                rhs: ScalarPredicateRhs::List(literals.to_vec()),
+            }),
+            presence_variable,
+        )));
+    }
+    if let Some(property) =
+        compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
+    {
+        return Ok(Some(presence_gate_optional_static_list_in_predicate(
+            PredicateExpression::Comparison(PropertyPredicate {
+                property,
+                operator: ComparisonOperator::In,
+                rhs: PredicateRhs::List(literals.to_vec()),
+            }),
+            presence_variable,
+        )));
+    }
+    if let Some(plan) = mode.graph_plan() {
+        if let Some(variable) = compile_optional_id_ref(lhs, format!("{path}.lhs"), plan, context)?
+        {
+            return Ok(Some(presence_gate_optional_static_list_in_predicate(
+                PredicateExpression::KeyComparison(KeyPredicate {
+                    variable,
+                    operator: ComparisonOperator::In,
+                    rhs: PredicateRhs::List(literals.to_vec()),
+                }),
+                presence_variable,
+            )));
+        }
+        if let Some(variable) =
+            compile_optional_element_id_ref(lhs, format!("{path}.lhs"), plan, context)?
+        {
+            return Ok(Some(presence_gate_optional_static_list_in_predicate(
+                PredicateExpression::ElementIdComparison(ElementIdPredicate {
+                    variable,
+                    operator: ComparisonOperator::In,
+                    rhs: PredicateRhs::List(literals.to_vec()),
+                }),
+                presence_variable,
+            )));
+        }
+    }
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
+        return Ok(Some(presence_gate_optional_static_list_in_predicate(
+            PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs,
+                operator: ComparisonOperator::In,
+                rhs: ScalarPredicateRhs::List(literals.to_vec()),
+            }),
+            presence_variable,
+        )));
+    }
+    Ok(None)
+}
+
+fn presence_gate_static_list_in_literal_predicate(
+    matches: bool,
+    presence_variable: Option<String>,
+) -> PredicateExpression {
+    match presence_variable {
+        Some(presence_variable) => presence_gated_boolean_predicate(presence_variable, matches),
+        None => PredicateExpression::Boolean(matches),
+    }
+}
+
+fn presence_gate_optional_static_list_in_predicate(
+    predicate: PredicateExpression,
+    presence_variable: Option<String>,
+) -> PredicateExpression {
+    match presence_variable {
+        Some(presence_variable) => PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::PresenceGated {
+                presence_variable,
+                expression: Box::new(ScalarExpression::Predicate(Box::new(predicate))),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+        }),
+        None => predicate,
+    }
 }
 
 fn compile_property_key_membership_predicate(
@@ -13233,6 +13298,9 @@ fn compile_property_key_membership_predicate(
     let Some(value) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)? else {
         return Ok(None);
     };
+    if !is_literal_expression(lhs) {
+        return Ok(None);
+    }
     let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
     let Literal::String(key) = literal else {
         return Err(unsupported(
@@ -13262,6 +13330,9 @@ fn compile_label_membership_predicate(
     else {
         return Ok(None);
     };
+    if !is_literal_expression(lhs) {
+        return Ok(None);
+    }
     let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
     let Literal::String(candidate) = literal else {
         return Err(unsupported(
@@ -14255,24 +14326,32 @@ fn compile_literal_list(
     }
 }
 
+fn compile_static_list_in_rhs_value(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let Some(value) = compile_optional_static_list_value(expression, path.clone(), plan, context)?
+    else {
+        let literals = compile_literal_list(expression, path, context)?;
+        return Ok(StaticListValue {
+            presence_variable: None,
+            element_type: infer_literal_list_element_type(&literals),
+            literals,
+        });
+    };
+    Ok(value)
+}
+
 fn compile_static_list_in_rhs_literals(
     expression: &Expression,
     path: impl Into<String>,
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<Vec<Literal>, CoreError> {
-    let path = path.into();
-    let Some(value) = compile_optional_static_list_value(expression, path.clone(), plan, context)?
-    else {
-        return compile_literal_list(expression, path, context);
-    };
-    if value.presence_variable.is_some() {
-        return Err(unsupported(
-            path,
-            "IN predicates over optional static list right-hand sides are not supported yet",
-        ));
-    }
-    Ok(value.literals)
+    Ok(compile_static_list_in_rhs_value(expression, path, plan, context)?.literals)
 }
 
 fn compile_literal_list_slice(
@@ -18307,6 +18386,56 @@ relationships:
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_in_rhs_as_presence_gated_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN service.name IN keys(person) AS service_name_is_owner_key",
+        )
+        .expect("optional static list IN RHS should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            }] if alias == "service_name_is_owner_key"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::PresenceGated {
+                            presence_variable,
+                            expression,
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true),
+                        )),
+                    }) if presence_variable == "person"
+                        && matches!(
+                            expression.as_ref(),
+                            ScalarExpression::Predicate(inner)
+                                if matches!(
+                                    inner.as_ref(),
+                                    PredicateExpression::Comparison(PropertyPredicate {
+                                        property: PropertyRef { variable, property },
+                                        operator: ComparisonOperator::In,
+                                        rhs: PredicateRhs::List(literals),
+                                    }) if variable == "service"
+                                        && property == "name"
+                                        && literals == &vec![
+                                        Literal::String("name".to_string()),
+                                        Literal::String("team".to_string()),
+                                    ]
+                                )
+                        )
+                )
+        ));
     }
 
     #[test]

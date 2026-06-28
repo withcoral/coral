@@ -167,10 +167,11 @@ The supported foundation subset is intentionally narrow:
   `tail(...)`, `labels(...)`, and declaration-aware `keys(...)`, folded at
   compile time and preserved as typed list IR in projections, `ORDER BY`,
   `size(...)`, endpoint list functions, static collection predicates, and
-  parenthesized `IN` right-hand sides. Concatenation rejects mixed non-null
-  element types, unknowable projected element types, dynamic operands, and
-  optional RHS `IN` lists until predicate-level nullable-list semantics are
-  represented directly;
+  parenthesized `IN` right-hand sides. Nullable static metadata lists on the
+  right-hand side of `IN` preserve optional-match nulls with the same presence
+  gating used by scalar metadata expressions. Concatenation rejects mixed
+  non-null element types, unknowable projected element types, dynamic operands,
+  and lists from different optional bindings;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal

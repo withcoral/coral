@@ -9461,6 +9461,43 @@ async fn cypher_keys_projection_preserves_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, service.name IN keys(person) AS service_name_is_owner_key \
+         ORDER BY service",
+    )
+    .await
+    .expect("optional static list IN RHS should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CASE WHEN \"n1\".\"id\" IS NULL THEN NULL ELSE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "service_name_is_owner_key": false}),
+            json!({"service": "deployments", "service_name_is_owner_key": false}),
+            json!({"service": "experiments", "service_name_is_owner_key": false}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_label_membership_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
