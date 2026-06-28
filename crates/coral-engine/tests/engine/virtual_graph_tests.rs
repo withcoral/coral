@@ -6732,13 +6732,13 @@ async fn cypher_match_after_optional_match_can_depend_on_optional_binding() {
 }
 
 #[tokio::test]
-async fn cypher_match_after_optional_match_rejects_global_filter_on_optional_binding() {
+async fn cypher_match_after_optional_match_filters_on_optional_binding() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
@@ -6750,11 +6750,19 @@ async fn cypher_match_after_optional_match_rejects_global_filter_on_optional_bin
          ORDER BY service, owner, target",
     )
     .await
-    .expect_err("post-optional WHERE filters over optional bindings should remain rejected");
+    .expect("post-optional WHERE filters over optional bindings should execute");
 
     assert!(
-        error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
-        "{error}"
+        execution.translated_sql().contains(" WHERE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner": "Ada Lovelace", "target": "experiments"}),
+            json!({"service": "deployments", "owner": "Grace Hopper", "target": "experiments"}),
+        ]
     );
 }
 

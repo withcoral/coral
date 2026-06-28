@@ -120,14 +120,15 @@ The supported foundation subset is intentionally narrow:
   lowerer keeps ordinary mandatory joins first when possible, then joins
   optional scopes before a mandatory relationship that is blocked on an
   optional endpoint, so unmatched optional rows are dropped by the following
-  inner join. Global `WHERE` predicates over still-optional bindings remain
-  rejected unless they are placed inside the optional scope. Exact positive
-  optional ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop expansion
-  inside one nullable optional scope. Same-label exact zero-hop optional ranges
-  such as `*0` lower to an identity predicate for newly introduced endpoints
-  when no named path needs optional presence gating; zero-hop optional ranges
-  over endpoints that were already bound are row-preserving and do not add
-  equality filters. Multi-length optional branch expansion remains deferred;
+  inner join. Later global `WHERE` predicates over still-optional bindings
+  lower as ordinary row filters, while predicates attached to the `OPTIONAL
+  MATCH` clause stay inside the nullable join scope. Exact positive optional
+  ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop expansion inside one
+  nullable optional scope. Same-label exact zero-hop optional ranges such as
+  `*0` lower to an identity predicate for newly introduced endpoints when no
+  named path needs optional presence gating; zero-hop optional ranges over
+  endpoints that were already bound are row-preserving and do not add equality
+  filters. Multi-length optional branch expansion remains deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)` and `size(path)` over optional relationships via the
   presence-gated scalar expression IR and compiler-generated internal
