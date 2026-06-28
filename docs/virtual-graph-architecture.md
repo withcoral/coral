@@ -83,6 +83,16 @@ must not inspect source manifests or runtime state. Its output is a
 `GraphPlan`; declaration validation, catalog validation, SQL lowering, and
 execution remain separate layers.
 
+Some `decypher` high-level AST nodes are currently lossy for Cypher constructs
+that Coral supports. Coral keeps these recovery paths narrow and source-backed:
+for `all` / `any` / `none` / `single` collection predicates, the frontend
+recovers the filter variable and collection expression from the lossless CST by
+function span, reparses only the collection expression fragment through
+`decypher`, and then routes it through the normal static-list compiler. This is
+limited to static folded collections and exists so collection predicates remain
+semantically correct without introducing SQL-rendering shortcuts in the
+frontend.
+
 The supported foundation subset is intentionally narrow:
 
 - read-only single-part queries and transparent multi-part `MATCH` queries;
@@ -143,6 +153,10 @@ The supported foundation subset is intentionally narrow:
   `tail(...)`, and optional null preservation for nullable graph bindings;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
+- static `all` / `any` / `none` / `single` collection predicates over literal
+  lists, list parameters, `tail(...)`, `labels(...)`, and declaration-aware
+  `keys(...)`, folded at compile time with Cypher unknown/null behavior and
+  optional-match presence gates preserved;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped

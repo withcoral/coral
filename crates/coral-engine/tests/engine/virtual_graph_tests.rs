@@ -9568,6 +9568,50 @@ async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_static_list_quantifier_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("missing".to_string()),
+            GraphLiteral::String("tier".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE all(key IN keys(service) WHERE key <> 'deprecated') \
+           AND any(key IN tail(keys(service)) WHERE key = 'tier') \
+           AND none(label IN labels(service) WHERE label = 'Team') \
+           AND single(key IN ['name', 'tier', 'risk'] WHERE key STARTS WITH 'r') \
+           AND any(key IN $selected_keys WHERE key IN keys(service)) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                all(key IN keys(service) WHERE key <> 'deprecated') AS keys_declared, \
+                any(label IN labels(service) WHERE label = 'Service') AS has_service_label \
+         ORDER BY owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static list collection predicates should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "keys_declared": true, "has_service_label": true}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "keys_declared": true, "has_service_label": true}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "keys_declared": true, "has_service_label": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

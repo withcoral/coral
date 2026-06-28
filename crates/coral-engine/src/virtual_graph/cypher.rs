@@ -5,8 +5,8 @@ use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
-    ExistsInner, Expression, FunctionInvocation, Literal as CypherLiteral, NumberLiteral,
-    Parameter as CypherParameter, UnaryOperator,
+    ExistsInner, Expression, FilterExpression, FunctionInvocation, Literal as CypherLiteral,
+    NumberLiteral, Parameter as CypherParameter, UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -162,6 +162,36 @@ struct StaticListValue {
     element_type: Option<LiteralListElementType>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CollectionFilterCall {
+    variable: String,
+    collection_source: String,
+    has_predicate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticBooleanOutcome {
+    True,
+    False,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticListQuantifier {
+    All,
+    Any,
+    None,
+    Single,
+}
+
+#[derive(Clone, Copy)]
+struct StaticFilterEvaluation<'a> {
+    variable: &'a str,
+    item: &'a Literal,
+    mode: PredicateCompileMode<'a>,
+    context: &'a CypherCompileContext,
+}
+
 #[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
@@ -185,6 +215,7 @@ struct CypherCompileState {
 #[derive(Debug, Default)]
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), String>,
+    collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
 }
@@ -197,6 +228,7 @@ impl CypherCompileContext {
     ) -> Self {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
+            collection_filter_calls: collect_collection_filter_calls(cypher),
             parameters,
             graph,
         }
@@ -206,6 +238,14 @@ impl CypherCompileContext {
         self.variable_function_arguments
             .get(&(function.span.start, function.span.end))
             .map(String::as_str)
+    }
+
+    fn collection_filter_call(
+        &self,
+        function: &FunctionInvocation,
+    ) -> Option<&CollectionFilterCall> {
+        self.collection_filter_calls
+            .get(&(function.span.start, function.span.end))
     }
 
     fn parameter_value(
@@ -8437,9 +8477,15 @@ fn is_boolean_scalar_expression(expression: &Expression) -> bool {
         | Expression::In { .. }
         | Expression::IsNull { .. }
         | Expression::NodeLabels { .. }
-        | Expression::Exists(_) => true,
+        | Expression::Exists(_)
+        | Expression::All(_)
+        | Expression::Any(_)
+        | Expression::None(_)
+        | Expression::Single(_) => true,
         Expression::FunctionCall(function) => {
-            is_exists_function(function) || is_empty_function(function)
+            is_exists_function(function)
+                || is_empty_function(function)
+                || collection_quantifier_function(function).is_some()
         }
         _ => false,
     }
@@ -8989,6 +9035,156 @@ fn collect_variable_function_arguments(cypher: &str) -> BTreeMap<(usize, usize),
         .collect()
 }
 
+fn collect_collection_filter_calls(cypher: &str) -> BTreeMap<(usize, usize), CollectionFilterCall> {
+    // decypher's high-level AST currently lowers all/any/none/single(...)
+    // filter expressions as normal function calls and drops the collection
+    // expression. Recover the filter header from the lossless CST by span.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
+        .filter_map(|node| collection_filter_call_from_cst(cypher, &node))
+        .collect()
+}
+
+fn collection_filter_call_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), CollectionFilterCall)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let call = parse_collection_filter_call_source(source)?;
+    Some(((start, end), call))
+}
+
+fn parse_collection_filter_call_source(source: &str) -> Option<CollectionFilterCall> {
+    let open = source.find('(')?;
+    let close = source.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let function_name = source.get(..open)?.trim();
+    if !matches!(
+        function_name.to_ascii_lowercase().as_str(),
+        "all" | "any" | "none" | "single"
+    ) {
+        return None;
+    }
+
+    let inner = source.get(open + 1..close)?.trim();
+    let in_index = find_top_level_keyword(inner, "IN")?;
+    let variable = parse_collection_filter_variable(inner.get(..in_index)?.trim())?;
+    let after_in = inner.get(in_index + "IN".len()..)?.trim();
+    let (collection_source, has_predicate) =
+        if let Some(where_index) = find_top_level_keyword(after_in, "WHERE") {
+            (after_in.get(..where_index)?.trim(), true)
+        } else {
+            (after_in, false)
+        };
+    if collection_source.is_empty() {
+        return None;
+    }
+    Some(CollectionFilterCall {
+        variable,
+        collection_source: collection_source.to_string(),
+        has_predicate,
+    })
+}
+
+fn parse_collection_filter_variable(source: &str) -> Option<String> {
+    if source.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = source
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    {
+        return Some(stripped.replace("``", "`"));
+    }
+    source
+        .chars()
+        .all(|character| character == '_' || character.is_ascii_alphanumeric())
+        .then(|| source.to_string())
+}
+
+fn find_top_level_keyword(source: &str, keyword: &str) -> Option<usize> {
+    let keyword_len = keyword.len();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+    let mut index = 0usize;
+
+    while index < source.len() {
+        let rest = source.get(index..)?;
+        let character = rest.chars().next()?;
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('\'') {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('`') {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+
+        if depth == 0
+            && rest.len() >= keyword_len
+            && rest
+                .get(..keyword_len)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(keyword))
+            && keyword_has_boundaries(source, index, keyword_len)
+        {
+            return Some(index);
+        }
+
+        index += character_len;
+    }
+    None
+}
+
+fn keyword_has_boundaries(source: &str, index: usize, keyword_len: usize) -> bool {
+    let before = source
+        .get(..index)
+        .and_then(|prefix| prefix.chars().next_back());
+    let after = source
+        .get(index + keyword_len..)
+        .and_then(|suffix| suffix.chars().next());
+    !before.is_some_and(is_identifier_continue) && !after.is_some_and(is_identifier_continue)
+}
+
+fn is_identifier_continue(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
+}
+
 fn variable_function_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize), String)> {
     let mut variables = node
         .children()
@@ -9138,6 +9334,23 @@ fn is_empty_function(function: &FunctionInvocation) -> bool {
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("isEmpty")
     )
+}
+
+fn collection_quantifier_function(function: &FunctionInvocation) -> Option<StaticListQuantifier> {
+    let [name] = function.name.as_slice() else {
+        return None;
+    };
+    if name.name.eq_ignore_ascii_case("all") {
+        Some(StaticListQuantifier::All)
+    } else if name.name.eq_ignore_ascii_case("any") {
+        Some(StaticListQuantifier::Any)
+    } else if name.name.eq_ignore_ascii_case("none") {
+        Some(StaticListQuantifier::None)
+    } else if name.name.eq_ignore_ascii_case("single") {
+        Some(StaticListQuantifier::Single)
+    } else {
+        None
+    }
 }
 
 fn is_id_function(function: &FunctionInvocation) -> bool {
@@ -9653,6 +9866,14 @@ fn compile_predicate_expression_in_mode(
             Ok(PredicateExpression::ScalarComparison(
                 compile_is_empty_predicate(function, path, mode.static_metadata_plan(), context)?,
             ))
+        }
+        Expression::FunctionCall(function)
+            if collection_quantifier_function(function).is_some() =>
+        {
+            compile_static_list_quantifier_function_predicate(function, path, mode, context)
+        }
+        Expression::All(_) | Expression::Any(_) | Expression::None(_) | Expression::Single(_) => {
+            compile_static_list_quantifier_ast_predicate(expression, path, mode, context)
         }
         Expression::PropertyLookup { .. } => {
             Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -10964,6 +11185,629 @@ fn compile_static_list_comparison_rhs(
             )
         },
     )
+}
+
+fn compile_static_list_value_source(
+    source: &str,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let (expression, fragment_context) =
+        parse_cypher_expression_fragment(source, path.clone(), context)?;
+    compile_optional_static_list_value(&expression, path, plan, &fragment_context)
+}
+
+fn parse_cypher_expression_fragment(
+    source: &str,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<(Expression, CypherCompileContext), CoreError> {
+    let path = path.into();
+    let fragment = format!("RETURN {source} AS __coral_expr");
+    let query = decypher::parse(&fragment).map_err(|error| {
+        Diagnostic::new(
+            "CYPHER_PARSE_ERROR",
+            path.clone(),
+            format!("could not parse collection predicate expression fragment: {error}"),
+        )
+        .into_core_error()
+    })?;
+    let expression = single_return_expression(&query, &path)?.clone();
+    let fragment_context = CypherCompileContext::from_source_with_parameters_and_graph(
+        &fragment,
+        context.parameters.clone(),
+        context.graph.clone(),
+    );
+    Ok((expression, fragment_context))
+}
+
+fn single_return_expression<'a>(query: &'a Query, path: &str) -> Result<&'a Expression, CoreError> {
+    let [
+        QueryBody::SingleQuery(SingleQuery {
+            kind: SingleQueryKind::SinglePart(single),
+        }),
+    ] = query.statements.as_slice()
+    else {
+        return Err(CoreError::internal(format!(
+            "expression fragment at {path} did not parse as a single RETURN query"
+        )));
+    };
+    let SinglePartBody::Return(return_clause) = &single.body else {
+        return Err(CoreError::internal(format!(
+            "expression fragment at {path} did not produce a RETURN clause"
+        )));
+    };
+    let [item] = return_clause.items.as_slice() else {
+        return Err(CoreError::internal(format!(
+            "expression fragment at {path} did not produce exactly one RETURN item"
+        )));
+    };
+    Ok(&item.expression)
+}
+
+fn compile_static_list_quantifier_ast_predicate(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    match expression {
+        Expression::All(filter) => compile_static_list_quantifier_predicate(
+            filter,
+            StaticListQuantifier::All,
+            path,
+            mode,
+            context,
+        ),
+        Expression::Any(filter) => compile_static_list_quantifier_predicate(
+            filter,
+            StaticListQuantifier::Any,
+            path,
+            mode,
+            context,
+        ),
+        Expression::None(filter) => compile_static_list_quantifier_predicate(
+            filter,
+            StaticListQuantifier::None,
+            path,
+            mode,
+            context,
+        ),
+        Expression::Single(filter) => compile_static_list_quantifier_predicate(
+            filter,
+            StaticListQuantifier::Single,
+            path,
+            mode,
+            context,
+        ),
+        _ => Err(CoreError::internal(
+            "static list quantifier AST helper called with non-quantifier expression",
+        )),
+    }
+}
+
+fn compile_static_list_quantifier_predicate(
+    filter: &FilterExpression,
+    quantifier: StaticListQuantifier,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let Some(collection) = compile_optional_static_list_value(
+        &filter.collection,
+        format!("{path}.collection"),
+        mode.static_metadata_plan(),
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.collection"),
+            "collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+        ));
+    };
+    let variable = variable_name(&filter.variable);
+    compile_static_list_quantifier_value_predicate(
+        collection,
+        filter.predicate.as_deref(),
+        &variable,
+        quantifier,
+        path,
+        mode,
+        context,
+    )
+}
+
+fn compile_static_list_quantifier_value_predicate(
+    collection: StaticListValue,
+    predicate: Option<&Expression>,
+    variable: &str,
+    quantifier: StaticListQuantifier,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let outcomes = collection
+        .literals
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let evaluation = StaticFilterEvaluation {
+                variable,
+                item,
+                mode,
+                context,
+            };
+            evaluate_static_filter_predicate(
+                predicate,
+                evaluation,
+                format!("{path}.predicate[{index}]"),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(static_boolean_outcome_predicate(
+        evaluate_static_list_quantifier(quantifier, outcomes.into_iter()),
+        collection.presence_variable.into_iter().collect(),
+    ))
+}
+
+fn compile_static_list_quantifier_function_predicate(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let quantifier = collection_quantifier_function(function).ok_or_else(|| {
+        CoreError::internal("collection quantifier helper called with non-quantifier function")
+    })?;
+    if let [
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter),
+    ] = function.arguments.as_slice()
+    {
+        return compile_static_list_quantifier_predicate(filter, quantifier, path, mode, context);
+    }
+
+    let call = context.collection_filter_call(function).ok_or_else(|| {
+        unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "{}() requires an item IN collection filter expression",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let predicate = if call.has_predicate {
+        let [predicate] = function.arguments.as_slice() else {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "{}() requires exactly one WHERE predicate expression",
+                    qualified_function_name(function)
+                ),
+            ));
+        };
+        Some(predicate)
+    } else {
+        None
+    };
+    let collection = compile_static_list_value_source(
+        &call.collection_source,
+        format!("{path}.collection"),
+        mode.static_metadata_plan(),
+        context,
+    )?
+    .ok_or_else(|| {
+        unsupported(
+            format!("{path}.collection"),
+            "collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+        )
+    })?;
+    compile_static_list_quantifier_value_predicate(
+        collection,
+        predicate,
+        &call.variable,
+        quantifier,
+        path,
+        mode,
+        context,
+    )
+}
+
+fn evaluate_static_filter_predicate(
+    predicate: Option<&Expression>,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    match predicate {
+        Some(predicate) => evaluate_static_filter_predicate_expression(predicate, evaluation, path),
+        None => static_boolean_outcome_from_literal(evaluation.item, path),
+    }
+}
+
+fn evaluate_static_filter_predicate_expression(
+    expression: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            evaluate_static_filter_predicate_expression(inner, evaluation, path)
+        }
+        Expression::BinaryOp {
+            op:
+                op @ (CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor),
+            lhs,
+            rhs,
+            ..
+        } => evaluate_static_filter_boolean_binary(*op, lhs, rhs, evaluation, path),
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            operand,
+            ..
+        } => Ok(static_boolean_not(
+            evaluate_static_filter_predicate_expression(
+                operand,
+                evaluation,
+                format!("{path}.operand"),
+            )?,
+        )),
+        Expression::Comparison { lhs, operators, .. } => {
+            evaluate_static_filter_comparison(lhs, operators.as_slice(), evaluation, path)
+        }
+        Expression::In { lhs, rhs, .. } => {
+            evaluate_static_filter_in_predicate(lhs, rhs, evaluation, path)
+        }
+        Expression::IsNull {
+            operand, negated, ..
+        } => {
+            let literal = compile_static_filter_literal_operand(
+                operand,
+                evaluation,
+                format!("{path}.operand"),
+            )?;
+            let is_null = matches!(literal, Literal::Null);
+            Ok(StaticBooleanOutcome::from_bool(if *negated {
+                !is_null
+            } else {
+                is_null
+            }))
+        }
+        Expression::Literal(CypherLiteral::Boolean(value)) => {
+            Ok(StaticBooleanOutcome::from_bool(*value))
+        }
+        Expression::Variable(variable_ref)
+            if variable_name(variable_ref) == evaluation.variable =>
+        {
+            static_boolean_outcome_from_literal(evaluation.item, path)
+        }
+        _ => Err(unsupported(
+            path,
+            "collection predicate item predicates support the filter variable, literals, parameters, comparisons, IN static lists, IS NULL, and AND/OR/XOR/NOT",
+        )),
+    }
+}
+
+fn evaluate_static_filter_boolean_binary(
+    operator: CypherBinaryOperator,
+    lhs: &Expression,
+    rhs: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    let left = evaluate_static_filter_predicate_expression(lhs, evaluation, format!("{path}.lhs"))?;
+    let right =
+        evaluate_static_filter_predicate_expression(rhs, evaluation, format!("{path}.rhs"))?;
+    match operator {
+        CypherBinaryOperator::And => Ok(static_boolean_and(left, right)),
+        CypherBinaryOperator::Or => Ok(static_boolean_or(left, right)),
+        CypherBinaryOperator::Xor => Ok(static_boolean_xor(left, right)),
+        _ => unreachable!("non-boolean operator reached static filter boolean helper"),
+    }
+}
+
+fn evaluate_static_filter_comparison(
+    lhs: &Expression,
+    operators: &[(CypherComparisonOperator, Box<Expression>)],
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    if operators.is_empty() {
+        return Err(unsupported(
+            path,
+            "collection predicate comparison must include an operator",
+        ));
+    }
+
+    let mut expression = StaticBooleanOutcome::True;
+    let mut current_lhs = lhs;
+    for (index, (operator, rhs)) in operators.iter().enumerate() {
+        let next = evaluate_static_filter_binary_comparison(
+            current_lhs,
+            compile_comparison_operator(*operator),
+            rhs,
+            evaluation,
+            format!("{path}.operators[{index}]"),
+        )?;
+        expression = static_boolean_and(expression, next);
+        current_lhs = rhs;
+    }
+    Ok(expression)
+}
+
+fn evaluate_static_filter_binary_comparison(
+    lhs: &Expression,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    let lhs = compile_static_filter_literal_operand(lhs, evaluation, format!("{path}.lhs"))?;
+    let rhs = compile_static_filter_literal_operand(rhs, evaluation, format!("{path}.rhs"))?;
+    evaluate_static_literal_comparison(&lhs, operator, &rhs, path)
+}
+
+fn evaluate_static_filter_in_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    let literal = compile_static_filter_literal_operand(lhs, evaluation, format!("{path}.lhs"))?;
+    let Some(values) = compile_optional_static_list_value(
+        rhs,
+        format!("{path}.rhs"),
+        evaluation.mode.static_metadata_plan(),
+        evaluation.context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.rhs"),
+            "collection predicate IN right-hand sides require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+        ));
+    };
+    evaluate_static_literal_in_list(&literal, &values.literals, path)
+}
+
+fn compile_static_filter_literal_operand(
+    expression: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_static_filter_literal_operand(inner, evaluation, path)
+        }
+        Expression::Variable(variable_ref)
+            if variable_name(variable_ref) == evaluation.variable =>
+        {
+            Ok(evaluation.item.clone())
+        }
+        Expression::Variable(variable_ref) => Err(unsupported(
+            path,
+            format!(
+                "collection predicate item variable '{}' is not the filter variable '{}'",
+                variable_name(variable_ref),
+                evaluation.variable,
+            ),
+        )),
+        _ => {
+            compile_predicate_literal_in_mode(expression, path, evaluation.mode, evaluation.context)
+        }
+    }
+}
+
+fn evaluate_static_literal_comparison(
+    lhs: &Literal,
+    operator: ComparisonOperator,
+    rhs: &Literal,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    if matches!(lhs, Literal::Null) || matches!(rhs, Literal::Null) {
+        return Ok(StaticBooleanOutcome::Unknown);
+    }
+    evaluate_literal_comparison(lhs, operator, rhs, path).map(StaticBooleanOutcome::from_bool)
+}
+
+fn evaluate_static_literal_in_list(
+    literal: &Literal,
+    literals: &[Literal],
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    if literals.is_empty() {
+        return Ok(StaticBooleanOutcome::False);
+    }
+    if matches!(literal, Literal::Null) {
+        return Ok(StaticBooleanOutcome::Unknown);
+    }
+
+    let mut saw_unknown = false;
+    for candidate in literals {
+        let outcome = evaluate_static_literal_comparison(
+            literal,
+            ComparisonOperator::Equal,
+            candidate,
+            path.clone(),
+        )?;
+        match outcome {
+            StaticBooleanOutcome::True => return Ok(StaticBooleanOutcome::True),
+            StaticBooleanOutcome::False => {}
+            StaticBooleanOutcome::Unknown => saw_unknown = true,
+        }
+    }
+
+    Ok(if saw_unknown {
+        StaticBooleanOutcome::Unknown
+    } else {
+        StaticBooleanOutcome::False
+    })
+}
+
+fn evaluate_static_list_quantifier(
+    quantifier: StaticListQuantifier,
+    outcomes: impl Iterator<Item = StaticBooleanOutcome>,
+) -> StaticBooleanOutcome {
+    let mut true_count = 0usize;
+    let mut saw_unknown = false;
+
+    for outcome in outcomes {
+        match (quantifier, outcome) {
+            (StaticListQuantifier::All, StaticBooleanOutcome::False)
+            | (StaticListQuantifier::None, StaticBooleanOutcome::True) => {
+                return StaticBooleanOutcome::False;
+            }
+            (StaticListQuantifier::Any, StaticBooleanOutcome::True) => {
+                return StaticBooleanOutcome::True;
+            }
+            (StaticListQuantifier::Single, StaticBooleanOutcome::True) => {
+                true_count += 1;
+                if true_count > 1 {
+                    return StaticBooleanOutcome::False;
+                }
+            }
+            (_, StaticBooleanOutcome::Unknown) => saw_unknown = true,
+            _ => {}
+        }
+    }
+
+    match quantifier {
+        StaticListQuantifier::All | StaticListQuantifier::None => {
+            if saw_unknown {
+                StaticBooleanOutcome::Unknown
+            } else {
+                StaticBooleanOutcome::True
+            }
+        }
+        StaticListQuantifier::Any => {
+            if saw_unknown {
+                StaticBooleanOutcome::Unknown
+            } else {
+                StaticBooleanOutcome::False
+            }
+        }
+        StaticListQuantifier::Single => match (true_count, saw_unknown) {
+            (1, false) => StaticBooleanOutcome::True,
+            (_, true) => StaticBooleanOutcome::Unknown,
+            _ => StaticBooleanOutcome::False,
+        },
+    }
+}
+
+fn static_boolean_outcome_predicate(
+    outcome: StaticBooleanOutcome,
+    presence_variables: Vec<String>,
+) -> PredicateExpression {
+    match outcome {
+        StaticBooleanOutcome::True if presence_variables.is_empty() => {
+            PredicateExpression::Boolean(true)
+        }
+        StaticBooleanOutcome::False if presence_variables.is_empty() => {
+            PredicateExpression::Boolean(false)
+        }
+        StaticBooleanOutcome::True => {
+            presence_gated_boolean_predicate_for_variables(presence_variables, true)
+        }
+        StaticBooleanOutcome::False => {
+            presence_gated_boolean_predicate_for_variables(presence_variables, false)
+        }
+        StaticBooleanOutcome::Unknown => unknown_boolean_predicate(),
+    }
+}
+
+fn unknown_boolean_predicate() -> PredicateExpression {
+    PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: ScalarExpression::Literal(Literal::Null),
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+    })
+}
+
+fn static_boolean_outcome_from_literal(
+    literal: &Literal,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    match literal {
+        Literal::Boolean(value) => Ok(StaticBooleanOutcome::from_bool(*value)),
+        Literal::Null => Ok(StaticBooleanOutcome::Unknown),
+        _ => Err(unsupported(
+            path,
+            "collection predicate truthiness requires boolean list elements",
+        )),
+    }
+}
+
+impl StaticBooleanOutcome {
+    fn from_bool(value: bool) -> Self {
+        if value { Self::True } else { Self::False }
+    }
+}
+
+fn static_boolean_not(value: StaticBooleanOutcome) -> StaticBooleanOutcome {
+    match value {
+        StaticBooleanOutcome::True => StaticBooleanOutcome::False,
+        StaticBooleanOutcome::False => StaticBooleanOutcome::True,
+        StaticBooleanOutcome::Unknown => StaticBooleanOutcome::Unknown,
+    }
+}
+
+fn static_boolean_and(
+    left: StaticBooleanOutcome,
+    right: StaticBooleanOutcome,
+) -> StaticBooleanOutcome {
+    match (left, right) {
+        (StaticBooleanOutcome::False, _) | (_, StaticBooleanOutcome::False) => {
+            StaticBooleanOutcome::False
+        }
+        (StaticBooleanOutcome::Unknown, _) | (_, StaticBooleanOutcome::Unknown) => {
+            StaticBooleanOutcome::Unknown
+        }
+        (StaticBooleanOutcome::True, StaticBooleanOutcome::True) => StaticBooleanOutcome::True,
+    }
+}
+
+fn static_boolean_or(
+    left: StaticBooleanOutcome,
+    right: StaticBooleanOutcome,
+) -> StaticBooleanOutcome {
+    match (left, right) {
+        (StaticBooleanOutcome::True, _) | (_, StaticBooleanOutcome::True) => {
+            StaticBooleanOutcome::True
+        }
+        (StaticBooleanOutcome::Unknown, _) | (_, StaticBooleanOutcome::Unknown) => {
+            StaticBooleanOutcome::Unknown
+        }
+        (StaticBooleanOutcome::False, StaticBooleanOutcome::False) => StaticBooleanOutcome::False,
+    }
+}
+
+fn static_boolean_xor(
+    left: StaticBooleanOutcome,
+    right: StaticBooleanOutcome,
+) -> StaticBooleanOutcome {
+    match (left, right) {
+        (StaticBooleanOutcome::Unknown, _) | (_, StaticBooleanOutcome::Unknown) => {
+            StaticBooleanOutcome::Unknown
+        }
+        (StaticBooleanOutcome::True, StaticBooleanOutcome::False)
+        | (StaticBooleanOutcome::False, StaticBooleanOutcome::True) => StaticBooleanOutcome::True,
+        (StaticBooleanOutcome::True, StaticBooleanOutcome::True)
+        | (StaticBooleanOutcome::False, StaticBooleanOutcome::False) => StaticBooleanOutcome::False,
+    }
 }
 
 fn evaluate_static_literal_list_comparison(
@@ -16398,6 +17242,188 @@ relationships:
                 }),
                 right: Box::new(PredicateExpression::Boolean(true)),
             })
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_quantifier_predicates() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "selected_keys".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("missing".to_string()),
+                Literal::String("tier".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE all(key IN keys(service) WHERE key <> 'deprecated') \
+               AND any(key IN tail(keys(service)) WHERE key = 'tier') \
+               AND none(label IN labels(service) WHERE label = 'Team') \
+               AND single(key IN ['name', 'tier', 'risk'] WHERE key STARTS WITH 'r') \
+               AND any(key IN $selected_keys WHERE key IN keys(service)) \
+             RETURN all(key IN keys(service) WHERE key <> 'deprecated') AS all_declared, \
+                    any(label IN labels(service) WHERE label = 'Service') AS has_label",
+            &parameters,
+        )
+        .expect("static list collection predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::And {
+                    left: Box::new(PredicateExpression::And {
+                        left: Box::new(PredicateExpression::And {
+                            left: Box::new(PredicateExpression::Boolean(true)),
+                            right: Box::new(PredicateExpression::Boolean(true)),
+                        }),
+                        right: Box::new(PredicateExpression::Boolean(true)),
+                    }),
+                    right: Box::new(PredicateExpression::Boolean(true)),
+                }),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(Box::new(
+                        PredicateExpression::Boolean(true),
+                    )),
+                    alias: "all_declared".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(Box::new(
+                        PredicateExpression::Boolean(true),
+                    )),
+                    alias: "has_label".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_quantifiers_as_presence_gated_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN all(key IN keys(person) WHERE key <> 'deprecated') AS owner_keys_declared",
+        )
+        .expect("optional static list collection predicate should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Predicate(Box::new(
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::PresenceGated {
+                            presence_variable: "person".to_string(),
+                            expression: Box::new(ScalarExpression::Literal(Literal::Boolean(true))),
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true),
+                        )),
+                    }),
+                )),
+                alias: "owner_keys_declared".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_quantifiers_without_where_and_preserves_unknown() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN all(flag IN [true, true]) AS all_true, \
+                    any(flag IN [false, null]) AS any_unknown, \
+                    none(flag IN [false]) AS none_true, \
+                    single(flag IN [true, null]) AS single_unknown",
+        )
+        .expect("boolean list collection predicates should compile");
+
+        assert_eq!(
+            plan.projections
+                .first()
+                .expect("expected all_true projection"),
+            &Projection::Expression {
+                expression: ScalarExpression::Predicate(Box::new(PredicateExpression::Boolean(
+                    true
+                ))),
+                alias: "all_true".to_string(),
+            }
+        );
+        assert!(matches!(
+            plan.projections
+                .get(1)
+                .expect("expected any_unknown projection"),
+            Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            } if alias == "any_unknown"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Literal(Literal::Null),
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    })
+                )
+        ));
+        assert_eq!(
+            plan.projections
+                .get(2)
+                .expect("expected none_true projection"),
+            &Projection::Expression {
+                expression: ScalarExpression::Predicate(Box::new(PredicateExpression::Boolean(
+                    true
+                ))),
+                alias: "none_true".to_string(),
+            }
+        );
+        assert!(matches!(
+            plan.projections
+                .get(3)
+                .expect("expected single_unknown projection"),
+            Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            } if alias == "single_unknown"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Literal(Literal::Null),
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    })
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_dynamic_list_quantifier_collections() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE any(key IN service.name WHERE key = 'billing-api') \
+             RETURN service.name AS service",
+        )
+        .expect_err("dynamic collection predicates should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list"),
+            "unexpected error: {error}"
         );
     }
 
