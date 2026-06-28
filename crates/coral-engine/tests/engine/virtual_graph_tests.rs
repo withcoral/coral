@@ -10485,6 +10485,47 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehension_cast_maps_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [x IN ['1', '2', null] | toInteger(x)] AS ints, \
+                [x IN ['1.5', '2.25', null] | toFloat(x)] AS floats, \
+                [x IN ['true', 'FALSE', null] | toBoolean(x)] AS booleans, \
+                [x IN ['bad', '3', null] | toIntegerOrNull(x)] AS nullable_ints, \
+                [x IN ['maybe', 'true', null] | toBooleanOrNull(x)] AS nullable_booleans \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("static list comprehension cast maps should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array(1, 2, NULL) AS \"ints\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

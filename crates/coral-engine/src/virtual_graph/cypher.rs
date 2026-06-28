@@ -7222,7 +7222,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -7404,6 +7404,9 @@ fn evaluate_static_map_function(
     {
         return Ok(literal);
     }
+    if let Some(literal) = evaluate_static_map_cast_function(function, &path, evaluation)? {
+        return Ok(literal);
+    }
     if let Some(literal) = evaluate_static_map_numeric_function(function, &path, evaluation)? {
         return Ok(literal);
     }
@@ -7432,6 +7435,41 @@ fn evaluate_static_map_null_or_length_function(
     }
     if is_character_length_function(function) {
         return evaluate_static_map_character_length(function, path.to_string(), evaluation)
+            .map(Some);
+    }
+    Ok(None)
+}
+
+fn evaluate_static_map_cast_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_to_string_function(function) || is_to_string_or_null_function(function) {
+        return evaluate_static_map_to_string(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_to_integer_function(function) {
+        return evaluate_static_map_to_integer(function, path.to_string(), evaluation, false)
+            .map(Some);
+    }
+    if is_to_integer_or_null_function(function) {
+        return evaluate_static_map_to_integer(function, path.to_string(), evaluation, true)
+            .map(Some);
+    }
+    if is_to_float_function(function) {
+        return evaluate_static_map_to_float(function, path.to_string(), evaluation, false)
+            .map(Some);
+    }
+    if is_to_float_or_null_function(function) {
+        return evaluate_static_map_to_float(function, path.to_string(), evaluation, true)
+            .map(Some);
+    }
+    if is_to_boolean_function(function) {
+        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation, false)
+            .map(Some);
+    }
+    if is_to_boolean_or_null_function(function) {
+        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation, true)
             .map(Some);
     }
     Ok(None)
@@ -7882,6 +7920,106 @@ fn evaluate_static_map_to_string(
     })
 }
 
+fn evaluate_static_map_to_integer(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    nullable: bool,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        &function_name,
+    )?;
+    match literal {
+        Literal::Integer(value) => Ok(Literal::Integer(value)),
+        Literal::String(value) => match value.trim().parse::<i64>() {
+            Ok(value) => Ok(Literal::Integer(value)),
+            Err(_) if nullable => Ok(Literal::Null),
+            Err(_) => Err(static_map_cast_error(path, &function_name, "integer")),
+        },
+        Literal::Null => Ok(Literal::Null),
+        _ if nullable => Ok(Literal::Null),
+        _ => Err(static_map_cast_error(path, &function_name, "integer")),
+    }
+}
+
+fn evaluate_static_map_to_float(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    nullable: bool,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        &function_name,
+    )?;
+    let value = match literal {
+        Literal::Integer(value) => Some(StaticNumericLiteral::Integer(value).as_f64()),
+        Literal::Float(value) => Some(value.into_inner()),
+        Literal::String(value) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite()),
+        Literal::Null => return Ok(Literal::Null),
+        Literal::Boolean(_) => None,
+    };
+    match value {
+        Some(value) => Ok(Literal::Float(OrderedFloat(value))),
+        None if nullable => Ok(Literal::Null),
+        None => Err(static_map_cast_error(path, &function_name, "float")),
+    }
+}
+
+fn evaluate_static_map_to_boolean(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    nullable: bool,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        &function_name,
+    )?;
+    let value = match literal {
+        Literal::Boolean(value) => Some(value),
+        Literal::String(value) if value.trim().eq_ignore_ascii_case("true") => Some(true),
+        Literal::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
+        Literal::Null => return Ok(Literal::Null),
+        Literal::Integer(_) | Literal::Float(_) | Literal::String(_) => None,
+    };
+    match value {
+        Some(value) => Ok(Literal::Boolean(value)),
+        None if nullable => Ok(Literal::Null),
+        None => Err(static_map_cast_error(path, &function_name, "boolean")),
+    }
+}
+
+fn static_map_cast_error(
+    path: impl Into<String>,
+    function_name: &str,
+    target_type: &str,
+) -> CoreError {
+    unsupported(
+        path,
+        format!(
+            "{function_name}() in static list comprehension maps cannot cast value to {target_type}"
+        ),
+    )
+}
+
 fn evaluate_static_map_unary_string_function(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -8220,6 +8358,11 @@ fn static_map_function_element_type(
         return Ok(Some(LiteralListElementType::Integer));
     }
     if let Some(element_type) =
+        static_map_cast_function_element_type(function, variable, source_element_type, context)?
+    {
+        return Ok(Some(element_type));
+    }
+    if let Some(element_type) =
         static_map_numeric_function_element_type(function, variable, source_element_type, context)?
     {
         return Ok(Some(element_type));
@@ -8228,6 +8371,34 @@ fn static_map_function_element_type(
         return Ok(Some(LiteralListElementType::String));
     }
     Ok(None)
+}
+
+fn static_map_cast_function_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let element_type = if is_to_string_function(function) || is_to_string_or_null_function(function)
+    {
+        LiteralListElementType::String
+    } else if is_to_integer_function(function) || is_to_integer_or_null_function(function) {
+        LiteralListElementType::Integer
+    } else if is_to_float_function(function) || is_to_float_or_null_function(function) {
+        LiteralListElementType::Float
+    } else if is_to_boolean_function(function) || is_to_boolean_or_null_function(function) {
+        LiteralListElementType::Boolean
+    } else {
+        return Ok(None);
+    };
+    static_map_single_function_argument_element_type(
+        function,
+        variable,
+        source_element_type,
+        context,
+        &qualified_function_name(function),
+    )?;
+    Ok(Some(element_type))
 }
 
 fn static_map_numeric_function_element_type(
@@ -8270,8 +8441,7 @@ fn static_map_numeric_function_element_type(
 }
 
 fn static_map_string_function_returns_string(function: &FunctionInvocation) -> bool {
-    is_to_string_function(function)
-        || is_to_lower_function(function)
+    is_to_lower_function(function)
         || is_to_upper_function(function)
         || is_trim_function(function)
         || is_ltrim_function(function)
@@ -22144,6 +22314,122 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_strict_cast_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN ['1', '2', null] | toInteger(x)] AS ints, \
+                    [x IN ['1.5', '2.25', null] | toFloat(x)] AS floats, \
+                    [x IN ['true', 'FALSE', null] | toBoolean(x)] AS booleans, \
+                    [x IN [1, 2, null] | toString(x)] AS strings",
+        )
+        .expect("static list comprehension strict cast maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(1), Literal::Integer(2), Literal::Null],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "ints".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.5)),
+                            Literal::Float(OrderedFloat(2.25)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "floats".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Boolean(true),
+                            Literal::Boolean(false),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "booleans".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("1".to_string()),
+                            Literal::String("2".to_string()),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "strings".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_nullable_cast_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN ['bad', '3', null] | toIntegerOrNull(x)] AS ints, \
+                    [x IN ['bad', '2.5', null] | toFloatOrNull(x)] AS floats, \
+                    [x IN ['maybe', 'true', null] | toBooleanOrNull(x)] AS booleans, \
+                    [x IN [1, 2, null] | toStringOrNull(x)] AS strings",
+        )
+        .expect("static list comprehension nullable cast maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Null, Literal::Integer(3), Literal::Null],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "ints".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Null,
+                            Literal::Float(OrderedFloat(2.5)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "floats".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Null, Literal::Boolean(true), Literal::Null],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "booleans".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("1".to_string()),
+                            Literal::String("2".to_string()),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "strings".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_static_list_comprehension_numeric_function_maps() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
@@ -22325,6 +22611,19 @@ relationships:
             error
                 .to_string()
                 .contains("static numeric map expressions require numeric operands"),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN ['bad'] | toInteger(x)] AS values",
+        )
+        .expect_err("toInteger() should reject invalid strict casts");
+
+        assert!(
+            error.to_string().contains(
+                "toInteger() in static list comprehension maps cannot cast value to integer"
+            ),
             "{error}"
         );
 
