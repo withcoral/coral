@@ -961,9 +961,9 @@ fn compile_static_alternative_outer_aggregate_item(
         &format!("{path}.return.items[{index}]"),
         None,
         context,
-    )?;
+    );
     let source_expression = match target {
-        AggregateTarget::Property(_) => {
+        Ok(AggregateTarget::Property(_)) => {
             let [argument] = function.arguments.as_slice() else {
                 return Err(unsupported(
                     format!("{path}.return.items[{index}].expression.arguments"),
@@ -972,19 +972,19 @@ fn compile_static_alternative_outer_aggregate_item(
             };
             argument.clone()
         }
-        AggregateTarget::PresenceGatedProperty { .. } => {
+        Ok(AggregateTarget::PresenceGatedProperty { .. }) => {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression.arguments"),
                 "pattern alternatives do not support optional relationship endpoint property aggregates yet",
             ));
         }
-        AggregateTarget::Expression(_) => {
+        Ok(AggregateTarget::Expression(_)) => {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression.arguments"),
                 "pattern alternatives do not support aggregate expression targets yet",
             ));
         }
-        AggregateTarget::VariableKey { variable } => {
+        Ok(AggregateTarget::VariableKey { variable }) => {
             if function_kind != AggregateFunction::Count {
                 return Err(unsupported(
                     format!("{path}.return.items[{index}].expression.arguments"),
@@ -997,12 +997,17 @@ fn compile_static_alternative_outer_aggregate_item(
                 graph_presence_function_expression_for_variable(&variable, function)
             }
         }
-        AggregateTarget::PresenceGatedVariableKey { .. } => {
+        Ok(AggregateTarget::PresenceGatedVariableKey { .. }) => {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression.arguments"),
                 "pattern alternatives do not support optional relationship endpoint aggregates yet",
             ));
         }
+        Err(error) => compile_static_alternative_outer_aggregate_expression_source(
+            function,
+            &format!("{path}.return.items[{index}]"),
+        )?
+        .ok_or(error)?,
     };
     Ok(Some(StaticAlternativeOuterProjectionItem::Aggregate {
         function: function_kind,
@@ -1014,6 +1019,242 @@ fn compile_static_alternative_outer_aggregate_item(
             variable_name,
         ),
     }))
+}
+
+fn compile_static_alternative_outer_aggregate_expression_source(
+    function: &FunctionInvocation,
+    path: &str,
+) -> Result<Option<Expression>, CoreError> {
+    let [argument] = function.arguments.as_slice() else {
+        return Ok(None);
+    };
+    if !is_static_alternative_aggregate_scalar_source(argument) {
+        return Ok(None);
+    }
+    if expression_contains_aggregate(argument) || expression_contains_subquery(argument) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            "pattern alternatives do not support nested aggregates or correlated subqueries inside aggregate expression targets",
+        ));
+    }
+    Ok(Some(argument.clone()))
+}
+
+fn is_static_alternative_aggregate_scalar_source(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_alternative_aggregate_scalar_source(inner),
+        expression if is_literal_expression(expression) => true,
+        Expression::BinaryOp {
+            op:
+                CypherBinaryOperator::Add
+                | CypherBinaryOperator::Subtract
+                | CypherBinaryOperator::Multiply
+                | CypherBinaryOperator::Divide
+                | CypherBinaryOperator::Modulo
+                | CypherBinaryOperator::Power,
+            ..
+        }
+        | Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        }
+        | Expression::Case(_)
+        | Expression::ListIndex { .. } => true,
+        Expression::FunctionCall(function) => {
+            is_static_alternative_aggregate_scalar_function(function)
+        }
+        _ => false,
+    }
+}
+
+fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation) -> bool {
+    is_id_function(function)
+        || is_element_id_function(function)
+        || is_type_function(function)
+        || is_coalesce_function(function)
+        || is_null_if_function(function)
+        || is_to_string_function(function)
+        || is_to_integer_function(function)
+        || is_to_float_function(function)
+        || is_to_boolean_function(function)
+        || is_to_string_or_null_function(function)
+        || is_to_integer_or_null_function(function)
+        || is_to_float_or_null_function(function)
+        || is_to_boolean_or_null_function(function)
+        || is_to_lower_function(function)
+        || is_to_upper_function(function)
+        || is_trim_function(function)
+        || is_ltrim_function(function)
+        || is_rtrim_function(function)
+        || is_replace_function(function)
+        || is_head_function(function)
+        || is_last_function(function)
+        || is_tail_function(function)
+        || is_character_length_function(function)
+        || is_substring_function(function)
+        || is_left_function(function)
+        || is_right_function(function)
+        || is_reverse_function(function)
+        || is_abs_function(function)
+        || is_ceil_function(function)
+        || is_floor_function(function)
+        || is_round_function(function)
+        || is_sqrt_function(function)
+        || is_sign_function(function)
+        || is_exp_function(function)
+        || is_log_function(function)
+        || is_log10_function(function)
+        || is_pi_function(function)
+        || is_e_function(function)
+        || is_sin_function(function)
+        || is_cos_function(function)
+        || is_tan_function(function)
+        || is_cot_function(function)
+        || is_asin_function(function)
+        || is_acos_function(function)
+        || is_atan_function(function)
+        || is_atan2_function(function)
+        || is_degrees_function(function)
+        || is_radians_function(function)
+        || is_haversin_function(function)
+}
+
+fn expression_contains_subquery(expression: &Expression) -> bool {
+    match expression {
+        Expression::CountStar { .. }
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_)
+        | Expression::Exists(_) => true,
+        Expression::FunctionCall(function) => {
+            function.arguments.iter().any(expression_contains_subquery)
+        }
+        Expression::Literal(literal) => literal_contains_subquery(literal),
+        Expression::PropertyLookup { base, .. }
+        | Expression::IsNull { operand: base, .. }
+        | Expression::UnaryOp { operand: base, .. }
+        | Expression::Parenthesized(base) => expression_contains_subquery(base),
+        Expression::NodeLabels { base, labels, .. } => {
+            expression_contains_subquery(base)
+                || labels.iter().any(label_expression_contains_subquery)
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            expression_contains_subquery(lhs) || expression_contains_subquery(rhs)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            expression_contains_subquery(lhs)
+                || operators
+                    .iter()
+                    .any(|(_, rhs)| expression_contains_subquery(rhs))
+        }
+        Expression::ListIndex { list, index, .. } => {
+            expression_contains_subquery(list) || expression_contains_subquery(index)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            expression_contains_subquery(list)
+                || start.as_deref().is_some_and(expression_contains_subquery)
+                || end.as_deref().is_some_and(expression_contains_subquery)
+        }
+        Expression::Case(case) => case_contains_subquery(case),
+        Expression::ListComprehension(comprehension) => {
+            list_comprehension_contains_subquery(comprehension)
+        }
+        Expression::PatternComprehension(comprehension) => {
+            pattern_comprehension_contains_subquery(comprehension)
+        }
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => filter_expression_contains_subquery(filter),
+        Expression::MapProjection(map) => map_projection_contains_subquery(map),
+        Expression::Variable(_) | Expression::Parameter(_) | Expression::Pattern(_) => false,
+    }
+}
+
+fn literal_contains_subquery(literal: &CypherLiteral) -> bool {
+    match literal {
+        CypherLiteral::List(list) => list.elements.iter().any(expression_contains_subquery),
+        CypherLiteral::Map(map) => map
+            .entries
+            .iter()
+            .any(|(_, value)| expression_contains_subquery(value)),
+        CypherLiteral::Number(_)
+        | CypherLiteral::String(_)
+        | CypherLiteral::Boolean(_)
+        | CypherLiteral::Null => false,
+    }
+}
+
+fn case_contains_subquery(case: &CaseExpression) -> bool {
+    case.scrutinee
+        .as_deref()
+        .is_some_and(expression_contains_subquery)
+        || case.alternatives.iter().any(|alternative| {
+            expression_contains_subquery(&alternative.when)
+                || expression_contains_subquery(&alternative.then)
+        })
+        || case
+            .default
+            .as_deref()
+            .is_some_and(expression_contains_subquery)
+}
+
+fn list_comprehension_contains_subquery(
+    comprehension: &decypher::ast::expr::ListComprehension,
+) -> bool {
+    comprehension
+        .filter
+        .as_deref()
+        .is_some_and(expression_contains_subquery)
+        || comprehension
+            .map
+            .as_ref()
+            .is_some_and(expression_contains_subquery)
+}
+
+fn pattern_comprehension_contains_subquery(
+    comprehension: &decypher::ast::expr::PatternComprehension,
+) -> bool {
+    comprehension
+        .where_clause
+        .as_ref()
+        .is_some_and(expression_contains_subquery)
+        || expression_contains_subquery(&comprehension.map)
+}
+
+fn filter_expression_contains_subquery(filter: &decypher::ast::expr::FilterExpression) -> bool {
+    expression_contains_subquery(&filter.collection)
+        || filter
+            .predicate
+            .as_deref()
+            .is_some_and(expression_contains_subquery)
+}
+
+fn map_projection_contains_subquery(map: &decypher::ast::expr::MapProjection) -> bool {
+    map.items.iter().any(|item| match item {
+        decypher::ast::expr::MapProjectionItem::Literal { value, .. } => {
+            expression_contains_subquery(value)
+        }
+        decypher::ast::expr::MapProjectionItem::AllProperties { .. }
+        | decypher::ast::expr::MapProjectionItem::PropertyLookup { .. } => false,
+    })
+}
+
+fn label_expression_contains_subquery(expression: &LabelExpression) -> bool {
+    match expression {
+        LabelExpression::Dynamic {
+            expression: dynamic,
+            ..
+        } => expression_contains_subquery(dynamic),
+        LabelExpression::Or { lhs, rhs, .. } | LabelExpression::And { lhs, rhs, .. } => {
+            label_expression_contains_subquery(lhs) || label_expression_contains_subquery(rhs)
+        }
+        LabelExpression::Not { inner, .. } | LabelExpression::Group { inner, .. } => {
+            label_expression_contains_subquery(inner)
+        }
+        LabelExpression::Static(_) => false,
+    }
 }
 
 fn graph_identity_function_expression_for_variable(
@@ -18734,6 +18975,101 @@ relationships:
                 direction: OrderDirection::Descending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_aggregate_expression_targets() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, \
+                    collect(DISTINCT coalesce(service.tier, 'unknown')) AS tiers, \
+                    count(coalesce(service.tier, 'unknown')) AS tier_count, \
+                    sum(service.risk + 1) AS adjusted_risk \
+             ORDER BY sum(service.risk + 1) DESC, name",
+        )
+        .expect("aggregate expression targets should compile as outer union aggregates");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec![
+                "name".to_string(),
+                "__coral_agg_1".to_string(),
+                "__coral_agg_2".to_string(),
+                "__coral_agg_3".to_string(),
+            ]
+        );
+        assert!(matches!(
+            union.first.projections.get(1),
+            Some(Projection::Expression {
+                expression: ScalarExpression::Coalesce { .. },
+                alias,
+            }) if alias == "__coral_agg_1"
+        ));
+        assert!(matches!(
+            union.first.projections.get(3),
+            Some(Projection::Expression {
+                expression: ScalarExpression::Arithmetic { .. },
+                alias,
+            }) if alias == "__coral_agg_3"
+        ));
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "name".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: true,
+                        alias: "tiers".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Count,
+                        source: "__coral_agg_2".to_string(),
+                        distinct: false,
+                        alias: "tier_count".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Sum,
+                        source: "__coral_agg_3".to_string(),
+                        distinct: false,
+                        alias: "adjusted_risk".to_string(),
+                    },
+                ],
+                group_by: vec!["name".to_string()],
+            })
+        );
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("adjusted_risk".to_string()),
+                    direction: OrderDirection::Descending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("name".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_static_label_alternatives_with_aggregate_expression_subqueries() {
+        assert_unsupported(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN collect(CASE \
+                      WHEN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } THEN service.name \
+                      ELSE 'none' \
+                    END) AS services",
         );
     }
 

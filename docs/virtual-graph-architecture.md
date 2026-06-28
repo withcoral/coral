@@ -264,7 +264,9 @@ The supported foundation subset is intentionally narrow:
   expression targets such as `collect(coalesce(n.tier, 'unknown'))`,
   `count(coalesce(n.tier, 'unknown'))`, and `sum(n.risk + 1)` lower through
   the same scalar-expression renderer; correlated scalar subqueries are still
-  rejected inside aggregate targets. GQL aggregate aliases include
+  rejected inside aggregate targets. Static pattern-alternative rewrites project
+  aggregate expression targets as hidden per-branch aliases, then apply the
+  aggregate over those aliases after `UNION ALL`. GQL aggregate aliases include
   `collect_list`, `stdev_samp`, and `stdev_pop`; numeric property aggregates,
   property and identity `ORDER BY`, direct aggregate `ORDER BY` expressions
   that match

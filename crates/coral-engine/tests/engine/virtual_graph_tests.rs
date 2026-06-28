@@ -707,6 +707,59 @@ async fn cypher_static_node_label_alternatives_numeric_aggregates_after_union() 
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_aggregate_expressions_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, \
+                collect(DISTINCT coalesce(service.tier, 'unknown')) AS tiers, \
+                count(coalesce(service.tier, 'unknown')) AS tier_count, \
+                sum(service.risk + 1) AS adjusted_risk \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with outer aggregate expressions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(\"n1\".\"tier\", 'unknown') AS \"__coral_agg_1\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUM(\"__coral_agg_3\") AS \"adjusted_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_string_array_field(row, "tiers");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "tiers": ["prod"], "tier_count": 1, "adjusted_risk": 1.9}),
+            json!({"owner": "Grace Hopper", "tiers": ["prod"], "tier_count": 1, "adjusted_risk": 1.5}),
+            json!({"owner": "Katherine Johnson", "tiers": ["dev"], "tier_count": 1, "adjusted_risk": 1.25}),
+            json!({"owner": "analytics", "tiers": ["dev"], "tier_count": 1, "adjusted_risk": 1.25}),
+            json!({"owner": "infra", "tiers": ["prod"], "tier_count": 1, "adjusted_risk": 1.5}),
+            json!({"owner": "platform", "tiers": ["prod", "unknown"], "tier_count": 2, "adjusted_risk": 3.85}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_numeric_aggregate_type_errors_reject_before_sql_execution()
  {
     let temp = TempDir::new().expect("temp dir");
@@ -723,6 +776,30 @@ async fn cypher_static_node_label_alternatives_numeric_aggregate_type_errors_rej
     )
     .await
     .expect_err("sum(string) should fail during graph query validation");
+
+    assert!(
+        error.to_string().contains("requires a numeric property"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_aggregate_expression_type_errors_reject_before_sql_execution()
+ {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, sum(toString(service.risk)) AS bad_sum",
+    )
+    .await
+    .expect_err("sum(toString(...)) should fail during graph query validation");
 
     assert!(
         error.to_string().contains("requires a numeric property"),
