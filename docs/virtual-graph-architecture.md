@@ -116,7 +116,8 @@ The supported foundation subset is intentionally narrow:
 - `IN` predicates over scalar literal lists, including numeric and null members;
 - typed Cypher parameters bound through the explicit parameter API, where
   scalar parameters are accepted in literal positions and list parameters are
-  accepted as `IN` right-hand sides;
+  accepted as `IN` right-hand sides and static metadata-list comparison
+  operands;
 - `id(node)`, `id(keyedRelationship)`, `type(relationship)`, `labels(node)`,
   and `keys(variable)` in projections, with optional relationship and node
   function projections preserving null for unmatched optional bindings;
@@ -124,6 +125,10 @@ The supported foundation subset is intentionally narrow:
   scalar expressions folded from static pattern/declaration metadata, with
   optional endpoint forms using the same presence-gated scalar IR as endpoint
   property and identity expressions;
+- declaration-aware `labels(...) = [...]`, `labels(...) <> [...]`,
+  `keys(...) = [...]`, and `keys(...) <> [...]` predicates folded from static
+  label/property metadata, including reversed literal-list operands and
+  list-parameter operands;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped
@@ -196,7 +201,8 @@ maps, keyless relationship identity operations, non-terminal projection
 boundaries, post-union result processing, scalar projections containing
 multiple correlated `COUNT`/`EXISTS` subqueries, general subqueries with `WITH`,
 `RETURN`, `UNION`, or procedure calls,
-path/list length via `size`, and broad expression semantics.
+path/list length via `size`, ordered metadata-list comparisons, dynamic list
+comparisons, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

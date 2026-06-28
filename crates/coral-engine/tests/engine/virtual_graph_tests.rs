@@ -4923,6 +4923,7 @@ async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources
                   WHEN type(owns) = 'OWNS' \
                     AND service:Service \
                     AND 'Service' IN labels(service) \
+                    AND labels(service) = ['Service'] \
                     AND 'source' IN keys(owns) THEN 'ownership' \
                   ELSE 'other' \
                 END AS category, \
@@ -4931,7 +4932,11 @@ async fn cypher_case_graph_metadata_predicates_execute_against_synthetic_sources
                   WHEN service:Service THEN 'service' \
                   ELSE 'other' \
                 END AS label_bucket, \
-                CASE WHEN type(owns) IN ['OWNS'] THEN 'typed' ELSE 'other' END AS type_bucket \
+                CASE \
+                  WHEN type(owns) IN ['OWNS'] \
+                   AND keys(owns) = ['since', 'source'] THEN 'typed' \
+                  ELSE 'other' \
+                END AS type_bucket \
          ORDER BY service",
     )
     .await
@@ -9167,6 +9172,64 @@ async fn cypher_label_membership_predicates_execute_against_synthetic_sources() 
         execution_to_rows(execution.execution()),
         vec![json!({"services": 4})]
     );
+}
+
+#[tokio::test]
+async fn cypher_metadata_list_equality_predicates_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE labels(service) = ['Service'] \
+           AND ['Team'] <> labels(service) \
+           AND keys(service) = ['active', 'id', 'name', 'risk', 'team', 'tier'] \
+           AND ['since', 'source'] = keys(owns) \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("metadata list equality predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("WHERE (((TRUE AND TRUE) AND TRUE) AND TRUE)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+        ]
+    );
+
+    let no_rows = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE labels(service) = ['Team'] \
+            OR keys(service) = ['name'] \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("non-matching metadata list equality predicates should execute");
+
+    assert!(
+        no_rows.translated_sql().contains("WHERE (FALSE OR FALSE)"),
+        "{}",
+        no_rows.translated_sql()
+    );
+    assert_eq!(execution_to_rows(no_rows.execution()), Vec::<Value>::new());
 }
 
 #[tokio::test]

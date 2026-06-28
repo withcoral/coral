@@ -135,6 +135,20 @@ struct GraphValueRef {
     presence_variable: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MetadataListRef {
+    Labels { value: GraphValueRef, label: String },
+    Keys { value: GraphValueRef },
+}
+
+impl MetadataListRef {
+    fn value(&self) -> &GraphValueRef {
+        match self {
+            Self::Labels { value, .. } | Self::Keys { value } => value,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
@@ -9685,6 +9699,15 @@ fn declared_graph_value_property_count(
     value: &GraphValueRef,
     path: &str,
 ) -> Result<usize, CoreError> {
+    declared_graph_value_property_names(graph, plan, value, path).map(|properties| properties.len())
+}
+
+fn declared_graph_value_property_names(
+    graph: &Declaration,
+    plan: &GraphPlan,
+    value: &GraphValueRef,
+    path: &str,
+) -> Result<Vec<String>, CoreError> {
     if let Some(node) = plan
         .nodes
         .iter()
@@ -9694,12 +9717,12 @@ fn declared_graph_value_property_count(
             unsupported(
                 path.to_string(),
                 format!(
-                    "isEmpty(keys(...)) could not resolve node label '{}'",
+                    "keys() metadata expression could not resolve node label '{}'",
                     node.label
                 ),
             )
         })?;
-        return Ok(mapping.properties.len());
+        return Ok(mapping.properties.keys().cloned().collect());
     }
 
     let relationship = plan
@@ -9710,7 +9733,7 @@ fn declared_graph_value_property_count(
             unsupported(
                 path.to_string(),
                 format!(
-                    "isEmpty(keys(...)) argument '{}' is not a bound graph variable",
+                    "keys() metadata expression argument '{}' is not a bound graph variable",
                     value.variable
                 ),
             )
@@ -9722,7 +9745,7 @@ fn declared_graph_value_property_count(
         .collect::<BTreeMap<_, _>>();
     let mapping =
         return_star_relationship_mapping(graph, relationship, &node_labels_by_variable, path)?;
-    Ok(mapping.properties.len())
+    Ok(mapping.properties.keys().cloned().collect())
 }
 
 fn optional_graph_variable_presence_variable(
@@ -10200,6 +10223,12 @@ fn compile_binary_comparison(
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
     let operator = compile_comparison_operator(operator);
+    if let Some(plan) = mode.static_metadata_plan()
+        && let Some(predicate) =
+            compile_optional_metadata_list_comparison(lhs, operator, rhs, &path, plan, context)?
+    {
+        return Ok(predicate);
+    }
     if let Some(property) =
         compile_optional_property_ref(lhs, format!("{path}.lhs"), mode.graph_plan(), context)?
     {
@@ -10280,6 +10309,167 @@ fn compile_binary_comparison(
     }
 
     Err(unsupported(path, mode.unsupported_comparison_message()))
+}
+
+fn compile_optional_metadata_list_comparison(
+    lhs: &Expression,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    path: &str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if let Some(reference) =
+        compile_optional_metadata_list_ref(lhs, format!("{path}.lhs"), plan, context)?
+    {
+        let actual = compile_metadata_list_actual_literals(
+            &reference,
+            context.graph.as_ref(),
+            plan,
+            format!("{path}.lhs"),
+        )?;
+        let expected = compile_metadata_literal_list(rhs, format!("{path}.rhs"), context)?;
+        return Ok(Some(compile_metadata_literal_list_predicate(
+            reference.value(),
+            &actual,
+            operator,
+            &expected,
+            path,
+            plan,
+        )?));
+    }
+    let Some(reference) =
+        compile_optional_metadata_list_ref(rhs, format!("{path}.rhs"), plan, context)?
+    else {
+        return Ok(None);
+    };
+    let actual = compile_metadata_list_actual_literals(
+        &reference,
+        context.graph.as_ref(),
+        plan,
+        format!("{path}.rhs"),
+    )?;
+    let expected = compile_metadata_literal_list(lhs, format!("{path}.lhs"), context)?;
+    Ok(Some(compile_metadata_literal_list_predicate(
+        reference.value(),
+        &actual,
+        operator,
+        &expected,
+        path,
+        plan,
+    )?))
+}
+
+fn compile_optional_metadata_list_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<MetadataListRef>, CoreError> {
+    let path = path.into();
+    if let Some((value, label)) =
+        compile_optional_labels_ref(expression, path.clone(), plan, context)?
+    {
+        return Ok(Some(MetadataListRef::Labels { value, label }));
+    }
+    Ok(compile_optional_keys_ref(expression, path, plan, context)?
+        .map(|value| MetadataListRef::Keys { value }))
+}
+
+fn compile_metadata_list_actual_literals(
+    reference: &MetadataListRef,
+    graph: Option<&Declaration>,
+    plan: &GraphPlan,
+    path: impl Into<String>,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    match reference {
+        MetadataListRef::Labels { label, .. } => Ok(vec![Literal::String(label.clone())]),
+        MetadataListRef::Keys { value } => {
+            let graph = graph.ok_or_else(|| {
+                unsupported(
+                    path.clone(),
+                    "keys() list predicates require a graph declaration so mapped property keys can be inspected",
+                )
+            })?;
+            declared_graph_value_property_names(graph, plan, value, &path).map(|properties| {
+                properties
+                    .into_iter()
+                    .map(Literal::String)
+                    .collect::<Vec<_>>()
+            })
+        }
+    }
+}
+
+fn compile_metadata_literal_list_predicate(
+    value: &GraphValueRef,
+    actual: &[Literal],
+    operator: ComparisonOperator,
+    expected: &[Literal],
+    path: &str,
+    plan: &GraphPlan,
+) -> Result<PredicateExpression, CoreError> {
+    let matches = evaluate_metadata_literal_list_comparison(actual, operator, expected, path)?;
+    let presence_variable = match value.presence_variable.clone() {
+        Some(variable) => Some(variable),
+        None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+    };
+    Ok(match presence_variable {
+        Some(presence_variable) => presence_gated_boolean_predicate(presence_variable, matches),
+        None => PredicateExpression::Boolean(matches),
+    })
+}
+
+fn evaluate_metadata_literal_list_comparison(
+    actual: &[Literal],
+    operator: ComparisonOperator,
+    expected: &[Literal],
+    path: &str,
+) -> Result<bool, CoreError> {
+    match operator {
+        ComparisonOperator::Equal => Ok(actual == expected),
+        ComparisonOperator::NotEqual => Ok(actual != expected),
+        _ => Err(unsupported(
+            path.to_string(),
+            "metadata list predicates support only = and <>",
+        )),
+    }
+}
+
+fn compile_metadata_literal_list(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_metadata_literal_list(inner, path, context),
+        Expression::Literal(CypherLiteral::List(list)) => list
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(index, expression)| {
+                compile_literal(expression, format!("{path}[{index}]"), context)
+            })
+            .collect(),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::List(values) => Ok(values.clone()),
+                CypherParameterValue::Literal(_) => Err(unsupported(
+                    path,
+                    "metadata list predicates require a literal list or list parameter",
+                )),
+            }
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => compile_literal_list_slice(list, start.as_deref(), end.as_deref(), path, context),
+        _ => Err(unsupported(
+            path,
+            "metadata list predicates require a literal list or list parameter",
+        )),
+    }
 }
 
 fn compile_optional_scalar_binary_comparison(
@@ -15065,6 +15255,150 @@ relationships:
     }
 
     #[test]
+    fn compiles_metadata_list_equality_predicates_as_boolean_constants() {
+        let graph = star_test_graph();
+        let label_match = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE labels(service) = ['Service'] \
+             RETURN service.name AS service",
+        )
+        .expect("labels() list equality should compile");
+        let label_mismatch = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE ['Team'] <> labels(service) \
+             RETURN service.name AS service",
+        )
+        .expect("reversed labels() list inequality should compile");
+        let keys_match = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE keys(service) = ['name', 'tier'] \
+               AND ['since', 'source'] = keys(owns) \
+             RETURN person.name AS owner",
+        )
+        .expect("keys() list equality should compile");
+        let parameters = BTreeMap::from([
+            (
+                "service_labels".to_string(),
+                CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
+            ),
+            (
+                "service_keys".to_string(),
+                CypherParameterValue::List(vec![
+                    Literal::String("name".to_string()),
+                    Literal::String("tier".to_string()),
+                ]),
+            ),
+        ]);
+        let parameterized = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE labels(service) = $service_labels \
+               AND keys(service) = $service_keys \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect("metadata list equality should support list parameters");
+
+        assert_eq!(
+            label_match.predicate,
+            Some(PredicateExpression::Boolean(true))
+        );
+        assert_eq!(
+            label_mismatch.predicate,
+            Some(PredicateExpression::Boolean(true))
+        );
+        assert_eq!(
+            keys_match.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+        assert_eq!(
+            parameterized.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_optional_metadata_list_equality_as_presence_gated_scalar_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN labels(person) = ['Person'] AS owner_has_person_label, \
+                    keys(person) = ['name', 'team'] AS owner_has_person_keys",
+        )
+        .expect("optional metadata list equality scalar projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(Box::new(
+                        PredicateExpression::ScalarComparison(ScalarPredicate {
+                            lhs: ScalarExpression::PresenceGated {
+                                presence_variable: "person".to_string(),
+                                expression: Box::new(ScalarExpression::Literal(Literal::Boolean(
+                                    true
+                                ),)),
+                            },
+                            operator: ComparisonOperator::Equal,
+                            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                                Literal::Boolean(true),
+                            )),
+                        }),
+                    )),
+                    alias: "owner_has_person_label".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(Box::new(
+                        PredicateExpression::ScalarComparison(ScalarPredicate {
+                            lhs: ScalarExpression::PresenceGated {
+                                presence_variable: "person".to_string(),
+                                expression: Box::new(ScalarExpression::Literal(Literal::Boolean(
+                                    true
+                                ),)),
+                            },
+                            operator: ComparisonOperator::Equal,
+                            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                                Literal::Boolean(true),
+                            )),
+                        }),
+                    )),
+                    alias: "owner_has_person_keys".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_ordered_metadata_list_predicates() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE labels(service) > ['Service'] \
+             RETURN service.name AS service",
+        )
+        .expect_err("ordered metadata list predicates should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("metadata list predicates support only = and <>"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn compiles_parameterized_label_membership_predicates() {
         let parameters = BTreeMap::from([(
             "label".to_string(),
@@ -17094,12 +17428,18 @@ relationships:
 
     #[test]
     fn compiles_graph_metadata_predicates_inside_searched_case_predicates() {
-        let plan = compile_cypher(
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
             "MATCH (service:Service) \
              MATCH (person:Person)-[owns:OWNS]->(service) \
              RETURN CASE \
                       WHEN type(owns) = 'OWNS' THEN 'relationship' \
-                      WHEN service:Service AND 'Service' IN labels(service) AND 'source' IN keys(owns) THEN 'metadata' \
+                      WHEN service:Service \
+                        AND 'Service' IN labels(service) \
+                        AND labels(service) = ['Service'] \
+                        AND 'source' IN keys(owns) \
+                        AND keys(owns) = ['since', 'source'] THEN 'metadata' \
                       ELSE 'unknown' \
                     END AS state \
              ORDER BY CASE WHEN type(owns) IN ['OWNS'] THEN 0 ELSE 1 END",
