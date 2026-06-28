@@ -275,14 +275,15 @@ The supported foundation subset is intentionally narrow:
 - parser-accepted static list comprehensions such as `[k IN keys(node)]`,
   `[l IN labels(node)]`, `[x IN ['a', 'b']]`, `[x IN $list]`, and
   `[x IN split('a,b', ',')]`, folded as typed static-list expressions in
-  projections, `ORDER BY`, and `IN` right-hand sides. Unsliced list-valued
-  `coalesce(...)` and `CASE` sources reuse the same branch-local static-list
-  reducers as membership and collection predicates: each branch is folded
-  through the comprehension filter/map evaluator, then rendered as a typed
-  list-valued `COALESCE` or scalar `CASE` expression with existing
-  optional-presence gates intact. When such a conditional comprehension appears
-  on the right-hand side of `IN`, the frontend renders branch-local boolean
-  membership expressions instead of emitting SQL `IN` over a dynamic array
+  projections, `ORDER BY`, exact/ordered static-list comparisons, and `IN`
+  right-hand sides. Unsliced list-valued `coalesce(...)` and `CASE` sources
+  reuse the same branch-local static-list reducers as membership and collection
+  predicates: each branch is folded through the comprehension filter/map
+  evaluator, then rendered as a typed list-valued `COALESCE` or scalar `CASE`
+  expression with existing optional-presence gates intact. When such a
+  conditional comprehension appears inside list comparison or on the right-hand
+  side of `IN`, the frontend renders branch-local boolean comparison or
+  membership expressions instead of emitting SQL predicates over a dynamic array
   expression. Static `WHERE` filters over the item variable, literals, scalar
   parameters,
   comparisons, string predicates (`STARTS WITH`, `ENDS WITH`, `CONTAINS`, and

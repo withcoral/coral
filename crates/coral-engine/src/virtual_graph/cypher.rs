@@ -19313,9 +19313,29 @@ fn compile_optional_static_list_comparison(
     {
         return Ok(Some(predicate));
     }
+    if !is_parameter_expression(lhs)
+        && let Some(predicate) = compile_optional_static_list_comprehension_comparison(
+            lhs, operator, rhs, path, plan, context,
+        )?
+    {
+        return Ok(Some(predicate));
+    }
     if !is_parameter_expression(rhs) && is_branch_local_static_list_slice_expression(rhs) {
         let inverted_operator = invert_comparison_operator(operator, format!("{path}.operator"))?;
         if let Some(predicate) = compile_optional_static_list_slice_comparison(
+            rhs,
+            inverted_operator,
+            lhs,
+            path,
+            plan,
+            context,
+        )? {
+            return Ok(Some(predicate));
+        }
+    }
+    if !is_parameter_expression(rhs) && is_static_list_comprehension_expression(rhs) {
+        let inverted_operator = invert_comparison_operator(operator, format!("{path}.operator"))?;
+        if let Some(predicate) = compile_optional_static_list_comprehension_comparison(
             rhs,
             inverted_operator,
             lhs,
@@ -19351,6 +19371,217 @@ fn compile_optional_static_list_comparison(
         &expected,
         path,
     )?))
+}
+
+fn is_static_list_comprehension_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_list_comprehension_expression(inner),
+        Expression::ListComprehension(_) => true,
+        _ => false,
+    }
+}
+
+fn compile_optional_static_list_comprehension_comparison(
+    actual: &Expression,
+    operator: ComparisonOperator,
+    expected: &Expression,
+    path: &str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if !is_static_list_comprehension_expression(actual) {
+        return Ok(None);
+    }
+    let expected =
+        compile_static_list_comparison_rhs(expected, format!("{path}.expected"), plan, context)?;
+    let Some(expression) = compile_optional_static_list_comprehension_comparison_scalar_expression(
+        actual,
+        operator,
+        &expected,
+        path,
+        PredicateCompileMode::CaseWhen { plan: Some(plan) },
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(boolean_scalar_expression_predicate(expression)))
+}
+
+fn compile_optional_static_list_comprehension_comparison_scalar_expression(
+    actual: &Expression,
+    operator: ComparisonOperator,
+    expected: &StaticListValue,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match actual {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_comprehension_comparison_scalar_expression(
+                inner, operator, expected, path, mode, context,
+            )
+        }
+        Expression::ListComprehension(comprehension) => {
+            let source = context
+                .list_comprehension_source(comprehension)
+                .ok_or_else(|| {
+                    unsupported(
+                        path.clone(),
+                        "list comprehensions require a recoverable `variable IN collection` source",
+                    )
+                })?;
+            let variable = variable_name(&comprehension.variable);
+            if source.variable != variable {
+                return Err(unsupported(
+                    path,
+                    "list comprehension variable recovery did not match the parsed AST",
+                ));
+            }
+            let map = if source.has_map {
+                Some(comprehension.map.as_ref().ok_or_else(|| {
+                    unsupported(
+                        format!("{path}.map"),
+                        "mapped static list comprehensions require a recoverable map expression",
+                    )
+                })?)
+            } else {
+                None
+            };
+            let recovered_filter =
+                recover_static_list_comprehension_filter(comprehension, source, &path, context)?;
+            let filter = comprehension
+                .filter
+                .as_deref()
+                .or_else(|| recovered_filter.as_ref().map(|(filter, _)| filter));
+            let filter_context = recovered_filter
+                .as_ref()
+                .map_or(context, |(_, filter_context)| filter_context);
+            let (collection_expression, collection_context) = parse_cypher_expression_fragment(
+                &source.collection_source,
+                format!("{path}.collection"),
+                context,
+            )?;
+            let evaluation = StaticListComprehensionEvaluation {
+                variable: &variable,
+                filter,
+                filter_context,
+                map,
+                map_context: context,
+                mode,
+            };
+            let comparison = StaticListSliceComparison {
+                bounds: StaticListSliceBounds {
+                    start: None,
+                    end: None,
+                },
+                operator,
+                expected,
+            };
+            compile_optional_static_list_comprehension_source_comparison_scalar_expression(
+                &collection_expression,
+                &comparison,
+                path,
+                evaluation,
+                &collection_context,
+                context,
+            )
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_static_list_comprehension_source_comparison_scalar_expression(
+    collection: &Expression,
+    comparison: &StaticListSliceComparison<'_>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    collection_context: &CypherCompileContext,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match collection {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_comprehension_source_comparison_scalar_expression(
+                inner,
+                comparison,
+                path,
+                evaluation,
+                collection_context,
+                context,
+            )
+        }
+        Expression::Case(case) => {
+            let Some(parts) = compile_optional_static_list_case_parts(
+                case,
+                format!("{path}.collection"),
+                evaluation.mode,
+                collection_context,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(ScalarExpression::Case {
+                alternatives: parts
+                    .alternatives
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (when, result))| {
+                        let result = static_list_case_result_comprehension_result(
+                            result,
+                            format!("{path}.collection.alternatives[{index}].then"),
+                            evaluation,
+                        )?;
+                        Ok(ScalarCaseAlternative {
+                            when,
+                            then: static_list_case_result_slice_comparison_scalar_expression(
+                                result,
+                                comparison,
+                                format!("{path}.collection.alternatives[{index}].then"),
+                                context,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CoreError>>()?,
+                else_expression: parts
+                    .default
+                    .map(|result| {
+                        let result = static_list_case_result_comprehension_result(
+                            result,
+                            format!("{path}.collection.default"),
+                            evaluation,
+                        )?;
+                        static_list_case_result_slice_comparison_scalar_expression(
+                            result,
+                            comparison,
+                            format!("{path}.collection.default"),
+                            context,
+                        )
+                        .map(Box::new)
+                    })
+                    .transpose()?,
+            }))
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            let Some(coalesce) = compile_optional_static_list_coalesce_arguments(
+                function,
+                format!("{path}.collection"),
+                evaluation.mode.static_metadata_plan(),
+                collection_context,
+            )?
+            else {
+                return Ok(None);
+            };
+            let coalesce =
+                static_list_coalesce_comprehension_arguments(coalesce, path.clone(), evaluation)?;
+            static_list_coalesce_slice_comparison_scalar_expression(
+                coalesce, comparison, path, context,
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn compile_optional_static_list_slice_comparison(
@@ -29732,6 +29963,52 @@ relationships:
                 && case_alias == "case_has_team_key"
                 && is_case_boolean_scalar_predicate(coalesced_predicate.as_ref())
                 && is_case_boolean_scalar_predicate(case_predicate.as_ref())
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_comparisons() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN [k IN coalesce(keys(person), ['fallback']) | k] = ['name', 'team'] AS coalesced_matches_keys, \
+                    ['fallback'] = [k IN coalesce(keys(person), ['fallback']) | k] AS coalesced_is_fallback, \
+                    [k IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END | k] <> [] AS case_non_empty \
+             ORDER BY [k IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END | k] > ['fallback']",
+        )
+        .expect("static list comprehension comparisons should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(coalesced_matches),
+                    alias: coalesced_matches_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(coalesced_fallback),
+                    alias: coalesced_fallback_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(case_non_empty),
+                    alias: case_non_empty_alias,
+                },
+            ] if coalesced_matches_alias == "coalesced_matches_keys"
+                && coalesced_fallback_alias == "coalesced_is_fallback"
+                && case_non_empty_alias == "case_non_empty"
+                && is_case_boolean_scalar_predicate(coalesced_matches.as_ref())
+                && is_case_boolean_scalar_predicate(coalesced_fallback.as_ref())
+                && is_case_boolean_scalar_predicate(case_non_empty.as_ref())
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         ));
     }
 

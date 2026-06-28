@@ -12518,6 +12518,44 @@ async fn cypher_static_list_comprehensions_as_in_rhs_execute() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehension_comparisons_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                [k IN coalesce(keys(person), ['fallback']) | k] = ['name', 'team'] AS owner_keys_match, \
+                ['fallback'] = [k IN coalesce(keys(person), ['fallback']) | k] AS fallback_keys, \
+                [k IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END | k] > ['fallback'] AS keys_after_fallback \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list comprehension comparisons should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_keys_match": true, "fallback_keys": false, "keys_after_fallback": true}),
+            json!({"service": "deployments", "owner_keys_match": true, "fallback_keys": false, "keys_after_fallback": true}),
+            json!({"service": "experiments", "owner_keys_match": true, "fallback_keys": false, "keys_after_fallback": true}),
+            json!({"service": "legacy-sync", "owner_keys_match": false, "fallback_keys": true, "keys_after_fallback": false}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehension_length_maps_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
