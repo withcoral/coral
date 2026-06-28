@@ -7030,13 +7030,16 @@ fn compile_optional_static_list_comprehension_value(
             "list comprehension variable recovery did not match the parsed AST",
         ));
     }
-    if source.has_map {
-        validate_static_list_comprehension_identity_map(
-            comprehension.map.as_ref(),
-            &variable,
-            format!("{path}.map"),
-        )?;
-    }
+    let map = if source.has_map {
+        Some(comprehension.map.as_ref().ok_or_else(|| {
+            unsupported(
+                format!("{path}.map"),
+                "mapped static list comprehensions require a recoverable map expression",
+            )
+        })?)
+    } else {
+        None
+    };
     let Some(collection) = compile_static_list_value_source(
         &source.collection_source,
         format!("{path}.collection"),
@@ -7049,17 +7052,8 @@ fn compile_optional_static_list_comprehension_value(
             "static list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
         ));
     };
-    let recovered_filter = if comprehension.filter.is_none() {
-        source
-            .filter_source
-            .as_deref()
-            .map(|filter_source| {
-                parse_cypher_expression_fragment(filter_source, format!("{path}.filter"), context)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let recovered_filter =
+        recover_static_list_comprehension_filter(comprehension, source, &path, context)?;
     let filter = comprehension
         .filter
         .as_deref()
@@ -7068,35 +7062,54 @@ fn compile_optional_static_list_comprehension_value(
         .as_ref()
         .map_or(context, |(_, filter_context)| filter_context);
 
+    let source_element_type = collection.element_type;
     let literals = collection
         .literals
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            let evaluation = StaticFilterEvaluation {
+            let filter_evaluation = StaticFilterEvaluation {
                 variable: &variable,
                 item,
                 mode: PredicateCompileMode::CaseWhen { plan },
                 context: filter_context,
             };
+            let map_evaluation = StaticFilterEvaluation {
+                variable: &variable,
+                item,
+                mode: PredicateCompileMode::CaseWhen { plan },
+                context,
+            };
             let outcome = match filter {
                 Some(filter) => evaluate_static_filter_predicate_expression(
                     filter,
-                    evaluation,
+                    filter_evaluation,
                     format!("{path}.filter[{index}]"),
                 ),
                 None => Ok(StaticBooleanOutcome::True),
             };
             match outcome {
-                Ok(StaticBooleanOutcome::True) => Some(Ok(item.clone())),
+                Ok(StaticBooleanOutcome::True) => {
+                    Some(evaluate_static_list_comprehension_map_expression(
+                        map,
+                        map_evaluation,
+                        format!("{path}.map[{index}]"),
+                    ))
+                }
                 Ok(StaticBooleanOutcome::False | StaticBooleanOutcome::Unknown) => None,
                 Err(error) => Some(Err(error)),
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let element_type = collection
-        .element_type
-        .or_else(|| infer_literal_list_element_type(&literals));
+    let element_type = match infer_literal_list_element_type(&literals) {
+        Some(element_type) => Some(element_type),
+        None => static_list_comprehension_output_element_type(
+            map,
+            &variable,
+            source_element_type,
+            context,
+        )?,
+    };
     Ok(Some(StaticListValue {
         presence_variable: collection.presence_variable,
         literals,
@@ -7104,28 +7117,348 @@ fn compile_optional_static_list_comprehension_value(
     }))
 }
 
-fn validate_static_list_comprehension_identity_map(
+fn recover_static_list_comprehension_filter(
+    comprehension: &ListComprehension,
+    source: &ListComprehensionSource,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<Option<(Expression, CypherCompileContext)>, CoreError> {
+    if comprehension.filter.is_some() {
+        return Ok(None);
+    }
+    source
+        .filter_source
+        .as_deref()
+        .map(|filter_source| {
+            parse_cypher_expression_fragment(filter_source, format!("{path}.filter"), context)
+        })
+        .transpose()
+}
+
+fn evaluate_static_list_comprehension_map_expression(
     map: Option<&Expression>,
-    variable: &str,
+    evaluation: StaticFilterEvaluation<'_>,
     path: impl Into<String>,
-) -> Result<(), CoreError> {
+) -> Result<Literal, CoreError> {
     let Some(map) = map else {
-        return Ok(());
+        return Ok(evaluation.item.clone());
     };
-    if expression_is_variable_ref(map, variable) {
-        return Ok(());
+    evaluate_static_map_expression(map, evaluation, path)
+}
+
+fn evaluate_static_map_expression(
+    expression: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => evaluate_static_map_expression(inner, evaluation, path),
+        Expression::Variable(variable_ref)
+            if variable_name(variable_ref) == evaluation.variable =>
+        {
+            Ok(evaluation.item.clone())
+        }
+        Expression::Variable(variable_ref) => Err(unsupported(
+            path,
+            format!(
+                "list comprehension map variable '{}' is not the item variable '{}'",
+                variable_name(variable_ref),
+                evaluation.variable,
+            ),
+        )),
+        Expression::Literal(_)
+        | Expression::Parameter(_)
+        | Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        } => compile_literal(expression, path, evaluation.context),
+        Expression::FunctionCall(function) => {
+            evaluate_static_map_function(function, path, evaluation)
+        }
+        _ => Err(unsupported(
+            path,
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), and replace()",
+        )),
+    }
+}
+
+fn evaluate_static_map_function(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    if is_to_string_function(function) {
+        return evaluate_static_map_to_string(function, path, evaluation);
+    }
+    if is_to_lower_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "toLower",
+            str::to_lowercase,
+        );
+    }
+    if is_to_upper_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "toUpper",
+            str::to_uppercase,
+        );
+    }
+    if is_trim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "trim",
+            |value| value.trim().to_string(),
+        );
+    }
+    if is_ltrim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "lTrim",
+            |value| value.trim_start().to_string(),
+        );
+    }
+    if is_rtrim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "rTrim",
+            |value| value.trim_end().to_string(),
+        );
+    }
+    if is_replace_function(function) {
+        return evaluate_static_map_replace(function, path, evaluation);
     }
     Err(unsupported(
         path,
-        "static list comprehensions currently support identity map expressions only",
+        format!(
+            "function '{}' is not supported in static list comprehension map expressions",
+            qualified_function_name(function)
+        ),
     ))
 }
 
-fn expression_is_variable_ref(expression: &Expression, variable: &str) -> bool {
+fn evaluate_static_map_to_string(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal =
+        evaluate_static_map_single_function_argument(function, path, evaluation, "toString")?;
+    Ok(match literal {
+        Literal::String(value) => Literal::String(value),
+        Literal::Integer(value) => Literal::String(value.to_string()),
+        Literal::Float(value) => Literal::String(value.into_inner().to_string()),
+        Literal::Boolean(value) => Literal::String(value.to_string()),
+        Literal::Null => Literal::Null,
+    })
+}
+
+fn evaluate_static_map_unary_string_function(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+    transform: impl FnOnce(&str) -> String,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        function_name,
+    )?;
+    let Some(value) = static_map_string_argument(literal, function_name, path)? else {
+        return Ok(Literal::Null);
+    };
+    Ok(Literal::String(transform(&value)))
+}
+
+fn evaluate_static_map_single_function_argument(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [argument] => {
+            evaluate_static_map_expression(argument, evaluation, format!("{path}.arguments[0]"))
+        }
+        [] => {
+            let variable = evaluation
+                .context
+                .variable_function_argument(function)
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("{path}.arguments"),
+                        format!(
+                            "{function_name}() in static list comprehension maps requires exactly one argument"
+                        ),
+                    )
+                })?;
+            if variable != evaluation.variable {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    format!(
+                        "{function_name}() argument '{variable}' is not the item variable '{}'",
+                        evaluation.variable
+                    ),
+                ));
+            }
+            Ok(evaluation.item.clone())
+        }
+        _ => Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "{function_name}() in static list comprehension maps requires exactly one argument"
+            ),
+        )),
+    }
+}
+
+fn evaluate_static_map_replace(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let (expression, search, replacement) = match function.arguments.as_slice() {
+        [expression, search, replacement] => (
+            evaluate_static_map_expression(expression, evaluation, format!("{path}.arguments[0]"))?,
+            evaluate_static_map_expression(search, evaluation, format!("{path}.arguments[1]"))?,
+            evaluate_static_map_expression(
+                replacement,
+                evaluation,
+                format!("{path}.arguments[2]"),
+            )?,
+        ),
+        [search, replacement] => {
+            let variable = evaluation
+                .context
+                .variable_function_argument(function)
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("{path}.arguments"),
+                        "replace() in static list comprehension maps requires exactly three arguments",
+                    )
+                })?;
+            if variable != evaluation.variable {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    format!(
+                        "replace() argument '{variable}' is not the item variable '{}'",
+                        evaluation.variable
+                    ),
+                ));
+            }
+            (
+                evaluation.item.clone(),
+                evaluate_static_map_expression(search, evaluation, format!("{path}.arguments[1]"))?,
+                evaluate_static_map_expression(
+                    replacement,
+                    evaluation,
+                    format!("{path}.arguments[2]"),
+                )?,
+            )
+        }
+        _ => {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                "replace() in static list comprehension maps requires exactly three arguments",
+            ));
+        }
+    };
+    let Some(expression) = static_map_string_argument(expression, "replace", path.clone())? else {
+        return Ok(Literal::Null);
+    };
+    let Some(search) = static_map_string_argument(search, "replace", path.clone())? else {
+        return Ok(Literal::Null);
+    };
+    let Some(replacement) = static_map_string_argument(replacement, "replace", path)? else {
+        return Ok(Literal::Null);
+    };
+    Ok(Literal::String(expression.replace(&search, &replacement)))
+}
+
+fn static_map_string_argument(
+    literal: Literal,
+    function_name: &str,
+    path: impl Into<String>,
+) -> Result<Option<String>, CoreError> {
+    match literal {
+        Literal::String(value) => Ok(Some(value)),
+        Literal::Null => Ok(None),
+        _ => Err(unsupported(
+            path,
+            format!(
+                "{function_name}() in static list comprehension maps requires string arguments"
+            ),
+        )),
+    }
+}
+
+fn static_list_comprehension_output_element_type(
+    map: Option<&Expression>,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let Some(map) = map else {
+        return Ok(source_element_type);
+    };
+    static_list_comprehension_map_element_type(map, variable, source_element_type, context)
+}
+
+fn static_list_comprehension_map_element_type(
+    expression: &Expression,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
     match expression {
-        Expression::Parenthesized(inner) => expression_is_variable_ref(inner, variable),
-        Expression::Variable(variable_ref) => variable_name(variable_ref) == variable,
-        _ => false,
+        Expression::Parenthesized(inner) => static_list_comprehension_map_element_type(
+            inner,
+            variable,
+            source_element_type,
+            context,
+        ),
+        Expression::Variable(variable_ref) if variable_name(variable_ref) == variable => {
+            Ok(source_element_type)
+        }
+        Expression::Literal(_) | Expression::UnaryOp { .. } => Ok(literal_list_element_kind(
+            &compile_literal(expression, "list_comprehension.map", context)?,
+        )),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, "list_comprehension.map")? {
+                CypherParameterValue::Literal(literal) => Ok(literal_list_element_kind(literal)),
+                CypherParameterValue::List(_) => Ok(None),
+            }
+        }
+        Expression::FunctionCall(function)
+            if is_to_string_function(function)
+                || is_to_lower_function(function)
+                || is_to_upper_function(function)
+                || is_trim_function(function)
+                || is_ltrim_function(function)
+                || is_rtrim_function(function)
+                || is_replace_function(function) =>
+        {
+            Ok(Some(LiteralListElementType::String))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -20153,17 +20486,87 @@ relationships:
     }
 
     #[test]
-    fn rejects_mapped_static_list_comprehensions() {
+    fn compiles_mapped_static_list_comprehensions() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service) | toUpper(k)] AS upper_keys, \
+                    [k IN [' name ', null, 'tier'] | trim(k)] AS trimmed_keys, \
+                    [k IN ['service-id'] | replace(k, '-', '_')] AS replaced_keys, \
+                    [k IN [1, 2] | toString(k)] AS number_strings \
+             ORDER BY [k IN keys(service) WHERE k <> 'tier' | upper(k)]",
+        )
+        .expect("mapped static list comprehensions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("NAME".to_string()),
+                            Literal::String("TIER".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "upper_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::Null,
+                            Literal::String("tier".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "trimmed_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("service_id".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "replaced_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("1".to_string()),
+                            Literal::String("2".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "number_strings".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![Literal::String("NAME".to_string())],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_mapped_static_list_comprehensions() {
         let error = compile_cypher_for_graph(
             &star_test_graph(),
-            "MATCH (service:Service) RETURN [k IN keys(service) | toUpper(k)] AS upper_keys",
+            "MATCH (service:Service) RETURN [k IN keys(service) | service.name] AS key_names",
         )
-        .expect_err("mapped static list comprehensions should be rejected");
+        .expect_err("dynamic mapped static list comprehensions should be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("static list comprehensions currently support identity map"),
+                .contains("static list comprehension map expressions support"),
             "{error}"
         );
     }

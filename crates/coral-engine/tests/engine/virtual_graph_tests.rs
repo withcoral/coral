@@ -10291,6 +10291,45 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
 }
 
 #[tokio::test]
+async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [k IN keys(service) WHERE k IN ['name', 'tier'] | upper(k)] AS upper_keys, \
+                [k IN [' service-name ', null] | trim(k)] AS trimmed_keys, \
+                [k IN ['service-id'] | replace(k, '-', '_')] AS replaced_keys \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("mapped static list comprehensions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('NAME', 'TIER') AS \"upper_keys\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
