@@ -1728,28 +1728,53 @@ async fn cypher_exists_pattern_predicates_support_outer_right_endpoint() {
 }
 
 #[tokio::test]
-async fn cypher_exists_subquery_where_is_rejected_until_scoped_subqueries_land() {
+async fn cypher_exists_pattern_where_matches_explicit_match_subquery() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
-        &[source],
+    let compact = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
          WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' } \
-         RETURN service.name AS service",
+         RETURN service.name AS service \
+         ORDER BY service",
     )
     .await
-    .expect_err("WHERE inside EXISTS pattern predicates should be rejected");
-
+    .expect("compact EXISTS pattern WHERE should execute");
     assert!(
-        error
-            .to_string()
-            .contains("require an explicit MATCH clause"),
-        "{error}"
+        compact
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"tier\" = 'dev'"),
+        "{}",
+        compact.translated_sql()
+    );
+
+    let explicit = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("explicit EXISTS MATCH WHERE should execute");
+
+    assert_eq!(
+        execution_to_rows(compact.execution()),
+        execution_to_rows(explicit.execution())
+    );
+    assert_eq!(
+        execution_to_rows(compact.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
     );
 }
 
@@ -2313,6 +2338,32 @@ async fn cypher_exists_match_subqueries_reject_non_conjunctive_inner_where() {
     )
     .await
     .expect_err("non-conjunctive EXISTS MATCH WHERE should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("WHERE clauses with property comparisons joined by AND"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_pattern_where_rejects_non_conjunctive_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' OR target.tier = 'prod' } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect_err("non-conjunctive compact EXISTS pattern WHERE should be rejected");
 
     assert!(
         error

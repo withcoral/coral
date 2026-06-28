@@ -215,14 +215,15 @@ The supported foundation subset is intentionally narrow:
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
-- `EXISTS { MATCH ... }` lowered to SQL semi-joins in `WHERE`; scalar
-  `EXISTS` projections lower as correlated `COUNT(*) > 0` expressions so they
-  are executable by DataFusion in `RETURN`, can be sorted through their
-  projected alias or an exact repeated projected expression, can appear in
-  searched `CASE` expressions when a scalar expression has only one correlated
-  subquery, and compact pattern
-  `EXISTS { ... }` supports inline property maps when no compact `WHERE` clause
-  is present;
+- `EXISTS { MATCH ... }` and compact `EXISTS { pattern WHERE ... }` lower to SQL
+  semi-joins in `WHERE`; scalar `EXISTS` projections lower as correlated
+  `COUNT(*) > 0` expressions so they are executable by DataFusion in `RETURN`,
+  can be sorted through their projected alias or an exact repeated projected
+  expression, and can appear in searched `CASE` expressions when a scalar
+  expression has only one correlated subquery. Compact pattern `WHERE` is
+  recovered from decypher's lossless CST when the high-level AST classifies the
+  `WHERE` as a subquery clause, then rewritten through the same scoped
+  `MATCH ... WHERE ... FINISH` planner path as explicit existential subqueries;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,

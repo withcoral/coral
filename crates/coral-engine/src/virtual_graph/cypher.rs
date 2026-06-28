@@ -240,6 +240,7 @@ struct CypherCompileState {
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), String>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
+    compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
 }
@@ -253,6 +254,7 @@ impl CypherCompileContext {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
+            compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
             parameters,
             graph,
         }
@@ -270,6 +272,12 @@ impl CypherCompileContext {
     ) -> Option<&CollectionFilterCall> {
         self.collection_filter_calls
             .get(&(function.span.start, function.span.end))
+    }
+
+    fn compact_exists_pattern_query(&self, exists: &ExistsExpression) -> Option<&str> {
+        self.compact_exists_pattern_queries
+            .get(&(exists.span.start, exists.span.end))
+            .map(String::as_str)
     }
 
     fn parameter_value(
@@ -10089,6 +10097,74 @@ fn collect_collection_filter_calls(cypher: &str) -> BTreeMap<(usize, usize), Col
         .collect()
 }
 
+fn collect_compact_exists_pattern_queries(cypher: &str) -> BTreeMap<(usize, usize), String> {
+    // decypher's high-level AST treats `WHERE` inside `EXISTS { pattern WHERE ... }`
+    // as a clause child, which makes the builder classify the expression as a
+    // regular subquery and lose the compact pattern. Recover that compact form
+    // from the lossless CST and lower it through the same scoped MATCH path as
+    // `EXISTS { MATCH pattern WHERE ... }`.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::EXISTS_SUBQUERY)
+        .filter_map(|node| compact_exists_pattern_query_from_cst(cypher, &node))
+        .collect()
+}
+
+fn compact_exists_pattern_query_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), String)> {
+    let has_pattern = node
+        .children()
+        .any(|child| child.kind() == SyntaxKind::NODE_PATTERN);
+    let has_where = node
+        .children()
+        .any(|child| child.kind() == SyntaxKind::WHERE_CLAUSE);
+    if !has_pattern || !has_where {
+        return None;
+    }
+
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let inner = compact_exists_inner_source(source)?;
+    let where_index = find_top_level_keyword(inner, "WHERE")?;
+    let pattern_source = inner.get(..where_index)?.trim();
+    let where_source = inner.get(where_index + "WHERE".len()..)?.trim();
+    if pattern_source.is_empty() || where_source.is_empty() {
+        return None;
+    }
+    Some((
+        (start, end),
+        format!("MATCH {pattern_source} WHERE {where_source} FINISH"),
+    ))
+}
+
+fn compact_exists_inner_source(source: &str) -> Option<&str> {
+    if let Some(open) = source.find('{') {
+        let close = source.rfind('}')?;
+        if close <= open {
+            return None;
+        }
+        return source.get(open + 1..close).map(str::trim);
+    }
+
+    let exists_end = "EXISTS".len();
+    let after_exists = source.get(exists_end..)?.trim_start();
+    if !after_exists.starts_with('(') {
+        return None;
+    }
+    let open = source.len() - after_exists.len();
+    let close = source.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    source.get(open + 1..close).map(str::trim)
+}
+
 fn collection_filter_call_from_cst(
     cypher: &str,
     node: &SyntaxNode,
@@ -10993,30 +11069,89 @@ fn compile_exists_pattern_predicate(
     let path = path.into();
     match exists.inner.as_ref() {
         ExistsInner::Pattern(pattern, where_clause) => {
-            if where_clause.is_some() {
-                return Err(unsupported(
-                    format!("{path}.where"),
-                    "EXISTS pattern predicates currently support inline property maps; WHERE inside EXISTS requires scoped predicate planning",
-                ));
-            }
             let [part] = pattern.parts.as_slice() else {
                 return Err(unsupported(
                     format!("{path}.pattern.parts"),
                     "EXISTS pattern predicates currently support exactly one connected pattern part",
                 ));
             };
-            compile_scoped_pattern_predicate(
-                part,
-                path,
-                plan,
-                context,
-                "EXISTS pattern predicates",
-                "EXISTS pattern predicates require graph context",
-            )
+            match where_clause.as_deref() {
+                Some(where_clause) => compile_scoped_pattern_where_predicate(
+                    part,
+                    where_clause,
+                    path,
+                    plan,
+                    context,
+                    "EXISTS pattern predicates",
+                    "EXISTS pattern predicates require graph context",
+                ),
+                None => compile_scoped_pattern_predicate(
+                    part,
+                    path,
+                    plan,
+                    context,
+                    "EXISTS pattern predicates",
+                    "EXISTS pattern predicates require graph context",
+                ),
+            }
         }
         ExistsInner::RegularQuery(query) => {
+            if let Some(compact_query) = context.compact_exists_pattern_query(exists) {
+                return compile_compact_exists_pattern_query(compact_query, path, plan, context);
+            }
             compile_exists_regular_query_predicate(query, path, plan, context)
         }
+    }
+}
+
+fn compile_compact_exists_pattern_query(
+    source: &str,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let query = decypher::parse(source).map_err(|error| {
+        Diagnostic::new(
+            "CYPHER_PARSE_ERROR",
+            path.clone(),
+            format!("could not parse compact EXISTS pattern recovery: {error}"),
+        )
+        .into_core_error()
+    })?;
+    let regular_query = regular_query_from_single_statement(query, &path)?;
+    let fragment_context = CypherCompileContext::from_source_with_parameters_and_graph(
+        source,
+        context.parameters.clone(),
+        context.graph.clone(),
+    );
+    compile_exists_regular_query_predicate(&regular_query, path, plan, &fragment_context)
+}
+
+fn regular_query_from_single_statement(
+    query: Query,
+    path: &str,
+) -> Result<RegularQuery, CoreError> {
+    let mut statements = query.statements.into_iter();
+    let Some(statement) = statements.next() else {
+        return Err(CoreError::internal(format!(
+            "compact EXISTS pattern recovery at {path} did not produce a query"
+        )));
+    };
+    if statements.next().is_some() {
+        return Err(CoreError::internal(format!(
+            "compact EXISTS pattern recovery at {path} produced multiple statements"
+        )));
+    }
+    match statement {
+        QueryBody::SingleQuery(single_query) => Ok(RegularQuery {
+            single_query,
+            unions: Vec::new(),
+        }),
+        QueryBody::Regular(query) => Ok(query),
+        _ => Err(CoreError::internal(format!(
+            "compact EXISTS pattern recovery at {path} did not produce a data query"
+        ))),
     }
 }
 
@@ -11232,6 +11367,42 @@ fn compile_scoped_pattern_predicate(
     let relationship_start = exists_plan.relationships.len();
     let predicate_start = exists_plan.predicates.len();
     compile_pattern_part_into(part, 0, false, &mut exists_plan, &mut exists_state, context)?;
+    compile_scoped_plan_delta_predicate(
+        exists_plan,
+        plan,
+        ScopedPlanDelta {
+            nodes_before: node_start,
+            relationship_base: relationship_start,
+            predicate_offset: predicate_start,
+        },
+        path,
+        feature_name,
+    )
+}
+
+fn compile_scoped_pattern_where_predicate(
+    part: &PatternPart,
+    where_clause: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_context_message: &'static str,
+) -> Result<PredicateExpression, CoreError> {
+    let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(path, missing_context_message));
+    };
+    let mut exists_plan = plan.clone();
+    exists_plan.predicate = None;
+    let mut exists_state = CypherCompileState::default();
+    let node_start = exists_plan.nodes.len();
+    let relationship_start = exists_plan.relationships.len();
+    let predicate_start = exists_plan.predicates.len();
+    compile_pattern_part_into(part, 0, false, &mut exists_plan, &mut exists_state, context)?;
+    let predicate =
+        compile_predicate_expression(where_clause, format!("{path}.where"), &exists_plan, context)?;
+    append_predicate_expression(predicate, &mut exists_plan);
     compile_scoped_plan_delta_predicate(
         exists_plan,
         plan,
@@ -19748,6 +19919,26 @@ relationships:
                 nulls: None,
             }] if alias == "has_dependency"
         ));
+    }
+
+    #[test]
+    fn compiles_compact_exists_pattern_where_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' } \
+             RETURN service.name AS service",
+        )
+        .expect("compact EXISTS pattern WHERE should compile");
+
+        let Some(PredicateExpression::ExistsPattern(pattern)) = plan.predicate else {
+            panic!("expected compact EXISTS pattern WHERE to compile as an EXISTS predicate");
+        };
+        assert!(pattern.predicates.iter().any(|predicate| {
+            predicate.property.variable == "target"
+                && predicate.property.property == "tier"
+                && predicate.operator == ComparisonOperator::Equal
+                && predicate.rhs == PredicateRhs::Literal(Literal::String("dev".to_string()))
+        }));
     }
 
     #[test]
