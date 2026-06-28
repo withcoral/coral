@@ -1038,6 +1038,144 @@ async fn cypher_union_all_preserves_duplicate_rows() {
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND ['prod', 'dev'] AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, service.name AS service \
+         ORDER BY tier, service",
+    )
+    .await
+    .expect("static UNWIND Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "service": "experiments"}),
+            json!({"tier": "prod", "service": "billing-api"}),
+            json!({"tier": "prod", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_unwind_duplicate_aggregates_execute_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND ['prod', 'prod', 'dev'] AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, count(*) AS services \
+         ORDER BY tier",
+    )
+    .await
+    .expect("duplicate static UNWIND aggregate query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(*) AS \"services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "services": 1}),
+            json!({"tier": "prod", "services": 4}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_unwind_empty_list_preserves_aggregate_zero_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND [] AS tier \
+         MATCH (service:Service) \
+         RETURN count(*) AS services",
+    )
+    .await
+    .expect("empty static UNWIND aggregate query should execute");
+
+    assert!(
+        execution.translated_sql().contains("WHERE FALSE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"services": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_unwind_list_parameters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "tiers".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("dev".to_string()),
+            GraphLiteral::String("prod".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND $tiers AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, service.name AS service \
+         ORDER BY tier, service",
+        &parameters,
+    )
+    .await
+    .expect("parameterized static UNWIND query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "service": "experiments"}),
+            json!({"tier": "prod", "service": "billing-api"}),
+            json!({"tier": "prod", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_flatten_inside_union_all() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

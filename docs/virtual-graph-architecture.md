@@ -281,6 +281,14 @@ The supported foundation subset is intentionally narrow:
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;
+- single-part static `UNWIND` over literal lists, list parameters, and folded
+  static list expressions. The Cypher frontend expands these into capped
+  `UNION ALL` branches and substitutes the unwind variable as a scalar literal
+  before normal graph planning. Duplicate list elements are intentionally
+  preserved, aggregate projections are hoisted through the same outer union
+  aggregation path used by static pattern alternatives, and empty lists compile
+  to a forced-empty graph plan. Dynamic list-valued columns and `WITH`-scoped
+  unwinds remain future row-source IR work rather than SQL-rendering shortcuts;
 - exact fixed relationship ranges greater than one hop lowered as repeated
   fixed-hop joins when the graph declaration yields one unambiguous intermediate
   label sequence, including cross-label paths such as
@@ -314,10 +322,10 @@ inside `OPTIONAL MATCH`, relationship-variable list bindings for zero-hop or
 multi-hop ranges, ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar
-projections containing multiple correlated `COUNT`/`EXISTS` subqueries, general
-subqueries with `WITH`, `RETURN`, `UNION`, or procedure calls, ordered
-metadata-list comparisons, dynamic list comparisons or indexes, and broad
-expression semantics.
+projections containing multiple correlated `COUNT`/`EXISTS` subqueries, dynamic
+or multipart `UNWIND`, general subqueries with `WITH`, `RETURN`, `UNION`, or
+procedure calls, ordered metadata-list comparisons, dynamic list comparisons or
+indexes, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

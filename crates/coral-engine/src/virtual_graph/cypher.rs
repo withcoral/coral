@@ -1,12 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
+use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, Unwind, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
     ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension,
-    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, UnaryOperator,
+    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, StringLiteral,
+    UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -19,6 +20,7 @@ use decypher::ast::query::{
     MultiPartQuery, MultiPartQueryPart, Query, QueryBody, ReadingClause, RegularQuery,
     SinglePartBody, SinglePartQuery, SingleQuery, SingleQueryKind,
 };
+use decypher::ast::visit::{self, VisitMut};
 use decypher::cst::AstNode as _;
 use decypher::syntax::{SyntaxKind, SyntaxNode};
 use ordered_float::OrderedFloat;
@@ -55,6 +57,7 @@ struct CompiledRelationship {
 }
 
 const MAX_PATTERN_ALTERNATIVE_BRANCHES: usize = 64;
+const MAX_STATIC_UNWIND_BRANCHES: usize = 64;
 const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
 const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
@@ -623,7 +626,8 @@ fn compile_single_query_as_graph_query(
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
-    let mut variants = expand_single_query_pattern_alternatives(single_query, context)?;
+    let contains_static_unwind = single_query_contains_unwind(single_query);
+    let mut variants = expand_single_query_static_branches(single_query, context, &path)?;
     if variants.len() == 1 {
         let variant = variants
             .first()
@@ -643,6 +647,12 @@ fn compile_single_query_as_graph_query(
         outer_projection_plan.as_ref(),
         &path,
     )?;
+    if contains_static_unwind && hidden_order_plan.is_some() {
+        return Err(unsupported(
+            format!("{path}.return.order"),
+            "static UNWIND expansion does not support ORDER BY expressions that are not projected yet; project the expression and order by its alias",
+        ));
+    }
     for variant in &mut variants {
         apply_static_alternative_outer_projection_rewrite(
             &mut variant.query,
@@ -693,6 +703,393 @@ fn compile_single_query_as_graph_query(
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+}
+
+fn expand_single_query_static_branches(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Vec<ExpandedSingleQuery>, CoreError> {
+    let unwind_variants = expand_single_query_static_unwinds(single_query, context, path)?;
+    let mut expanded = Vec::new();
+    for variant in unwind_variants {
+        let pattern_variants = expand_single_query_pattern_alternatives(&variant.query, context)?;
+        for pattern_variant in pattern_variants {
+            if expanded.len() >= MAX_PATTERN_ALTERNATIVE_BRANCHES {
+                return Err(unsupported(
+                    path,
+                    format!(
+                        "static branch expansion produced more than {MAX_PATTERN_ALTERNATIVE_BRANCHES} branches; simplify the query or split it explicitly"
+                    ),
+                ));
+            }
+            expanded.push(ExpandedSingleQuery {
+                query: pattern_variant.query,
+                force_empty: variant.force_empty || pattern_variant.force_empty,
+            });
+        }
+    }
+    Ok(expanded)
+}
+
+fn expand_single_query_static_unwinds(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Vec<ExpandedSingleQuery>, CoreError> {
+    let mut expanded = vec![ExpandedSingleQuery {
+        query: single_query.clone(),
+        force_empty: false,
+    }];
+
+    loop {
+        let mut progressed = false;
+        let mut next = Vec::new();
+        for variant in expanded {
+            let Some(index) = first_static_unwind_index(&variant.query, path)? else {
+                next.push(variant);
+                continue;
+            };
+            progressed = true;
+            let alternatives = expand_static_unwind_at_index(&variant, index, context, path)?;
+            for alternative in alternatives {
+                if next.len() >= MAX_STATIC_UNWIND_BRANCHES {
+                    return Err(unsupported(
+                        path,
+                        format!(
+                            "static UNWIND expands to more than {MAX_STATIC_UNWIND_BRANCHES} branches; use a smaller static list or split the query explicitly"
+                        ),
+                    ));
+                }
+                next.push(alternative);
+            }
+        }
+        expanded = next;
+        if !progressed {
+            return Ok(expanded);
+        }
+    }
+}
+
+fn first_static_unwind_index(
+    single_query: &SingleQuery,
+    path: &str,
+) -> Result<Option<usize>, CoreError> {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(query) => Ok(query
+            .reading_clauses
+            .iter()
+            .position(|clause| matches!(clause, ReadingClause::Unwind(_)))),
+        SingleQueryKind::MultiPart(query) => {
+            if multi_part_query_contains_unwind(query) {
+                Err(unsupported(
+                    path,
+                    "UNWIND with WITH-separated multipart queries requires staged row-source planning and is not supported yet",
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn multi_part_query_contains_unwind(query: &MultiPartQuery) -> bool {
+    query.parts.iter().any(|part| {
+        part.reading_clauses
+            .iter()
+            .any(|clause| matches!(clause, ReadingClause::Unwind(_)))
+    }) || query
+        .final_part
+        .reading_clauses
+        .iter()
+        .any(|clause| matches!(clause, ReadingClause::Unwind(_)))
+}
+
+fn single_query_contains_unwind(single_query: &SingleQuery) -> bool {
+    match &single_query.kind {
+        SingleQueryKind::SinglePart(query) => query
+            .reading_clauses
+            .iter()
+            .any(|clause| matches!(clause, ReadingClause::Unwind(_))),
+        SingleQueryKind::MultiPart(query) => multi_part_query_contains_unwind(query),
+    }
+}
+
+fn expand_static_unwind_at_index(
+    variant: &ExpandedSingleQuery,
+    index: usize,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Vec<ExpandedSingleQuery>, CoreError> {
+    let SingleQueryKind::SinglePart(query) = &variant.query.kind else {
+        return Err(CoreError::internal(
+            "static UNWIND expansion reached non-single-part query",
+        ));
+    };
+    let ReadingClause::Unwind(unwind) = query
+        .reading_clauses
+        .get(index)
+        .ok_or_else(|| CoreError::internal("static UNWIND index was out of bounds"))?
+    else {
+        return Err(CoreError::internal(
+            "static UNWIND expansion index did not point at UNWIND",
+        ));
+    };
+    let variable = variable_name(&unwind.variable);
+    validate_static_unwind_scope(query, index, &variable, path)?;
+    let values = compile_static_unwind_values(unwind, index, context, path)?;
+
+    if values.is_empty() {
+        return Ok(vec![expand_static_unwind_literal_branch(
+            variant,
+            index,
+            &variable,
+            &Literal::Null,
+            true,
+        )?]);
+    }
+
+    values
+        .iter()
+        .map(|literal| {
+            expand_static_unwind_literal_branch(
+                variant,
+                index,
+                &variable,
+                literal,
+                variant.force_empty,
+            )
+        })
+        .collect()
+}
+
+fn compile_static_unwind_values(
+    unwind: &Unwind,
+    index: usize,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Vec<Literal>, CoreError> {
+    let value = compile_optional_static_list_value(
+        &unwind.expression,
+        format!("{path}.reading_clauses[{index}].unwind.expression"),
+        None,
+        context,
+    )?
+    .ok_or_else(|| {
+        unsupported(
+            format!("{path}.reading_clauses[{index}].unwind.expression"),
+            "UNWIND currently supports literal lists, list parameters, and folded static list expressions; dynamic graph property lists require row-source planning",
+        )
+    })?;
+    if value.presence_variable.is_some() {
+        return Err(unsupported(
+            format!("{path}.reading_clauses[{index}].unwind.expression"),
+            "UNWIND over optional graph metadata lists requires row-source planning and is not supported yet",
+        ));
+    }
+    Ok(value.literals)
+}
+
+fn validate_static_unwind_scope(
+    query: &SinglePartQuery,
+    index: usize,
+    variable: &str,
+    path: &str,
+) -> Result<(), CoreError> {
+    for (clause_index, clause) in query.reading_clauses.iter().take(index).enumerate() {
+        if reading_clause_binds_variable(clause, variable) {
+            return Err(unsupported(
+                format!("{path}.reading_clauses[{index}].unwind.variable"),
+                format!(
+                    "UNWIND variable '{variable}' is already bound before reading clause {clause_index}"
+                ),
+            ));
+        }
+    }
+    for (clause_index, clause) in query.reading_clauses.iter().enumerate().skip(index + 1) {
+        if reading_clause_binds_variable(clause, variable) {
+            return Err(unsupported(
+                format!("{path}.reading_clauses[{clause_index}]"),
+                format!(
+                    "static UNWIND variable '{variable}' cannot be rebound by a later reading clause"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reading_clause_binds_variable(clause: &ReadingClause, variable: &str) -> bool {
+    match clause {
+        ReadingClause::Match(match_clause) => match_clause_bound_variables(match_clause)
+            .iter()
+            .any(|candidate| candidate == variable),
+        ReadingClause::Unwind(unwind) => variable_name(&unwind.variable) == variable,
+        ReadingClause::InQueryCall(_)
+        | ReadingClause::CallSubquery(_)
+        | ReadingClause::LoadCsv(_) => false,
+    }
+}
+
+fn match_clause_bound_variables(match_clause: &Match) -> BTreeSet<String> {
+    let mut variables = BTreeSet::new();
+    for part in &match_clause.pattern.parts {
+        pattern_part_bound_variables(part, &mut variables);
+    }
+    variables
+}
+
+fn pattern_part_bound_variables(pattern_part: &PatternPart, variables: &mut BTreeSet<String>) {
+    if let Some(variable) = pattern_part.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+    pattern_element_bound_variables(&pattern_part.anonymous.element, variables);
+}
+
+fn pattern_element_bound_variables(element: &PatternElement, variables: &mut BTreeSet<String>) {
+    match element {
+        PatternElement::Path { start, chains } => {
+            node_pattern_bound_variables(start, variables);
+            for chain in chains {
+                relationship_pattern_bound_variables(&chain.relationship, variables);
+                node_pattern_bound_variables(&chain.node, variables);
+            }
+        }
+        PatternElement::Parenthesized(inner) => pattern_element_bound_variables(inner, variables),
+        PatternElement::Quantified { element, .. } => {
+            pattern_element_bound_variables(element, variables);
+        }
+    }
+}
+
+fn node_pattern_bound_variables(pattern: &CypherNodePattern, variables: &mut BTreeSet<String>) {
+    if let Some(variable) = pattern.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+}
+
+fn relationship_pattern_bound_variables(
+    pattern: &CypherRelationshipPattern,
+    variables: &mut BTreeSet<String>,
+) {
+    if let Some(variable) = pattern
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.variable.as_ref())
+    {
+        variables.insert(variable_name(variable));
+    }
+}
+
+fn expand_static_unwind_literal_branch(
+    variant: &ExpandedSingleQuery,
+    index: usize,
+    variable: &str,
+    literal: &Literal,
+    force_empty: bool,
+) -> Result<ExpandedSingleQuery, CoreError> {
+    let mut query = variant.query.clone();
+    let SingleQueryKind::SinglePart(single_part) = &mut query.kind else {
+        return Err(CoreError::internal(
+            "static UNWIND literal branch reached non-single-part query",
+        ));
+    };
+    single_part.reading_clauses.remove(index);
+    substitute_static_unwind_literal(single_part, index, variable, literal);
+    Ok(ExpandedSingleQuery { query, force_empty })
+}
+
+fn substitute_static_unwind_literal(
+    query: &mut SinglePartQuery,
+    start_index: usize,
+    variable: &str,
+    literal: &Literal,
+) {
+    let mut substitution = StaticUnwindSubstitution { variable, literal };
+    for clause in query.reading_clauses.iter_mut().skip(start_index) {
+        substitution.visit_reading_clause(clause);
+    }
+    substitution.visit_single_part_body(&mut query.body);
+}
+
+struct StaticUnwindSubstitution<'a> {
+    variable: &'a str,
+    literal: &'a Literal,
+}
+
+impl StaticUnwindSubstitution<'_> {
+    fn visit_reading_clause(&mut self, clause: &mut ReadingClause) {
+        match clause {
+            ReadingClause::Match(match_clause) => self.visit_match(match_clause),
+            ReadingClause::Unwind(unwind) => self.visit_unwind(unwind),
+            ReadingClause::InQueryCall(call) => self.visit_in_query_call(call),
+            ReadingClause::CallSubquery(subquery) => self.visit_call_subquery_mut(subquery),
+            ReadingClause::LoadCsv(load_csv) => self.visit_load_csv_mut(load_csv),
+        }
+    }
+
+    fn visit_single_part_body(&mut self, body: &mut SinglePartBody) {
+        match body {
+            SinglePartBody::Return(return_clause) => self.visit_return(return_clause),
+            SinglePartBody::Updating {
+                updating,
+                return_clause,
+            } => {
+                for clause in updating {
+                    match clause {
+                        decypher::ast::query::UpdatingClause::Create(create) => {
+                            self.visit_create(create);
+                        }
+                        decypher::ast::query::UpdatingClause::Merge(merge) => {
+                            self.visit_merge(merge);
+                        }
+                        decypher::ast::query::UpdatingClause::Delete(delete) => {
+                            self.visit_delete(delete);
+                        }
+                        decypher::ast::query::UpdatingClause::Set(set) => {
+                            self.visit_set(set);
+                        }
+                        decypher::ast::query::UpdatingClause::Remove(remove) => {
+                            self.visit_remove(remove);
+                        }
+                        decypher::ast::query::UpdatingClause::Foreach(foreach) => {
+                            self.visit_foreach_mut(foreach);
+                        }
+                    }
+                }
+                if let Some(return_clause) = return_clause {
+                    self.visit_return(return_clause);
+                }
+            }
+            SinglePartBody::Finish(finish) => self.visit_finish_mut(finish),
+        }
+    }
+}
+
+impl VisitMut for StaticUnwindSubstitution<'_> {
+    fn visit_expression(&mut self, expression: &mut Expression) {
+        if let Expression::Variable(variable) = expression
+            && variable_name(variable) == self.variable
+        {
+            *expression = cypher_literal_expression(self.literal, variable.name.span);
+            return;
+        }
+        visit::walk_expression_mut(self, expression);
+    }
+}
+
+fn cypher_literal_expression(literal: &Literal, span: decypher::error::Span) -> Expression {
+    Expression::Literal(match literal {
+        Literal::String(value) => CypherLiteral::String(StringLiteral {
+            value: value.clone(),
+            span,
+            raw: None,
+        }),
+        Literal::Integer(value) => CypherLiteral::Number(NumberLiteral::Integer(*value)),
+        Literal::Float(value) => CypherLiteral::Number(NumberLiteral::Float(value.into_inner())),
+        Literal::Boolean(value) => CypherLiteral::Boolean(*value),
+        Literal::Null => CypherLiteral::Null,
+    })
 }
 
 fn force_empty_plan(plan: &mut GraphPlan) {
@@ -18540,6 +18937,131 @@ relationships:
         assert_eq!(union.branches.len(), 1);
         let branch = union.branches.first().expect("union branch should exist");
         assert!(branch.all);
+    }
+
+    #[test]
+    fn compiles_static_unwind_as_union_all_branches() {
+        let query = compile_cypher_query(
+            "UNWIND ['prod', 'dev'] AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN tier AS tier, service.name AS service \
+             ORDER BY tier, service",
+        )
+        .expect("static UNWIND query should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static UNWIND to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 1);
+        assert!(union.branches.first().expect("branch").all);
+        assert_eq!(
+            union.first.projections.first(),
+            Some(&Projection::Literal {
+                literal: Literal::String("prod".to_string()),
+                alias: "tier".to_string(),
+            })
+        );
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .expect("static UNWIND branch should exist")
+                .plan
+                .projections
+                .first(),
+            Some(&Projection::Literal {
+                literal: Literal::String("dev".to_string()),
+                alias: "tier".to_string(),
+            })
+        );
+        assert_eq!(
+            union.first.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_duplicate_static_unwind_aggregates_as_outer_union_aggregates() {
+        let query = compile_cypher_query(
+            "UNWIND ['prod', 'prod', 'dev'] AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN tier AS tier, count(*) AS services \
+             ORDER BY tier",
+        )
+        .expect("static UNWIND aggregate query should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected duplicate static UNWIND to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 2);
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "tier".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::CountAll {
+                        alias: "services".to_string(),
+                    },
+                ],
+                group_by: vec!["tier".to_string()],
+            })
+        );
+        assert_eq!(projection_names(&union.first), vec!["tier".to_string()]);
+    }
+
+    #[test]
+    fn compiles_empty_static_unwind_as_forced_empty_plan() {
+        let query = compile_cypher_query(
+            "UNWIND [] AS tier \
+             MATCH (service:Service) \
+             RETURN tier AS tier, count(*) AS services",
+        )
+        .expect("empty static UNWIND query should compile");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("single empty static UNWIND branch should compile as a plan");
+        };
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::Boolean(false))
+        ));
+        assert_eq!(
+            plan.projections.first(),
+            Some(&Projection::Literal {
+                literal: Literal::Null,
+                alias: "tier".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_static_unwind_sources() {
+        assert_unsupported(
+            "MATCH (service:Service) \
+             UNWIND service.tier AS tier \
+             RETURN tier",
+        );
+    }
+
+    #[test]
+    fn rejects_static_unwind_hidden_order_expressions() {
+        assert_unsupported(
+            "UNWIND ['prod', 'dev'] AS tier \
+             MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY toUpper(tier)",
+        );
     }
 
     #[test]
