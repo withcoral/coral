@@ -2762,13 +2762,13 @@ async fn cypher_exists_subqueries_execute_inside_searched_case() {
 }
 
 #[tokio::test]
-async fn cypher_rejects_multiple_correlated_scalar_subqueries_in_one_projection() {
+async fn cypher_multiple_exists_scalar_subqueries_execute_in_case_projection() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
@@ -2777,14 +2777,93 @@ async fn cypher_rejects_multiple_correlated_scalar_subqueries_in_one_projection(
                   WHEN EXISTS { MATCH (service)-[:DEPENDS_ON {criticality: 'runtime'}]->(:Service) } THEN 'runtime-dependency' \
                   WHEN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } THEN 'non-runtime-dependency' \
                   ELSE 'isolated' \
-                END AS dependency_state",
+                END AS dependency_state, \
+                service.name AS service \
+         ORDER BY service",
     )
     .await
-    .expect_err("multiple correlated scalar subqueries should be rejected before SQL execution");
+    .expect("multiple correlated EXISTS scalar subqueries should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_state": "runtime-dependency"}),
+            json!({"service": "deployments", "dependency_state": "non-runtime-dependency"}),
+            json!({"service": "experiments", "dependency_state": "isolated"}),
+            json!({"service": "legacy-sync", "dependency_state": "isolated"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_multiple_count_scalar_subqueries_execute_in_arithmetic_projection() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } \
+                  + COUNT { MATCH (:Service)-[:DEPENDS_ON]->(service) } AS dependency_degree \
+         ORDER BY service",
+    )
+    .await
+    .expect("multiple correlated COUNT scalar subqueries should execute");
 
     assert!(
-        error.to_string().contains("at most one correlated"),
-        "{error}"
+        execution
+            .translated_sql()
+            .matches("LEFT JOIN (SELECT")
+            .count()
+            >= 2
+            && execution.translated_sql().contains("GROUP BY"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_degree": 2}),
+            json!({"service": "deployments", "dependency_degree": 2}),
+            json!({"service": "experiments", "dependency_degree": 2}),
+            json!({"service": "legacy-sync", "dependency_degree": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_multiple_count_scalar_subqueries_execute_as_separate_projections() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS outbound_dependencies, \
+                COUNT { MATCH (:Service)-[:DEPENDS_ON]->(service) } AS inbound_dependencies \
+         ORDER BY service",
+    )
+    .await
+    .expect("multiple correlated COUNT scalar subquery projections should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "outbound_dependencies": 2, "inbound_dependencies": 0}),
+            json!({"service": "deployments", "outbound_dependencies": 1, "inbound_dependencies": 1}),
+            json!({"service": "experiments", "outbound_dependencies": 0, "inbound_dependencies": 2}),
+            json!({"service": "legacy-sync", "outbound_dependencies": 0, "inbound_dependencies": 0}),
+        ]
     );
 }
 

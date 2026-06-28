@@ -447,10 +447,11 @@ relationship-variable list bindings for zero-hop or multi-hop ranges,
 ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar
-projections containing multiple correlated `COUNT`/`EXISTS` subqueries, dynamic
-or multipart `UNWIND`, general subqueries with `WITH`, `RETURN`, `UNION`, or
-procedure calls, dynamic list comparisons or indexes, branch-local sliced lists
-in list-comprehension/`UNWIND` contexts, and broad expression semantics.
+projections containing multiple complex or multi-anchor correlated
+`COUNT`/`EXISTS` subqueries, dynamic or multipart `UNWIND`, general subqueries
+with `WITH`, `RETURN`, `UNION`, or procedure calls, dynamic list comparisons or
+indexes, branch-local sliced lists in list-comprehension/`UNWIND` contexts, and
+broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

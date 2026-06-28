@@ -12863,7 +12863,6 @@ fn compile_arithmetic_projection(
         Some(state),
         context,
     )?;
-    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
         expression,
         alias: item
@@ -12883,7 +12882,6 @@ fn compile_boolean_scalar_projection(
     let path = path.into();
     let expression =
         compile_boolean_scalar_expression(expression, format!("{path}.expression"), plan, context)?;
-    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
         expression,
         alias: item
@@ -12909,7 +12907,6 @@ fn compile_case_projection(
         Some(state),
         context,
     )?;
-    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
         expression,
         alias: item
@@ -12938,7 +12935,6 @@ fn compile_scalar_function_projection(
     else {
         return Ok(None);
     };
-    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Some(Projection::Expression {
         expression,
         alias: item
@@ -12946,20 +12942,6 @@ fn compile_scalar_function_projection(
             .as_ref()
             .map_or_else(|| default_scalar_function_alias(function), variable_name),
     }))
-}
-
-fn validate_scalar_projection_correlated_subqueries(
-    expression: &ScalarExpression,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    let count = scalar_expression_correlated_subquery_count(expression);
-    if count > 1 {
-        return Err(unsupported(
-            path,
-            "scalar projection expressions support at most one correlated COUNT { ... } or EXISTS { MATCH ... } subquery; project each subquery separately and compose the projected aliases",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_aggregate_scalar_target_correlated_subqueries(
