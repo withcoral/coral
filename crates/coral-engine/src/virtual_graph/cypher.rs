@@ -984,19 +984,24 @@ fn compile_static_alternative_outer_aggregate_item(
                 "pattern alternatives do not support aggregate expression targets yet",
             ));
         }
-        Ok(AggregateTarget::VariableKey { variable }) => {
-            if function_kind != AggregateFunction::Count {
+        Ok(AggregateTarget::VariableKey { variable }) => match function_kind {
+            AggregateFunction::Count => {
+                if function.distinct {
+                    graph_identity_function_expression_for_variable(&variable, function)
+                } else {
+                    graph_presence_function_expression_for_variable(&variable, function)
+                }
+            }
+            AggregateFunction::Collect => {
+                graph_identity_function_expression_for_variable(&variable, function)
+            }
+            _ => {
                 return Err(unsupported(
                     format!("{path}.return.items[{index}].expression.arguments"),
-                    "pattern alternatives only support count(variable) over graph variables",
+                    "pattern alternatives only support count(variable) and collect(variable) over graph variables",
                 ));
             }
-            if function.distinct {
-                graph_identity_function_expression_for_variable(&variable, function)
-            } else {
-                graph_presence_function_expression_for_variable(&variable, function)
-            }
-        }
+        },
         Ok(AggregateTarget::PresenceGatedVariableKey { .. }) => {
             return Err(unsupported(
                 format!("{path}.return.items[{index}].expression.arguments"),
@@ -18899,6 +18904,56 @@ relationships:
                     distinct: true,
                     alias: "owners".to_string(),
                 }],
+                group_by: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_collect_graph_variable_projection() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team) \
+             RETURN collect(entity) AS entities, collect(DISTINCT entity) AS distinct_entities",
+        )
+        .expect("collect(node) should compile as an outer union aggregate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::GraphIdentity {
+                        variable: "entity".to_string(),
+                    },
+                    alias: "__coral_agg_0".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphIdentity {
+                        variable: "entity".to_string(),
+                    },
+                    alias: "__coral_agg_1".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_0".to_string(),
+                        distinct: false,
+                        alias: "entities".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: true,
+                        alias: "distinct_entities".to_string(),
+                    },
+                ],
                 group_by: Vec::new(),
             })
         );

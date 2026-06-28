@@ -665,6 +665,70 @@ async fn cypher_static_node_label_alternatives_collect_property_after_union() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_collect_graph_variables_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         RETURN collect(owner) AS owners, collect(DISTINCT owner) AS distinct_owners",
+    )
+    .await
+    .expect("static label alternatives with collect(node) should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(\"__coral_agg_0\") AS \"owners\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("'node:Person:'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("'node:Team:'"),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("collect graph variable query should return one row");
+    sort_string_array_field(row, "owners");
+    sort_string_array_field(row, "distinct_owners");
+    assert_eq!(
+        rows,
+        vec![json!({
+            "owners": [
+                "node:Person:1",
+                "node:Person:2",
+                "node:Person:3",
+                "node:Team:1000",
+                "node:Team:2000",
+                "node:Team:3000"
+            ],
+            "distinct_owners": [
+                "node:Person:1",
+                "node:Person:2",
+                "node:Person:3",
+                "node:Team:1000",
+                "node:Team:2000",
+                "node:Team:3000"
+            ]
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_numeric_aggregates_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
