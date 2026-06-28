@@ -19,7 +19,7 @@ use decypher::ast::query::{
     MultiPartQuery, MultiPartQueryPart, Query, QueryBody, ReadingClause, RegularQuery,
     SinglePartBody, SinglePartQuery, SingleQuery, SingleQueryKind,
 };
-use decypher::cst::{AstNode as _, AstToken as _, Ident};
+use decypher::cst::AstNode as _;
 use decypher::syntax::{SyntaxKind, SyntaxNode};
 use ordered_float::OrderedFloat;
 use regex::Regex;
@@ -249,6 +249,14 @@ struct PendingPathBinding {
     length: usize,
 }
 
+#[derive(Debug, Clone)]
+struct VariableFunctionArgument {
+    variable: String,
+    index: usize,
+    /// Total source argument count, or 0 when recovered by legacy child fallback.
+    count: usize,
+}
+
 #[derive(Debug, Default)]
 struct CypherCompileState {
     path_variables: BTreeMap<String, PathBinding>,
@@ -258,7 +266,7 @@ struct CypherCompileState {
 
 #[derive(Debug, Default)]
 struct CypherCompileContext {
-    variable_function_arguments: BTreeMap<(usize, usize), String>,
+    variable_function_arguments: BTreeMap<(usize, usize), VariableFunctionArgument>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
@@ -283,9 +291,16 @@ impl CypherCompileContext {
     }
 
     fn variable_function_argument(&self, function: &FunctionInvocation) -> Option<&str> {
+        self.variable_function_argument_info(function)
+            .map(|argument| argument.variable.as_str())
+    }
+
+    fn variable_function_argument_info(
+        &self,
+        function: &FunctionInvocation,
+    ) -> Option<&VariableFunctionArgument> {
         self.variable_function_arguments
             .get(&(function.span.start, function.span.end))
-            .map(String::as_str)
     }
 
     fn collection_filter_call(
@@ -7385,6 +7400,12 @@ fn evaluate_static_map_function(
     evaluation: StaticFilterEvaluation<'_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
+    if is_coalesce_function(function) {
+        return evaluate_static_map_coalesce(function, path, evaluation);
+    }
+    if is_null_if_function(function) {
+        return evaluate_static_map_null_if(function, path, evaluation);
+    }
     if is_to_string_function(function) {
         return evaluate_static_map_to_string(function, path, evaluation);
     }
@@ -7463,6 +7484,101 @@ fn evaluate_static_map_function(
     ))
 }
 
+fn evaluate_static_map_function_arguments(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+) -> Result<Vec<Literal>, CoreError> {
+    let variable_argument = evaluation.context.variable_function_argument_info(function);
+    if let Some(argument) = variable_argument {
+        if argument.variable != evaluation.variable {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "{function_name}() argument '{}' is not the item variable '{}'",
+                    argument.variable, evaluation.variable
+                ),
+            ));
+        }
+        if argument.count != 0
+            && (argument.count != function.arguments.len() + 1 || argument.index >= argument.count)
+        {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!("{function_name}() arguments could not be recovered from the parsed AST"),
+            ));
+        }
+    }
+
+    let mut literals = function
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            let logical_index = match variable_argument {
+                Some(variable_argument) if index >= variable_argument.index => index + 1,
+                _ => index,
+            };
+            evaluate_static_map_expression(
+                argument,
+                evaluation,
+                format!("{path}.arguments[{logical_index}]"),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(argument) = variable_argument {
+        literals.insert(argument.index, evaluation.item.clone());
+    }
+    Ok(literals)
+}
+
+fn evaluate_static_map_coalesce(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let arguments =
+        evaluate_static_map_function_arguments(function, &path, evaluation, "coalesce")?;
+    if arguments.len() < 2 {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "coalesce() in static list comprehension maps requires at least two arguments",
+        ));
+    }
+    Ok(arguments
+        .into_iter()
+        .find(|literal| !matches!(literal, Literal::Null))
+        .unwrap_or(Literal::Null))
+}
+
+fn evaluate_static_map_null_if(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let arguments = evaluate_static_map_function_arguments(function, &path, evaluation, "nullIf")?;
+    let [expression, value] = arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "nullIf() in static list comprehension maps requires exactly two arguments",
+        ));
+    };
+    if matches!(expression, Literal::Null) {
+        return Ok(Literal::Null);
+    }
+    if matches!(value, Literal::Null) {
+        return Ok(expression.clone());
+    }
+    if evaluate_literal_comparison(expression, ComparisonOperator::Equal, value, path)? {
+        Ok(Literal::Null)
+    } else {
+        Ok(expression.clone())
+    }
+}
+
 fn evaluate_static_map_to_string(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -7494,7 +7610,7 @@ fn evaluate_static_map_unary_string_function(
         evaluation,
         function_name,
     )?;
-    let Some(value) = static_map_string_argument(literal, function_name, path)? else {
+    let Some(value) = static_map_string_argument(&literal, function_name, path)? else {
         return Ok(Literal::Null);
     };
     Ok(Literal::String(transform(&value)))
@@ -7507,32 +7623,33 @@ fn evaluate_static_map_single_function_argument(
     function_name: &str,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
+    if let Some(argument) = evaluation.context.variable_function_argument_info(function) {
+        if argument.variable != evaluation.variable {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "{function_name}() argument '{}' is not the item variable '{}'",
+                    argument.variable, evaluation.variable
+                ),
+            ));
+        }
+        if argument.index != 0
+            || (argument.count != 0 && argument.count != 1)
+            || !function.arguments.is_empty()
+        {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "{function_name}() in static list comprehension maps requires exactly one argument"
+                ),
+            ));
+        }
+        return Ok(evaluation.item.clone());
+    }
+
     match function.arguments.as_slice() {
         [argument] => {
             evaluate_static_map_expression(argument, evaluation, format!("{path}.arguments[0]"))
-        }
-        [] => {
-            let variable = evaluation
-                .context
-                .variable_function_argument(function)
-                .ok_or_else(|| {
-                    unsupported(
-                        format!("{path}.arguments"),
-                        format!(
-                            "{function_name}() in static list comprehension maps requires exactly one argument"
-                        ),
-                    )
-                })?;
-            if variable != evaluation.variable {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    format!(
-                        "{function_name}() argument '{variable}' is not the item variable '{}'",
-                        evaluation.variable
-                    ),
-                ));
-            }
-            Ok(evaluation.item.clone())
         }
         _ => Err(unsupported(
             format!("{path}.arguments"),
@@ -7549,51 +7666,12 @@ fn evaluate_static_map_replace(
     evaluation: StaticFilterEvaluation<'_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
-    let (expression, search, replacement) = match function.arguments.as_slice() {
-        [expression, search, replacement] => (
-            evaluate_static_map_expression(expression, evaluation, format!("{path}.arguments[0]"))?,
-            evaluate_static_map_expression(search, evaluation, format!("{path}.arguments[1]"))?,
-            evaluate_static_map_expression(
-                replacement,
-                evaluation,
-                format!("{path}.arguments[2]"),
-            )?,
-        ),
-        [search, replacement] => {
-            let variable = evaluation
-                .context
-                .variable_function_argument(function)
-                .ok_or_else(|| {
-                    unsupported(
-                        format!("{path}.arguments"),
-                        "replace() in static list comprehension maps requires exactly three arguments",
-                    )
-                })?;
-            if variable != evaluation.variable {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    format!(
-                        "replace() argument '{variable}' is not the item variable '{}'",
-                        evaluation.variable
-                    ),
-                ));
-            }
-            (
-                evaluation.item.clone(),
-                evaluate_static_map_expression(search, evaluation, format!("{path}.arguments[1]"))?,
-                evaluate_static_map_expression(
-                    replacement,
-                    evaluation,
-                    format!("{path}.arguments[2]"),
-                )?,
-            )
-        }
-        _ => {
-            return Err(unsupported(
-                format!("{path}.arguments"),
-                "replace() in static list comprehension maps requires exactly three arguments",
-            ));
-        }
+    let arguments = evaluate_static_map_function_arguments(function, &path, evaluation, "replace")?;
+    let [expression, search, replacement] = arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "replace() in static list comprehension maps requires exactly three arguments",
+        ));
     };
     let Some(expression) = static_map_string_argument(expression, "replace", path.clone())? else {
         return Ok(Literal::Null);
@@ -7613,83 +7691,29 @@ fn evaluate_static_map_substring(
     evaluation: StaticFilterEvaluation<'_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
-    let (expression, start, length) = if let Some(variable) =
-        evaluation.context.variable_function_argument(function)
-    {
-        if variable != evaluation.variable {
+    let arguments =
+        evaluate_static_map_function_arguments(function, &path, evaluation, "substring")?;
+    let (expression, start, length) = match arguments.as_slice() {
+        [expression, start] => (expression, start, None),
+        [expression, start, length] => (expression, start, Some(length)),
+        _ => {
             return Err(unsupported(
                 format!("{path}.arguments"),
-                format!(
-                    "substring() argument '{variable}' is not the item variable '{}'",
-                    evaluation.variable
-                ),
+                "substring() in static list comprehension maps requires exactly two or three arguments",
             ));
-        }
-        match function.arguments.as_slice() {
-            [start] => (
-                evaluation.item.clone(),
-                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
-                None,
-            ),
-            [start, length] => (
-                evaluation.item.clone(),
-                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
-                Some(evaluate_static_map_expression(
-                    length,
-                    evaluation,
-                    format!("{path}.arguments[2]"),
-                )?),
-            ),
-            _ => {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    "substring() in static list comprehension maps requires exactly two or three arguments",
-                ));
-            }
-        }
-    } else {
-        match function.arguments.as_slice() {
-            [expression, start] => (
-                evaluate_static_map_expression(
-                    expression,
-                    evaluation,
-                    format!("{path}.arguments[0]"),
-                )?,
-                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
-                None,
-            ),
-            [expression, start, length] => (
-                evaluate_static_map_expression(
-                    expression,
-                    evaluation,
-                    format!("{path}.arguments[0]"),
-                )?,
-                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
-                Some(evaluate_static_map_expression(
-                    length,
-                    evaluation,
-                    format!("{path}.arguments[2]"),
-                )?),
-            ),
-            _ => {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    "substring() in static list comprehension maps requires exactly two or three arguments",
-                ));
-            }
         }
     };
     let Some(expression) = static_map_string_argument(expression, "substring", path.clone())?
     else {
         return Ok(Literal::Null);
     };
-    let Some(start) = static_map_non_negative_integer_argument(&start, "substring", path.clone())?
+    let Some(start) = static_map_non_negative_integer_argument(start, "substring", path.clone())?
     else {
         return Ok(Literal::Null);
     };
     let length = match length {
         Some(length) => {
-            match static_map_non_negative_integer_argument(&length, "substring", path)? {
+            match static_map_non_negative_integer_argument(length, "substring", path)? {
                 Some(length) => Some(length),
                 None => return Ok(Literal::Null),
             }
@@ -7748,49 +7772,19 @@ fn evaluate_static_map_two_argument_string_function(
     function_name: &str,
 ) -> Result<(Option<String>, Option<usize>), CoreError> {
     let path = path.into();
-    let (expression, count) = match function.arguments.as_slice() {
-        [expression, count] => (
-            evaluate_static_map_expression(expression, evaluation, format!("{path}.arguments[0]"))?,
-            evaluate_static_map_expression(count, evaluation, format!("{path}.arguments[1]"))?,
-        ),
-        [count] => {
-            let variable = evaluation
-                .context
-                .variable_function_argument(function)
-                .ok_or_else(|| {
-                    unsupported(
-                        format!("{path}.arguments"),
-                        format!(
-                            "{function_name}() in static list comprehension maps requires exactly two arguments"
-                        ),
-                    )
-                })?;
-            if variable != evaluation.variable {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    format!(
-                        "{function_name}() argument '{variable}' is not the item variable '{}'",
-                        evaluation.variable
-                    ),
-                ));
-            }
-            (
-                evaluation.item.clone(),
-                evaluate_static_map_expression(count, evaluation, format!("{path}.arguments[1]"))?,
-            )
-        }
-        _ => {
-            return Err(unsupported(
-                format!("{path}.arguments"),
-                format!(
-                    "{function_name}() in static list comprehension maps requires exactly two arguments"
-                ),
-            ));
-        }
+    let arguments =
+        evaluate_static_map_function_arguments(function, &path, evaluation, function_name)?;
+    let [expression, count] = arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "{function_name}() in static list comprehension maps requires exactly two arguments"
+            ),
+        ));
     };
     Ok((
         static_map_string_argument(expression, function_name, path.clone())?,
-        static_map_non_negative_integer_argument(&count, function_name, path)?,
+        static_map_non_negative_integer_argument(count, function_name, path)?,
     ))
 }
 
@@ -7803,12 +7797,12 @@ fn static_substring(value: &str, start: usize, length: Option<usize>) -> String 
 }
 
 fn static_map_string_argument(
-    literal: Literal,
+    literal: &Literal,
     function_name: &str,
     path: impl Into<String>,
 ) -> Result<Option<String>, CoreError> {
     match literal {
-        Literal::String(value) => Ok(Some(value)),
+        Literal::String(value) => Ok(Some(value.clone())),
         Literal::Null => Ok(None),
         _ => Err(unsupported(
             path,
@@ -7917,6 +7911,12 @@ fn static_list_comprehension_map_element_type(
             source_element_type,
             context,
         ),
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            static_map_coalesce_element_type(function, variable, source_element_type, context)
+        }
+        Expression::FunctionCall(function) if is_null_if_function(function) => {
+            static_map_null_if_element_type(function, variable, source_element_type, context)
+        }
         Expression::FunctionCall(function)
             if is_to_string_function(function)
                 || is_to_lower_function(function)
@@ -7933,6 +7933,113 @@ fn static_list_comprehension_map_element_type(
             Ok(Some(LiteralListElementType::String))
         }
         _ => Ok(None),
+    }
+}
+
+fn static_map_function_argument_element_types(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Option<LiteralListElementType>>, CoreError> {
+    let variable_argument = context.variable_function_argument_info(function);
+    if let Some(argument) = variable_argument {
+        if argument.variable != variable {
+            return Err(unsupported(
+                "list_comprehension.map.arguments",
+                format!(
+                    "static list comprehension map argument '{}' is not the item variable '{}'",
+                    argument.variable, variable
+                ),
+            ));
+        }
+        if argument.count != 0
+            && (argument.count != function.arguments.len() + 1 || argument.index >= argument.count)
+        {
+            return Err(unsupported(
+                "list_comprehension.map.arguments",
+                "static list comprehension map arguments could not be recovered from the parsed AST",
+            ));
+        }
+    }
+
+    let mut element_types = function
+        .arguments
+        .iter()
+        .map(|argument| {
+            static_list_comprehension_map_element_type(
+                argument,
+                variable,
+                source_element_type,
+                context,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(argument) = variable_argument {
+        element_types.insert(argument.index, source_element_type);
+    }
+    Ok(element_types)
+}
+
+fn static_map_coalesce_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let element_types = static_map_function_argument_element_types(
+        function,
+        variable,
+        source_element_type,
+        context,
+    )?;
+    if element_types.len() < 2 {
+        return Err(unsupported(
+            "list_comprehension.map.arguments",
+            "coalesce() in static list comprehension maps requires at least two arguments",
+        ));
+    }
+    let mut expected = None;
+    for element_type in element_types {
+        expected =
+            merge_static_map_element_types(expected, element_type, "coalesce() static map result")?;
+    }
+    Ok(expected)
+}
+
+fn static_map_null_if_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let element_types = static_map_function_argument_element_types(
+        function,
+        variable,
+        source_element_type,
+        context,
+    )?;
+    let [expression, _] = element_types.as_slice() else {
+        return Err(unsupported(
+            "list_comprehension.map.arguments",
+            "nullIf() in static list comprehension maps requires exactly two arguments",
+        ));
+    };
+    Ok(*expression)
+}
+
+fn merge_static_map_element_types(
+    lhs: Option<LiteralListElementType>,
+    rhs: Option<LiteralListElementType>,
+    description: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs != rhs => Err(unsupported(
+            "list_comprehension.map",
+            format!("{description} requires compatible non-null element types"),
+        )),
+        (Some(element_type), _) | (_, Some(element_type)) => Ok(Some(element_type)),
+        (None, None) => Ok(None),
     }
 }
 
@@ -11317,7 +11424,9 @@ fn compile_function_aggregate_target(
     }
 }
 
-fn collect_variable_function_arguments(cypher: &str) -> BTreeMap<(usize, usize), String> {
+fn collect_variable_function_arguments(
+    cypher: &str,
+) -> BTreeMap<(usize, usize), VariableFunctionArgument> {
     // decypher's high-level AST currently drops variable-only function
     // arguments such as count(n), id(n), and type(r); the lossless CST keeps
     // them by span.
@@ -11530,10 +11639,89 @@ fn parse_collection_filter_variable(source: &str) -> Option<String> {
     {
         return Some(stripped.replace("``", "`"));
     }
-    source
-        .chars()
-        .all(|character| character == '_' || character.is_ascii_alphanumeric())
-        .then(|| source.to_string())
+    let mut characters = source.chars();
+    let first = characters.next()?;
+    if matches!(
+        source.to_ascii_lowercase().as_str(),
+        "null" | "true" | "false"
+    ) {
+        return None;
+    }
+    (first == '_' || first.is_ascii_alphabetic())
+        .then_some(())
+        .filter(|()| {
+            characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+        })
+        .map(|()| source.to_string())
+}
+
+fn split_top_level_arguments(source: &str) -> Option<Vec<&str>> {
+    if source.trim().is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut arguments = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+    let mut start = 0usize;
+    let mut index = 0usize;
+
+    while index < source.len() {
+        let rest = source.get(index..)?;
+        let character = rest.chars().next()?;
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('\'') {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('`') {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                arguments.push(source.get(start..index)?.trim());
+                start = index + character_len;
+            }
+            _ => {}
+        }
+
+        index += character_len;
+    }
+
+    if depth != 0 || in_string || in_escaped_identifier {
+        return None;
+    }
+
+    arguments.push(source.get(start..)?.trim());
+    arguments
+        .iter()
+        .all(|argument| !argument.is_empty())
+        .then_some(arguments)
 }
 
 fn find_top_level_keyword(source: &str, keyword: &str) -> Option<usize> {
@@ -11665,23 +11853,67 @@ fn is_identifier_continue(character: char) -> bool {
     character == '_' || character.is_ascii_alphanumeric()
 }
 
-fn variable_function_argument_from_cst(node: &SyntaxNode) -> Option<((usize, usize), String)> {
+fn variable_function_argument_from_cst(
+    node: &SyntaxNode,
+) -> Option<((usize, usize), VariableFunctionArgument)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = node.text().to_string();
+    let open = source.find('(')?;
+    let close = source.rfind(')')?;
+    if close <= open {
+        return variable_function_argument_from_children(node, start, end);
+    }
+    let Some(arguments) = split_top_level_arguments(source.get(open + 1..close)?) else {
+        return variable_function_argument_from_children(node, start, end);
+    };
+    let mut variables = arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            parse_collection_filter_variable(argument).map(|variable| (index, variable))
+        });
+    let Some((index, variable)) = variables.next() else {
+        return variable_function_argument_from_children(node, start, end);
+    };
+    if variables.next().is_some() {
+        return None;
+    }
+    Some((
+        (start, end),
+        VariableFunctionArgument {
+            variable,
+            index,
+            count: arguments.len(),
+        },
+    ))
+}
+
+fn variable_function_argument_from_children(
+    node: &SyntaxNode,
+    start: usize,
+    end: usize,
+) -> Option<((usize, usize), VariableFunctionArgument)> {
     let mut variables = node
         .children()
-        .filter(|child| child.kind() == SyntaxKind::VARIABLE);
+        .filter(|child| child.kind() == SyntaxKind::VARIABLE)
+        .filter_map(|child| {
+            let source = child.text().to_string();
+            parse_collection_filter_variable(source.trim())
+        });
     let variable = variables.next()?;
     if variables.next().is_some() {
         return None;
     }
-    let variable = variable_name_from_cst(&variable)?;
-    let range = node.text_range();
-    Some(((range.start().into(), range.end().into()), variable))
-}
-
-fn variable_name_from_cst(node: &SyntaxNode) -> Option<String> {
-    node.first_token()
-        .and_then(Ident::cast)
-        .map(|ident| ident.unescape())
+    Some((
+        (start, end),
+        VariableFunctionArgument {
+            variable,
+            index: 0,
+            count: 0,
+        },
+    ))
 }
 
 fn compile_aggregate_target(
@@ -21318,6 +21550,86 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_null_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN ['name', null] | coalesce(k, 'missing')] AS coalesced_keys, \
+                    [k IN keys(service) | nullIf(k, 'tier')] AS nullified_tier, \
+                    [k IN ['fallback'] | coalesce(null, k)] AS coalesced_second_arg, \
+                    [k IN ['id'] | nullIf('id', k)] AS nullified_second_arg",
+        )
+        .expect("static list comprehension null maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("missing".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "coalesced_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("name".to_string()), Literal::Null],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "nullified_tier".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("fallback".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "coalesced_second_arg".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Null],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "nullified_second_arg".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_static_list_comprehension_null_maps_with_invalid_arguments() {
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [k IN keys(service) | coalesce(k)] AS values",
+        )
+        .expect_err("coalesce() should require at least two arguments");
+
+        assert!(
+            error.to_string().contains(
+                "coalesce() in static list comprehension maps requires at least two arguments"
+            ),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [k IN keys(service) | nullIf(k)] AS values",
+        )
+        .expect_err("nullIf() should require exactly two arguments");
+
+        assert!(
+            error.to_string().contains(
+                "nullIf() in static list comprehension maps requires exactly two arguments"
+            ),
+            "{error}"
         );
     }
 
