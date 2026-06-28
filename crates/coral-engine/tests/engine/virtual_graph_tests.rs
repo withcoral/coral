@@ -5578,6 +5578,41 @@ async fn cypher_optional_fixed_relationship_ranges_execute_as_repeated_hops() {
 }
 
 #[tokio::test]
+async fn cypher_optional_zero_hop_relationship_range_executes_as_identity() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON*0]->(target:Service) \
+         RETURN service.name AS service, target.name AS target \
+         ORDER BY service",
+    )
+    .await
+    .expect("same-label optional zero-hop relationship range should execute");
+
+    assert!(
+        !execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "target": "billing-api"}),
+            json!({"service": "deployments", "target": "deployments"}),
+            json!({"service": "experiments", "target": "experiments"}),
+            json!({"service": "legacy-sync", "target": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multihop_optional_match_where_applies_to_whole_scope() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -5687,13 +5687,22 @@ fn append_zero_length_relationship(
     plan: &mut GraphPlan,
     chain_state: &PathChainCompileState,
 ) -> Result<(), CoreError> {
-    if options.optional {
+    if options.optional && options.force_optional_path_presence {
         return Err(unsupported(
             format!(
                 "match.pattern.parts[{}].relationships[{}]",
                 options.part_index, options.chain_index
             ),
             "OPTIONAL MATCH with zero-hop relationship ranges is not supported yet because optional path length requires a relationship presence binding",
+        ));
+    }
+    if options.optional && chain_state.previous_label != next_label {
+        return Err(unsupported(
+            format!(
+                "match.pattern.parts[{}].relationships[{}]",
+                options.part_index, options.chain_index
+            ),
+            "OPTIONAL MATCH with zero-hop relationship ranges across different endpoint labels requires nullable node binding and is not supported yet",
         ));
     }
     let predicate = if chain_state.previous_label == next_label {
@@ -28624,6 +28633,43 @@ relationships:
     }
 
     #[test]
+    fn compiles_optional_zero_hop_relationship_ranges_for_same_label_endpoints() {
+        let plan = compile_cypher(
+            "MATCH (source:Service) \
+             OPTIONAL MATCH (source)-[:DEPENDS_ON*0]->(target:Service) \
+             RETURN source.name AS source, target.name AS target",
+        )
+        .expect("same-label optional zero-hop relationship range should compile");
+
+        assert!(plan.optional_relationships.is_empty());
+        assert!(plan.optional_matches.is_empty());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::KeyComparison(KeyPredicate {
+                variable: "source".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Key {
+                    variable: "target".to_string(),
+                },
+            }))
+        );
+    }
+
+    #[test]
+    fn rejects_optional_zero_hop_relationship_ranges_requiring_nullable_bindings() {
+        assert_unsupported(
+            "MATCH (source:Service) \
+             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target:Service) \
+             RETURN length(path)",
+        );
+        assert_unsupported(
+            "MATCH (person:Person) \
+             OPTIONAL MATCH (person)-[:OWNS*0]->(service:Service) \
+             RETURN service.name",
+        );
+    }
+
+    #[test]
     fn compiles_optional_match_local_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -28785,7 +28831,6 @@ relationships:
             "MATCH (a:Service)-[:DEPENDS_ON]->{1,}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*9..9]->(b:Service) RETURN a.name",
             "MATCH (a:Service) OPTIONAL MATCH (a)-[:DEPENDS_ON*1..2]->(b:Service) RETURN a.name",
-            "MATCH (a:Service) OPTIONAL MATCH (a)-[:DEPENDS_ON*0]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Person) RETURN a.name",
             "MATCH (a:Service)-[r:DEPENDS_ON*0]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[r:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
