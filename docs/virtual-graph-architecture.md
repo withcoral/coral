@@ -359,11 +359,14 @@ The supported foundation subset is intentionally narrow:
   `EXISTS { MATCH ... }` and `COUNT { MATCH ... }` predicates inside scoped
   subquery `WHERE` clauses are supported recursively for relationship and
   node-only patterns, with endpoint correlations resolved through child-local
-  aliases, parent scoped aliases, or outer `MATCH` bindings. Nested scoped
-  boolean/scalar predicates over the nested subquery scope use the same renderer
-  as top-level scoped `EXISTS`; `OPTIONAL MATCH`, `WITH`, `RETURN`, and `UNION`
-  inside scoped subqueries still require staged planning and are rejected before
-  SQL lowering;
+  aliases, parent scoped aliases, or outer `MATCH` bindings. Nested `EXISTS`
+  scoped boolean/scalar predicates can also reference parent scoped properties
+  through the same alias renderer. Nested `COUNT` relationship predicates can
+  correlate endpoints to parent scoped nodes, but parent scoped property
+  references inside the nested count's own `WHERE` predicate remain rejected
+  until that shape is lowered as a staged aggregate join. `OPTIONAL MATCH`,
+  `WITH`, `RETURN`, and `UNION` inside scoped subqueries still require staged
+  planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
   `COUNT { MATCH pattern WHERE ... FINISH }`, allowing Coral to support GQL-style
   counted pattern syntax without depending on parser-private AST recovery. The

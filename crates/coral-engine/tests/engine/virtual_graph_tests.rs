@@ -3339,6 +3339,43 @@ async fn cypher_exists_match_subqueries_support_nested_exists_complex_own_where(
 }
 
 #[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_exists_parent_scoped_property_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE EXISTS { \
+             MATCH (target)-[:DEPENDS_ON]->(leaf:Service) \
+             WHERE leaf.team <> target.team \
+           } \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("nested scoped EXISTS predicates should resolve parent scoped properties");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_n0\".\"owning_team\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exists_match_subqueries_support_nested_count_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -3369,6 +3406,38 @@ async fn cypher_exists_match_subqueries_support_nested_count_predicates() {
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_reject_nested_count_parent_scoped_property_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE COUNT { \
+             MATCH (target)-[:DEPENDS_ON]->(leaf:Service) \
+             WHERE leaf.team <> target.team \
+           } > 0 \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect_err("nested scoped COUNT predicates should reject parent scoped properties");
+
+    assert!(
+        error
+            .to_string()
+            .contains("cannot reference parent scoped variable 'target'"),
+        "{error}"
     );
 }
 

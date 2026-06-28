@@ -3501,12 +3501,26 @@ impl<'a> Lowerer<'a> {
                 parent_local_aliases,
             )?);
         }
+        let mut scoped_relationships = relationship_bindings.clone();
+        scoped_relationships.extend(parent_relationships.iter().cloned());
+        let mut scoped_local_nodes = parent_local_nodes.clone();
+        scoped_local_nodes.extend(
+            local_nodes
+                .iter()
+                .map(|(variable, node)| (*variable, *node)),
+        );
+        let mut scoped_local_aliases = parent_local_aliases.clone();
+        scoped_local_aliases.extend(
+            local_aliases
+                .iter()
+                .map(|(variable, alias)| (*variable, alias.clone())),
+        );
         conditions.extend(self.render_scoped_conditions(
             &predicate.predicates,
             predicate.predicate.as_deref(),
-            &relationship_bindings,
-            &local_nodes,
-            &local_aliases,
+            &scoped_relationships,
+            &scoped_local_nodes,
+            &scoped_local_aliases,
         )?);
         Ok(format!(
             "(SELECT {select_expression} FROM {from_clause} WHERE {})",
