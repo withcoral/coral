@@ -12757,6 +12757,46 @@ async fn cypher_static_list_case_and_coalesce_quantifiers_execute_against_synthe
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_slice_quantifiers_execute_against_synthetic_sources()
+{
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                any(key IN (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[1..2] WHERE key = 'team') AS case_slice_has_team, \
+                all(key IN coalesce(keys(person), ['fallback', 'owner'])[0..1] WHERE key <> 'deprecated') AS coalesced_slice_all_declared, \
+                none(key IN (CASE WHEN service.tier = 'prod' THEN [] ELSE ['not-prod'] END)[0..1] WHERE key = 'prod') AS tier_slice_none_prod, \
+                single(key IN coalesce(keys(person), ['fallback', 'owner'])[0..1] WHERE key STARTS WITH 'f') AS coalesced_slice_single_fallback \
+         ORDER BY service",
+    )
+    .await
+    .expect("sliced static list CASE/coalesce collection predicates should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_slice_has_team": true, "coalesced_slice_all_declared": true, "tier_slice_none_prod": true, "coalesced_slice_single_fallback": false}),
+            json!({"service": "deployments", "case_slice_has_team": true, "coalesced_slice_all_declared": true, "tier_slice_none_prod": true, "coalesced_slice_single_fallback": false}),
+            json!({"service": "experiments", "case_slice_has_team": true, "coalesced_slice_all_declared": true, "tier_slice_none_prod": true, "coalesced_slice_single_fallback": false}),
+            json!({"service": "legacy-sync", "case_slice_has_team": false, "coalesced_slice_all_declared": true, "tier_slice_none_prod": true, "coalesced_slice_single_fallback": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
