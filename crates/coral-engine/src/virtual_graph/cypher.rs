@@ -59,10 +59,12 @@ struct CompiledRelationship {
 
 const MAX_PATTERN_ALTERNATIVE_BRANCHES: usize = 64;
 const MAX_STATIC_UNWIND_BRANCHES: usize = 64;
+const MAX_STATIC_RANGE_LENGTH: usize = 4096;
 const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
 const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
+const INTERNAL_STATIC_RANGE_FUNCTION: &str = "__coral_static_range";
 
 #[derive(Debug, Clone)]
 enum StaticLabelTypeAlternativeSite {
@@ -588,8 +590,9 @@ fn compile_cypher_query_with_optional_graph(
     parameters: &BTreeMap<String, CypherParameterValue>,
     graph: Option<&Declaration>,
 ) -> Result<GraphQuery, CoreError> {
-    let normalized = normalize_compact_count_subqueries(cypher);
-    let cypher = normalized.as_ref();
+    let count_normalized = normalize_compact_count_subqueries(cypher);
+    let range_normalized = normalize_static_range_functions(count_normalized.as_ref());
+    let cypher = range_normalized.as_ref();
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
@@ -8269,6 +8272,9 @@ fn compile_optional_static_list_value(
             rhs,
             ..
         } => compile_optional_static_list_concat_value(lhs, rhs, path, plan, context),
+        Expression::FunctionCall(function) if is_internal_static_range_function(function) => {
+            compile_static_range_list_value(function, path, context).map(Some)
+        }
         Expression::FunctionCall(function) if is_reverse_function(function) => {
             compile_optional_static_list_reverse_value(function, path, plan, context)
         }
@@ -8418,6 +8424,90 @@ fn compile_optional_static_list_comprehension_value(
         literals,
         element_type,
     }))
+}
+
+fn compile_static_range_list_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let (start_argument, end_argument, step_argument) = match function.arguments.as_slice() {
+        [start, end] => (start, end, None),
+        [start, end, step] => (start, end, Some(step)),
+        _ => {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                "range() supports start, end, and optional step integer arguments",
+            ));
+        }
+    };
+
+    let start =
+        compile_static_range_integer_argument(start_argument, format!("{path}.start"), context)?;
+    let end = compile_static_range_integer_argument(end_argument, format!("{path}.end"), context)?;
+    let step = if let Some(step) = step_argument {
+        compile_static_range_integer_argument(step, format!("{path}.step"), context)?
+    } else {
+        1
+    };
+    if step == 0 {
+        return Err(unsupported(
+            format!("{path}.step"),
+            "range() step must not be zero",
+        ));
+    }
+
+    let mut literals = Vec::new();
+    let mut current = start;
+    let should_continue = |current: i64| {
+        if step > 0 {
+            current <= end
+        } else {
+            current >= end
+        }
+    };
+    while should_continue(current) {
+        if literals.len() >= MAX_STATIC_RANGE_LENGTH {
+            return Err(unsupported(
+                path.clone(),
+                format!(
+                    "static range() expands to more than {MAX_STATIC_RANGE_LENGTH} values; use a smaller range or split the query explicitly"
+                ),
+            ));
+        }
+        literals.push(Literal::Integer(current));
+        if current == end {
+            break;
+        }
+        current = current.checked_add(step).ok_or_else(|| {
+            unsupported(
+                path.clone(),
+                "range() integer expansion overflowed i64 bounds",
+            )
+        })?;
+    }
+
+    Ok(StaticListValue {
+        presence_variable: None,
+        literals,
+        element_type: Some(LiteralListElementType::Integer),
+    })
+}
+
+fn compile_static_range_integer_argument(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<i64, CoreError> {
+    let path = path.into();
+    match compile_literal(expression, path.clone(), context)? {
+        Literal::Integer(value) => Ok(value),
+        _ => Err(unsupported(
+            path,
+            "range() arguments must be integer literals",
+        )),
+    }
 }
 
 fn recover_static_list_comprehension_filter(
@@ -10538,6 +10628,11 @@ fn compile_other_function_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    if let Some(projection) =
+        compile_optional_static_list_projection(item, path.clone(), plan, context)?
+    {
+        return Ok(projection);
+    }
     if let Some(projection) =
         compile_optional_size_path_length_projection(function, item, path.clone(), state, context)?
     {
@@ -13602,6 +13697,109 @@ fn normalize_compact_count_subqueries(cypher: &str) -> Cow<'_, str> {
     Cow::Owned(normalized)
 }
 
+fn normalize_static_range_functions(cypher: &str) -> Cow<'_, str> {
+    const RANGE_KEYWORD: &str = "range";
+
+    let mut rewrites = Vec::new();
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < cypher.len() {
+        let Some(rest) = cypher.get(index..) else {
+            break;
+        };
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => {
+                in_string = true;
+                index += character_len;
+                continue;
+            }
+            '`' => {
+                in_escaped_identifier = true;
+                index += character_len;
+                continue;
+            }
+            _ => {}
+        }
+
+        if rest
+            .get(..RANGE_KEYWORD.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(RANGE_KEYWORD))
+            && keyword_has_boundaries(cypher, index, RANGE_KEYWORD.len())
+            && previous_non_whitespace(cypher, index) != Some('.')
+        {
+            let after_keyword = skip_ascii_whitespace(cypher, index + RANGE_KEYWORD.len());
+            if cypher
+                .get(after_keyword..)
+                .is_some_and(|value| value.starts_with('('))
+            {
+                rewrites.push((index, index + RANGE_KEYWORD.len()));
+                index = after_keyword + '('.len_utf8();
+                continue;
+            }
+        }
+
+        index += character_len;
+    }
+
+    if rewrites.is_empty() {
+        return Cow::Borrowed(cypher);
+    }
+
+    let mut normalized =
+        String::with_capacity(cypher.len() + rewrites.len() * INTERNAL_STATIC_RANGE_FUNCTION.len());
+    let mut cursor = 0usize;
+    for (start, end) in rewrites {
+        if let Some(prefix) = cypher.get(cursor..start) {
+            normalized.push_str(prefix);
+        }
+        normalized.push_str(INTERNAL_STATIC_RANGE_FUNCTION);
+        cursor = end;
+    }
+    if let Some(suffix) = cypher.get(cursor..) {
+        normalized.push_str(suffix);
+    }
+    Cow::Owned(normalized)
+}
+
 fn compact_count_body_should_normalize(body: &str) -> bool {
     let trimmed = body.trim_start();
     if trimmed.starts_with('(') {
@@ -13632,6 +13830,14 @@ fn skip_ascii_whitespace(source: &str, mut index: usize) -> usize {
         index += character.len_utf8();
     }
     index
+}
+
+fn previous_non_whitespace(source: &str, index: usize) -> Option<char> {
+    source
+        .get(..index)?
+        .chars()
+        .rev()
+        .find(|character| !character.is_whitespace())
 }
 
 fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
@@ -14287,6 +14493,13 @@ fn is_internal_graph_presence_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name == INTERNAL_GRAPH_PRESENCE_FUNCTION
+    )
+}
+
+fn is_internal_static_range_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name == INTERNAL_STATIC_RANGE_FUNCTION
     )
 }
 
@@ -26526,6 +26739,103 @@ relationships:
                     alias: "selected_tiers".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_range_list_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN range(1, 3) AS forward, range(3, 1, -1) AS backward, range(3, 1) AS empty",
+        )
+        .expect("static range list projections should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: forward,
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: forward_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: backward,
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: backward_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: empty,
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: empty_alias,
+                },
+            ] if forward_alias == "forward"
+                && forward == &vec![Literal::Integer(1), Literal::Integer(2), Literal::Integer(3)]
+                && backward_alias == "backward"
+                && backward == &vec![Literal::Integer(3), Literal::Integer(2), Literal::Integer(1)]
+                && empty_alias == "empty"
+                && empty.is_empty()
+        ));
+    }
+
+    #[test]
+    fn compiles_static_range_indexes_slices_and_comprehensions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 2 IN range(1, 3) \
+             RETURN range(1, 5, 2)[1] AS middle, \
+                    range(1, 5, 2)[1..] AS tail, \
+                    [x IN range(1, 3) | x * 10] AS scaled",
+        )
+        .expect("static range list expressions should compose with folded list operations");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(3)),
+                    alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: tail,
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: tail_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: scaled,
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: scaled_alias,
+                },
+            ] if alias == "middle"
+                && tail_alias == "tail"
+                && tail == &vec![Literal::Integer(3), Literal::Integer(5)]
+                && scaled_alias == "scaled"
+                && scaled == &vec![Literal::Integer(10), Literal::Integer(20), Literal::Integer(30)]
+        ));
+    }
+
+    #[test]
+    fn rejects_static_range_with_zero_step() {
+        let error = compile_cypher(
+            "UNWIND range(1, 3, 0) AS ordinal \
+             MATCH (service:Service) \
+             RETURN ordinal AS ordinal",
+        )
+        .expect_err("zero-step static range should be rejected");
+
+        assert!(
+            error.to_string().contains("step must not be zero"),
+            "{error}"
         );
     }
 

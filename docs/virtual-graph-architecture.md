@@ -99,11 +99,13 @@ predicates and static comprehensions remain semantically correct without
 introducing SQL-rendering shortcuts in the frontend.
 
 Some Cypher constructs are blocked before Coral compilation because the current
-parser dependency does not accept or fully preserve their standard syntax. Known
-frontend blockers include unsupported dynamic list-comprehension sources or map
-expressions, and the built-in `range(start, end[, step])` function. These
-should be addressed in the parser frontend or shared expression IR rather than
-by query-string rewriting in Coral.
+parser dependency does not accept or fully preserve their standard syntax. Coral
+keeps narrow source-compatibility normalizers for parser gaps that can lower
+directly into existing IR, currently compact counted patterns and static
+`range(start, end[, step])`. Broader frontend blockers, such as unsupported
+dynamic list-comprehension sources or map expressions, should be addressed in
+the parser frontend or shared expression IR rather than by broad query-string
+rewriting in Coral.
 
 The supported foundation subset is intentionally narrow:
 
@@ -304,8 +306,9 @@ The supported foundation subset is intentionally narrow:
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;
-- single-part static `UNWIND` over literal lists, list parameters, and folded
-  static list expressions. The Cypher frontend expands these into capped
+- single-part static `UNWIND` over literal lists, list parameters, static
+  `range(...)`, and folded static list expressions. The Cypher frontend expands
+  these into capped
   `UNION ALL` branches and substitutes the unwind variable as a scalar literal
   before normal graph planning. Duplicate list elements are intentionally
   preserved, aggregate projections are hoisted through the same outer union

@@ -1250,6 +1250,80 @@ async fn cypher_static_unwind_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_range_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND range(1, 3) AS ordinal \
+         MATCH (service:Service) \
+         WHERE service.id = ordinal * 10 \
+         RETURN ordinal AS ordinal, service.name AS service \
+         ORDER BY ordinal",
+    )
+    .await
+    .expect("static range UNWIND query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"ordinal": 1, "service": "billing-api"}),
+            json!({"ordinal": 2, "service": "deployments"}),
+            json!({"ordinal": 3, "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_unwind_parameterized_range_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "start".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(1)),
+        ),
+        (
+            "end".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(4)),
+        ),
+        (
+            "step".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::Integer(2)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND range($start, $end, $step) AS ordinal \
+         MATCH (service:Service) \
+         WHERE service.id = ordinal * 10 \
+         RETURN ordinal AS ordinal, service.name AS service \
+         ORDER BY ordinal",
+        &parameters,
+    )
+    .await
+    .expect("parameterized static range UNWIND query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"ordinal": 1, "service": "billing-api"}),
+            json!({"ordinal": 3, "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_unwind_duplicate_aggregates_execute_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
