@@ -191,9 +191,9 @@ The supported foundation subset is intentionally narrow:
   filters over the item variable, literals, scalar parameters, comparisons,
   string predicates (`STARTS WITH`, `ENDS WITH`, `CONTAINS`, and regex), `IN`
   static lists, `IS NULL`, and `AND`/`OR`/`XOR`/`NOT` are evaluated before SQL
-  lowering. Static map expressions over folded items support
-  identity, scalar literals and parameters, `toString`, string case conversion,
-  trim variants, and `replace`;
+  lowering. Static map expressions over folded items support identity, scalar
+  literals and parameters, numeric arithmetic, predicate-valued maps,
+  `toString`, string case conversion, trim variants, and `replace`;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal

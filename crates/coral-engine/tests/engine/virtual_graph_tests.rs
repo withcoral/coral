@@ -10370,6 +10370,55 @@ async fn cypher_static_list_comprehension_string_filters_execute_against_synthet
 }
 
 #[tokio::test]
+async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "weights".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::Integer(2),
+            GraphLiteral::Integer(4),
+            GraphLiteral::Null,
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [x IN [1, 2, 3] | x + 1] AS incremented, \
+                [x IN [1.5, 2.5] | x * 2] AS doubled, \
+                [x IN $weights | x / 2] AS halved_weights, \
+                [k IN keys(service) | k STARTS WITH 't'] AS t_flags \
+         ORDER BY owner, service",
+        &parameters,
+    )
+    .await
+    .expect("numeric static list comprehension maps should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array(2, 3, 4) AS \"incremented\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

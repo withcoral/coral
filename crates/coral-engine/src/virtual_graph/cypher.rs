@@ -7167,19 +7167,203 @@ fn evaluate_static_map_expression(
                 evaluation.variable,
             ),
         )),
-        Expression::Literal(_)
-        | Expression::Parameter(_)
-        | Expression::UnaryOp {
+        Expression::Literal(_) | Expression::Parameter(_) => {
+            compile_literal(expression, path, evaluation.context)
+        }
+        Expression::UnaryOp {
             op: UnaryOperator::Negate,
+            operand,
             ..
-        } => compile_literal(expression, path, evaluation.context),
+        } => evaluate_static_map_numeric_negation(operand, evaluation, path),
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            ..
+        }
+        | Expression::Comparison { .. }
+        | Expression::In { .. }
+        | Expression::IsNull { .. }
+        | Expression::BinaryOp {
+            op: CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor,
+            ..
+        } => evaluate_static_filter_predicate_expression(expression, evaluation, path)
+            .map(static_boolean_outcome_literal),
+        Expression::BinaryOp { op, lhs, rhs, .. } => {
+            evaluate_static_map_arithmetic(*op, lhs, rhs, evaluation, path)
+        }
         Expression::FunctionCall(function) => {
             evaluate_static_map_function(function, path, evaluation)
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), and replace()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), and replace()",
         )),
+    }
+}
+
+fn evaluate_static_map_numeric_negation(
+    operand: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match evaluate_static_map_expression(operand, evaluation, format!("{path}.operand"))? {
+        Literal::Integer(value) => value
+            .checked_neg()
+            .map(Literal::Integer)
+            .ok_or_else(|| unsupported(path, "static numeric map negation overflowed i64")),
+        Literal::Float(value) => Ok(Literal::Float(OrderedFloat(-value.into_inner()))),
+        Literal::Null => Ok(Literal::Null),
+        _ => Err(unsupported(
+            path,
+            "static numeric map negation requires numeric operands",
+        )),
+    }
+}
+
+fn evaluate_static_map_arithmetic(
+    operator: CypherBinaryOperator,
+    lhs: &Expression,
+    rhs: &Expression,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let operator = compile_arithmetic_operator(operator, format!("{path}.operator"))?;
+    let lhs = evaluate_static_map_expression(lhs, evaluation, format!("{path}.lhs"))?;
+    let rhs = evaluate_static_map_expression(rhs, evaluation, format!("{path}.rhs"))?;
+    evaluate_static_literal_arithmetic(&lhs, operator, &rhs, path)
+}
+
+fn evaluate_static_literal_arithmetic(
+    lhs: &Literal,
+    operator: ArithmeticOperator,
+    rhs: &Literal,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let Some(lhs) = StaticNumericLiteral::from_literal(lhs, format!("{path}.lhs"))? else {
+        return Ok(Literal::Null);
+    };
+    let Some(rhs) = StaticNumericLiteral::from_literal(rhs, format!("{path}.rhs"))? else {
+        return Ok(Literal::Null);
+    };
+    if lhs.is_integer() && rhs.is_integer() {
+        let left = lhs.as_i64();
+        let right = rhs.as_i64();
+        match operator {
+            ArithmeticOperator::Add => {
+                return left
+                    .checked_add(right)
+                    .map(Literal::Integer)
+                    .ok_or_else(|| {
+                        unsupported(path, "static integer map addition overflowed i64")
+                    });
+            }
+            ArithmeticOperator::Subtract => {
+                return left
+                    .checked_sub(right)
+                    .map(Literal::Integer)
+                    .ok_or_else(|| {
+                        unsupported(path, "static integer map subtraction overflowed i64")
+                    });
+            }
+            ArithmeticOperator::Multiply => {
+                return left
+                    .checked_mul(right)
+                    .map(Literal::Integer)
+                    .ok_or_else(|| {
+                        unsupported(path, "static integer map multiplication overflowed i64")
+                    });
+            }
+            ArithmeticOperator::Modulo => {
+                if right == 0 {
+                    return Err(unsupported(path, "static integer map modulo by zero"));
+                }
+                return left
+                    .checked_rem(right)
+                    .map(Literal::Integer)
+                    .ok_or_else(|| unsupported(path, "static integer map modulo overflowed i64"));
+            }
+            ArithmeticOperator::Divide | ArithmeticOperator::Power => {}
+        }
+    }
+
+    let left = lhs.as_f64();
+    let right = rhs.as_f64();
+    let value = match operator {
+        ArithmeticOperator::Add => left + right,
+        ArithmeticOperator::Subtract => left - right,
+        ArithmeticOperator::Multiply => left * right,
+        ArithmeticOperator::Divide => {
+            if right == 0.0 {
+                return Err(unsupported(path, "static numeric map division by zero"));
+            }
+            left / right
+        }
+        ArithmeticOperator::Modulo => {
+            if right == 0.0 {
+                return Err(unsupported(path, "static numeric map modulo by zero"));
+            }
+            left % right
+        }
+        ArithmeticOperator::Power => left.powf(right),
+    };
+    if !value.is_finite() {
+        return Err(unsupported(
+            path,
+            "static numeric map expression produced a non-finite float",
+        ));
+    }
+    Ok(Literal::Float(OrderedFloat(value)))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StaticNumericLiteral {
+    Integer(i64),
+    Float(f64),
+}
+
+impl StaticNumericLiteral {
+    fn from_literal(literal: &Literal, path: impl Into<String>) -> Result<Option<Self>, CoreError> {
+        match literal {
+            Literal::Integer(value) => Ok(Some(Self::Integer(*value))),
+            Literal::Float(value) => Ok(Some(Self::Float(value.into_inner()))),
+            Literal::Null => Ok(None),
+            _ => Err(unsupported(
+                path,
+                "static numeric map expressions require numeric operands",
+            )),
+        }
+    }
+
+    fn is_integer(self) -> bool {
+        matches!(self, Self::Integer(_))
+    }
+
+    fn as_i64(self) -> i64 {
+        match self {
+            Self::Integer(value) => value,
+            Self::Float(_) => unreachable!("float numeric literal has no i64 value"),
+        }
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "static numeric map folding follows SQL numeric promotion for mixed/inexact arithmetic"
+    )]
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Integer(value) => value as f64,
+            Self::Float(value) => value,
+        }
+    }
+}
+
+fn static_boolean_outcome_literal(outcome: StaticBooleanOutcome) -> Literal {
+    match outcome {
+        StaticBooleanOutcome::True => Literal::Boolean(true),
+        StaticBooleanOutcome::False => Literal::Boolean(false),
+        StaticBooleanOutcome::Unknown => Literal::Null,
     }
 }
 
@@ -7438,15 +7622,45 @@ fn static_list_comprehension_map_element_type(
         Expression::Variable(variable_ref) if variable_name(variable_ref) == variable => {
             Ok(source_element_type)
         }
-        Expression::Literal(_) | Expression::UnaryOp { .. } => Ok(literal_list_element_kind(
-            &compile_literal(expression, "list_comprehension.map", context)?,
-        )),
+        Expression::Literal(_) => Ok(literal_list_element_kind(&compile_literal(
+            expression,
+            "list_comprehension.map",
+            context,
+        )?)),
         Expression::Parameter(parameter) => {
             match context.parameter_value(parameter, "list_comprehension.map")? {
                 CypherParameterValue::Literal(literal) => Ok(literal_list_element_kind(literal)),
                 CypherParameterValue::List(_) => Ok(None),
             }
         }
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        } => match source_element_type {
+            Some(LiteralListElementType::Integer | LiteralListElementType::Float) => {
+                Ok(source_element_type)
+            }
+            _ => Ok(None),
+        },
+        Expression::UnaryOp {
+            op: UnaryOperator::Not,
+            ..
+        }
+        | Expression::Comparison { .. }
+        | Expression::In { .. }
+        | Expression::IsNull { .. }
+        | Expression::BinaryOp {
+            op: CypherBinaryOperator::And | CypherBinaryOperator::Or | CypherBinaryOperator::Xor,
+            ..
+        } => Ok(Some(LiteralListElementType::Boolean)),
+        Expression::BinaryOp { op, lhs, rhs, .. } => static_map_arithmetic_element_type(
+            *op,
+            lhs,
+            rhs,
+            variable,
+            source_element_type,
+            context,
+        ),
         Expression::FunctionCall(function)
             if is_to_string_function(function)
                 || is_to_lower_function(function)
@@ -7460,6 +7674,36 @@ fn static_list_comprehension_map_element_type(
         }
         _ => Ok(None),
     }
+}
+
+fn static_map_arithmetic_element_type(
+    operator: CypherBinaryOperator,
+    lhs: &Expression,
+    rhs: &Expression,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let operator = compile_arithmetic_operator(operator, "list_comprehension.map.operator")?;
+    if matches!(
+        operator,
+        ArithmeticOperator::Divide | ArithmeticOperator::Power
+    ) {
+        return Ok(Some(LiteralListElementType::Float));
+    }
+    let left =
+        static_list_comprehension_map_element_type(lhs, variable, source_element_type, context)?;
+    let right =
+        static_list_comprehension_map_element_type(rhs, variable, source_element_type, context)?;
+    Ok(match (left, right) {
+        (Some(LiteralListElementType::Float), _) | (_, Some(LiteralListElementType::Float)) => {
+            Some(LiteralListElementType::Float)
+        }
+        (Some(LiteralListElementType::Integer), Some(LiteralListElementType::Integer)) => {
+            Some(LiteralListElementType::Integer)
+        }
+        _ => None,
+    })
 }
 
 fn compile_optional_static_list_slice_value(
@@ -20598,6 +20842,74 @@ relationships:
                         element_type: LiteralListElementType::String,
                     },
                     alias: "regex_t".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_numeric_and_boolean_static_list_comprehension_maps() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "weights".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::Integer(2),
+                Literal::Integer(4),
+                Literal::Null,
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [1, 2, 3] | x + 1] AS incremented, \
+                    [x IN [1.5, 2.5] | x * 2] AS doubled, \
+                    [x IN $weights | x / 2] AS halved_weights, \
+                    [k IN keys(service) | k STARTS WITH 't'] AS t_flags",
+            &parameters,
+        )
+        .expect("numeric and boolean static list comprehension maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Integer(2),
+                            Literal::Integer(3),
+                            Literal::Integer(4)
+                        ],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "incremented".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(3.0)),
+                            Literal::Float(OrderedFloat(5.0))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "doubled".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.0)),
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "halved_weights".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Boolean(false), Literal::Boolean(true)],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "t_flags".to_string(),
                 },
             ]
         );
