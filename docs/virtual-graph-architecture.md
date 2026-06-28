@@ -135,7 +135,11 @@ The supported foundation subset is intentionally narrow:
   through the same declaration-aware tabular contract, with aliases used as
   output column prefixes;
 - named node variables where the first binding has one static label and
-  repeated bindings may omit the label;
+  repeated bindings may omit the label. In declaration-aware compilation,
+  fresh named and anonymous endpoints may omit the label when the exact typed
+  relationship pattern and graph declaration infer one unique endpoint label;
+  declaration-free compilation keeps rejecting first-bound named variables and
+  anonymous nodes without labels;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers

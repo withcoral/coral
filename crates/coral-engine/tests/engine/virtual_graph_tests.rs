@@ -158,6 +158,40 @@ async fn cypher_graph_aware_label_inference_executes_against_synthetic_sources()
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_anonymous_label_inference_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH ()-[:ROUTES]->(service:Service) \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("graph-aware Cypher should infer the anonymous Person endpoint");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"person_service_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_label_inference_preserves_unmatched_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

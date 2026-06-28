@@ -5622,7 +5622,7 @@ fn compile_pattern_part_into(
         start,
         plan,
         fresh_internal_node_variable(plan, part_index, 0),
-        node_label_hint(start, &label_hints),
+        path_node_label_hint(start, 0, &label_hints),
         format!("match.pattern.parts[{part_index}].nodes[0]"),
         context,
     )?;
@@ -5697,17 +5697,17 @@ fn infer_path_node_label_hints(
     plan: &GraphPlan,
     graph: Option<&Declaration>,
     path: impl Into<String>,
-) -> Result<BTreeMap<String, String>, CoreError> {
+) -> Result<PathNodeLabelHints, CoreError> {
     let path = path.into();
     let Some(graph) = graph else {
-        return Ok(BTreeMap::new());
+        return Ok(PathNodeLabelHints::default());
     };
 
     let mut nodes = Vec::with_capacity(chains.len() + 1);
     nodes.push(start);
     nodes.extend(chains.iter().map(|chain| &chain.node));
 
-    let mut labels = explicit_and_bound_path_node_labels(&nodes, plan, &path)?;
+    let mut labels = explicit_and_bound_path_node_label_hints(&nodes, plan, &path)?;
     let mut changed = true;
     while changed {
         changed = false;
@@ -5728,16 +5728,9 @@ fn infer_path_node_label_hints(
             let right_node = nodes
                 .get(index + 1)
                 .ok_or_else(|| CoreError::internal("path label inference right node missing"))?;
-            let left_variable = path_node_variable(left_node);
-            let right_variable = path_node_variable(right_node);
-            let left_label = left_variable
-                .as_ref()
-                .and_then(|variable| labels.get(variable))
-                .cloned();
-            let right_label = right_variable
-                .as_ref()
-                .and_then(|variable| labels.get(variable))
-                .cloned();
+            let left_label = path_node_label_hint(left_node, index, &labels).map(str::to_string);
+            let right_label =
+                path_node_label_hint(right_node, index + 1, &labels).map(str::to_string);
             let compatible_pairs = pairs
                 .iter()
                 .filter(|(left, right)| {
@@ -5750,23 +5743,21 @@ fn infer_path_node_label_hints(
             }
 
             let relationship_path = format!("{path}.relationships[{index}]");
-            if left_label.is_none()
-                && let Some(variable) = left_variable
-            {
+            if left_label.is_none() {
                 changed |= infer_path_node_label(
                     &mut labels,
-                    &variable,
+                    left_node,
+                    index,
                     compatible_pairs.iter().map(|(left, _)| left.as_str()),
                     &relationship_type,
                     &relationship_path,
                 )?;
             }
-            if right_label.is_none()
-                && let Some(variable) = right_variable
-            {
+            if right_label.is_none() {
                 changed |= infer_path_node_label(
                     &mut labels,
-                    &variable,
+                    right_node,
+                    index + 1,
                     compatible_pairs.iter().map(|(_, right)| right.as_str()),
                     &relationship_type,
                     &relationship_path,
@@ -5777,25 +5768,37 @@ fn infer_path_node_label_hints(
     Ok(labels)
 }
 
-fn explicit_and_bound_path_node_labels(
+#[derive(Default)]
+struct PathNodeLabelHints {
+    variables: BTreeMap<String, String>,
+    positions: BTreeMap<usize, String>,
+}
+
+fn explicit_and_bound_path_node_label_hints(
     nodes: &[&CypherNodePattern],
     plan: &GraphPlan,
     path: &str,
-) -> Result<BTreeMap<String, String>, CoreError> {
-    let mut labels = BTreeMap::new();
+) -> Result<PathNodeLabelHints, CoreError> {
+    let mut labels = PathNodeLabelHints::default();
     for (index, node) in nodes.iter().enumerate() {
-        let Some(variable) = path_node_variable(node) else {
-            continue;
-        };
-        if let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable) {
-            labels.insert(variable.clone(), existing.label.clone());
+        if let Some(variable) = path_node_variable(node)
+            && let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable)
+        {
+            record_path_node_label_hint(
+                &mut labels,
+                node,
+                index,
+                existing.label.clone(),
+                format!("{path}.nodes[{index}]"),
+            )?;
         }
         if let Some(label) =
             optional_single_static_label(&node.labels, format!("{path}.nodes[{index}].labels"))?
         {
-            record_path_node_label(
+            record_path_node_label_hint(
                 &mut labels,
-                &variable,
+                node,
+                index,
                 label,
                 format!("{path}.nodes[{index}]"),
             )?;
@@ -5804,7 +5807,20 @@ fn explicit_and_bound_path_node_labels(
     Ok(labels)
 }
 
-fn record_path_node_label(
+fn record_path_node_label_hint(
+    labels: &mut PathNodeLabelHints,
+    node: &CypherNodePattern,
+    index: usize,
+    label: String,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    if let Some(variable) = path_node_variable(node) {
+        return record_path_variable_label(&mut labels.variables, &variable, label, path);
+    }
+    record_path_position_label(&mut labels.positions, index, label, path)
+}
+
+fn record_path_variable_label(
     labels: &mut BTreeMap<String, String>,
     variable: &str,
     label: String,
@@ -5825,9 +5841,31 @@ fn record_path_node_label(
     }
 }
 
+fn record_path_position_label(
+    labels: &mut BTreeMap<usize, String>,
+    index: usize,
+    label: String,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    match labels.get(&index) {
+        Some(existing) if existing == &label => Ok(false),
+        Some(existing) => Err(unsupported(
+            path,
+            format!(
+                "anonymous node at path position {index} has conflicting inferred labels '{existing}' and '{label}'"
+            ),
+        )),
+        None => {
+            labels.insert(index, label);
+            Ok(true)
+        }
+    }
+}
+
 fn infer_path_node_label<'a>(
-    labels: &mut BTreeMap<String, String>,
-    variable: &str,
+    labels: &mut PathNodeLabelHints,
+    node: &CypherNodePattern,
+    index: usize,
     candidates: impl Iterator<Item = &'a str>,
     relationship_type: &str,
     path: &str,
@@ -5835,9 +5873,10 @@ fn infer_path_node_label<'a>(
     let candidates = candidates.collect::<BTreeSet<_>>();
     match candidates.len() {
         0 => Ok(false),
-        1 => record_path_node_label(
+        1 => record_path_node_label_hint(
             labels,
-            variable,
+            node,
+            index,
             candidates
                 .into_iter()
                 .next()
@@ -5848,10 +5887,18 @@ fn infer_path_node_label<'a>(
         _ => Err(unsupported(
             path,
             format!(
-                "relationship pattern could not infer a unique label for node variable '{variable}' from '{relationship_type}' mappings; add an explicit node label"
+                "relationship pattern could not infer a unique label for {} from '{relationship_type}' mappings; add an explicit node label",
+                path_node_description(node, index)
             ),
         )),
     }
+}
+
+fn path_node_description(node: &CypherNodePattern, index: usize) -> String {
+    path_node_variable(node).map_or_else(
+        || format!("anonymous node at path position {index}"),
+        |variable| format!("node variable '{variable}'"),
+    )
 }
 
 fn relationship_label_inference_descriptor(
@@ -5969,18 +6016,22 @@ fn path_node_variable(node: &CypherNodePattern) -> Option<String> {
     node.variable.as_ref().map(variable_name)
 }
 
-fn node_label_hint<'a>(
+fn path_node_label_hint<'a>(
     node: &CypherNodePattern,
-    hints: &'a BTreeMap<String, String>,
+    index: usize,
+    hints: &'a PathNodeLabelHints,
 ) -> Option<&'a str> {
-    path_node_variable(node).and_then(|variable| hints.get(&variable).map(String::as_str))
+    path_node_variable(node)
+        .and_then(|variable| hints.variables.get(&variable))
+        .or_else(|| hints.positions.get(&index))
+        .map(String::as_str)
 }
 
 fn compile_path_chain_into(
     chain: &PatternElementChain,
     options: PathChainCompileOptions,
     chain_state: &mut PathChainCompileState,
-    label_hints: &BTreeMap<String, String>,
+    label_hints: &PathNodeLabelHints,
     plan: &mut GraphPlan,
     state: &mut CypherCompileState,
     context: &CypherCompileContext,
@@ -5994,7 +6045,7 @@ fn compile_path_chain_into(
         &chain.node,
         plan,
         fresh_internal_node_variable(plan, options.part_index, options.chain_index + 1),
-        node_label_hint(&chain.node, label_hints),
+        path_node_label_hint(&chain.node, options.chain_index + 1, label_hints),
         node_path,
         context,
     )?;
@@ -6780,12 +6831,8 @@ fn compile_node(
         Some(variable) => validate_variable(variable)?,
         None => anonymous_variable,
     };
-    let label =
-        optional_single_static_label(&pattern.labels, format!("{path}.labels"))?.or_else(|| {
-            (!is_anonymous)
-                .then(|| label_hint.map(str::to_string))
-                .flatten()
-        });
+    let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?
+        .or_else(|| label_hint.map(str::to_string));
     if is_anonymous && label.is_none() {
         return Err(unsupported(
             format!("{path}.labels"),
@@ -30220,6 +30267,90 @@ relationships:
     }
 
     #[test]
+    fn graph_aware_cypher_infers_anonymous_outgoing_endpoint_labels() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:OWNS]->() RETURN person.name",
+        )
+        .expect("graph declaration should infer the anonymous outgoing endpoint");
+
+        let anonymous = plan
+            .nodes
+            .iter()
+            .find(|node| node.variable.starts_with("__coral_node_"))
+            .expect("anonymous endpoint should be bound internally");
+        assert_eq!(anonymous.label, "Service");
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: anonymous.variable.clone(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_anonymous_incoming_endpoint_labels() {
+        let graph = route_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH ()-[:ROUTES]->(service:Service) RETURN service.name",
+        )
+        .expect("graph declaration should infer the anonymous incoming endpoint");
+
+        let anonymous = plan
+            .nodes
+            .iter()
+            .find(|node| node.variable.starts_with("__coral_node_"))
+            .expect("anonymous endpoint should be bound internally");
+        assert_eq!(anonymous.label, "Person");
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "ROUTES".to_string(),
+                left: anonymous.variable.clone(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_anonymous_fixed_and_zero_hop_endpoint_labels() {
+        let graph = route_test_graph();
+        let fixed = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:ROUTES*2]->() RETURN person.name",
+        )
+        .expect("graph declaration should infer the anonymous fixed-hop endpoint");
+        assert!(
+            fixed.nodes.iter().any(|node| {
+                node.variable.starts_with("__coral_node_") && node.label == "Incident"
+            }),
+            "fixed-hop anonymous endpoint label was not inferred: {:?}",
+            fixed.nodes
+        );
+
+        let zero = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:ROUTES*0]->() RETURN person.name",
+        )
+        .expect("graph declaration should infer the anonymous zero-hop endpoint");
+        assert!(
+            zero.nodes.iter().any(|node| {
+                node.variable.starts_with("__coral_node_") && node.label == "Person"
+            }),
+            "zero-hop anonymous endpoint label was not inferred: {:?}",
+            zero.nodes
+        );
+    }
+
+    #[test]
     fn graph_aware_cypher_preserves_fixed_length_intermediate_ambiguity() {
         let graph = route_test_graph();
         let error = compile_cypher_for_graph(
@@ -30273,6 +30404,23 @@ relationships:
 
         assert!(
             error.to_string().contains("could not infer a unique label"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_ambiguous_anonymous_endpoint_labels() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH ()-[:OWNS]->(service:Service) RETURN service.name",
+        )
+        .expect_err("ambiguous anonymous endpoint labels should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("anonymous node at path position 0"),
             "{error:?}"
         );
     }
