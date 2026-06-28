@@ -14972,7 +14972,7 @@ fn evaluate_static_filter_predicate_expression(
         }
         _ => Err(unsupported(
             path,
-            "collection predicate item predicates support the filter variable, literals, parameters, comparisons, IN static lists, IS NULL, and AND/OR/XOR/NOT",
+            "collection predicate item predicates support the filter variable, literals, parameters, folded scalar expressions, comparisons, IN static lists, IS NULL, and AND/OR/XOR/NOT",
         )),
     }
 }
@@ -15085,10 +15085,56 @@ fn compile_static_filter_literal_operand(
                 evaluation.variable,
             ),
         )),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            ..
+        }
+        | Expression::BinaryOp {
+            op:
+                CypherBinaryOperator::Add
+                | CypherBinaryOperator::Subtract
+                | CypherBinaryOperator::Multiply
+                | CypherBinaryOperator::Divide
+                | CypherBinaryOperator::Modulo
+                | CypherBinaryOperator::Power,
+            ..
+        } => evaluate_static_map_expression(expression, evaluation, path),
+        Expression::FunctionCall(function) if is_static_map_operand_function(function) => {
+            evaluate_static_map_expression(expression, evaluation, path)
+        }
         _ => {
             compile_predicate_literal_in_mode(expression, path, evaluation.mode, evaluation.context)
         }
     }
+}
+
+fn is_static_map_operand_function(function: &FunctionInvocation) -> bool {
+    is_coalesce_function(function)
+        || is_null_if_function(function)
+        || is_character_length_function(function)
+        || is_static_map_cast_function(function)
+        || is_static_map_numeric_function(function)
+        || static_map_string_function_returns_string(function)
+}
+
+fn is_static_map_cast_function(function: &FunctionInvocation) -> bool {
+    is_to_string_function(function)
+        || is_to_string_or_null_function(function)
+        || is_to_integer_function(function)
+        || is_to_integer_or_null_function(function)
+        || is_to_float_function(function)
+        || is_to_float_or_null_function(function)
+        || is_to_boolean_function(function)
+        || is_to_boolean_or_null_function(function)
+}
+
+fn is_static_map_numeric_function(function: &FunctionInvocation) -> bool {
+    is_abs_function(function)
+        || is_ceil_function(function)
+        || is_floor_function(function)
+        || is_round_function(function)
+        || is_sqrt_function(function)
+        || is_sign_function(function)
 }
 
 fn evaluate_static_literal_comparison(
@@ -22098,6 +22144,54 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_expression_filters() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service) WHERE toUpper(k) STARTS WITH 'T'] AS upper_t_keys, \
+                    [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
+                    [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values, \
+                    [x IN [1.2, 2.8] WHERE floor(x) = 2.0] AS floored_values",
+        )
+        .expect("static list comprehension expression filters should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "upper_t_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("2".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "numeric_strings".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(2), Literal::Integer(3)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "arithmetic_values".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Float(OrderedFloat(2.8))],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "floored_values".to_string(),
+                },
+            ]
         );
     }
 

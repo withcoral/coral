@@ -10268,7 +10268,10 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
                 service.name AS service, \
                 [k IN keys(service) WHERE k IN ['name', 'tier']] AS exposed_keys, \
                 [k IN $selected_keys WHERE k IN keys(service)] AS selected_existing_keys, \
-                [k IN ['name', null, 'tier'] WHERE k IS NOT NULL] AS non_null_literals \
+                [k IN ['name', null, 'tier'] WHERE k IS NOT NULL] AS non_null_literals, \
+                [k IN keys(service) WHERE toUpper(k) STARTS WITH 'T'] AS upper_t_keys, \
+                [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
+                [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values \
          ORDER BY owner, service",
         &parameters,
     )
@@ -10285,9 +10288,9 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
         ]
     );
 }
