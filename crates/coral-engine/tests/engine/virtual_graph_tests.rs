@@ -9528,6 +9528,57 @@ async fn cypher_static_list_tail_functions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_reverse_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("name".to_string()),
+            GraphLiteral::String("tier".to_string()),
+            GraphLiteral::String("risk".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE head(reverse(keys(service))) = 'tier' \
+           AND any(key IN reverse(keys(service)) WHERE key = 'name') \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                reverse(keys(service)) AS service_keys_reversed, \
+                reverse(labels(service) + keys(service)) AS metadata_reversed, \
+                tail(reverse($selected_keys)) AS selected_reversed_tail, \
+                size(reverse(labels(service) + keys(service))) AS metadata_size \
+         ORDER BY reverse(keys(service)), owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static reverse() list functions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('tier', 'team', 'risk', 'name', 'id', 'active') AS \"service_keys_reversed\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_keys_reversed": ["tier", "team", "risk", "name", "id", "active"], "metadata_reversed": ["tier", "team", "risk", "name", "id", "active", "Service"], "selected_reversed_tail": ["tier", "name"], "metadata_size": 7}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_keys_reversed": ["tier", "team", "risk", "name", "id", "active"], "metadata_reversed": ["tier", "team", "risk", "name", "id", "active", "Service"], "selected_reversed_tail": ["tier", "name"], "metadata_size": 7}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_keys_reversed": ["tier", "team", "risk", "name", "id", "active"], "metadata_reversed": ["tier", "team", "risk", "name", "id", "active", "Service"], "selected_reversed_tail": ["tier", "name"], "metadata_size": 7}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

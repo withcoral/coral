@@ -149,10 +149,11 @@ The supported foundation subset is intentionally narrow:
   and preserving optional nulls for nullable bindings. Empty static slices are
   carried through the IR as typed folded lists so DataFusion can render typed
   empty arrays instead of ambiguous `make_array()` values;
-- `head(...)`, `last(...)`, and `tail(...)` over literal lists, list
-  parameters, and static metadata lists, folded at compile time with `NULL` for
-  empty matched lists in `head(...)` / `last(...)`, typed empty-list results for
-  `tail(...)`, and optional null preservation for nullable graph bindings;
+- `head(...)`, `last(...)`, `tail(...)`, and list-valued `reverse(...)` over
+  literal lists, list parameters, and static metadata lists, folded at compile
+  time with `NULL` for empty matched lists in `head(...)` / `last(...)`, typed
+  empty-list results for `tail(...)` and `reverse(...)`, and optional null
+  preservation for nullable graph bindings;
 - static list concatenation with `+` over literal lists, list parameters,
   `tail(...)`, `labels(...)`, and declaration-aware `keys(...)`, folded at
   compile time and preserved as typed list IR in projections, `ORDER BY`,

@@ -6230,6 +6230,27 @@ fn compile_optional_static_list_value(
             rhs,
             ..
         } => compile_optional_static_list_concat_value(lhs, rhs, path, plan, context),
+        Expression::FunctionCall(function) if is_reverse_function(function) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    "reverse() requires exactly one argument",
+                ));
+            };
+            let Some(value) = compile_optional_static_list_value(
+                argument,
+                format!("{path}.arguments[0]"),
+                plan,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(reverse_static_list_value(
+                value,
+                format!("{path}.arguments[0]"),
+            )?))
+        }
         Expression::FunctionCall(function) if is_tail_function(function) => {
             let [argument] = function.arguments.as_slice() else {
                 return Err(unsupported(
@@ -6288,6 +6309,26 @@ fn compile_optional_static_list_value(
             }
         }
     }
+}
+
+fn reverse_static_list_value(
+    value: StaticListValue,
+    path: impl Into<String>,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let Some(element_type) = value.element_type else {
+        return Err(unsupported(
+            path,
+            "reverse() requires a list with a known non-null element type",
+        ));
+    };
+    let mut literals = value.literals;
+    literals.reverse();
+    Ok(StaticListValue {
+        presence_variable: value.presence_variable,
+        literals,
+        element_type: Some(element_type),
+    })
 }
 
 fn compile_optional_static_list_concat_value(
@@ -7545,9 +7586,26 @@ fn compile_reverse_scalar_expression(
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "reverse() requires exactly one argument",
+        ));
+    };
+    if let Some(value) =
+        compile_optional_static_list_value(argument, format!("{path}.arguments[0]"), plan, context)?
+    {
+        let argument_path = format!("{path}.arguments[0]");
+        let value = reverse_static_list_value(value, argument_path.clone())?;
+        return static_list_value_scalar_expression(value, argument_path);
+    }
     Ok(ScalarExpression::Reverse {
-        expression: Box::new(compile_single_scalar_function_argument(
-            function, path, "reverse", plan, context,
+        expression: Box::new(compile_scalar_expression_in_mode(
+            argument,
+            format!("{path}.arguments[0]"),
+            plan,
+            context,
         )?),
     })
 }
@@ -17414,6 +17472,139 @@ relationships:
                 nulls: None,
             }]
         );
+    }
+
+    #[test]
+    fn compiles_static_list_reverse_function() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+                Literal::String("test".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE head(reverse(keys(service))) = 'tier' \
+               AND any(key IN reverse(keys(service)) WHERE key = 'name') \
+             RETURN reverse(keys(service)) AS service_keys_reversed, \
+                    reverse(labels(service) + keys(service)) AS metadata_reversed, \
+                    head(reverse(keys(service))) AS first_reversed_key, \
+                    tail(reverse($tiers)) AS reversed_parameter_tail, \
+                    size(reverse(labels(service) + keys(service))) AS metadata_size \
+             ORDER BY reverse(keys(service))",
+            &parameters,
+        )
+        .expect("static reverse() list functions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("tier".to_string()),
+                            Literal::String("name".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_keys_reversed".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("tier".to_string()),
+                            Literal::String("name".to_string()),
+                            Literal::String("Service".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "metadata_reversed".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("tier".to_string())),
+                    alias: "first_reversed_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("dev".to_string()),
+                            Literal::String("prod".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "reversed_parameter_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(3)),
+                    alias: "metadata_size".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::String("tier".to_string()),
+                        Literal::String("name".to_string())
+                    ],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_reverse_as_presence_gated_scalar() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN reverse(labels(person) + keys(person)) AS owner_metadata",
+        )
+        .expect("optional static reverse() list function should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::PresenceGated {
+                    presence_variable: "person".to_string(),
+                    expression: Box::new(ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("team".to_string()),
+                            Literal::String("name".to_string()),
+                            Literal::String("Person".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    }),
+                },
+                alias: "owner_metadata".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_reverse_with_ambiguous_list_element_type() {
+        for cypher in [
+            "MATCH (service:Service) RETURN reverse([]) AS values",
+            "MATCH (service:Service) RETURN reverse([null]) AS values",
+            "MATCH (service:Service) RETURN reverse([1, 'prod']) AS values",
+        ] {
+            let error = compile_cypher(cypher).expect_err("ambiguous reverse() should be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("reverse() requires a list with a known non-null element type"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
