@@ -5810,7 +5810,10 @@ async fn cypher_literal_only_predicates_execute_against_synthetic_sources() {
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         WHERE 1 = 1 AND 5 >= 3 AND 'prod' IN ['prod', 'dev'] \
+         WHERE 1 = 1 \
+           AND 5 >= 3 \
+           AND toLower('PROD') = 'prod' \
+           AND coalesce(null, 'prod') IN ['prod', 'dev'] \
          RETURN service.name AS service \
          ORDER BY service \
          LIMIT 2",
@@ -5836,7 +5839,7 @@ async fn cypher_literal_only_predicates_execute_against_synthetic_sources() {
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         WHERE 'prod' IN ['dev', null] \
+         WHERE replace('billing-api', '-', '') = 'billing-api' \
          RETURN service.name AS service",
     )
     .await

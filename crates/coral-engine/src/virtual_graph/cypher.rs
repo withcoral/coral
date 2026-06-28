@@ -14456,6 +14456,11 @@ fn compile_binary_comparison(
         }
     }
     if let Some(predicate) =
+        compile_optional_static_literal_scalar_comparison(lhs, operator, rhs, &path, mode, context)?
+    {
+        return Ok(predicate);
+    }
+    if let Some(predicate) =
         compile_optional_scalar_binary_comparison(lhs, operator, rhs, &path, mode, context)?
     {
         return Ok(predicate);
@@ -14509,6 +14514,242 @@ fn compile_binary_comparison(
     }
 
     Err(unsupported(path, mode.unsupported_comparison_message()))
+}
+
+fn compile_optional_static_literal_scalar_comparison(
+    lhs: &Expression,
+    operator: ComparisonOperator,
+    rhs: &Expression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let Some(lhs) =
+        compile_optional_static_literal_scalar_operand(lhs, format!("{path}.lhs"), mode, context)?
+    else {
+        return Ok(None);
+    };
+    let Some(rhs) =
+        compile_optional_static_literal_scalar_operand(rhs, format!("{path}.rhs"), mode, context)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(PredicateExpression::Boolean(
+        evaluate_literal_only_comparison(&lhs, operator, &rhs, path)?,
+    )))
+}
+
+fn compile_optional_static_literal_scalar_operand(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<Literal>, CoreError> {
+    let path = path.into();
+    if is_direct_static_literal_scalar_operand(expression) {
+        return compile_literal(expression, path, context).map(Some);
+    }
+    if !is_static_literal_scalar_operand(expression, context) {
+        return Ok(None);
+    }
+
+    let mut variables = BTreeSet::new();
+    expression_variables(expression, &mut variables);
+    if !variables.is_empty()
+        || expression_contains_recovered_function_variable_argument(expression, context)
+    {
+        return Ok(None);
+    }
+
+    let item = Literal::Null;
+    let evaluation = StaticFilterEvaluation {
+        variable: "__coral_static_literal_operand",
+        item: &item,
+        mode,
+        context,
+    };
+    evaluate_static_map_expression(expression, evaluation, path).map(Some)
+}
+
+fn is_static_literal_scalar_operand(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_literal_scalar_operand(inner, context),
+        expression if is_direct_static_literal_scalar_operand(expression) => true,
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate | UnaryOperator::Not,
+            operand,
+            ..
+        }
+        | Expression::IsNull { operand, .. } => is_static_literal_scalar_operand(operand, context),
+        Expression::BinaryOp {
+            op:
+                CypherBinaryOperator::Add
+                | CypherBinaryOperator::Subtract
+                | CypherBinaryOperator::Multiply
+                | CypherBinaryOperator::Divide
+                | CypherBinaryOperator::Modulo
+                | CypherBinaryOperator::Power
+                | CypherBinaryOperator::And
+                | CypherBinaryOperator::Or
+                | CypherBinaryOperator::Xor,
+            lhs,
+            rhs,
+            ..
+        } => {
+            is_static_literal_scalar_operand(lhs, context)
+                && is_static_literal_scalar_operand(rhs, context)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            is_static_literal_scalar_operand(lhs, context)
+                && operators
+                    .iter()
+                    .all(|(_, rhs)| is_static_literal_scalar_operand(rhs, context))
+        }
+        Expression::In { lhs, rhs, .. } => {
+            is_static_literal_scalar_operand(lhs, context)
+                && is_static_literal_list_operand(rhs, context)
+        }
+        Expression::FunctionCall(function) => {
+            if context.variable_function_argument(function).is_some() {
+                return false;
+            }
+            if is_character_length_function(function) {
+                return function
+                    .arguments
+                    .iter()
+                    .all(|argument| is_static_literal_character_length_operand(argument, context));
+            }
+            is_static_map_operand_function(function)
+                && function.arguments.iter().all(|argument| {
+                    is_static_literal_scalar_operand(argument, context)
+                        || (is_empty_function(function)
+                            && is_static_literal_list_operand(argument, context))
+                })
+        }
+        _ => false,
+    }
+}
+
+fn is_static_literal_character_length_operand(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            is_static_literal_character_length_operand(inner, context)
+        }
+        Expression::Parameter(parameter) => !matches!(
+            context.parameters.get(parameter.name.name.as_str()),
+            Some(CypherParameterValue::List(_))
+        ),
+        expression => is_static_literal_scalar_operand(expression, context),
+    }
+}
+
+fn is_direct_static_literal_scalar_operand(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_direct_static_literal_scalar_operand(inner),
+        Expression::ListIndex { list, .. } => is_literal_list_source_expression(list),
+        expression => is_literal_expression(expression),
+    }
+}
+
+fn is_static_literal_list_operand(expression: &Expression, context: &CypherCompileContext) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_literal_list_operand(inner, context),
+        Expression::Literal(CypherLiteral::List(_)) | Expression::Parameter(_) => true,
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            is_static_literal_list_operand(list, context)
+                && start
+                    .as_deref()
+                    .is_none_or(|start| is_static_literal_scalar_operand(start, context))
+                && end
+                    .as_deref()
+                    .is_none_or(|end| is_static_literal_scalar_operand(end, context))
+        }
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Add,
+            lhs,
+            rhs,
+            ..
+        } => {
+            is_static_literal_list_operand(lhs, context)
+                && is_static_literal_list_operand(rhs, context)
+        }
+        Expression::FunctionCall(function) => {
+            context.variable_function_argument(function).is_none()
+                && (is_tail_function(function) || is_reverse_function(function))
+                && function
+                    .arguments
+                    .iter()
+                    .all(|argument| is_static_literal_list_operand(argument, context))
+        }
+        _ => false,
+    }
+}
+
+fn expression_contains_recovered_function_variable_argument(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            expression_contains_recovered_function_variable_argument(inner, context)
+        }
+        Expression::UnaryOp { operand, .. } | Expression::IsNull { operand, .. } => {
+            expression_contains_recovered_function_variable_argument(operand, context)
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            expression_contains_recovered_function_variable_argument(lhs, context)
+                || expression_contains_recovered_function_variable_argument(rhs, context)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            expression_contains_recovered_function_variable_argument(lhs, context)
+                || operators.iter().any(|(_, rhs)| {
+                    expression_contains_recovered_function_variable_argument(rhs, context)
+                })
+        }
+        Expression::ListIndex { list, index, .. } => {
+            expression_contains_recovered_function_variable_argument(list, context)
+                || expression_contains_recovered_function_variable_argument(index, context)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            expression_contains_recovered_function_variable_argument(list, context)
+                || start.as_deref().is_some_and(|start| {
+                    expression_contains_recovered_function_variable_argument(start, context)
+                })
+                || end.as_deref().is_some_and(|end| {
+                    expression_contains_recovered_function_variable_argument(end, context)
+                })
+        }
+        Expression::Case(case) => {
+            case.scrutinee.as_deref().is_some_and(|expression| {
+                expression_contains_recovered_function_variable_argument(expression, context)
+            }) || case.alternatives.iter().any(|alternative| {
+                expression_contains_recovered_function_variable_argument(&alternative.when, context)
+                    || expression_contains_recovered_function_variable_argument(
+                        &alternative.then,
+                        context,
+                    )
+            }) || case.default.as_deref().is_some_and(|expression| {
+                expression_contains_recovered_function_variable_argument(expression, context)
+            })
+        }
+        Expression::FunctionCall(function) => {
+            context.variable_function_argument(function).is_some()
+                || function.arguments.iter().any(|argument| {
+                    expression_contains_recovered_function_variable_argument(argument, context)
+                })
+        }
+        _ => false,
+    }
 }
 
 fn compile_optional_static_list_comparison(
@@ -15836,6 +16077,14 @@ fn compile_in_predicate(
     )?;
     let presence_variable = rhs_value.presence_variable.clone();
     let literals = rhs_value.literals;
+    if let Some(literal) =
+        compile_optional_static_literal_scalar_operand(lhs, format!("{path}.lhs"), mode, context)?
+    {
+        return Ok(presence_gate_static_list_in_literal_predicate(
+            evaluate_literal_in_list(&literal, &literals, path)?,
+            presence_variable,
+        ));
+    }
     if let Some(predicate) = compile_dynamic_static_list_in_predicate(
         lhs,
         &literals,
@@ -26456,7 +26705,31 @@ relationships:
                 true,
             ),
             (
+                "MATCH (service:Service) WHERE (1 + 2) * 3 = 9 RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE toLower('PROD') = 'prod' RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE trim(' prod ') = 'prod' RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE size('abc') = 3 RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE coalesce(null, 'prod') = 'prod' RETURN service.name",
+                true,
+            ),
+            (
                 "MATCH (service:Service) WHERE 'prod' IN ['dev', 'prod', null] RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE toLower('PROD') IN ['dev', 'prod'] RETURN service.name",
                 true,
             ),
             (
@@ -26465,6 +26738,10 @@ relationships:
             ),
             (
                 "MATCH (service:Service) WHERE 'prod' IN ['dev', null] RETURN service.name",
+                false,
+            ),
+            (
+                "MATCH (service:Service) WHERE replace('billing-api', '-', '') = 'billing-api' RETURN service.name",
                 false,
             ),
         ] {

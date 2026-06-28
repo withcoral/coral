@@ -213,6 +213,11 @@ The supported foundation subset is intentionally narrow:
 - regex predicates lowered to DataFusion `regexp_like` for string literals,
   string parameters, and scalar expression RHS values; regex syntax follows
   DataFusion/Rust regex semantics, not Neo4j's Java regex dialect;
+- literal-only `WHERE` comparison and `IN` predicates over supported static
+  scalar expressions folded before SQL lowering, including arithmetic,
+  `coalesce`, `nullIf`, character length, casts, string case/trim/replace,
+  substring, `left`, `right`, scalar-string `reverse`, numeric map functions,
+  and scalar parameters;
 - scalar string, numeric, and conversion expressions in projections,
   predicates, and ordering, including arithmetic `+`, `-`, `*`, `/`, `%`,
   and `^`, unary numeric negation, `coalesce`, strict scalar casts lowered to
