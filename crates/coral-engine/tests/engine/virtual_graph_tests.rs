@@ -4416,7 +4416,7 @@ async fn cypher_static_label_expression_patterns_execute_against_synthetic_sourc
         &[source],
         test_runtime(),
         &graph,
-        "MATCH (person:Person&!Team)-[owns:OWNS&!DEPENDS_ON]->(service:Service&!Team) \
+        "MATCH (person:Person&!(Team|Service))-[owns:OWNS&!(DEPENDS_ON|ALERTS)]->(service:Service&!Team) \
          RETURN person.name AS owner, service.name AS service, owns.source AS source \
          ORDER BY owner, service",
     )

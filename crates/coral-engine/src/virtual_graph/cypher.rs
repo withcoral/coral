@@ -16361,6 +16361,14 @@ fn single_static_label(
             "contradictory label expressions cannot be represented by one Coral mapping",
         ));
     }
+    for (index, expression) in labels.iter().enumerate() {
+        if !evaluate_static_label_expression(expression, label, format!("{path}[{index}]"))? {
+            return Err(unsupported(
+                path,
+                "contradictory label expressions cannot be represented by one Coral mapping",
+            ));
+        }
+    }
     Ok((*label).clone())
 }
 
@@ -16415,11 +16423,34 @@ fn collect_static_label_exclusion(
             path,
             "dynamic label expressions are not supported yet",
         )),
-        LabelExpression::And { .. } | LabelExpression::Or { .. } | LabelExpression::Not { .. } => {
-            Err(unsupported(
-                path,
-                "negated compound label expressions are not supported yet",
-            ))
+        LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
+            validate_static_label_expression(lhs, format!("{path}.lhs"))?;
+            validate_static_label_expression(rhs, format!("{path}.rhs"))
+        }
+        LabelExpression::Not { inner, .. } => {
+            validate_static_label_expression(inner, format!("{path}.inner"))
+        }
+    }
+}
+
+fn validate_static_label_expression(
+    expression: &LabelExpression,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    match expression {
+        LabelExpression::Static(_) => Ok(()),
+        LabelExpression::Group { inner, .. } => validate_static_label_expression(inner, path),
+        LabelExpression::Dynamic { .. } => Err(unsupported(
+            path,
+            "dynamic label expressions are not supported yet",
+        )),
+        LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
+            validate_static_label_expression(lhs, format!("{path}.lhs"))?;
+            validate_static_label_expression(rhs, format!("{path}.rhs"))
+        }
+        LabelExpression::Not { inner, .. } => {
+            validate_static_label_expression(inner, format!("{path}.inner"))
         }
     }
 }
@@ -26190,7 +26221,7 @@ relationships:
     #[test]
     fn compiles_static_label_expression_patterns() {
         let plan = compile_cypher(
-            "MATCH (person:Person&!Team)-[owns:OWNS&!DEPENDS_ON]->(service:Service&!Team) \
+            "MATCH (person:Person&!(Team|Service))-[owns:OWNS&!(DEPENDS_ON|ALERTS)]->(service:Service&!Team) \
              RETURN person.name AS owner, service.name AS service",
         )
         .expect("static label expression patterns should compile");
@@ -26217,6 +26248,22 @@ relationships:
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn rejects_contradictory_compound_label_exclusion_patterns() {
+        let error = compile_cypher(
+            "MATCH (service:Service&!(Service|Team)) \
+             RETURN service.name AS service",
+        )
+        .expect_err("contradictory compound label exclusion should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("contradictory label expressions"),
+            "{error:?}"
         );
     }
 
