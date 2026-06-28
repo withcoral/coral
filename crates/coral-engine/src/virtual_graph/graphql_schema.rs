@@ -26,6 +26,7 @@ struct RelationshipSchemaField {
     name: String,
     endpoint_argument: &'static str,
     endpoint_enum: String,
+    filter_input: String,
     target_label: String,
     target_where: String,
     relationship_where: String,
@@ -213,6 +214,7 @@ pub fn graphql_schema_sdl_for_graph(graph: &Declaration) -> Result<String, CoreE
             &node_where_type(&node.label),
             &node_property_names(node),
             true,
+            &relationship_schema_fields_for_node(graph, &node.label),
         );
     }
 
@@ -222,7 +224,14 @@ pub fn graphql_schema_sdl_for_graph(graph: &Declaration) -> Result<String, CoreE
             &relationship_where_type(&relationship.relationship_type),
             &relationship.properties,
             relationship.has_key,
+            &[],
         );
+    }
+
+    for node in &graph.nodes {
+        for field in relationship_schema_fields_for_node(graph, &node.label) {
+            push_relationship_filter_input(&mut sdl, &field);
+        }
     }
 
     for node in &graph.nodes {
@@ -294,6 +303,7 @@ fn push_where_input(
     input_name: &str,
     properties: &BTreeSet<String>,
     has_identity: bool,
+    relationship_filters: &[RelationshipSchemaField],
 ) {
     writeln!(sdl, "input {input_name} {{").expect("writing GraphQL SDL to string should not fail");
     if has_identity {
@@ -302,6 +312,10 @@ fn push_where_input(
     }
     for property in properties {
         writeln!(sdl, "  {property}: CoralGraphValueFilter")
+            .expect("writing GraphQL SDL to string should not fail");
+    }
+    for field in relationship_filters {
+        writeln!(sdl, "  {}: {}", field.name, field.filter_input)
             .expect("writing GraphQL SDL to string should not fail");
     }
     writeln!(sdl, "  and: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
@@ -318,6 +332,22 @@ fn push_where_input(
     writeln!(sdl, "  OR: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
     writeln!(sdl, "  XOR: [{input_name}!]").expect("writing GraphQL SDL to string should not fail");
     writeln!(sdl, "  NOT: {input_name}").expect("writing GraphQL SDL to string should not fail");
+    sdl.push_str("}\n\n");
+}
+
+fn push_relationship_filter_input(sdl: &mut String, field: &RelationshipSchemaField) {
+    writeln!(sdl, "input {} {{", field.filter_input)
+        .expect("writing GraphQL SDL to string should not fail");
+    writeln!(
+        sdl,
+        "  {}: {} = {}",
+        field.endpoint_argument, field.endpoint_enum, field.target_label
+    )
+    .expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  where: {}", field.target_where)
+        .expect("writing GraphQL SDL to string should not fail");
+    writeln!(sdl, "  relationshipWhere: {}", field.relationship_where)
+        .expect("writing GraphQL SDL to string should not fail");
     sdl.push_str("}\n\n");
 }
 
@@ -416,6 +446,7 @@ fn validate_graphql_schema_names(graph: &Declaration) -> Result<(), CoreError> {
         for field in relationship_schema_fields(relationship) {
             validate_graphql_name(&field.name, format!("{path}.type"))?;
             validate_graphql_name(&field.endpoint_enum, format!("{path}.type"))?;
+            validate_graphql_name(&field.filter_input, format!("{path}.type"))?;
         }
         for property in relationship_property_names(relationship) {
             validate_graphql_property_name(&property, format!("{path}.properties.{property}"))?;
@@ -478,6 +509,11 @@ fn validate_generated_type_names_are_unique(graph: &Declaration) -> Result<(), C
                 &mut names,
                 &field.endpoint_enum,
                 format!("relationship field '{}'", field.name),
+            )?;
+            insert_generated_type_name(
+                &mut names,
+                &field.filter_input,
+                format!("relationship filter '{}'", field.name),
             )?;
         }
     }
@@ -658,6 +694,11 @@ fn relationship_schema_field(
             &relationship.relationship_type,
             endpoint_argument,
         ),
+        filter_input: relationship_filter_input_type(
+            source_label,
+            direction,
+            &relationship.relationship_type,
+        ),
         target_label: target_label.to_string(),
         target_where: node_where_type(target_label),
         relationship_where: relationship_where_type(&relationship.relationship_type),
@@ -700,6 +741,17 @@ fn node_aggregate_field_type(label: &str) -> String {
 
 fn relationship_where_type(relationship_type: &str) -> String {
     format!("{relationship_type}RelationshipWhere")
+}
+
+fn relationship_filter_input_type(
+    source_label: &str,
+    direction: &str,
+    relationship_type: &str,
+) -> String {
+    format!(
+        "{source_label}{}{relationship_type}Filter",
+        capitalize_graphql_suffix(direction)
+    )
 }
 
 fn relationship_endpoint_enum_type(

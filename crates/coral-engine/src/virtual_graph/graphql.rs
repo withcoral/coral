@@ -6098,7 +6098,7 @@ nodes:
         let plan = compile_graphql_for_graph_with_variables(
             &graph,
             r"
-            query People($ownsFilter: PersonOutOWNSWhere!) {
+            query People($ownsFilter: PersonOutOWNSFilter!) {
               Person(where: { out_OWNS: $ownsFilter }) {
                 name
               }
@@ -6635,6 +6635,7 @@ relationships:
         assert!(sdl.contains("input PersonWhere {"));
         assert!(sdl.contains("  _id: CoralGraphIdentityFilter"));
         assert!(sdl.contains("  _elementId: CoralGraphElementIdFilter"));
+        assert!(sdl.contains("  out_OWNS: PersonOutOWNSFilter"));
         assert!(sdl.contains("  _and: [PersonWhere!]"));
         assert!(sdl.contains("  _not: PersonWhere"));
         assert!(sdl.contains("  AND: [PersonWhere!]"));
@@ -6659,6 +6660,9 @@ relationships:
         assert!(sdl.contains("  _maxDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
             "out_OWNS(to: PersonOutOWNSToLabel = Service, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
+        ));
+        assert!(sdl.contains(
+            "input PersonOutOWNSFilter {\n  to: PersonOutOWNSToLabel = Service\n  where: ServiceWhere\n  relationshipWhere: OWNSRelationshipWhere\n}"
         ));
         assert!(sdl.contains("enum PersonOutOWNSToLabel {\n  Service\n}"));
         assert!(sdl.contains("type OWNS {"));

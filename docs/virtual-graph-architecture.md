@@ -430,9 +430,10 @@ metadata, mapped graph properties use a custom `CoralGraphValue` scalar while
 reserved identity fields use `_id: CoralGraphValue` and `_elementId: String`.
 The schema includes root node fields, node `where` and `orderBy` inputs,
 relationship traversal fields with endpoint enum defaults for unambiguous
-mappings, relationship `relationshipWhere` inputs, and relationship object
-types for the properties and identity fields available through `_edge`
-selections. Standard GraphQL SDL cannot express Coral's
+mappings, relationship-existence filter inputs inside node `where` inputs,
+relationship `relationshipWhere` inputs, and relationship object types for the
+properties and identity fields available through `_edge` selections. Standard
+GraphQL SDL cannot express Coral's
 context-specific `_edge` field without changing the query contract to wrapper
 objects, so SDL generation exposes the relationship object shapes while the
 compiler remains the authority for validating `_edge` placement inside traversal
