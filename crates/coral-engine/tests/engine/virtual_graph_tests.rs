@@ -8615,6 +8615,43 @@ async fn cypher_terminal_with_return_star_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_star_explicit_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         WITH *, service.name AS name, service.tier AS tier \
+         RETURN tier AS service_tier, name AS service_name \
+         ORDER BY service_name",
+    )
+    .await
+    .expect("terminal WITH * explicit projection aliases should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" AS \"service_name\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service_tier": "prod", "service_name": "billing-api"}),
+            json!({"service_tier": "prod", "service_name": "deployments"}),
+            json!({"service_tier": "dev", "service_name": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_scalar_where_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

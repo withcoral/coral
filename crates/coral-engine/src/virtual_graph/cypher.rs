@@ -3564,6 +3564,12 @@ fn compile_terminal_with_projection(
     }
 
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if part.with.star && return_clause.star {
+        return Err(unsupported(
+            "final_part.return.star",
+            "RETURN * after WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
+        ));
+    }
     let mut plan = GraphPlan::default();
     let mut state = CypherCompileState::default();
     compile_reading_clauses_into(
@@ -3703,12 +3709,6 @@ fn compile_terminal_with_clause(
     context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     plan.distinct = with.distinct;
-    if with.star {
-        return Err(unsupported(
-            "with.star",
-            "WITH * requires scoped query planning and is not supported yet",
-        ));
-    }
     if with.items.is_empty() {
         return Err(unsupported(
             "with.items",
@@ -21322,6 +21322,48 @@ relationships:
     }
 
     #[test]
+    fn compiles_terminal_with_star_and_explicit_projection_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH *, service.name AS name, service.tier AS tier \
+             RETURN tier AS service_tier, name AS service_name \
+             ORDER BY service_name",
+        )
+        .expect("terminal WITH * explicit projection aliases should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("service_tier".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service_name".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_terminal_with_scalar_where_alias_predicates() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[:OWNS]->(service:Service) \
@@ -28781,7 +28823,7 @@ relationships:
     #[test]
     fn rejects_non_transparent_with_boundaries() {
         assert_unsupported("MATCH (service:Service) WITH DISTINCT service RETURN service.name");
-        assert_unsupported("MATCH (service:Service) WITH *, service.name AS name RETURN name");
+        assert_unsupported("MATCH (service:Service) WITH *, service.name AS name RETURN *");
         assert_unsupported(
             "MATCH (service:Service) WITH service LIMIT 1 MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name",
         );

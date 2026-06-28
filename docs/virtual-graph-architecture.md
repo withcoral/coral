@@ -279,7 +279,9 @@ The supported foundation subset is intentionally narrow:
   aliases;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
   graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets
-  whose final `RETURN` can reorder or rename every projected alias;
+  whose final `RETURN` can reorder or rename every projected alias, including
+  bounded `WITH *` plus explicit aliases when the final `RETURN` enumerates
+  those aliases rather than using `RETURN *`;
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;
