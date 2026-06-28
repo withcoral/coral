@@ -8915,6 +8915,34 @@ async fn cypher_reversed_relationship_endpoint_properties_keep_mapping_orientati
 }
 
 #[tokio::test]
+async fn cypher_undirected_cross_label_endpoint_properties_use_mapping_orientation() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service)-[owns:OWNS]-(person:Person) \
+         RETURN startNode(owns).name AS owner, endNode(owns).name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("undirected cross-label endpoint property query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_endpoint_identity_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

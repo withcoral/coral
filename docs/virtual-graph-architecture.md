@@ -130,7 +130,10 @@ The supported foundation subset is intentionally narrow:
   output column prefixes;
 - named node variables where the first binding has one static label and
   repeated bindings may omit the label;
-- directed, reverse, and undirected typed relationships;
+- directed, reverse, and undirected typed relationships, with
+  `startNode(r)` / `endNode(r)` endpoint functions over cross-label
+  undirected relationships when a single graph declaration mapping recovers
+  original edge orientation;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;

@@ -14941,12 +14941,14 @@ fn compile_relationship_endpoint_ref(
             RelationshipEndpoint::Start => relationship.right.clone(),
             RelationshipEndpoint::End => relationship.left.clone(),
         }),
-        Direction::Undirected => Err(unsupported(
+        Direction::Undirected => resolve_undirected_relationship_endpoint_variable(
+            relationship,
+            endpoint,
+            function_name,
+            plan,
+            context,
             path,
-            format!(
-                "{function_name}() over undirected relationships is not supported yet because endpoint orientation is data-dependent"
-            ),
-        )),
+        ),
     }?;
     Ok(GraphValueRef {
         variable: endpoint_variable,
@@ -14955,6 +14957,90 @@ fn compile_relationship_endpoint_ref(
             .contains(&relationship_index)
             .then_some(variable),
     })
+}
+
+fn resolve_undirected_relationship_endpoint_variable(
+    relationship: &RelationshipPattern,
+    endpoint: RelationshipEndpoint,
+    function_name: &str,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    let left_label =
+        node_label_for_variable(plan, &relationship.left, format!("{path}.left"))?.to_string();
+    let right_label =
+        node_label_for_variable(plan, &relationship.right, format!("{path}.right"))?.to_string();
+    if left_label == right_label {
+        return Err(unsupported(
+            path,
+            format!(
+                "{function_name}() over undirected relationships is not supported yet because endpoint orientation is data-dependent"
+            ),
+        ));
+    }
+    let graph = context.graph.as_ref().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "{function_name}() over cross-label undirected relationships requires a graph declaration so Coral can resolve mapping orientation"
+            ),
+        )
+    })?;
+    let matches = graph
+        .relationships_for_type(&relationship.relationship_type)
+        .filter(|mapping| {
+            relationship_mapping_matches_pattern(
+                mapping,
+                Direction::Undirected,
+                &left_label,
+                &right_label,
+            )
+        })
+        .collect::<Vec<_>>();
+    let [mapping] = matches.as_slice() else {
+        return Err(unsupported(
+            path,
+            format!(
+                "{function_name}() over undirected relationship type '{}' for {left_label} and {right_label} requires exactly one graph declaration mapping",
+                relationship.relationship_type
+            ),
+        ));
+    };
+    if mapping.from.label == left_label && mapping.to.label == right_label {
+        return Ok(match endpoint {
+            RelationshipEndpoint::Start => relationship.left.clone(),
+            RelationshipEndpoint::End => relationship.right.clone(),
+        });
+    }
+    if mapping.from.label == right_label && mapping.to.label == left_label {
+        return Ok(match endpoint {
+            RelationshipEndpoint::Start => relationship.right.clone(),
+            RelationshipEndpoint::End => relationship.left.clone(),
+        });
+    }
+    Err(CoreError::internal(
+        "undirected endpoint mapping matched neither pattern orientation",
+    ))
+}
+
+fn node_label_for_variable<'a>(
+    plan: &'a GraphPlan,
+    variable: &str,
+    path: impl Into<String>,
+) -> Result<&'a str, CoreError> {
+    let path = path.into();
+    plan.nodes
+        .iter()
+        .find(|node| node.variable == variable)
+        .map(|node| node.label.as_str())
+        .ok_or_else(|| {
+            unsupported(
+                path,
+                format!("relationship endpoint variable '{variable}' is not a named node"),
+            )
+        })
 }
 
 fn compile_literal_list(
@@ -18198,6 +18284,69 @@ relationships:
                 distinct: false,
                 alias: "sources".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_undirected_cross_label_relationship_endpoint_properties() {
+        let graph = star_test_graph();
+        for cypher in [
+            "MATCH (person:Person)-[owns:OWNS]-(service:Service) \
+             RETURN startNode(owns).name AS owner, endNode(owns).name AS service \
+             ORDER BY startNode(owns).name",
+            "MATCH (service:Service)-[owns:OWNS]-(person:Person) \
+             RETURN startNode(owns).name AS owner, endNode(owns).name AS service \
+             ORDER BY startNode(owns).name",
+        ] {
+            let plan = compile_cypher_for_graph(&graph, cypher)
+                .expect("undirected cross-label endpoint properties should compile");
+
+            assert_eq!(
+                plan.projections,
+                vec![
+                    Projection::Property {
+                        property: PropertyRef {
+                            variable: "person".to_string(),
+                            property: "name".to_string(),
+                        },
+                        alias: Some("owner".to_string()),
+                    },
+                    Projection::Property {
+                        property: PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        },
+                        alias: Some("service".to_string()),
+                    },
+                ]
+            );
+            assert_eq!(
+                plan.order_by,
+                vec![OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_undirected_cross_label_endpoint_properties_without_graph_context() {
+        let error = compile_cypher(
+            "MATCH (person:Person)-[owns:OWNS]-(service:Service) \
+             RETURN startNode(owns).name AS owner",
+        )
+        .expect_err("undirected cross-label endpoint functions require graph context");
+
+        assert!(
+            error.to_string().contains(
+                "startNode() over cross-label undirected relationships requires a graph declaration"
+            ),
+            "{error}"
         );
     }
 
