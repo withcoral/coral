@@ -5712,12 +5712,16 @@ fn infer_path_node_label_hints(
     while changed {
         changed = false;
         for (index, chain) in chains.iter().enumerate() {
-            let Some((direction, relationship_type, length)) =
-                relationship_label_inference_descriptor(&chain.relationship)
+            let Some(descriptor) = relationship_label_inference_descriptor(&chain.relationship)
             else {
                 continue;
             };
-            let pairs = relationship_label_pairs(graph, &relationship_type, direction, length);
+            let pairs = relationship_label_pairs(
+                graph,
+                descriptor.relationship_type.as_deref(),
+                descriptor.direction,
+                descriptor.length,
+            );
             if pairs.is_empty() {
                 continue;
             }
@@ -5743,13 +5747,14 @@ fn infer_path_node_label_hints(
             }
 
             let relationship_path = format!("{path}.relationships[{index}]");
+            let relationship_description = descriptor.relationship_description();
             if left_label.is_none() {
                 changed |= infer_path_node_label(
                     &mut labels,
                     left_node,
                     index,
                     compatible_pairs.iter().map(|(left, _)| left.as_str()),
-                    &relationship_type,
+                    &relationship_description,
                     &relationship_path,
                 )?;
             }
@@ -5759,7 +5764,7 @@ fn infer_path_node_label_hints(
                     right_node,
                     index + 1,
                     compatible_pairs.iter().map(|(_, right)| right.as_str()),
-                    &relationship_type,
+                    &relationship_description,
                     &relationship_path,
                 )?;
             }
@@ -5867,7 +5872,7 @@ fn infer_path_node_label<'a>(
     node: &CypherNodePattern,
     index: usize,
     candidates: impl Iterator<Item = &'a str>,
-    relationship_type: &str,
+    relationship_description: &str,
     path: &str,
 ) -> Result<bool, CoreError> {
     let candidates = candidates.collect::<BTreeSet<_>>();
@@ -5887,7 +5892,7 @@ fn infer_path_node_label<'a>(
         _ => Err(unsupported(
             path,
             format!(
-                "relationship pattern could not infer a unique label for {} from '{relationship_type}' mappings; add an explicit node label",
+                "relationship pattern could not infer a unique label for {} from {relationship_description} mappings; add an explicit node label",
                 path_node_description(node, index)
             ),
         )),
@@ -5901,17 +5906,37 @@ fn path_node_description(node: &CypherNodePattern, index: usize) -> String {
     )
 }
 
+struct RelationshipLabelInferenceDescriptor {
+    direction: Direction,
+    relationship_type: Option<String>,
+    length: usize,
+}
+
+impl RelationshipLabelInferenceDescriptor {
+    fn relationship_description(&self) -> String {
+        self.relationship_type.as_ref().map_or_else(
+            || "untyped relationship".to_string(),
+            |relationship_type| format!("'{relationship_type}'"),
+        )
+    }
+}
+
 fn relationship_label_inference_descriptor(
     pattern: &CypherRelationshipPattern,
-) -> Option<(Direction, String, usize)> {
+) -> Option<RelationshipLabelInferenceDescriptor> {
     let length = relationship_fixed_length(pattern, "relationship").ok()?;
-    let detail = pattern.detail.as_ref()?;
-    let relationship_type = detail.types.as_ref()?;
-    let relationship_type = single_static_label(
-        std::slice::from_ref(relationship_type),
-        "relationship.types",
-    )
-    .ok()?;
+    let relationship_type = pattern
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.types.as_ref())
+        .map(|relationship_type| {
+            single_static_label(
+                std::slice::from_ref(relationship_type),
+                "relationship.types",
+            )
+        })
+        .transpose()
+        .ok()?;
     let direction = match pattern.direction {
         CypherRelationshipDirection::Right => Direction::Outgoing,
         CypherRelationshipDirection::Left => Direction::Incoming,
@@ -5919,12 +5944,16 @@ fn relationship_label_inference_descriptor(
             Direction::Undirected
         }
     };
-    Some((direction, relationship_type, length))
+    Some(RelationshipLabelInferenceDescriptor {
+        direction,
+        relationship_type,
+        length,
+    })
 }
 
 fn relationship_label_pairs(
     graph: &Declaration,
-    relationship_type: &str,
+    relationship_type: Option<&str>,
     direction: Direction,
     length: usize,
 ) -> BTreeSet<(String, String)> {
@@ -5936,12 +5965,26 @@ fn relationship_label_pairs(
             .collect();
     }
     if length > 1 {
+        let Some(relationship_type) = relationship_type else {
+            return BTreeSet::new();
+        };
         return fixed_length_relationship_label_pairs(graph, relationship_type, direction, length);
     }
-    graph
-        .relationships_for_type(relationship_type)
-        .flat_map(|relationship| relationship_label_pairs_for_direction(relationship, direction))
-        .collect()
+    match relationship_type {
+        Some(relationship_type) => graph
+            .relationships_for_type(relationship_type)
+            .flat_map(|relationship| {
+                relationship_label_pairs_for_direction(relationship, direction)
+            })
+            .collect(),
+        None => graph
+            .relationships
+            .iter()
+            .flat_map(|relationship| {
+                relationship_label_pairs_for_direction(relationship, direction)
+            })
+            .collect(),
+    }
 }
 
 fn fixed_length_relationship_label_pairs(
@@ -30516,6 +30559,59 @@ relationships:
     }
 
     #[test]
+    fn graph_aware_cypher_infers_untyped_relationship_endpoint_labels() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-->(service) RETURN service.name",
+        )
+        .expect("graph declaration should infer the untyped relationship endpoint");
+
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| node.variable == "service" && node.label == "Service"),
+            "service endpoint label was not inferred: {:?}",
+            plan.nodes
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_untyped_anonymous_endpoint_labels() {
+        let graph = star_test_graph();
+        let plan =
+            compile_cypher_for_graph(&graph, "MATCH (person:Person)-->() RETURN person.name")
+                .expect("graph declaration should infer the untyped anonymous endpoint");
+
+        let anonymous = plan
+            .nodes
+            .iter()
+            .find(|node| node.variable.starts_with("__coral_node_"))
+            .expect("anonymous endpoint should be bound internally");
+        assert_eq!(anonymous.label, "Service");
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: anonymous.variable.clone(),
+            }]
+        );
+    }
+
+    #[test]
     fn graph_aware_cypher_infers_untyped_relationship_variables() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
@@ -30533,6 +30629,23 @@ relationships:
                 direction: Direction::Outgoing,
                 right: "service".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_ambiguous_untyped_endpoint_labels() {
+        let graph = route_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-->(target) RETURN person.name",
+        )
+        .expect_err("ambiguous untyped endpoint label should be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "could not infer a unique label for node variable 'target' from untyped relationship mappings"
+            ),
+            "{error:?}"
         );
     }
 
