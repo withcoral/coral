@@ -209,6 +209,18 @@ enum StaticBooleanOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticListElementFamily {
+    String,
+    Numeric,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticListOrderingOutcome {
+    Known(Ordering),
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticListQuantifier {
     All,
     Any,
@@ -13371,7 +13383,10 @@ fn compile_optional_static_list_comparison(
     };
     let expected = compile_static_list_comparison_rhs(lhs, format!("{path}.lhs"), plan, context)?;
     Ok(Some(compile_static_list_predicate(
-        &actual, operator, &expected, path,
+        &actual,
+        invert_comparison_operator(operator, format!("{path}.operator"))?,
+        &expected,
+        path,
     )?))
 }
 
@@ -13472,12 +13487,7 @@ fn compile_static_list_predicate(
     expected: &StaticListValue,
     path: &str,
 ) -> Result<PredicateExpression, CoreError> {
-    let matches = evaluate_static_literal_list_comparison(
-        &actual.literals,
-        operator,
-        &expected.literals,
-        path,
-    )?;
+    let matches = evaluate_static_literal_list_comparison(actual, operator, expected, path)?;
     let presence_variables = actual
         .presence_variable
         .iter()
@@ -13486,10 +13496,10 @@ fn compile_static_list_predicate(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    Ok(match presence_variables.as_slice() {
-        [] => PredicateExpression::Boolean(matches),
-        _ => presence_gated_boolean_predicate_for_variables(presence_variables, matches),
-    })
+    Ok(static_boolean_outcome_predicate(
+        matches,
+        presence_variables,
+    ))
 }
 
 fn compile_static_list_comparison_rhs(
@@ -14133,18 +14143,160 @@ fn static_boolean_xor(
 }
 
 fn evaluate_static_literal_list_comparison(
-    actual: &[Literal],
+    actual: &StaticListValue,
     operator: ComparisonOperator,
-    expected: &[Literal],
+    expected: &StaticListValue,
     path: &str,
-) -> Result<bool, CoreError> {
+) -> Result<StaticBooleanOutcome, CoreError> {
     match operator {
-        ComparisonOperator::Equal => Ok(actual == expected),
-        ComparisonOperator::NotEqual => Ok(actual != expected),
+        ComparisonOperator::Equal => Ok(StaticBooleanOutcome::from_bool(
+            actual.literals == expected.literals,
+        )),
+        ComparisonOperator::NotEqual => Ok(StaticBooleanOutcome::from_bool(
+            actual.literals != expected.literals,
+        )),
+        ComparisonOperator::GreaterThan
+        | ComparisonOperator::GreaterThanOrEqual
+        | ComparisonOperator::LessThan
+        | ComparisonOperator::LessThanOrEqual => {
+            validate_ordered_static_list_element_family(actual, expected, path)?;
+            match compare_static_literal_lists(&actual.literals, &expected.literals, path)? {
+                StaticListOrderingOutcome::Known(ordering) => Ok(StaticBooleanOutcome::from_bool(
+                    evaluate_ordering_comparison(ordering, operator),
+                )),
+                StaticListOrderingOutcome::Unknown => Ok(StaticBooleanOutcome::Unknown),
+            }
+        }
         _ => Err(unsupported(
             path.to_string(),
-            "static list predicates support only = and <>",
+            "static list predicates support =, <>, and lexicographic ordered comparisons over string or numeric lists",
         )),
+    }
+}
+
+fn validate_ordered_static_list_element_family(
+    actual: &StaticListValue,
+    expected: &StaticListValue,
+    path: &str,
+) -> Result<(), CoreError> {
+    let mut family = None;
+    for element_type in [actual.element_type, expected.element_type]
+        .into_iter()
+        .flatten()
+    {
+        merge_ordered_static_list_element_family(
+            &mut family,
+            static_list_element_family(element_type, path)?,
+            path,
+        )?;
+    }
+    for literal in actual.literals.iter().chain(expected.literals.iter()) {
+        if let Some(next) = literal_static_list_element_family(literal, path)? {
+            merge_ordered_static_list_element_family(&mut family, next, path)?;
+        }
+    }
+    Ok(())
+}
+
+fn static_list_element_family(
+    element_type: LiteralListElementType,
+    path: &str,
+) -> Result<StaticListElementFamily, CoreError> {
+    match element_type {
+        LiteralListElementType::String => Ok(StaticListElementFamily::String),
+        LiteralListElementType::Integer | LiteralListElementType::Float => {
+            Ok(StaticListElementFamily::Numeric)
+        }
+        LiteralListElementType::Boolean => Err(unsupported(
+            path.to_string(),
+            "ordered static list predicates require string or numeric list elements",
+        )),
+    }
+}
+
+fn literal_static_list_element_family(
+    literal: &Literal,
+    path: &str,
+) -> Result<Option<StaticListElementFamily>, CoreError> {
+    match literal {
+        Literal::String(_) => Ok(Some(StaticListElementFamily::String)),
+        Literal::Integer(_) | Literal::Float(_) => Ok(Some(StaticListElementFamily::Numeric)),
+        Literal::Null => Ok(None),
+        Literal::Boolean(_) => Err(unsupported(
+            path.to_string(),
+            "ordered static list predicates require string or numeric list elements",
+        )),
+    }
+}
+
+fn merge_ordered_static_list_element_family(
+    family: &mut Option<StaticListElementFamily>,
+    next: StaticListElementFamily,
+    path: &str,
+) -> Result<(), CoreError> {
+    match family {
+        Some(current) if *current != next => Err(unsupported(
+            path.to_string(),
+            "ordered static list predicates require both lists to use the same orderable element family",
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *family = Some(next);
+            Ok(())
+        }
+    }
+}
+
+fn compare_static_literal_lists(
+    actual: &[Literal],
+    expected: &[Literal],
+    path: &str,
+) -> Result<StaticListOrderingOutcome, CoreError> {
+    for (index, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        match compare_static_list_literals(actual, expected, format!("{path}[{index}]"))? {
+            StaticListOrderingOutcome::Known(Ordering::Equal) => {}
+            outcome => return Ok(outcome),
+        }
+    }
+    Ok(StaticListOrderingOutcome::Known(
+        actual.len().cmp(&expected.len()),
+    ))
+}
+
+fn compare_static_list_literals(
+    actual: &Literal,
+    expected: &Literal,
+    path: impl Into<String>,
+) -> Result<StaticListOrderingOutcome, CoreError> {
+    let path = path.into();
+    if matches!(actual, Literal::Null) || matches!(expected, Literal::Null) {
+        return Ok(StaticListOrderingOutcome::Unknown);
+    }
+    if let Some(ordering) = compare_numeric_literals(actual, expected, path.clone())? {
+        return Ok(StaticListOrderingOutcome::Known(ordering));
+    }
+    match (actual, expected) {
+        (Literal::String(actual), Literal::String(expected)) => {
+            Ok(StaticListOrderingOutcome::Known(actual.cmp(expected)))
+        }
+        _ => Err(unsupported(
+            path,
+            "ordered static list predicates require comparable string or numeric elements",
+        )),
+    }
+}
+
+fn evaluate_ordering_comparison(ordering: Ordering, operator: ComparisonOperator) -> bool {
+    match operator {
+        ComparisonOperator::GreaterThan => ordering == Ordering::Greater,
+        ComparisonOperator::GreaterThanOrEqual => {
+            matches!(ordering, Ordering::Greater | Ordering::Equal)
+        }
+        ComparisonOperator::LessThan => ordering == Ordering::Less,
+        ComparisonOperator::LessThanOrEqual => {
+            matches!(ordering, Ordering::Less | Ordering::Equal)
+        }
+        _ => unreachable!("non-ordered operator reached ordered list comparison helper"),
     }
 }
 
@@ -21379,20 +21531,105 @@ relationships:
     }
 
     #[test]
-    fn rejects_ordered_metadata_list_predicates() {
+    fn compiles_ordered_metadata_list_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE labels(service) > ['Account'] \
+             RETURN service.name AS service",
+        )
+        .expect("ordered metadata list predicates should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn compiles_ordered_static_list_predicates_with_literal_left_side() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE ['Team'] > labels(service) \
+               AND labels(service) <= ['Service', 'z'] \
+               AND [1, 2] < [1, 3] \
+             RETURN service.name AS service",
+        )
+        .expect("ordered static list predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::And {
+                    left: Box::new(PredicateExpression::Boolean(true)),
+                    right: Box::new(PredicateExpression::Boolean(true)),
+                }),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_null_ordered_static_list_predicates_as_unknown() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [null] < [null] AS unknown_order",
+        )
+        .expect("null ordered static list predicates should compile to unknown");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            }] if alias == "unknown_order"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Literal(Literal::Null),
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    })
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_boolean_ordered_static_list_predicates() {
         let graph = star_test_graph();
         let error = compile_cypher_for_graph(
             &graph,
             "MATCH (service:Service) \
-             WHERE labels(service) > ['Service'] \
+             WHERE [true] < [false] \
              RETURN service.name AS service",
         )
-        .expect_err("ordered metadata list predicates should be rejected");
+        .expect_err("boolean ordered static list predicates should be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("static list predicates support only = and <>"),
+                .contains("ordered static list predicates require string or numeric list elements"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_cross_family_ordered_static_list_predicates() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE labels(service) < [1] \
+             RETURN service.name AS service",
+        )
+        .expect_err("cross-family ordered static list predicates should be rejected");
+
+        assert!(
+            error.to_string().contains("same orderable element family"),
             "{error:?}"
         );
     }

@@ -158,9 +158,11 @@ The supported foundation subset is intentionally narrow:
   optional endpoint forms using the same presence-gated scalar IR as endpoint
   property and identity expressions;
 - declaration-aware `labels(...) = [...]`, `labels(...) <> [...]`,
-  `keys(...) = [...]`, `keys(...) <> [...]`, and `tail(...)` static-list
-  predicates folded from static label/property metadata or typed folded-list
-  expressions, including reversed operands and list-parameter operands;
+  `labels(...) < [...]`, `keys(...) = [...]`, `keys(...) <> [...]`,
+  `keys(...) >= [...]`, and `tail(...)` static-list predicates folded from
+  static label/property metadata or typed folded-list expressions, including
+  reversed operands, list-parameter operands, and lexicographic ordered
+  comparisons over compatible string or numeric static lists;
 - zero-based positive and negative index expressions over static folded lists,
   including `labels(...)`, declaration-aware `keys(...)`, `tail(...)`,
   `reverse(...)`, and static list concatenation, folded at compile time with

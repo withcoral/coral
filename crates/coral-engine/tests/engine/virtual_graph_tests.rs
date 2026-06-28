@@ -10441,6 +10441,9 @@ async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sour
            AND [] = tail(labels(service)) \
            AND tail($selected_keys) = ['tier'] \
            AND tail(keys(service)) <> [] \
+           AND tail(keys(service)) > ['id', 'name', 'risk', 'team'] \
+           AND tail(keys(service)) < ['id', 'name', 'risk', 'team', 'tier', 'zzz'] \
+           AND ['id', 'name', 'risk', 'team', 'tier', 'zzz'] > tail(keys(service)) \
          RETURN person.name AS owner, service.name AS service \
          ORDER BY owner, service",
         &parameters,
