@@ -4335,6 +4335,45 @@ async fn cypher_inline_relationship_property_maps_execute_as_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_parameterized_inline_property_maps_execute_as_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "tier".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("prod".to_string())),
+        ),
+        (
+            "source".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("pagerduty".to_string())),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS {source: $source}]->(service:Service {tier: $tier}) \
+         RETURN person.name AS owner, service.name AS service",
+        &parameters,
+    )
+    .await
+    .expect("parameterized inline property maps should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"r0\".\"source\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"owner": "Grace Hopper", "service": "deployments"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multihop_paths_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -26908,6 +26908,48 @@ relationships:
     }
 
     #[test]
+    fn compiles_parameterized_inline_property_maps_as_predicates() {
+        let parameters = BTreeMap::from([
+            (
+                "source".to_string(),
+                CypherParameterValue::Literal(Literal::String("catalog".to_string())),
+            ),
+            (
+                "active".to_string(),
+                CypherParameterValue::Literal(Literal::Boolean(true)),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (person:Person)-[ownership:OWNS {source: $source}]->(service:Service {active: $active}) \
+             RETURN service.name",
+            &parameters,
+        )
+        .expect("parameterized inline property maps should compile");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "active".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::Boolean(true)),
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "ownership".to_string(),
+                        property: "source".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_anonymous_inline_relationship_property_maps_with_internal_variable() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[:OWNS {source: 'catalog'}]->(service:Service) \
