@@ -3669,27 +3669,21 @@ fn compile_terminal_with_graph_modifiers(
     query: &MultiPartQuery,
     context: &CypherCompileContext,
 ) -> Result<Option<GraphPlan>, CoreError> {
-    let terminal_modifier_candidate = query
+    let terminal_graph_candidate = query
         .parts
         .iter()
-        .any(|part| with_has_row_modifiers(&part.with));
-    if !terminal_modifier_candidate {
+        .any(|part| part.with.distinct || with_has_row_modifiers(&part.with));
+    if !terminal_graph_candidate {
         return Ok(None);
     }
     let [part] = query.parts.as_slice() else {
         return Err(unsupported(
             "query.parts",
-            "WITH ORDER BY, SKIP, and LIMIT over graph variables currently support exactly one MATCH ... WITH ... RETURN query part",
+            "terminal graph-variable WITH DISTINCT, ORDER BY, SKIP, and LIMIT currently support exactly one MATCH ... WITH ... RETURN query part",
         ));
     };
     if with_requires_terminal_projection(&part.with) {
         return Ok(None);
-    }
-    if part.with.distinct {
-        return Err(unsupported(
-            "parts[0].with.distinct",
-            "WITH DISTINCT over graph variables requires staged query planning and is not supported yet",
-        ));
     }
     if !part.updating_clauses.is_empty() {
         return Err(unsupported(
@@ -3700,7 +3694,7 @@ fn compile_terminal_with_graph_modifiers(
     if !query.final_part.reading_clauses.is_empty() {
         return Err(unsupported(
             "final_part.reading_clauses",
-            "WITH ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning and are not supported yet",
+            "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning and are not supported yet",
         ));
     }
 
@@ -3731,13 +3725,60 @@ fn compile_terminal_with_graph_modifiers(
         append_predicate_expression(predicate, &mut plan);
     }
     apply_terminal_graph_with_modifiers(&part.with, &mut plan, &state, context)?;
+    if part.with.distinct {
+        validate_terminal_distinct_graph_return(return_clause, &plan, &state)?;
+    }
     compile_return(return_clause, &mut plan, &state, context)?;
+    if part.with.distinct {
+        plan.distinct = true;
+    }
     reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(Some(plan))
 }
 
 fn with_has_row_modifiers(with: &With) -> bool {
     with.order.is_some() || with.skip.is_some() || with.limit.is_some()
+}
+
+fn validate_terminal_distinct_graph_return(
+    return_clause: &Return,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+) -> Result<(), CoreError> {
+    if return_clause.star {
+        if return_clause.items.is_empty() {
+            return Ok(());
+        }
+        return Err(unsupported(
+            "final_part.return.star",
+            "RETURN * mixed with explicit projections after WITH DISTINCT requires staged query planning and is not supported yet",
+        ));
+    }
+
+    let visible = visible_graph_variables(plan, state);
+    for (index, item) in return_clause.items.iter().enumerate() {
+        let Some(variable) = terminal_return_graph_variable(&item.expression) else {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                "terminal WITH DISTINCT over graph variables currently requires RETURN of carried graph variables or RETURN *; scalar projections require staged query planning and are not supported yet",
+            ));
+        };
+        if !visible.contains(&variable) {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                format!("terminal RETURN references unknown WITH graph variable '{variable}'"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn terminal_return_graph_variable(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => terminal_return_graph_variable(inner),
+        Expression::Variable(variable) => Some(variable_name(variable)),
+        _ => None,
+    }
 }
 
 fn apply_terminal_graph_with_modifiers(
@@ -27521,6 +27562,62 @@ relationships:
                     alias: Some("risk".to_string()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_terminal_with_distinct_graph_variable_return() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (:Person)-[:OWNS]->(target:Service) \
+             WITH DISTINCT target AS t \
+             ORDER BY t.name \
+             RETURN t",
+        )
+        .expect("terminal WITH DISTINCT graph variable return should compile");
+
+        assert!(plan.distinct);
+        assert_eq!(plan.nodes.len(), 2);
+        assert!(plan.nodes.iter().any(|node| {
+            node.variable.starts_with("__coral_hidden_") && node.label == "Person"
+        }));
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| node.variable == "t" && node.label == "Service")
+        );
+        assert_eq!(
+            plan.projection_output_names(),
+            vec!["t.__id", "t.__labels", "t.name", "t.tier"]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "t".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_with_distinct_graph_variable_scalar_return() {
+        let error = compile_cypher(
+            "MATCH (:Service)-[:DEPENDS_ON]->(target:Service) \
+             WITH DISTINCT target \
+             RETURN target.name AS target",
+        )
+        .expect_err("scalar projection after graph-variable WITH DISTINCT should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("scalar projections require staged query planning"),
+            "{error}"
         );
     }
 

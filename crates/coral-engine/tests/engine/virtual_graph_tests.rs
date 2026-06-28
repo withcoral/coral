@@ -9928,6 +9928,57 @@ async fn cypher_terminal_with_graph_variable_modifiers_execute_against_synthetic
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_distinct_graph_variable_return_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (:Service)-[:DEPENDS_ON]->(target:Service) \
+         WITH DISTINCT target AS t \
+         ORDER BY t.name \
+         RETURN t",
+    )
+    .await
+    .expect("terminal WITH DISTINCT graph variable return should execute");
+
+    assert!(
+        execution.translated_sql().starts_with("SELECT DISTINCT "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "t.__id": 20,
+                "t.__labels": ["Service"],
+                "t.active": true,
+                "t.id": 20,
+                "t.name": "deployments",
+                "t.risk": 0.5,
+                "t.team": "infra",
+                "t.tier": "prod"
+            }),
+            json!({
+                "t.__id": 30,
+                "t.__labels": ["Service"],
+                "t.active": false,
+                "t.id": 30,
+                "t.name": "experiments",
+                "t.risk": 0.25,
+                "t.team": "analytics",
+                "t.tier": "dev"
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_star_modifiers_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -404,12 +404,14 @@ The supported foundation subset is intentionally narrow:
   that match projected aggregates, projection alias `ORDER BY` including
   aggregate aliases, and explicit null placement on supported sort keys;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
-  graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets
-  whose final `RETURN` can reorder or rename every projected alias, including
-  bounded `WITH *` plus explicit scalar aliases when the final `RETURN`
-  enumerates those aliases or uses `RETURN *` to expand visible graph variables
-  plus the aliases. Aggregate aliases in `WITH * ... RETURN *` remain deferred
-  because they require grouped scoped planning;
+  graph-variable `WITH DISTINCT` and row modifiers, and terminal `WITH`
+  projection subsets whose final `RETURN` can reorder or rename every projected
+  alias, including bounded `WITH *` plus explicit scalar aliases when the final
+  `RETURN` enumerates those aliases or uses `RETURN *` to expand visible graph
+  variables plus the aliases. Terminal graph-variable `WITH DISTINCT` preserves
+  graph-variable returns and `RETURN *`; scalar projections after that boundary
+  remain deferred with aggregate aliases in `WITH * ... RETURN *` because they
+  require grouped scoped planning;
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;
