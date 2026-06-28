@@ -255,7 +255,7 @@ impl<'a> PredicateCompileMode<'a> {
                 "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
             Self::CaseWhen { .. } => {
-                "CASE WHEN predicates support property/scalar comparisons, static graph metadata predicates, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
+                "CASE WHEN predicates support property/scalar comparisons, static graph metadata predicates including labels()/keys() list predicates and indexes, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
             }
         }
     }
@@ -5556,6 +5556,36 @@ fn compile_order_expression(
             projections,
             path,
         ),
+        expression => {
+            if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+                expression,
+                path.clone(),
+                plan,
+                context,
+            )? {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
+            compile_order_expression_after_metadata_list_index(
+                expression,
+                projections,
+                plan,
+                state,
+                context,
+                path,
+            )
+        }
+    }
+}
+
+fn compile_order_expression_after_metadata_list_index(
+    expression: &Expression,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: String,
+) -> Result<OrderExpression, CoreError> {
+    match expression {
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
@@ -6224,16 +6254,10 @@ fn compile_projection(
     state: &CypherCompileState,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    if let Some((expression, output_name)) = compile_optional_endpoint_property_scalar_expression(
-        &item.expression,
-        format!("{path}.expression"),
-        Some(plan),
-        context,
-    )? {
-        return Ok(Projection::Expression {
-            expression,
-            alias: item.alias.as_ref().map_or(output_name, variable_name),
-        });
+    if let Some(projection) =
+        compile_optional_graph_scalar_projection(item, path.clone(), context, plan)?
+    {
+        return Ok(projection);
     }
     match &item.expression {
         Expression::CountStar { .. } => Ok(Projection::CountAll {
@@ -6320,6 +6344,41 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_optional_graph_scalar_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+    plan: &GraphPlan,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    if let Some((expression, output_name)) = compile_optional_endpoint_property_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(plan),
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item.alias.as_ref().map_or(output_name, variable_name),
+        }));
+    }
+    if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        plan,
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "expression".to_string(), variable_name),
+        }));
+    }
+    Ok(None)
 }
 
 fn compile_path_length_projection(
@@ -7560,6 +7619,21 @@ fn compile_scalar_expression_in_mode(
                 expression, path, plan, context,
             )?))
         }
+        Expression::ListIndex { .. } => {
+            if let Some(plan) = plan
+                && let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+                    expression,
+                    path.clone(),
+                    plan,
+                    context,
+                )?
+            {
+                return Ok(expression);
+            }
+            Ok(ScalarExpression::Literal(compile_literal(
+                expression, path, context,
+            )?))
+        }
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
@@ -7985,6 +8059,12 @@ fn compile_optional_predicate_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_optional_predicate_scalar_expression(inner, path, plan, context)
         }
+        Expression::ListIndex { .. } => match plan {
+            Some(plan) => compile_optional_metadata_list_index_scalar_expression(
+                expression, path, plan, context,
+            ),
+            None => Ok(None),
+        },
         Expression::PropertyLookup { .. } => Ok(
             compile_optional_endpoint_property_scalar_expression(expression, path, plan, context)?
                 .map(|(expression, _)| expression),
@@ -8070,7 +8150,8 @@ fn compile_scalar_predicate_rhs(
             op: UnaryOperator::Negate,
             ..
         }
-        | Expression::PropertyLookup { .. } => Ok(ScalarPredicateRhs::Expression(
+        | Expression::PropertyLookup { .. }
+        | Expression::ListIndex { .. } => Ok(ScalarPredicateRhs::Expression(
             compile_scalar_expression_in_mode(expression, path, plan, context)?,
         )),
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
@@ -10472,6 +10553,50 @@ fn compile_metadata_literal_list(
     }
 }
 
+fn compile_optional_metadata_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_metadata_list_index_scalar_expression(inner, path, plan, context)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(reference) =
+                compile_optional_metadata_list_ref(list, format!("{path}.list"), plan, context)?
+            else {
+                return Ok(None);
+            };
+            let actual = compile_metadata_list_actual_literals(
+                &reference,
+                context.graph.as_ref(),
+                plan,
+                format!("{path}.list"),
+            )?;
+            let literal = compile_list_index_literal(
+                &actual,
+                index,
+                &path,
+                context,
+                "metadata list indexes require an integer literal or scalar integer parameter",
+            )?;
+            let value = reference.value();
+            let presence_variable = match value.presence_variable.clone() {
+                Some(variable) => Some(variable),
+                None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+            };
+            Ok(Some(presence_gate_scalar_expression(
+                presence_variable,
+                ScalarExpression::Literal(literal),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn compile_optional_scalar_binary_comparison(
     lhs: &Expression,
     operator: ComparisonOperator,
@@ -11803,26 +11928,40 @@ fn compile_literal_list_index(
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     let values = compile_literal_list(list, format!("{path}.list"), context)?;
+    compile_list_index_literal(
+        &values,
+        index,
+        path,
+        context,
+        "literal list indexes require an integer literal or scalar integer parameter",
+    )
+}
+
+fn compile_list_index_literal(
+    values: &[Literal],
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+    message: &'static str,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
     let index = compile_literal(index, format!("{path}.index"), context)?;
     let Literal::Integer(index) = index else {
-        return Err(unsupported(
-            format!("{path}.index"),
-            "literal list indexes require an integer literal or scalar integer parameter",
-        ));
+        return Err(unsupported(format!("{path}.index"), message));
     };
     let len = i64::try_from(values.len())
-        .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
+        .map_err(|error| CoreError::internal(format!("list length overflow: {error}")))?;
     let normalized = if index < 0 { len + index } else { index };
     if normalized < 0 || normalized >= len {
         return Ok(Literal::Null);
     }
     let index = usize::try_from(normalized).map_err(|error| {
-        CoreError::internal(format!("literal list index normalization failed: {error}"))
+        CoreError::internal(format!("list index normalization failed: {error}"))
     })?;
     values
         .get(index)
         .cloned()
-        .ok_or_else(|| CoreError::internal("literal list index was out of bounds after checking"))
+        .ok_or_else(|| CoreError::internal("list index was out of bounds after checking"))
 }
 
 fn compile_literal(
@@ -15374,6 +15513,106 @@ relationships:
                         }),
                     )),
                     alias: "owner_has_person_keys".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_metadata_list_index_scalar_expressions() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE labels(service)[0] = 'Service' \
+               AND keys(service)[-1] = 'tier' \
+             RETURN labels(service)[0] AS service_label, \
+                    keys(owns)[0] AS first_ownership_key, \
+                    keys(service)[99] AS missing_key \
+             ORDER BY keys(service)[1]",
+        )
+        .expect("metadata list indexes should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::String("Service".to_string())),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::String("Service".to_string()),
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::String("tier".to_string())),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::String("tier".to_string()),
+                    )),
+                })),
+            })
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("Service".to_string())),
+                    alias: "service_label".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("since".to_string())),
+                    alias: "first_ownership_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Null),
+                    alias: "missing_key".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::String(
+                    "tier".to_string(),
+                ))),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_metadata_list_indexes_as_presence_gated_scalars() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN labels(person)[0] AS owner_label, \
+                    keys(person)[-1] AS owner_last_key",
+        )
+        .expect("optional metadata list indexes should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::String(
+                            "Person".to_string(),
+                        ))),
+                    },
+                    alias: "owner_label".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::String(
+                            "team".to_string(),
+                        ))),
+                    },
+                    alias: "owner_last_key".to_string(),
                 },
             ]
         );

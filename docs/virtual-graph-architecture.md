@@ -129,6 +129,9 @@ The supported foundation subset is intentionally narrow:
   `keys(...) = [...]`, and `keys(...) <> [...]` predicates folded from static
   label/property metadata, including reversed literal-list operands and
   list-parameter operands;
+- zero-based positive and negative index expressions over static
+  `labels(...)` and declaration-aware `keys(...)` metadata lists, folded at
+  compile time with out-of-range indexes returning `NULL`;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped
@@ -202,7 +205,7 @@ boundaries, post-union result processing, scalar projections containing
 multiple correlated `COUNT`/`EXISTS` subqueries, general subqueries with `WITH`,
 `RETURN`, `UNION`, or procedure calls,
 path/list length via `size`, ordered metadata-list comparisons, dynamic list
-comparisons, and broad expression semantics.
+comparisons or indexes, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

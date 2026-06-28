@@ -9233,6 +9233,54 @@ async fn cypher_metadata_list_equality_predicates_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_metadata_list_indexes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE labels(service)[0] = 'Service' \
+           AND keys(service)[-1] = 'tier' \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                labels(service)[0] AS service_label, \
+                keys(owns)[0] AS first_ownership_key, \
+                keys(service)[99] AS missing_key \
+         ORDER BY keys(service)[1], owner, service",
+    )
+    .await
+    .expect("metadata list indexes should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'Service' AS \"service_label\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("NULL AS \"missing_key\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_label": "Service", "first_ownership_key": "since"}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_label": "Service", "first_ownership_key": "since"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_label": "Service", "first_ownership_key": "since"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_node_label_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
