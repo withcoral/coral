@@ -10683,6 +10683,21 @@ fn static_list_case_result_length_scalar_expression(
     }
 }
 
+fn static_list_case_result_endpoint_scalar_expression(
+    result: StaticListCaseResult,
+    endpoint: ListEndpoint,
+) -> ScalarExpression {
+    match result {
+        StaticListCaseResult::Null => ScalarExpression::Literal(Literal::Null),
+        StaticListCaseResult::List(value) => {
+            static_list_value_endpoint_scalar_expression(value, endpoint)
+        }
+        StaticListCaseResult::Coalesce(coalesce) => {
+            static_list_coalesce_endpoint_scalar_expression(coalesce, endpoint)
+        }
+    }
+}
+
 fn static_list_case_result_is_empty_scalar_expression(
     result: StaticListCaseResult,
 ) -> ScalarExpression {
@@ -10692,6 +10707,24 @@ fn static_list_case_result_is_empty_scalar_expression(
         StaticListCaseResult::Coalesce(coalesce) => {
             static_list_coalesce_is_empty_scalar_expression(coalesce)
         }
+    }
+}
+
+fn static_list_coalesce_endpoint_scalar_expression(
+    coalesce: StaticListCoalesceArguments,
+    endpoint: ListEndpoint,
+) -> ScalarExpression {
+    ScalarExpression::Coalesce {
+        expressions: coalesce
+            .arguments
+            .into_iter()
+            .map(|argument| match argument {
+                StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
+                StaticListCoalesceArgument::List(value) => {
+                    static_list_value_endpoint_scalar_expression(value, endpoint)
+                }
+            })
+            .collect(),
     }
 }
 
@@ -10750,6 +10783,32 @@ fn compile_optional_static_list_case_length_scalar_expression(
             .default
             .map(static_list_case_result_length_scalar_expression)
             .transpose()?
+            .map(Box::new),
+    }))
+}
+
+fn compile_optional_static_list_case_endpoint_scalar_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+    endpoint: ListEndpoint,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let Some(parts) = compile_optional_static_list_case_parts(case, path, mode, context)? else {
+        return Ok(None);
+    };
+    Ok(Some(ScalarExpression::Case {
+        alternatives: parts
+            .alternatives
+            .into_iter()
+            .map(|(when, result)| ScalarCaseAlternative {
+                when,
+                then: static_list_case_result_endpoint_scalar_expression(result, endpoint),
+            })
+            .collect(),
+        else_expression: parts
+            .default
+            .map(|result| static_list_case_result_endpoint_scalar_expression(result, endpoint))
             .map(Box::new),
     }))
 }
@@ -12968,7 +13027,7 @@ fn compile_core_scalar_function_expression(
         compile_static_list_endpoint_scalar_expression(
             function,
             path,
-            plan,
+            mode,
             context,
             ListEndpoint::Head,
         )?
@@ -12976,7 +13035,7 @@ fn compile_core_scalar_function_expression(
         compile_static_list_endpoint_scalar_expression(
             function,
             path,
-            plan,
+            mode,
             context,
             ListEndpoint::Last,
         )?
@@ -13007,11 +13066,12 @@ enum ListEndpoint {
 fn compile_static_list_endpoint_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
     endpoint: ListEndpoint,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     let function_name = match endpoint {
         ListEndpoint::Head => "head",
         ListEndpoint::Last => "last",
@@ -13022,6 +13082,30 @@ fn compile_static_list_endpoint_scalar_expression(
             format!("{function_name}() requires exactly one list argument"),
         ));
     };
+    if let Expression::Case(case) = argument
+        && let Some(expression) = compile_optional_static_list_case_endpoint_scalar_expression(
+            case,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+            endpoint,
+        )?
+    {
+        return Ok(expression);
+    }
+    if let Expression::FunctionCall(function) = argument
+        && is_coalesce_function(function)
+        && let Some(coalesce) = compile_optional_static_list_coalesce_arguments(
+            function,
+            format!("{path}.arguments[0]"),
+            plan,
+            context,
+        )?
+    {
+        return Ok(static_list_coalesce_endpoint_scalar_expression(
+            coalesce, endpoint,
+        ));
+    }
     let Some(value) = compile_optional_static_list_value(
         argument,
         format!("{path}.arguments[0]"),
@@ -13036,16 +13120,22 @@ fn compile_static_list_endpoint_scalar_expression(
             ),
         ));
     };
+    Ok(static_list_value_endpoint_scalar_expression(
+        value, endpoint,
+    ))
+}
+
+fn static_list_value_endpoint_scalar_expression(
+    value: StaticListValue,
+    endpoint: ListEndpoint,
+) -> ScalarExpression {
     let literal = match endpoint {
         ListEndpoint::Head => value.literals.first(),
         ListEndpoint::Last => value.literals.last(),
     }
     .cloned()
     .unwrap_or(Literal::Null);
-    Ok(presence_gate_scalar_expression(
-        value.presence_variable,
-        ScalarExpression::Literal(literal),
-    ))
+    presence_gate_scalar_expression(value.presence_variable, ScalarExpression::Literal(literal))
 }
 
 fn compile_static_list_tail_scalar_expression(
@@ -30496,6 +30586,79 @@ relationships:
                             Literal::Boolean(true)
                         )),
                     })
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_case_endpoint_functions() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN head(CASE WHEN person IS NULL THEN [] ELSE keys(person) END) AS first_owner_key, \
+                    last(CASE WHEN person IS NULL THEN [] ELSE keys(person) END) AS last_owner_key, \
+                    head(coalesce(keys(person), [])) AS coalesced_first_key, \
+                    last(CASE WHEN service.tier = 'prod' THEN [] ELSE null END) AS empty_last \
+             ORDER BY last(CASE WHEN person IS NULL THEN [] ELSE keys(person) END)",
+        )
+        .expect("static list CASE head/last should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Case { alternatives, .. },
+                    alias: first_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case { .. },
+                    alias: last_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions },
+                    alias: coalesced_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case {
+                        alternatives: empty_alternatives,
+                        else_expression,
+                    },
+                    alias: empty_alias,
+                },
+            ] if first_alias == "first_owner_key"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::Null),
+                        ..
+                    }]
+                )
+                && last_alias == "last_owner_key"
+                && coalesced_alias == "coalesced_first_key"
+                && expressions.len() == 2
+                && empty_alias == "empty_last"
+                && matches!(
+                    empty_alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::Null),
+                        ..
+                    }]
+                )
+                && matches!(
+                    else_expression.as_deref(),
+                    Some(ScalarExpression::Literal(Literal::Null))
                 )
         ));
         assert!(matches!(

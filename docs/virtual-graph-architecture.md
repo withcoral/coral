@@ -214,13 +214,14 @@ The supported foundation subset is intentionally narrow:
   `head(...)`, `tail(...)`, slice, index, and static `UNWIND` handling can reuse
   the same folded-list machinery. Scalar/list mixes, all-null or untyped empty
   list outputs, dynamic list columns, and lists gated by different optional
-  bindings remain rejected. `size(coalesce(...))` and `isEmpty(coalesce(...))`
-  are handled as scalar reducers over those same static branches, e.g.
-  `coalesce(size(branch1), size(branch2))`, so optional metadata fallbacks work
-  without adding a runtime array-length operator. Because reducer outputs do not
-  render an array value, all-empty branches such as `size(coalesce([], []))` can
-  compile even though projecting `coalesce([], [])` remains rejected as an
-  untyped dynamic-list boundary;
+  bindings remain rejected. `head(...)`, `last(...)`, `size(...)`, and
+  `isEmpty(...)` over list-valued `coalesce(...)` are handled as scalar reducers
+  over those same static branches, e.g. `coalesce(size(branch1), size(branch2))`,
+  so optional metadata fallbacks work without adding runtime array endpoint or
+  array-length operators. Because reducer outputs do not render an array value,
+  all-empty branches such as `size(coalesce([], []))` can compile even though
+  projecting `coalesce([], [])` remains rejected as an untyped dynamic-list
+  boundary;
 - list-valued `CASE` result branches over static lists and `NULL` values. The
   `CASE` compiler first probes branch result expressions for static-list shapes;
   if any non-null branch is a list, every non-null `THEN` / `ELSE` branch must
@@ -230,9 +231,10 @@ The supported foundation subset is intentionally narrow:
   This keeps conditional optional-metadata normalization in the same SQL
   renderer and validator path as scalar `CASE` while still rejecting scalar/list
   mixes, mixed element families, all-empty/all-null results, and dynamic list
-  columns. `size(CASE ... END)` and `isEmpty(CASE ... END)` are scalar reducers
-  over the same branch parts, so they compile all-empty branch sets by lowering
-  to integer or boolean `CASE` expressions rather than rendering an untyped list;
+  columns. `head(CASE ... END)`, `last(CASE ... END)`, `size(CASE ... END)`, and
+  `isEmpty(CASE ... END)` are scalar reducers over the same branch parts, so
+  they compile all-empty branch sets by lowering to scalar `CASE` expressions
+  rather than rendering an untyped list;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the
