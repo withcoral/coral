@@ -93,6 +93,13 @@ limited to static folded collections and exists so collection predicates remain
 semantically correct without introducing SQL-rendering shortcuts in the
 frontend.
 
+Some Cypher constructs are blocked before Coral compilation because the current
+parser dependency does not accept or fully preserve their standard syntax. Known
+frontend blockers include list comprehensions such as
+`[key IN keys(n) WHERE key STARTS WITH 't' | key]` and the built-in
+`range(start, end[, step])` function. These should be addressed in the parser
+frontend rather than by query-string rewriting in Coral.
+
 The supported foundation subset is intentionally narrow:
 
 - read-only single-part queries and transparent multi-part `MATCH` queries;
@@ -231,19 +238,25 @@ The supported foundation subset is intentionally narrow:
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;
+- exact fixed relationship ranges greater than one hop lowered as repeated
+  fixed-hop joins when the endpoints share one static node label;
+- finite positive bounded mandatory relationship ranges and GQL relationship
+  quantifiers lowered as `UNION ALL` branches, with outer row modifiers,
+  aggregates, and `length(path)` applied after expansion;
 - non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
   carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
-value projection or filtering, variable-length paths, parameterized property
-maps, keyless relationship identity operations, non-terminal projection
-boundaries, post-union result processing, scalar projections containing
-multiple correlated `COUNT`/`EXISTS` subqueries, general subqueries with `WITH`,
-`RETURN`, `UNION`, or procedure calls,
-path/list length via `size`, ordered metadata-list comparisons, dynamic list
-comparisons or indexes, and broad expression semantics.
+value projection or filtering, zero-hop or unbounded variable-length paths,
+bounded ranges inside `OPTIONAL MATCH`, parameterized property maps, keyless
+relationship identity operations, non-terminal projection boundaries,
+post-union result processing, scalar projections containing multiple correlated
+`COUNT`/`EXISTS` subqueries, general subqueries with `WITH`, `RETURN`, `UNION`,
+or procedure calls, path/list length via `size`, ordered metadata-list
+comparisons, dynamic list comparisons or indexes, and broad expression
+semantics.
 
 ## GraphQL Frontend Boundary
 
