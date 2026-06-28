@@ -11721,6 +11721,40 @@ async fn cypher_static_list_scalar_concatenation_unwinds_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_static_list_casts_unwind_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND toBooleanList(['true', 'false', 'bad', 0, 2]) AS active_flag \
+         MATCH (service:Service) \
+         WHERE service.active = active_flag \
+         RETURN active_flag AS active, count(*) AS services \
+         ORDER BY active",
+    )
+    .await
+    .expect("static list casts should execute through UNWIND");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"active": false, "services": 4}),
+            json!({"active": true, "services": 4}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehensions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

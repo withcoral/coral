@@ -205,6 +205,13 @@ The supported foundation subset is intentionally narrow:
   with the same presence gating used by scalar metadata expressions.
   Concatenation rejects mixed non-null element types, unknowable projected
   element types, dynamic operands, and lists from different optional bindings;
+- static list cast functions `toStringList(...)`, `toIntegerList(...)`,
+  `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
+  use Cypher's nullable per-element conversion semantics and then re-enter the
+  same typed static-list IR, so cast outputs compose with projection,
+  `ORDER BY`, static `UNWIND`, indexes/slices, endpoint list functions,
+  predicates, and list comprehensions. Literal `NULL` list inputs and dynamic
+  list values remain rejected until Coral has a nullable dynamic-list IR;
 - parser-accepted static list comprehensions such as `[k IN keys(node)]`,
   `[l IN labels(node)]`, `[x IN ['a', 'b']]`, `[x IN $list]`, and
   `[x IN split('a,b', ',')]`, folded as typed static-list expressions in

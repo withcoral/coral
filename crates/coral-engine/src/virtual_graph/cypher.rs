@@ -235,6 +235,34 @@ enum StaticListQuantifier {
     Single,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticListCastTarget {
+    String,
+    Integer,
+    Float,
+    Boolean,
+}
+
+impl StaticListCastTarget {
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::String => "toStringList",
+            Self::Integer => "toIntegerList",
+            Self::Float => "toFloatList",
+            Self::Boolean => "toBooleanList",
+        }
+    }
+
+    fn element_type(self) -> LiteralListElementType {
+        match self {
+            Self::String => LiteralListElementType::String,
+            Self::Integer => LiteralListElementType::Integer,
+            Self::Float => LiteralListElementType::Float,
+            Self::Boolean => LiteralListElementType::Boolean,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StaticFilterEvaluation<'a> {
     variable: &'a str,
@@ -1564,6 +1592,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_to_integer_or_null_function(function)
         || is_to_float_or_null_function(function)
         || is_to_boolean_or_null_function(function)
+        || is_static_list_cast_function(function)
         || is_to_lower_function(function)
         || is_to_upper_function(function)
         || is_trim_function(function)
@@ -8287,6 +8316,9 @@ fn compile_optional_static_list_value(
         Expression::FunctionCall(function) if is_split_function(function) => {
             compile_static_split_list_value(function, path, context).map(Some)
         }
+        Expression::FunctionCall(function) if is_static_list_cast_function(function) => {
+            compile_static_list_cast_value(function, path, plan, context).map(Some)
+        }
         Expression::FunctionCall(function) if is_reverse_function(function) => {
             compile_optional_static_list_reverse_value(function, path, plan, context)
         }
@@ -8589,6 +8621,154 @@ fn compile_static_split_string_argument(
             path,
             "split() arguments must be string literals or scalar string parameters",
         )),
+    }
+}
+
+fn compile_static_list_cast_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let target = static_list_cast_function(function).ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "function '{}' is not a static list cast function",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let function_name = target.function_name();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!("{function_name}() requires exactly one list argument"),
+        ));
+    };
+    let Some(value) = compile_optional_static_list_value(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!(
+                "{function_name}() requires a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list"
+            ),
+        ));
+    };
+
+    let literals = value
+        .literals
+        .iter()
+        .enumerate()
+        .map(|(index, literal)| {
+            cast_static_list_literal(literal, target, format!("{path}.arguments[0][{index}]"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(StaticListValue {
+        presence_variable: value.presence_variable,
+        literals,
+        element_type: Some(target.element_type()),
+    })
+}
+
+fn cast_static_list_literal(
+    literal: &Literal,
+    target: StaticListCastTarget,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    match target {
+        StaticListCastTarget::String => Ok(cast_static_literal_to_string_or_null(literal)),
+        StaticListCastTarget::Integer => cast_static_literal_to_integer_or_null(literal, path),
+        StaticListCastTarget::Float => Ok(cast_static_literal_to_float_or_null(literal)),
+        StaticListCastTarget::Boolean => Ok(cast_static_literal_to_boolean_or_null(literal)),
+    }
+}
+
+fn cast_static_literal_to_string_or_null(literal: &Literal) -> Literal {
+    match literal {
+        Literal::String(value) => Literal::String(value.clone()),
+        Literal::Integer(value) => Literal::String(value.to_string()),
+        Literal::Float(value) => Literal::String(value.into_inner().to_string()),
+        Literal::Boolean(value) => Literal::String(value.to_string()),
+        Literal::Null => Literal::Null,
+    }
+}
+
+fn cast_static_literal_to_integer_or_null(
+    literal: &Literal,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match literal {
+        Literal::Integer(value) => Ok(Literal::Integer(*value)),
+        Literal::Float(value) => {
+            let Some(value) = finite_f64_to_i64_or_null(value.into_inner(), path)? else {
+                return Ok(Literal::Null);
+            };
+            Ok(Literal::Integer(value))
+        }
+        Literal::String(value) => Ok(value
+            .trim()
+            .parse::<i64>()
+            .map_or(Literal::Null, Literal::Integer)),
+        Literal::Boolean(value) => Ok(Literal::Integer(i64::from(*value))),
+        Literal::Null => Ok(Literal::Null),
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "static Cypher toIntegerList() folding intentionally truncates finite floats after range checks"
+)]
+fn finite_f64_to_i64_or_null(value: f64, path: String) -> Result<Option<i64>, CoreError> {
+    if !value.is_finite() {
+        return Ok(None);
+    }
+    let truncated = value.trunc();
+    if truncated < i64::MIN as f64 || truncated > i64::MAX as f64 {
+        return Err(unsupported(
+            path,
+            "toIntegerList() static float conversion overflowed i64 bounds",
+        ));
+    }
+    Ok(Some(truncated as i64))
+}
+
+fn cast_static_literal_to_float_or_null(literal: &Literal) -> Literal {
+    let value = match literal {
+        Literal::Integer(value) => Some(StaticNumericLiteral::Integer(*value).as_f64()),
+        Literal::Float(value) => Some(value.into_inner()),
+        Literal::String(value) => value
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite()),
+        Literal::Boolean(_) | Literal::Null => None,
+    };
+    match value {
+        Some(value) => Literal::Float(OrderedFloat(value)),
+        None => Literal::Null,
+    }
+}
+
+fn cast_static_literal_to_boolean_or_null(literal: &Literal) -> Literal {
+    let value = match literal {
+        Literal::Boolean(value) => Some(*value),
+        Literal::String(value) if value.trim().eq_ignore_ascii_case("true") => Some(true),
+        Literal::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
+        Literal::Integer(value) => Some(*value != 0),
+        Literal::Float(_) | Literal::String(_) | Literal::Null => None,
+    };
+    match value {
+        Some(value) => Literal::Boolean(value),
+        None => Literal::Null,
     }
 }
 
@@ -12322,6 +12502,8 @@ fn compile_core_scalar_function_expression(
         compile_to_float_or_null_scalar_expression(function, path, mode, context)?
     } else if is_to_boolean_or_null_function(function) {
         compile_to_boolean_or_null_scalar_expression(function, path, mode, context)?
+    } else if is_static_list_cast_function(function) {
+        compile_static_list_cast_scalar_expression(function, path, plan, context)?
     } else if is_to_lower_function(function) {
         compile_to_lower_scalar_expression(function, path, mode, context)?
     } else if is_to_upper_function(function) {
@@ -12444,6 +12626,17 @@ fn compile_static_list_tail_scalar_expression(
         ));
     };
     static_list_tail_expression(value, format!("{path}.arguments[0]"))
+}
+
+fn compile_static_list_cast_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let value = compile_static_list_cast_value(function, path.clone(), plan, context)?;
+    static_list_value_scalar_expression(value, path)
 }
 
 fn compile_numeric_scalar_function_expression(
@@ -14849,6 +15042,28 @@ fn is_to_boolean_or_null_function(function: &FunctionInvocation) -> bool {
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("toBooleanOrNull")
     )
+}
+
+fn static_list_cast_function(function: &FunctionInvocation) -> Option<StaticListCastTarget> {
+    match function.name.as_slice() {
+        [name] if name.name.eq_ignore_ascii_case("toStringList") => {
+            Some(StaticListCastTarget::String)
+        }
+        [name] if name.name.eq_ignore_ascii_case("toIntegerList") => {
+            Some(StaticListCastTarget::Integer)
+        }
+        [name] if name.name.eq_ignore_ascii_case("toFloatList") => {
+            Some(StaticListCastTarget::Float)
+        }
+        [name] if name.name.eq_ignore_ascii_case("toBooleanList") => {
+            Some(StaticListCastTarget::Boolean)
+        }
+        _ => None,
+    }
+}
+
+fn is_static_list_cast_function(function: &FunctionInvocation) -> bool {
+    static_list_cast_function(function).is_some()
 }
 
 fn is_to_lower_function(function: &FunctionInvocation) -> bool {
@@ -24832,6 +25047,125 @@ relationships:
                     alias: "mapped".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_cast_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN toStringList([1, true, null]) AS strings, \
+                    toIntegerList(['bad', 2, true, 3.7, false, null]) AS integers, \
+                    toFloatList(['bad', 2, 2.5, '3.5', true, null]) AS floats, \
+                    toBooleanList(['true', 'false', 'bad', 0, 2, true, 1.5, null]) AS booleans",
+        )
+        .expect("static list casts should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("1".to_string()),
+                            Literal::String("true".to_string()),
+                            Literal::Null,
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "strings".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Null,
+                            Literal::Integer(2),
+                            Literal::Integer(1),
+                            Literal::Integer(3),
+                            Literal::Integer(0),
+                            Literal::Null,
+                        ],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "integers".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Null,
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Float(OrderedFloat(2.5)),
+                            Literal::Float(OrderedFloat(3.5)),
+                            Literal::Null,
+                            Literal::Null,
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "floats".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Boolean(true),
+                            Literal::Boolean(false),
+                            Literal::Null,
+                            Literal::Boolean(false),
+                            Literal::Boolean(true),
+                            Literal::Boolean(true),
+                            Literal::Null,
+                            Literal::Null,
+                        ],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "booleans".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_cast_predicates_and_ordering() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE head(toIntegerList(['1', 'bad'])) = 1 \
+               AND last(toBooleanList(['false', 2])) = true \
+             RETURN service.name AS service \
+             ORDER BY toStringList([2, true])",
+        )
+        .expect("static list casts should compile in predicates and ordering");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(1)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(1),
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Boolean(true)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Boolean(true),
+                    )),
+                })),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::String("2".to_string()),
+                        Literal::String("true".to_string()),
+                    ],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         );
     }
 
