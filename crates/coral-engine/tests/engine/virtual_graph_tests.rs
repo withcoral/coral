@@ -11934,6 +11934,44 @@ async fn cypher_static_list_indexes_and_slices_over_folded_lists_execute_against
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_indexes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                coalesce((CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END)[0], 'missing') AS case_first_key, \
+                coalesce(coalesce(keys(person), ['fallback'])[0], 'missing') AS coalesced_first_key, \
+                coalesce((CASE WHEN service.tier = 'prod' THEN [] ELSE null END)[0], 'missing') AS empty_first_key \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE/coalesce indexes should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_first_key": "name", "coalesced_first_key": "name", "empty_first_key": "missing"}),
+            json!({"service": "deployments", "case_first_key": "name", "coalesced_first_key": "name", "empty_first_key": "missing"}),
+            json!({"service": "experiments", "case_first_key": "name", "coalesced_first_key": "name", "empty_first_key": "missing"}),
+            json!({"service": "legacy-sync", "case_first_key": "fallback", "coalesced_first_key": "fallback", "empty_first_key": "missing"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

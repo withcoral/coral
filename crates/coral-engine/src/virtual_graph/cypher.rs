@@ -19533,25 +19533,196 @@ fn compile_optional_static_list_index_scalar_expression(
             compile_optional_static_list_index_scalar_expression(inner, path, plan, context)
         }
         Expression::ListIndex { list, index, .. } => {
+            if let Some(expression) = compile_optional_static_list_case_index_scalar_expression(
+                list,
+                index,
+                path.clone(),
+                plan,
+                context,
+            )? {
+                return Ok(Some(expression));
+            }
+            if let Some(expression) = compile_optional_static_list_coalesce_index_scalar_expression(
+                list,
+                index,
+                path.clone(),
+                plan,
+                context,
+            )? {
+                return Ok(Some(expression));
+            }
             let Some(value) =
                 compile_optional_static_list_value(list, format!("{path}.list"), plan, context)?
             else {
                 return Ok(None);
             };
-            let literal = compile_list_index_literal(
-                &value.literals,
-                index,
-                &path,
-                context,
-                "static list indexes require an integer literal or scalar integer parameter",
-            )?;
-            Ok(Some(presence_gate_scalar_expression(
-                value.presence_variable,
-                ScalarExpression::Literal(literal),
-            )))
+            static_list_value_index_scalar_expression(value, index, path, context).map(Some)
         }
         _ => Ok(None),
     }
+}
+
+fn compile_optional_static_list_case_index_scalar_expression(
+    list: &Expression,
+    index: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match list {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_case_index_scalar_expression(
+                inner, index, path, plan, context,
+            )
+        }
+        Expression::Case(case) => {
+            let Some(parts) = compile_optional_static_list_case_parts(
+                case,
+                format!("{path}.list"),
+                PredicateCompileMode::CaseWhen { plan },
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(ScalarExpression::Case {
+                alternatives: parts
+                    .alternatives
+                    .into_iter()
+                    .enumerate()
+                    .map(|(alternative_index, (when, result))| {
+                        Ok(ScalarCaseAlternative {
+                            when,
+                            then: static_list_case_result_index_scalar_expression(
+                                result,
+                                index,
+                                format!("{path}.list.alternatives[{alternative_index}].then"),
+                                context,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CoreError>>()?,
+                else_expression: parts
+                    .default
+                    .map(|result| {
+                        static_list_case_result_index_scalar_expression(
+                            result,
+                            index,
+                            format!("{path}.list.default"),
+                            context,
+                        )
+                        .map(Box::new)
+                    })
+                    .transpose()?,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_static_list_coalesce_index_scalar_expression(
+    list: &Expression,
+    index: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match list {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_coalesce_index_scalar_expression(
+                inner, index, path, plan, context,
+            )
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            let Some(coalesce) = compile_optional_static_list_coalesce_arguments(
+                function,
+                format!("{path}.list"),
+                plan,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            static_list_coalesce_index_scalar_expression(coalesce, index, path, context).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn static_list_case_result_index_scalar_expression(
+    result: StaticListCaseResult,
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match result {
+        StaticListCaseResult::Null => Ok(ScalarExpression::Literal(Literal::Null)),
+        StaticListCaseResult::List(value) => {
+            static_list_value_index_scalar_expression(value, index, path, context)
+        }
+        StaticListCaseResult::Coalesce(coalesce) => {
+            static_list_coalesce_index_scalar_expression(coalesce, index, path, context)
+        }
+    }
+}
+
+fn static_list_coalesce_index_scalar_expression(
+    coalesce: StaticListCoalesceArguments,
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut expression = ScalarExpression::Literal(Literal::Null);
+    for (argument_index, argument) in coalesce.arguments.into_iter().enumerate().rev() {
+        let StaticListCoalesceArgument::List(mut value) = argument else {
+            continue;
+        };
+        let presence_variable = value.presence_variable.take();
+        let indexed = static_list_value_index_scalar_expression(
+            value,
+            index,
+            format!("{path}.arguments[{argument_index}]"),
+            context,
+        )?;
+        expression = match presence_variable {
+            Some(variable) => ScalarExpression::Case {
+                alternatives: vec![ScalarCaseAlternative {
+                    when: PredicateExpression::Presence(PresencePredicate {
+                        variable,
+                        operator: ComparisonOperator::NotEqual,
+                    }),
+                    then: indexed,
+                }],
+                else_expression: Some(Box::new(expression)),
+            },
+            None => indexed,
+        };
+    }
+    Ok(expression)
+}
+
+fn static_list_value_index_scalar_expression(
+    value: StaticListValue,
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let literal = compile_list_index_literal(
+        &value.literals,
+        index,
+        path,
+        context,
+        "static list indexes require an integer literal or scalar integer parameter",
+    )?;
+    Ok(presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::Literal(literal),
+    ))
 }
 
 fn is_non_literal_static_list_slice_expression(expression: &Expression) -> bool {
@@ -31169,6 +31340,85 @@ relationships:
                 && coalesced_alias == "coalesced_first_key"
                 && expressions.len() == 2
                 && empty_alias == "empty_last"
+                && matches!(
+                    empty_alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::Null),
+                        ..
+                    }]
+                )
+                && matches!(
+                    else_expression.as_deref(),
+                    Some(ScalarExpression::Literal(Literal::Null))
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_case_and_coalesce_indexes() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN (CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END)[0] AS case_first_key, \
+                    coalesce(keys(person), ['fallback'])[0] AS coalesced_first_key, \
+                    (CASE WHEN service.tier = 'prod' THEN [] ELSE null END)[0] AS empty_first_key \
+             ORDER BY (CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END)[-1]",
+        )
+        .expect("static list CASE/coalesce indexes should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Case { alternatives, .. },
+                    alias: case_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case {
+                        alternatives: coalesce_alternatives,
+                        ..
+                    },
+                    alias: coalesce_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case {
+                        alternatives: empty_alternatives,
+                        else_expression,
+                    },
+                    alias: empty_alias,
+                },
+            ] if case_alias == "case_first_key"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::String(value)),
+                        ..
+                    }] if value == "fallback"
+                )
+                && coalesce_alias == "coalesced_first_key"
+                && matches!(
+                    coalesce_alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        when: PredicateExpression::Presence(PresencePredicate {
+                            variable,
+                            operator: ComparisonOperator::NotEqual,
+                        }),
+                        then: ScalarExpression::Literal(Literal::String(value)),
+                    }] if variable == "person" && value == "name"
+                )
+                && empty_alias == "empty_first_key"
                 && matches!(
                     empty_alternatives.as_slice(),
                     [ScalarCaseAlternative {
