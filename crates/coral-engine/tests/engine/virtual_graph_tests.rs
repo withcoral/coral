@@ -1324,6 +1324,47 @@ async fn cypher_static_unwind_parameterized_range_executes_against_synthetic_sou
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_parameterized_split_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "tiers".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("prod|dev".to_string())),
+        ),
+        (
+            "delimiter".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("|".to_string())),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND split($tiers, $delimiter) AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, service.name AS service \
+         ORDER BY tier, service",
+        &parameters,
+    )
+    .await
+    .expect("parameterized static split UNWIND query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "service": "experiments"}),
+            json!({"tier": "prod", "service": "billing-api"}),
+            json!({"tier": "prod", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_unwind_duplicate_aggregates_execute_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

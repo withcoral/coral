@@ -60,6 +60,7 @@ struct CompiledRelationship {
 const MAX_PATTERN_ALTERNATIVE_BRANCHES: usize = 64;
 const MAX_STATIC_UNWIND_BRANCHES: usize = 64;
 const MAX_STATIC_RANGE_LENGTH: usize = 4096;
+const MAX_STATIC_SPLIT_PARTS: usize = 4096;
 const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
 const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
@@ -8275,6 +8276,9 @@ fn compile_optional_static_list_value(
         Expression::FunctionCall(function) if is_internal_static_range_function(function) => {
             compile_static_range_list_value(function, path, context).map(Some)
         }
+        Expression::FunctionCall(function) if is_split_function(function) => {
+            compile_static_split_list_value(function, path, context).map(Some)
+        }
         Expression::FunctionCall(function) if is_reverse_function(function) => {
             compile_optional_static_list_reverse_value(function, path, plan, context)
         }
@@ -8358,7 +8362,7 @@ fn compile_optional_static_list_comprehension_value(
     else {
         return Err(unsupported(
             format!("{path}.collection"),
-            "static list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            "static list comprehensions require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
         ));
     };
     let recovered_filter =
@@ -8506,6 +8510,76 @@ fn compile_static_range_integer_argument(
         _ => Err(unsupported(
             path,
             "range() arguments must be integer literals",
+        )),
+    }
+}
+
+fn compile_static_split_list_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let [source, delimiter] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "split() supports exactly two string arguments",
+        ));
+    };
+
+    let source = compile_static_split_string_argument(source, format!("{path}.source"), context)?;
+    let delimiter =
+        compile_static_split_string_argument(delimiter, format!("{path}.delimiter"), context)?;
+    if delimiter.is_empty() {
+        return Err(unsupported(
+            format!("{path}.delimiter"),
+            "static split() requires a non-empty delimiter",
+        ));
+    }
+
+    let mut literals = Vec::new();
+    for part in source.split(delimiter.as_str()) {
+        if literals.len() >= MAX_STATIC_SPLIT_PARTS {
+            return Err(unsupported(
+                path.clone(),
+                format!(
+                    "static split() expands to more than {MAX_STATIC_SPLIT_PARTS} values; use a smaller string or split the query explicitly"
+                ),
+            ));
+        }
+        literals.push(Literal::String(part.to_string()));
+    }
+
+    Ok(StaticListValue {
+        presence_variable: None,
+        literals,
+        element_type: Some(LiteralListElementType::String),
+    })
+}
+
+fn compile_static_split_string_argument(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_static_split_string_argument(inner, path, context)
+        }
+        Expression::Literal(CypherLiteral::String(value)) => Ok(value.value.clone()),
+        Expression::Parameter(parameter) => match context
+            .parameter_value(parameter, path.clone())?
+        {
+            CypherParameterValue::Literal(Literal::String(value)) => Ok(value.clone()),
+            CypherParameterValue::Literal(_) | CypherParameterValue::List(_) => Err(unsupported(
+                path,
+                "split() arguments must be string literals or scalar string parameters",
+            )),
+        },
+        _ => Err(unsupported(
+            path,
+            "split() arguments must be string literals or scalar string parameters",
         )),
     }
 }
@@ -10181,7 +10255,7 @@ fn compile_optional_static_list_tail_value(
     else {
         return Err(unsupported(
             format!("{path}.arguments[0]"),
-            "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
+            "tail() requires a literal list, list parameter, static split(...), range(...), or static labels()/keys() metadata list",
         ));
     };
     Ok(Some(tail_static_list_value(
@@ -10225,7 +10299,7 @@ fn compile_optional_static_list_concat_value(
         (None, None) => Ok(None),
         (Some(_), None) | (None, Some(_)) => Err(unsupported(
             path,
-            "static list concatenation requires both operands to be literal lists, list parameters, tail(...), or static labels()/keys() metadata lists",
+            "static list concatenation requires both operands to be literal lists, list parameters, static split(...), range(...), tail(...), or static labels()/keys() metadata lists",
         )),
     }
 }
@@ -10576,7 +10650,7 @@ fn compile_projection(
             }
             Err(unsupported(
                 format!("{path}.expression"),
-                "list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+                "list comprehensions require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
             ))
         }
         Expression::Case(case) => compile_case_projection(case, item, path, plan, state, context),
@@ -12231,7 +12305,7 @@ fn compile_static_list_endpoint_scalar_expression(
         return Err(unsupported(
             format!("{path}.arguments[0]"),
             format!(
-                "{function_name}() requires a literal list, list parameter, or static labels()/keys() metadata list"
+                "{function_name}() requires a literal list, list parameter, static split(...), range(...), or static labels()/keys() metadata list"
             ),
         ));
     };
@@ -12269,7 +12343,7 @@ fn compile_static_list_tail_scalar_expression(
     else {
         return Err(unsupported(
             format!("{path}.arguments[0]"),
-            "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
+            "tail() requires a literal list, list parameter, static split(...), range(...), or static labels()/keys() metadata list",
         ));
     };
     static_list_tail_expression(value, format!("{path}.arguments[0]"))
@@ -14705,6 +14779,13 @@ fn is_tail_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+fn is_split_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("split")
+    )
+}
+
 fn is_character_length_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
@@ -16658,7 +16739,7 @@ fn compile_static_list_comparison_rhs(
         || {
             unsupported(
                 path,
-                "static list predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+                "static list predicates require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
             )
         },
     )
@@ -16782,7 +16863,7 @@ fn compile_static_list_quantifier_predicate(
     else {
         return Err(unsupported(
             format!("{path}.collection"),
-            "collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            "collection predicates require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
         ));
     };
     let variable = variable_name(&filter.variable);
@@ -16883,7 +16964,7 @@ fn compile_static_list_quantifier_function_predicate(
     .ok_or_else(|| {
         unsupported(
             format!("{path}.collection"),
-            "collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            "collection predicates require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
         )
     })?;
     compile_static_list_quantifier_value_predicate(
@@ -17055,7 +17136,7 @@ fn evaluate_static_filter_in_predicate(
     else {
         return Err(unsupported(
             format!("{path}.rhs"),
-            "collection predicate IN right-hand sides require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            "collection predicate IN right-hand sides require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
         ));
     };
     evaluate_static_literal_in_list(&literal, &values.literals, path)
@@ -25767,7 +25848,7 @@ relationships:
         assert!(
             error
                 .to_string()
-                .contains("collection predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list"),
+                .contains("collection predicates require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list"),
             "unexpected error: {error}"
         );
     }
@@ -26836,6 +26917,123 @@ relationships:
         assert!(
             error.to_string().contains("step must not be zero"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn compiles_static_split_list_projections() {
+        let parameters = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::Literal(Literal::String("prod|dev".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             RETURN split('prod,dev', ',') AS literal_tiers, \
+                    split($tiers, '|') AS parameter_tiers",
+            &parameters,
+        )
+        .expect("static split list projections should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: literal_tiers,
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: literal_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: parameter_tiers,
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: parameter_alias,
+                },
+            ] if literal_alias == "literal_tiers"
+                && literal_tiers == &vec![
+                    Literal::String("prod".to_string()),
+                    Literal::String("dev".to_string()),
+                ]
+                && parameter_alias == "parameter_tiers"
+                && parameter_tiers == &vec![
+                    Literal::String("prod".to_string()),
+                    Literal::String("dev".to_string()),
+                ]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_split_indexes_slices_and_comprehensions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 'prod' IN split('dev,prod', ',') \
+             RETURN split('prod:dev:stage', ':')[1] AS middle, \
+                    split('prod:dev:stage', ':')[1..] AS tail, \
+                    [tier IN split('prod,dev', ',') | toUpper(tier)] AS upper_tiers",
+        )
+        .expect("static split list expressions should compose with folded list operations");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String(middle)),
+                    alias: middle_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: tail,
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: tail_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: upper_tiers,
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: upper_alias,
+                },
+            ] if middle_alias == "middle"
+                && middle == "dev"
+                && tail_alias == "tail"
+                && tail == &vec![
+                    Literal::String("dev".to_string()),
+                    Literal::String("stage".to_string()),
+                ]
+                && upper_alias == "upper_tiers"
+                && upper_tiers == &vec![
+                    Literal::String("PROD".to_string()),
+                    Literal::String("DEV".to_string()),
+                ]
+        ));
+    }
+
+    #[test]
+    fn rejects_static_split_with_empty_or_dynamic_arguments() {
+        let empty_delimiter = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN split('prod,dev', '') AS tiers",
+        )
+        .expect_err("empty split delimiter should be rejected");
+        assert!(
+            empty_delimiter.to_string().contains("non-empty delimiter"),
+            "{empty_delimiter}"
+        );
+
+        let dynamic_source = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN split(service.name, '-') AS name_parts",
+        )
+        .expect_err("dynamic split source should be rejected");
+        assert!(
+            dynamic_source
+                .to_string()
+                .contains("string literals or scalar string parameters"),
+            "{dynamic_source}"
         );
     }
 

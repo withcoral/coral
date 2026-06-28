@@ -177,37 +177,42 @@ The supported foundation subset is intentionally narrow:
   comparisons over compatible string or numeric static lists;
 - zero-based positive and negative index expressions over static folded lists,
   including `labels(...)`, declaration-aware `keys(...)`, `tail(...)`,
-  `reverse(...)`, and static list concatenation, folded at compile time with
-  out-of-range indexes returning `NULL`;
+  `reverse(...)`, static `split(...)`, and static list concatenation, folded at
+  compile time with out-of-range indexes returning `NULL`;
 - start-inclusive/end-exclusive slice expressions over static folded lists,
   including `labels(...)`, declaration-aware `keys(...)`, `tail(...)`,
-  `reverse(...)`, and static list concatenation, folded at compile time and
-  preserving optional nulls for nullable bindings. Empty static slices are
-  carried through the IR as typed folded lists so DataFusion can render typed
-  empty arrays instead of ambiguous `make_array()` values;
+  `reverse(...)`, static `split(...)`, and static list concatenation, folded at
+  compile time and preserving optional nulls for nullable bindings. Empty static
+  slices are carried through the IR as typed folded lists so DataFusion can
+  render typed empty arrays instead of ambiguous `make_array()` values;
 - `head(...)`, `last(...)`, `tail(...)`, and list-valued `reverse(...)` over
-  literal lists, list parameters, and static metadata lists, folded at compile
-  time with `NULL` for empty matched lists in `head(...)` / `last(...)`, typed
-  empty-list results for `tail(...)` and `reverse(...)`, and optional null
-  preservation for nullable graph bindings;
+  literal lists, list parameters, static `split(...)`, and static metadata
+  lists, folded at compile time with `NULL` for empty matched lists in
+  `head(...)` / `last(...)`, typed empty-list results for `tail(...)` and
+  `reverse(...)`, and optional null preservation for nullable graph bindings;
+- static `split(source, delimiter)` over string literals or scalar string
+  parameters, folded into typed string lists with a capped expansion size.
+  Empty delimiters and dynamic graph-property split arguments remain rejected
+  until Coral has a dynamic list IR;
 - static list concatenation with `+` over literal lists, list parameters,
-  `tail(...)`, `labels(...)`, and declaration-aware `keys(...)`, folded at
-  compile time and preserved as typed list IR in projections, `ORDER BY`,
-  `size(...)`, endpoint list functions, static collection predicates, and
-  parenthesized `IN` right-hand sides. Nullable static metadata lists on the
-  right-hand side of `IN` preserve optional-match nulls with the same presence
-  gating used by scalar metadata expressions. Concatenation rejects mixed
-  non-null element types, unknowable projected element types, dynamic operands,
-  and lists from different optional bindings;
+  `tail(...)`, static `split(...)`, `labels(...)`, and declaration-aware
+  `keys(...)`, folded at compile time and preserved as typed list IR in
+  projections, `ORDER BY`, `size(...)`, endpoint list functions, static
+  collection predicates, and parenthesized `IN` right-hand sides. Nullable
+  static metadata lists on the right-hand side of `IN` preserve optional-match
+  nulls with the same presence gating used by scalar metadata expressions.
+  Concatenation rejects mixed non-null element types, unknowable projected
+  element types, dynamic operands, and lists from different optional bindings;
 - parser-accepted static list comprehensions such as `[k IN keys(node)]`,
-  `[l IN labels(node)]`, `[x IN ['a', 'b']]`, and `[x IN $list]`, folded as
-  typed static-list expressions in projections and `ORDER BY`. Static `WHERE`
-  filters over the item variable, literals, scalar parameters, comparisons,
-  string predicates (`STARTS WITH`, `ENDS WITH`, `CONTAINS`, and regex), `IN`
-  static lists, `IS NULL`, and `AND`/`OR`/`XOR`/`NOT` are evaluated before SQL
-  lowering. Static map expressions over folded items support identity, scalar
-  literals and parameters, numeric arithmetic, predicate-valued maps,
-  `toString`, string case conversion, trim variants, and `replace`;
+  `[l IN labels(node)]`, `[x IN ['a', 'b']]`, `[x IN $list]`, and
+  `[x IN split('a,b', ',')]`, folded as typed static-list expressions in
+  projections and `ORDER BY`. Static `WHERE` filters over the item variable,
+  literals, scalar parameters, comparisons, string predicates (`STARTS WITH`,
+  `ENDS WITH`, `CONTAINS`, and regex), `IN` static lists, `IS NULL`, and
+  `AND`/`OR`/`XOR`/`NOT` are evaluated before SQL lowering. Static map
+  expressions over folded items support identity, scalar literals and
+  parameters, numeric arithmetic, predicate-valued maps, `toString`, string case
+  conversion, trim variants, and `replace`;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal
@@ -307,8 +312,8 @@ The supported foundation subset is intentionally narrow:
   with identical output names, column order, and catalog-compatible output
   types;
 - single-part static `UNWIND` over literal lists, list parameters, static
-  `range(...)`, and folded static list expressions. The Cypher frontend expands
-  these into capped
+  `range(...)`, static `split(...)`, and folded static list expressions. The
+  Cypher frontend expands these into capped
   `UNION ALL` branches and substitutes the unwind variable as a scalar literal
   before normal graph planning. Duplicate list elements are intentionally
   preserved, aggregate projections are hoisted through the same outer union
