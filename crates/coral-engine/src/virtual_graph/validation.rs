@@ -3076,16 +3076,18 @@ impl<'a> GraphPlanValidator<'a> {
             &path,
         )?;
         Self::validate_exists_pattern_not_empty(predicate, &path)?;
+        let mut scoped_relationships = relationships.clone();
+        scoped_relationships.extend(parent_scope.relationships.iter().copied());
+        let mut scoped_local_nodes = parent_scope.local_nodes.clone();
+        scoped_local_nodes.extend(
+            local_nodes
+                .iter()
+                .map(|(variable, node)| (*variable, *node)),
+        );
         let scope = ExistsPredicateValidationContext {
-            relationships: &relationships,
-            local_nodes: &local_nodes,
+            relationships: &scoped_relationships,
+            local_nodes: &scoped_local_nodes,
         };
-        Self::reject_parent_scoped_count_predicate_variables(
-            predicate,
-            scope,
-            parent_scope,
-            &path,
-        )?;
         for (index, property_predicate) in predicate.predicates.iter().enumerate() {
             self.validate_exists_property_predicate(
                 property_predicate,
@@ -3101,58 +3103,6 @@ impl<'a> GraphPlanValidator<'a> {
             )?;
         }
         Ok(())
-    }
-
-    fn reject_parent_scoped_count_predicate_variables<'b, 'p>(
-        predicate: &'b ExistsPatternPredicate,
-        scope: ExistsPredicateValidationContext<'a, 'b>,
-        parent_scope: ExistsPredicateValidationContext<'a, 'p>,
-        path: &str,
-    ) -> Result<(), CoreError> {
-        let local_variables = Self::scoped_predicate_variables(scope);
-        let parent_variables = Self::scoped_predicate_variables(parent_scope);
-        let mut referenced_variables = BTreeSet::new();
-        for property_predicate in &predicate.predicates {
-            Self::collect_property_predicate_variables(
-                property_predicate,
-                &mut referenced_variables,
-            );
-        }
-        if let Some(predicate_expression) = predicate.predicate.as_ref() {
-            Self::collect_predicate_expression_variables(
-                predicate_expression,
-                &mut referenced_variables,
-            );
-        }
-        if let Some(variable) = referenced_variables.iter().find(|variable| {
-            parent_variables.contains(**variable) && !local_variables.contains(**variable)
-        }) {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_SCOPED_SUBQUERY",
-                format!("{path}.predicate"),
-                format!(
-                    "nested COUNT {{ ... }} predicates cannot reference parent scoped variable '{variable}' in their scoped WHERE predicate yet"
-                ),
-            )
-            .into_core_error());
-        }
-        Ok(())
-    }
-
-    fn scoped_predicate_variables<'b>(
-        scope: ExistsPredicateValidationContext<'a, 'b>,
-    ) -> BTreeSet<&'b str> {
-        scope
-            .local_nodes
-            .keys()
-            .copied()
-            .chain(
-                scope
-                    .relationships
-                    .iter()
-                    .filter_map(|relationship| relationship.pattern.variable.as_deref()),
-            )
-            .collect()
     }
 
     fn resolve_nested_scoped_exists_relationship_mappings<'b>(

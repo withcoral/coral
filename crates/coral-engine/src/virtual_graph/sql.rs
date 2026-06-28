@@ -130,6 +130,14 @@ enum ScalarSubqueryCandidate {
     Exists(ExistsPatternPredicate),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CountExistencePredicate {
+    Exists,
+    NotExists,
+    AlwaysTrue,
+    AlwaysFalse,
+}
+
 #[derive(Debug, Clone)]
 struct PrecomputedScalarSubquery {
     candidate: ScalarSubqueryCandidate,
@@ -3559,11 +3567,53 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_nested_scoped_count_exists_select<'b>(
+        &self,
+        pattern: &CountSubqueryPattern,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => self
+                .render_nested_scoped_pattern_select(
+                    predicate,
+                    "1",
+                    parent_relationships,
+                    parent_local_nodes,
+                    parent_local_aliases,
+                    "__coral_nested_count_n",
+                    "__coral_nested_count_r",
+                    "nested COUNT",
+                ),
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => self.render_nested_scoped_count_node_select(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                "1",
+            ),
+        }
+    }
+
     fn render_nested_scoped_count_node_subquery(
         &self,
         nodes: &[NodePattern],
         predicates: &[PropertyPredicate],
         predicate: Option<&PredicateExpression>,
+    ) -> Result<String, CoreError> {
+        self.render_nested_scoped_count_node_select(nodes, predicates, predicate, "COUNT(*)")
+    }
+
+    fn render_nested_scoped_count_node_select(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        select_expression: &str,
     ) -> Result<String, CoreError> {
         let local_nodes = self.scoped_local_node_map(nodes)?;
         let local_aliases = Self::nested_scoped_local_node_aliases(nodes, "__coral_nested_count_n");
@@ -3571,7 +3621,7 @@ impl<'a> Lowerer<'a> {
             nodes,
             predicates,
             predicate,
-            "COUNT(*)",
+            select_expression,
             &local_nodes,
             &local_aliases,
             "nested COUNT",
@@ -3856,6 +3906,15 @@ impl<'a> Lowerer<'a> {
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
+        if let Some(rendered) = self.try_render_scoped_count_existence_predicate(
+            predicate,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )? {
+            return Ok(rendered);
+        }
+
         let lhs = self.render_scoped_scalar_expression(
             &predicate.lhs,
             relationships,
@@ -3946,6 +4005,107 @@ impl<'a> Lowerer<'a> {
             (_, ScalarPredicateRhs::List(_)) => Err(CoreError::internal(
                 "validated scoped scalar literal list predicate reached generic RHS renderer",
             )),
+        }
+    }
+
+    fn try_render_scoped_count_existence_predicate<'b>(
+        &self,
+        predicate: &ScalarPredicate,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        let ScalarExpression::CountSubquery { pattern } = &predicate.lhs else {
+            return Ok(None);
+        };
+        let Some(existence) = Self::count_existence_predicate(predicate.operator, &predicate.rhs)
+        else {
+            return Ok(None);
+        };
+        self.render_scoped_count_existence_predicate(
+            pattern,
+            existence,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )
+        .map(Some)
+    }
+
+    fn count_existence_predicate(
+        operator: ComparisonOperator,
+        rhs: &ScalarPredicateRhs,
+    ) -> Option<CountExistencePredicate> {
+        let ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(value))) =
+            rhs
+        else {
+            return None;
+        };
+        match operator {
+            ComparisonOperator::Equal => match *value {
+                0 => Some(CountExistencePredicate::NotExists),
+                value if value < 0 => Some(CountExistencePredicate::AlwaysFalse),
+                _ => None,
+            },
+            ComparisonOperator::NotEqual => match *value {
+                0 => Some(CountExistencePredicate::Exists),
+                value if value < 0 => Some(CountExistencePredicate::AlwaysTrue),
+                _ => None,
+            },
+            ComparisonOperator::GreaterThan => match *value {
+                value if value < 0 => Some(CountExistencePredicate::AlwaysTrue),
+                0 => Some(CountExistencePredicate::Exists),
+                _ => None,
+            },
+            ComparisonOperator::GreaterThanOrEqual => match *value {
+                value if value <= 0 => Some(CountExistencePredicate::AlwaysTrue),
+                1 => Some(CountExistencePredicate::Exists),
+                _ => None,
+            },
+            ComparisonOperator::LessThan => match *value {
+                value if value <= 0 => Some(CountExistencePredicate::AlwaysFalse),
+                1 => Some(CountExistencePredicate::NotExists),
+                _ => None,
+            },
+            ComparisonOperator::LessThanOrEqual => match *value {
+                value if value < 0 => Some(CountExistencePredicate::AlwaysFalse),
+                0 => Some(CountExistencePredicate::NotExists),
+                _ => None,
+            },
+            ComparisonOperator::In
+            | ComparisonOperator::StartsWith
+            | ComparisonOperator::EndsWith
+            | ComparisonOperator::Contains
+            | ComparisonOperator::RegexMatch => None,
+        }
+    }
+
+    fn render_scoped_count_existence_predicate<'b>(
+        &self,
+        pattern: &CountSubqueryPattern,
+        predicate: CountExistencePredicate,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            CountExistencePredicate::AlwaysTrue => Ok("TRUE".to_string()),
+            CountExistencePredicate::AlwaysFalse => Ok("FALSE".to_string()),
+            CountExistencePredicate::Exists | CountExistencePredicate::NotExists => {
+                let select = self.render_nested_scoped_count_exists_select(
+                    pattern,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                Ok(match predicate {
+                    CountExistencePredicate::Exists => format!("EXISTS {select}"),
+                    CountExistencePredicate::NotExists => format!("NOT EXISTS {select}"),
+                    CountExistencePredicate::AlwaysTrue | CountExistencePredicate::AlwaysFalse => {
+                        unreachable!("constant count predicates handled before EXISTS rendering")
+                    }
+                })
+            }
         }
     }
 

@@ -361,10 +361,12 @@ The supported foundation subset is intentionally narrow:
   node-only patterns, with endpoint correlations resolved through child-local
   aliases, parent scoped aliases, or outer `MATCH` bindings. Nested `EXISTS`
   scoped boolean/scalar predicates can also reference parent scoped properties
-  through the same alias renderer. Nested `COUNT` relationship predicates can
-  correlate endpoints to parent scoped nodes, but parent scoped property
-  references inside the nested count's own `WHERE` predicate remain rejected
-  until that shape is lowered as a staged aggregate join. `OPTIONAL MATCH`,
+  through the same alias renderer. Nested `COUNT` predicates whose comparison is
+  equivalent to existence, such as `COUNT { ... } > 0` or `COUNT { ... } = 0`,
+  lower to `EXISTS` / `NOT EXISTS` so scoped parent-property predicates avoid
+  DataFusion's nested correlated scalar-subquery limits. Other nested count
+  comparisons continue through the scalar count renderer and will require staged
+  aggregate planning for broader parent-property support. `OPTIONAL MATCH`,
   `WITH`, `RETURN`, and `UNION` inside scoped subqueries still require staged
   planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
