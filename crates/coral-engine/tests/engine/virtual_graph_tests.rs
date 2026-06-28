@@ -9281,6 +9281,53 @@ async fn cypher_metadata_list_indexes_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE size(labels(service)) = 1 \
+           AND size(keys(owns)) = 2 \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                size(labels(service)) AS service_label_count, \
+                size(keys(service)) AS service_key_count \
+         ORDER BY size(keys(service)), owner, service",
+    )
+    .await
+    .expect("metadata list sizes should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("1 AS \"service_label_count\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("6 AS \"service_key_count\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_label_count": 1, "service_key_count": 6}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_label_count": 1, "service_key_count": 6}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_label_count": 1, "service_key_count": 6}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_node_label_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

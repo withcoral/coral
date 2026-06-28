@@ -6902,6 +6902,16 @@ fn compile_character_length_scalar_expression(
             ),
         ));
     };
+    if let Some(plan) = plan
+        && let Some(length) = compile_optional_metadata_list_length_scalar_expression(
+            argument,
+            format!("{path}.arguments[0]"),
+            plan,
+            context,
+        )?
+    {
+        return Ok(length);
+    }
     if let Some(length) = compile_literal_list_length_scalar_expression(
         argument,
         format!("{path}.arguments[0]"),
@@ -6919,6 +6929,42 @@ fn compile_character_length_scalar_expression(
             context,
         )?),
     })
+}
+
+fn compile_optional_metadata_list_length_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_metadata_list_length_scalar_expression(inner, path, plan, context)
+        }
+        expression => {
+            let Some(reference) =
+                compile_optional_metadata_list_ref(expression, path.clone(), plan, context)?
+            else {
+                return Ok(None);
+            };
+            let actual = compile_metadata_list_actual_literals(
+                &reference,
+                context.graph.as_ref(),
+                plan,
+                path,
+            )?;
+            let value = reference.value();
+            let presence_variable = match value.presence_variable.clone() {
+                Some(variable) => Some(variable),
+                None => optional_graph_variable_presence_variable(plan, &value.variable)?,
+            };
+            Ok(Some(presence_gate_scalar_expression(
+                presence_variable,
+                list_length_scalar_expression(actual.len())?,
+            )))
+        }
+    }
 }
 
 fn compile_literal_list_length_scalar_expression(
@@ -15613,6 +15659,97 @@ relationships:
                         ))),
                     },
                     alias: "owner_last_key".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_metadata_list_size_scalar_expressions() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE size(labels(service)) = 1 \
+               AND size(keys(owns)) = 2 \
+             RETURN size(labels(service)) AS service_label_count, \
+                    size(keys(service)) AS service_key_count \
+             ORDER BY size(keys(owns))",
+        )
+        .expect("metadata list sizes should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(1)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(1),
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(2)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(2),
+                    )),
+                })),
+            })
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "service_label_count".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(2)),
+                    alias: "service_key_count".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(
+                    Literal::Integer(2,)
+                )),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_metadata_list_sizes_as_presence_gated_scalars() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN size(labels(person)) AS owner_label_count, \
+                    size(keys(person)) AS owner_key_count",
+        )
+        .expect("optional metadata list sizes should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+                    },
+                    alias: "owner_label_count".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+                    },
+                    alias: "owner_key_count".to_string(),
                 },
             ]
         );

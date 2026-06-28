@@ -132,6 +132,8 @@ The supported foundation subset is intentionally narrow:
 - zero-based positive and negative index expressions over static
   `labels(...)` and declaration-aware `keys(...)` metadata lists, folded at
   compile time with out-of-range indexes returning `NULL`;
+- `size(labels(...))` and declaration-aware `size(keys(...))` scalar
+  expressions folded from static graph metadata, preserving optional nulls;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped

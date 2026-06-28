@@ -2472,8 +2472,11 @@ impl<'a> Lowerer<'a> {
                 variable,
                 relationship_type,
             } => self.render_relationship_type_ref(variable, relationship_type),
+            OrderExpression::Scalar(ScalarExpression::Literal(literal)) => {
+                Ok(render_order_literal(literal))
+            }
             OrderExpression::Scalar(expression) => self.render_scalar_expression(expression),
-            OrderExpression::Literal(literal) => Ok(render_literal(literal)),
+            OrderExpression::Literal(literal) => Ok(render_order_literal(literal)),
             OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         }
     }
@@ -3356,6 +3359,13 @@ fn render_literal(literal: &Literal) -> String {
         Literal::Float(value) => (*value).into_inner().to_string(),
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
+    }
+}
+
+fn render_order_literal(literal: &Literal) -> String {
+    match literal {
+        Literal::Integer(_) => format!("CAST({} AS BIGINT)", render_literal(literal)),
+        _ => render_literal(literal),
     }
 }
 
