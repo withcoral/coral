@@ -10714,7 +10714,7 @@ fn compile_binary_comparison(
     let operator = compile_comparison_operator(operator);
     if let Some(plan) = mode.static_metadata_plan()
         && let Some(predicate) =
-            compile_optional_metadata_list_comparison(lhs, operator, rhs, &path, plan, context)?
+            compile_optional_static_list_comparison(lhs, operator, rhs, &path, plan, context)?
     {
         return Ok(predicate);
     }
@@ -10800,7 +10800,7 @@ fn compile_binary_comparison(
     Err(unsupported(path, mode.unsupported_comparison_message()))
 }
 
-fn compile_optional_metadata_list_comparison(
+fn compile_optional_static_list_comparison(
     lhs: &Expression,
     operator: ComparisonOperator,
     rhs: &Expression,
@@ -10808,32 +10808,27 @@ fn compile_optional_metadata_list_comparison(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
-    if let Some(actual) =
-        compile_optional_metadata_list_value(lhs, format!("{path}.lhs"), plan, context)?
+    if !is_parameter_expression(lhs)
+        && let Some(actual) =
+            compile_optional_static_list_value(lhs, format!("{path}.lhs"), Some(plan), context)?
     {
-        let expected = compile_metadata_literal_list(rhs, format!("{path}.rhs"), context)?;
-        return Ok(Some(compile_metadata_literal_list_predicate(
-            &actual.value,
-            &actual.literals,
-            operator,
-            &expected,
-            path,
-            plan,
+        let expected =
+            compile_static_list_comparison_rhs(rhs, format!("{path}.rhs"), plan, context)?;
+        return Ok(Some(compile_static_list_predicate(
+            &actual, operator, &expected, path,
         )?));
     }
+    if is_parameter_expression(rhs) {
+        return Ok(None);
+    }
     let Some(actual) =
-        compile_optional_metadata_list_value(rhs, format!("{path}.rhs"), plan, context)?
+        compile_optional_static_list_value(rhs, format!("{path}.rhs"), Some(plan), context)?
     else {
         return Ok(None);
     };
-    let expected = compile_metadata_literal_list(lhs, format!("{path}.lhs"), context)?;
-    Ok(Some(compile_metadata_literal_list_predicate(
-        &actual.value,
-        &actual.literals,
-        operator,
-        &expected,
-        path,
-        plan,
+    let expected = compile_static_list_comparison_rhs(lhs, format!("{path}.lhs"), plan, context)?;
+    Ok(Some(compile_static_list_predicate(
+        &actual, operator, &expected, path,
     )?))
 }
 
@@ -10928,26 +10923,50 @@ fn compile_optional_metadata_list_value(
     }
 }
 
-fn compile_metadata_literal_list_predicate(
-    value: &GraphValueRef,
-    actual: &[Literal],
+fn compile_static_list_predicate(
+    actual: &StaticListValue,
     operator: ComparisonOperator,
-    expected: &[Literal],
+    expected: &StaticListValue,
     path: &str,
-    plan: &GraphPlan,
 ) -> Result<PredicateExpression, CoreError> {
-    let matches = evaluate_metadata_literal_list_comparison(actual, operator, expected, path)?;
-    let presence_variable = match value.presence_variable.clone() {
-        Some(variable) => Some(variable),
-        None => optional_graph_variable_presence_variable(plan, &value.variable)?,
-    };
-    Ok(match presence_variable {
-        Some(presence_variable) => presence_gated_boolean_predicate(presence_variable, matches),
-        None => PredicateExpression::Boolean(matches),
+    let matches = evaluate_static_literal_list_comparison(
+        &actual.literals,
+        operator,
+        &expected.literals,
+        path,
+    )?;
+    let presence_variables = actual
+        .presence_variable
+        .iter()
+        .chain(expected.presence_variable.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    Ok(match presence_variables.as_slice() {
+        [] => PredicateExpression::Boolean(matches),
+        _ => presence_gated_boolean_predicate_for_variables(presence_variables, matches),
     })
 }
 
-fn evaluate_metadata_literal_list_comparison(
+fn compile_static_list_comparison_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    compile_optional_static_list_value(expression, path.clone(), Some(plan), context)?.ok_or_else(
+        || {
+            unsupported(
+                path,
+                "static list predicates require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            )
+        },
+    )
+}
+
+fn evaluate_static_literal_list_comparison(
     actual: &[Literal],
     operator: ComparisonOperator,
     expected: &[Literal],
@@ -10958,43 +10977,16 @@ fn evaluate_metadata_literal_list_comparison(
         ComparisonOperator::NotEqual => Ok(actual != expected),
         _ => Err(unsupported(
             path.to_string(),
-            "metadata list predicates support only = and <>",
+            "static list predicates support only = and <>",
         )),
     }
 }
 
-fn compile_metadata_literal_list(
-    expression: &Expression,
-    path: impl Into<String>,
-    context: &CypherCompileContext,
-) -> Result<Vec<Literal>, CoreError> {
-    let path = path.into();
+fn is_parameter_expression(expression: &Expression) -> bool {
     match expression {
-        Expression::Parenthesized(inner) => compile_metadata_literal_list(inner, path, context),
-        Expression::Literal(CypherLiteral::List(list)) => list
-            .elements
-            .iter()
-            .enumerate()
-            .map(|(index, expression)| {
-                compile_literal(expression, format!("{path}[{index}]"), context)
-            })
-            .collect(),
-        Expression::Parameter(parameter) => {
-            match context.parameter_value(parameter, path.clone())? {
-                CypherParameterValue::List(values) => Ok(values.clone()),
-                CypherParameterValue::Literal(_) => Err(unsupported(
-                    path,
-                    "metadata list predicates require a literal list or list parameter",
-                )),
-            }
-        }
-        Expression::ListSlice {
-            list, start, end, ..
-        } => compile_literal_list_slice(list, start.as_deref(), end.as_deref(), path, context),
-        _ => Err(unsupported(
-            path,
-            "metadata list predicates require a literal list or list parameter",
-        )),
+        Expression::Parenthesized(inner) => is_parameter_expression(inner),
+        Expression::Parameter(_) => true,
+        _ => false,
     }
 }
 
@@ -11345,11 +11337,22 @@ fn compile_label_membership_predicate(
 }
 
 fn presence_gated_boolean_predicate(presence_variable: String, value: bool) -> PredicateExpression {
-    PredicateExpression::ScalarComparison(ScalarPredicate {
-        lhs: ScalarExpression::PresenceGated {
+    presence_gated_boolean_predicate_for_variables(vec![presence_variable], value)
+}
+
+fn presence_gated_boolean_predicate_for_variables(
+    presence_variables: Vec<String>,
+    value: bool,
+) -> PredicateExpression {
+    let expression = presence_variables.into_iter().fold(
+        ScalarExpression::Literal(Literal::Boolean(value)),
+        |expression, presence_variable| ScalarExpression::PresenceGated {
             presence_variable,
-            expression: Box::new(ScalarExpression::Literal(Literal::Boolean(value))),
+            expression: Box::new(expression),
         },
+    );
+    PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: expression,
         operator: ComparisonOperator::Equal,
         rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
     })
@@ -16366,6 +16369,72 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comparison_predicates() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE tail(keys(service)) = ['tier'] \
+               AND [] = tail(labels(service)) \
+               AND tail($tiers) <> ['prod'] \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect("static list comparison predicates should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::And {
+                    left: Box::new(PredicateExpression::Boolean(true)),
+                    right: Box::new(PredicateExpression::Boolean(true)),
+                }),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_comparisons_as_presence_gated_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN tail(keys(person)) = ['team'] AS owner_key_tail_matches",
+        )
+        .expect("optional static list comparison should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Predicate(Box::new(
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::PresenceGated {
+                            presence_variable: "person".to_string(),
+                            expression: Box::new(ScalarExpression::Literal(
+                                Literal::Boolean(true,)
+                            )),
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true),
+                        )),
+                    }),
+                )),
+                alias: "owner_key_tail_matches".to_string(),
+            }]
+        );
+    }
+
+    #[test]
     fn rejects_tail_with_ambiguous_list_element_type() {
         for cypher in [
             "MATCH (service:Service) RETURN tail([]) AS values",
@@ -16524,7 +16593,7 @@ relationships:
         assert!(
             error
                 .to_string()
-                .contains("metadata list predicates support only = and <>"),
+                .contains("static list predicates support only = and <>"),
             "{error:?}"
         );
     }
