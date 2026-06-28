@@ -3564,12 +3564,6 @@ fn compile_terminal_with_projection(
     }
 
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
-    if part.with.star && return_clause.star {
-        return Err(unsupported(
-            "final_part.return.star",
-            "RETURN * after WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
-        ));
-    }
     let mut plan = GraphPlan::default();
     let mut state = CypherCompileState::default();
     compile_reading_clauses_into(
@@ -3581,7 +3575,13 @@ fn compile_terminal_with_projection(
     )?;
 
     compile_terminal_with_clause(&part.with, &mut plan, &state, context)?;
-    apply_terminal_return_projection_aliases(return_clause, &mut plan.projections)?;
+    apply_terminal_return_projection_aliases(
+        return_clause,
+        &mut plan,
+        &state,
+        context,
+        part.with.star,
+    )?;
     apply_terminal_return_modifiers(return_clause, &mut plan, context)?;
     reject_ignored_path_variable_references(&plan, &state, "with")?;
     Ok(Some(plan))
@@ -3775,10 +3775,21 @@ fn compile_terminal_with_clause(
 
 fn apply_terminal_return_projection_aliases(
     return_clause: &Return,
-    projections: &mut Vec<Projection>,
+    plan: &mut GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    with_star: bool,
 ) -> Result<(), CoreError> {
     if return_clause.star {
         if return_clause.items.is_empty() {
+            if with_star {
+                expand_terminal_with_star_return_star(
+                    plan,
+                    state,
+                    context,
+                    "final_part.return.star",
+                )?;
+            }
             return Ok(());
         }
         return Err(unsupported(
@@ -3786,14 +3797,14 @@ fn apply_terminal_return_projection_aliases(
             "RETURN * mixed with explicit projections after WITH requires scoped query planning and is not supported yet",
         ));
     }
-    if return_clause.items.len() != projections.len() {
+    if return_clause.items.len() != plan.projections.len() {
         return Err(unsupported(
             "final_part.return.items",
             "terminal RETURN after WITH must pass through every WITH alias",
         ));
     }
-    let mut reordered = Vec::with_capacity(projections.len());
-    let mut available = projections.clone();
+    let mut reordered = Vec::with_capacity(plan.projections.len());
+    let mut available = plan.projections.clone();
     let mut returned_aliases = BTreeSet::new();
     for (index, item) in return_clause.items.iter().enumerate() {
         let Expression::Variable(variable) = &item.expression else {
@@ -3824,7 +3835,57 @@ fn apply_terminal_return_projection_aliases(
         }
         reordered.push(projection);
     }
-    *projections = reordered;
+    plan.projections = reordered;
+    Ok(())
+}
+
+fn expand_terminal_with_star_return_star(
+    plan: &mut GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<(), CoreError> {
+    let explicit_projections = std::mem::take(&mut plan.projections);
+    if explicit_projections
+        .iter()
+        .any(terminal_with_star_projection_requires_grouping)
+    {
+        return Err(unsupported(
+            path,
+            "RETURN * after WITH * with aggregate aliases requires grouped scoped query planning and is not supported yet",
+        ));
+    }
+    compile_return_star(plan, state, context, path)?;
+    for projection in explicit_projections {
+        push_unique_terminal_with_star_projection(plan, projection, path)?;
+    }
+    Ok(())
+}
+
+fn terminal_with_star_projection_requires_grouping(projection: &Projection) -> bool {
+    matches!(
+        projection,
+        Projection::CountAll { .. } | Projection::Aggregate { .. }
+    )
+}
+
+fn push_unique_terminal_with_star_projection(
+    plan: &mut GraphPlan,
+    projection: Projection,
+    path: &str,
+) -> Result<(), CoreError> {
+    let alias = projection.output_name();
+    if plan
+        .projections
+        .iter()
+        .any(|existing| existing.output_name() == alias)
+    {
+        return Err(unsupported(
+            path.to_string(),
+            format!("RETURN * expansion produced duplicate output column '{alias}'"),
+        ));
+    }
+    plan.projections.push(projection);
     Ok(())
 }
 
@@ -21360,6 +21421,94 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_terminal_with_star_return_star_and_explicit_projection_aliases() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WITH *, service.name AS name \
+             RETURN * \
+             ORDER BY name",
+        )
+        .expect("terminal WITH * RETURN * explicit aliases should compile");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "service.__id",
+                "service.__labels",
+                "service.name",
+                "service.tier",
+                "name",
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_with_star_return_star_with_aggregate_aliases() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WITH *, count(service) AS services \
+             RETURN *",
+        )
+        .expect_err("terminal WITH * RETURN * aggregate aliases require grouping");
+
+        assert!(
+            error.to_string().contains("aggregate aliases"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_with_star_return_star_duplicate_aliases() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WITH *, service.name AS `service.name` \
+             RETURN *",
+        )
+        .expect_err("terminal WITH * RETURN * duplicate aliases should fail");
+
+        assert!(
+            error.to_string().contains("duplicate output column"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_with_star_return_star_over_path_variables() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH path = (person:Person)-[ownership:OWNS]->(service:Service) \
+             WITH *, service.name AS service_name \
+             RETURN *",
+        )
+        .expect_err("terminal WITH * RETURN * should reject unmaterialized path values");
+
+        assert!(
+            error
+                .to_string()
+                .contains("RETURN * cannot carry path variables"),
+            "unexpected error: {error}"
         );
     }
 

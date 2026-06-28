@@ -8693,6 +8693,56 @@ async fn cypher_terminal_with_star_explicit_projections_execute_against_syntheti
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_star_return_star_expands_graph_variables_and_aliases() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name = 'billing-api' \
+         WITH *, service.tier AS tier_copy \
+         RETURN * \
+         ORDER BY tier_copy",
+    )
+    .await
+    .expect("terminal WITH * RETURN * should expand graph variables and scalar aliases");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"id\" AS \"service.__id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" AS \"tier_copy\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service.__id": 10,
+            "service.__labels": ["Service"],
+            "service.active": true,
+            "service.id": 10,
+            "service.name": "billing-api",
+            "service.risk": 0.9,
+            "service.team": "platform",
+            "service.tier": "prod",
+            "tier_copy": "prod"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_scalar_where_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
