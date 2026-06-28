@@ -218,6 +218,9 @@ The supported foundation subset is intentionally narrow:
   `property IN coalesce(keys(optionalNode), ['fallback'])` lower as branch-local
   scalar predicates, preserving matched optional metadata semantics while letting
   unmatched optional branches fall through to later static-list fallbacks.
+  Collection predicates such as `any(k IN coalesce(...) WHERE ...)` use the same
+  branch-local strategy, with each branch evaluated by the existing folded static
+  collection predicate evaluator.
   `head(...)`, `last(...)`, `size(...)`, and `isEmpty(...)` over list-valued
   `coalesce(...)` are handled as scalar reducers over those same static branches,
   e.g. `coalesce(size(branch1), size(branch2))`, so optional metadata fallbacks
@@ -237,10 +240,12 @@ The supported foundation subset is intentionally narrow:
   columns. `property IN CASE ... END` lowers to a scalar boolean `CASE` whose
   branch results are ordinary folded-list membership predicates, which allows
   empty or null branches in predicate position without rendering an untyped array
-  value. `head(CASE ... END)`, `last(CASE ... END)`, `size(CASE ... END)`, and
-  `isEmpty(CASE ... END)` are scalar reducers over the same branch parts, so they
-  compile all-empty branch sets by lowering to scalar `CASE` expressions rather
-  than rendering an untyped list;
+  value. Static collection predicates over `CASE` collections lower the same way,
+  except each branch result is the folded outcome of `all` / `any` / `none` /
+  `single` over that branch's list. `head(CASE ... END)`, `last(CASE ... END)`,
+  `size(CASE ... END)`, and `isEmpty(CASE ... END)` are scalar reducers over the
+  same branch parts, so they compile all-empty branch sets by lowering to scalar
+  `CASE` expressions rather than rendering an untyped list;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the
@@ -261,9 +266,11 @@ The supported foundation subset is intentionally narrow:
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal
-  lists, list parameters, `tail(...)`, `labels(...)`, and declaration-aware
-  `keys(...)`, folded at compile time with Cypher unknown/null behavior,
-  string predicate comparisons, and optional-match presence gates preserved;
+  lists, list parameters, `tail(...)`, static-list `CASE` / `coalesce(...)`,
+  `labels(...)`, and declaration-aware `keys(...)`, folded at compile time or
+  lowered through branch-local scalar predicates with Cypher unknown/null
+  behavior, string predicate comparisons, and optional-match presence gates
+  preserved;
 - `id(...)`, `type(relationship)`, static `'<Label>' IN labels(node)`
   membership, and branch-local membership over static-list `CASE` /
   `coalesce(...)` right-hand sides in predicates;

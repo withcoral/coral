@@ -12483,6 +12483,44 @@ async fn cypher_static_list_quantifier_predicates_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_quantifiers_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                any(key IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END WHERE key = 'team') AS case_has_team_key, \
+                any(key IN coalesce(keys(person), ['fallback']) WHERE key = 'fallback') AS coalesced_has_fallback, \
+                all(key IN coalesce(keys(person), ['fallback']) WHERE key <> 'deprecated') AS coalesced_all_declared \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE/coalesce collection predicates should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_has_team_key": true, "coalesced_has_fallback": false, "coalesced_all_declared": true}),
+            json!({"service": "deployments", "case_has_team_key": true, "coalesced_has_fallback": false, "coalesced_all_declared": true}),
+            json!({"service": "experiments", "case_has_team_key": true, "coalesced_has_fallback": false, "coalesced_all_declared": true}),
+            json!({"service": "legacy-sync", "case_has_team_key": false, "coalesced_has_fallback": true, "coalesced_all_declared": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
