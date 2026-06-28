@@ -3592,6 +3592,84 @@ async fn cypher_count_subqueries_work_in_scalar_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_count_subquery_positive_threshold_predicates_lower_to_exists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } > 0 \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COUNT positive threshold predicate should execute");
+
+    assert!(
+        execution.translated_sql().contains("EXISTS (SELECT 1 FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains("COUNT(*)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_count_subquery_zero_threshold_predicates_lower_to_not_exists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } = 0 \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COUNT zero threshold predicate should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("NOT EXISTS (SELECT 1 FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains("COUNT(*)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_subqueries_preserve_inner_where_predicates() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

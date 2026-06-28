@@ -2503,6 +2503,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_scalar_predicate(&self, predicate: &ScalarPredicate) -> Result<String, CoreError> {
+        if let Some(rendered) = self.try_render_count_existence_predicate(predicate)? {
+            return Ok(rendered);
+        }
+
         let lhs = self.render_scalar_expression(&predicate.lhs)?;
         match (&predicate.operator, &predicate.rhs) {
             (ComparisonOperator::In, ScalarPredicateRhs::List(literals)) => {
@@ -2581,6 +2585,21 @@ impl<'a> Lowerer<'a> {
                 self.render_scalar_predicate_rhs(&predicate.rhs)?
             )),
         }
+    }
+
+    fn try_render_count_existence_predicate(
+        &self,
+        predicate: &ScalarPredicate,
+    ) -> Result<Option<String>, CoreError> {
+        let ScalarExpression::CountSubquery { pattern } = &predicate.lhs else {
+            return Ok(None);
+        };
+        let Some(existence) = Self::count_existence_predicate(predicate.operator, &predicate.rhs)
+        else {
+            return Ok(None);
+        };
+        self.render_count_existence_predicate(pattern, existence)
+            .map(Some)
     }
 
     fn render_key_predicate(&self, predicate: &KeyPredicate) -> Result<String, CoreError> {
@@ -2788,6 +2807,22 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_count_exists_select(
+        &self,
+        pattern: &CountSubqueryPattern,
+    ) -> Result<String, CoreError> {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                self.render_scoped_pattern_select(predicate, "1")
+            }
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => self.render_count_node_select(nodes, predicates, predicate.as_deref(), "1"),
+        }
+    }
+
     fn scoped_condition_capacity(
         relationship_count: usize,
         property_predicate_count: usize,
@@ -2915,6 +2950,16 @@ impl<'a> Lowerer<'a> {
         predicates: &[PropertyPredicate],
         predicate: Option<&PredicateExpression>,
     ) -> Result<String, CoreError> {
+        self.render_count_node_select(nodes, predicates, predicate, "COUNT(*)")
+    }
+
+    fn render_count_node_select(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        select_expression: &str,
+    ) -> Result<String, CoreError> {
         if nodes.is_empty() {
             return Err(CoreError::internal(
                 "validated COUNT node subquery had no node bindings",
@@ -2926,7 +2971,7 @@ impl<'a> Lowerer<'a> {
             nodes,
             predicates,
             predicate,
-            "COUNT(*)",
+            select_expression,
             &local_nodes,
             &local_aliases,
             "COUNT",
@@ -4077,6 +4122,27 @@ impl<'a> Lowerer<'a> {
             | ComparisonOperator::EndsWith
             | ComparisonOperator::Contains
             | ComparisonOperator::RegexMatch => None,
+        }
+    }
+
+    fn render_count_existence_predicate(
+        &self,
+        pattern: &CountSubqueryPattern,
+        predicate: CountExistencePredicate,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            CountExistencePredicate::AlwaysTrue => Ok("TRUE".to_string()),
+            CountExistencePredicate::AlwaysFalse => Ok("FALSE".to_string()),
+            CountExistencePredicate::Exists | CountExistencePredicate::NotExists => {
+                let select = self.render_count_exists_select(pattern)?;
+                Ok(match predicate {
+                    CountExistencePredicate::Exists => format!("EXISTS {select}"),
+                    CountExistencePredicate::NotExists => format!("NOT EXISTS {select}"),
+                    CountExistencePredicate::AlwaysTrue | CountExistencePredicate::AlwaysFalse => {
+                        unreachable!("constant count predicates handled before EXISTS rendering")
+                    }
+                })
+            }
         }
     }
 
