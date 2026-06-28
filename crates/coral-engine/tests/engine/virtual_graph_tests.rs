@@ -1172,6 +1172,79 @@ async fn cypher_exact_gql_relationship_quantifiers_execute_as_repeated_hops() {
 }
 
 #[tokio::test]
+async fn cypher_bounded_cross_label_ranges_prune_impossible_lengths() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[:ROUTES*0..2]->(incident:Incident) \
+         RETURN person.name AS person, incident.title AS incident, length(path) AS hops \
+         ORDER BY person, incident",
+    )
+    .await
+    .expect("bounded cross-label path should execute after pruning impossible lengths");
+
+    assert!(
+        !execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"person_service_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_incident_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"person": "Ada Lovelace", "incident": "billing latency", "hops": 2}),
+            json!({"person": "Grace Hopper", "incident": "deploy failed", "hops": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_bounded_cross_label_ranges_with_no_feasible_lengths_return_empty_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[:ROUTES*0..1]->(incident:Incident) \
+         RETURN person.name AS person, incident.title AS incident, length(path) AS hops \
+         ORDER BY person, incident",
+    )
+    .await
+    .expect("all-pruned bounded cross-label path should execute as an empty result");
+
+    assert!(
+        execution.translated_sql().contains("WHERE")
+            && execution.translated_sql().contains("FALSE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(execution_to_rows(execution.execution()).is_empty());
+}
+
+#[tokio::test]
 async fn cypher_path_length_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -244,8 +244,13 @@ The supported foundation subset is intentionally narrow:
   `(:Person)-[:ROUTES*2]->(:Incident)` through `Service`;
 - exact zero-hop relationship ranges lowered as same-node identity predicates,
   and finite non-negative bounded mandatory relationship ranges and GQL
-  relationship quantifiers lowered as `UNION ALL` branches, with outer row
-  modifiers, aggregates, and `length(path)` applied after expansion;
+  relationship quantifiers lowered as fixed-hop alternatives, with outer row
+  modifiers, aggregates, and `length(path)` applied after expansion. Cross-label
+  bounded ranges use declaration metadata to prune impossible hop counts before
+  planning and keep only exact lengths with one unambiguous intermediate label
+  sequence; ranges whose exact alternatives are all pruned lower to ordinary
+  empty-result plans with `WHERE FALSE` so projections and result schemas remain
+  stable;
 - non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
   carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.
@@ -254,7 +259,7 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, unbounded variable-length paths, bounded ranges
 inside `OPTIONAL MATCH`, relationship-variable list bindings for zero-hop or
-multi-hop ranges, ambiguous or unmapped cross-label fixed-hop paths,
+multi-hop ranges, ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar
 projections containing multiple correlated `COUNT`/`EXISTS` subqueries, general
