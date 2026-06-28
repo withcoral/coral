@@ -522,6 +522,7 @@ fn compile_root_field(
     }
 
     let label = resolve_root_label(&root.name, graph, format!("{path}.name"))?;
+    validate_root_arguments(root, &path)?;
     let variable = variable_for_label(&label);
     let mut plan = GraphPlan {
         nodes: vec![NodePattern {
@@ -579,6 +580,47 @@ fn compile_root_field(
     }
 
     Ok(plan)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GraphqlRootArgumentSlot {
+    Where,
+    OrderBy,
+    Limit,
+    Offset,
+    Distinct,
+}
+
+fn validate_root_arguments(root: &Field<'_, String>, path: &str) -> Result<(), CoreError> {
+    let mut seen = BTreeMap::new();
+    for (index, (name, _)) in root.arguments.iter().enumerate() {
+        let Some(slot) = graphql_root_argument_slot(name) else {
+            continue;
+        };
+        if let Some(first_name) = seen.get(&slot) {
+            let message = if first_name == name {
+                format!("GraphQL root argument '{name}' is specified more than once")
+            } else {
+                format!(
+                    "GraphQL root argument '{name}' conflicts with earlier '{first_name}' argument"
+                )
+            };
+            return Err(unsupported(format!("{path}.arguments[{index}]"), message));
+        }
+        seen.insert(slot, name.clone());
+    }
+    Ok(())
+}
+
+fn graphql_root_argument_slot(name: &str) -> Option<GraphqlRootArgumentSlot> {
+    match name {
+        "where" => Some(GraphqlRootArgumentSlot::Where),
+        "orderBy" => Some(GraphqlRootArgumentSlot::OrderBy),
+        "limit" | "first" => Some(GraphqlRootArgumentSlot::Limit),
+        "offset" | "skip" => Some(GraphqlRootArgumentSlot::Offset),
+        "distinct" => Some(GraphqlRootArgumentSlot::Distinct),
+        _ => None,
+    }
 }
 
 fn resolve_root_label(
@@ -3869,6 +3911,77 @@ mod tests {
 
         assert_eq!(plan.limit, Some(3));
         assert_eq!(plan.skip, Some(1));
+    }
+
+    #[test]
+    fn rejects_ambiguous_graphql_root_arguments() {
+        let cases = [
+            (
+                r"
+                query {
+                  Service(limit: 1, first: 2) {
+                    name
+                  }
+                }
+                ",
+                "GraphQL root argument 'first' conflicts with earlier 'limit' argument",
+            ),
+            (
+                r"
+                query {
+                  Service(offset: 1, skip: 2) {
+                    name
+                  }
+                }
+                ",
+                "GraphQL root argument 'skip' conflicts with earlier 'offset' argument",
+            ),
+            (
+                r#"
+                query {
+                  Service(
+                    where: { tier: { eq: "prod" } }
+                    where: { name: { eq: "billing-api" } }
+                  ) {
+                    name
+                  }
+                }
+                "#,
+                "GraphQL root argument 'where' is specified more than once",
+            ),
+            (
+                r"
+                query {
+                  Service(
+                    orderBy: [{ field: name }]
+                    orderBy: [{ field: tier }]
+                  ) {
+                    name
+                  }
+                }
+                ",
+                "GraphQL root argument 'orderBy' is specified more than once",
+            ),
+            (
+                r"
+                query {
+                  Service(distinct: true, distinct: false) {
+                    name
+                  }
+                }
+                ",
+                "GraphQL root argument 'distinct' is specified more than once",
+            ),
+        ];
+
+        for (query, expected) in cases {
+            let error =
+                compile_graphql(query).expect_err("ambiguous GraphQL root arguments should fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
     }
 
     #[test]

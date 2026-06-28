@@ -3273,6 +3273,36 @@ async fn graphql_first_argument_executes_as_limit_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_conflicting_root_row_arguments_are_rejected() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query {
+          Service(limit: 1, first: 2) {
+            service: name
+          }
+        }
+        ",
+    )
+    .await
+    .expect_err("conflicting GraphQL root row arguments should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("GraphQL root argument 'first' conflicts with earlier 'limit' argument"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_variables_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
