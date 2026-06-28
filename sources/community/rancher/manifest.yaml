@@ -36,16 +36,32 @@ test_queries:
 tables:
   - name: clusters
     description: Kubernetes clusters tracked and provisioned via Rancher Manager.
+    guide: |
+      Each row is one cluster from `GET /v3/clusters`. Rancher v3 collections
+      paginate with an opaque `marker` and return the next page only as a full
+      URL in `pagination.next`, which Coral cannot follow directly. To stay
+      safe on larger installations, this source fetches a single bounded page
+      using `limit=1000` (Rancher's suggested upper bound) rather than silently
+      returning only a default-size first page. Use the `name` and `state`
+      pushdown filters to target specific clusters.
+    filters:
+      - name: name
+        required: false
+      - name: state
+        required: false
     request:
       method: GET
       path: /clusters
       query:
         - name: name
-          from: query
+          from: filter
           key: name
         - name: state
-          from: query
+          from: filter
           key: state
+        - name: limit
+          from: literal
+          value: "1000"
     response:
       row_strategy: direct
       rows_path: [data]
@@ -60,12 +76,12 @@ tables:
       - name: name
         type: Utf8
         nullable: false
-        description: Human-readable cluster name.
+        description: Human-readable cluster name. Also a server-side pushdown filter.
         expr: {kind: path, path: [name]}
       - name: state
         type: Utf8
         nullable: true
-        description: Runtime operational state of the cluster (e.g., active, pending).
+        description: Runtime operational state of the cluster (e.g., active, pending). Also a server-side pushdown filter.
         expr: {kind: path, path: [state]}
       - name: provider
         type: Utf8
