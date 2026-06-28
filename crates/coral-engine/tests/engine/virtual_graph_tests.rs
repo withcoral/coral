@@ -10330,6 +10330,46 @@ async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehension_string_filters_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [k IN keys(service) WHERE k STARTS WITH 't'] AS starts_with_t, \
+                [k IN keys(service) WHERE k ENDS WITH 'e'] AS ends_with_e, \
+                [k IN keys(service) WHERE k CONTAINS 'is'] AS contains_is, \
+                [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("static list comprehension string filters should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('team', 'tier') AS \"starts_with_t\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "starts_with_t": ["team", "tier"], "ends_with_e": ["active", "name"], "contains_is": ["risk"], "regex_t": ["team", "tier"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -20556,6 +20556,54 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_string_filters() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service) WHERE k STARTS WITH 't'] AS starts_with_t, \
+                    [k IN keys(service) WHERE k ENDS WITH 'e'] AS ends_with_e, \
+                    [k IN ['billing', 'deployments', 'experiments'] WHERE k CONTAINS 'ing'] AS contains_ing, \
+                    [k IN keys(service) WHERE k =~ '^t.*'] AS regex_t",
+        )
+        .expect("static list comprehension string filters should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "starts_with_t".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("name".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "ends_with_e".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("billing".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "contains_ing".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "regex_t".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_dynamic_mapped_static_list_comprehensions() {
         let error = compile_cypher_for_graph(
             &star_test_graph(),

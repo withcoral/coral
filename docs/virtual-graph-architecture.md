@@ -189,16 +189,17 @@ The supported foundation subset is intentionally narrow:
   `[l IN labels(node)]`, `[x IN ['a', 'b']]`, and `[x IN $list]`, folded as
   typed static-list expressions in projections and `ORDER BY`. Static `WHERE`
   filters over the item variable, literals, scalar parameters, comparisons,
-  `IN` static lists, `IS NULL`, and `AND`/`OR`/`XOR`/`NOT` are evaluated
-  before SQL lowering. Static map expressions over folded items support
+  string predicates (`STARTS WITH`, `ENDS WITH`, `CONTAINS`, and regex), `IN`
+  static lists, `IS NULL`, and `AND`/`OR`/`XOR`/`NOT` are evaluated before SQL
+  lowering. Static map expressions over folded items support
   identity, scalar literals and parameters, `toString`, string case conversion,
   trim variants, and `replace`;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal
   lists, list parameters, `tail(...)`, `labels(...)`, and declaration-aware
-  `keys(...)`, folded at compile time with Cypher unknown/null behavior and
-  optional-match presence gates preserved;
+  `keys(...)`, folded at compile time with Cypher unknown/null behavior,
+  string predicate comparisons, and optional-match presence gates preserved;
 - `id(...)`, `type(relationship)`, and static
   `'<Label>' IN labels(node)` membership in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped
