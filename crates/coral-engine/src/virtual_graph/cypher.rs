@@ -5079,12 +5079,11 @@ fn fixed_length_label_sequences(
     end_label: &str,
     length: usize,
 ) -> Vec<Vec<String>> {
+    let adjacency = fixed_length_label_adjacency(graph, relationship_type, direction);
     let mut sequences = Vec::new();
     let mut current = vec![start_label.to_string()];
     collect_fixed_length_label_sequences(
-        graph,
-        relationship_type,
-        direction,
+        &adjacency,
         end_label,
         length,
         &mut current,
@@ -5094,9 +5093,7 @@ fn fixed_length_label_sequences(
 }
 
 fn collect_fixed_length_label_sequences(
-    graph: &Declaration,
-    relationship_type: &str,
-    direction: Direction,
+    adjacency: &BTreeMap<String, BTreeSet<String>>,
     end_label: &str,
     remaining_hops: usize,
     current: &mut Vec<String>,
@@ -5115,16 +5112,16 @@ fn collect_fixed_length_label_sequences(
         return;
     }
 
-    for next_label in next_fixed_length_labels(graph, relationship_type, direction, &current_label)
-    {
+    let Some(next_labels) = adjacency.get(&current_label) else {
+        return;
+    };
+    for next_label in next_labels {
         if sequences.len() >= MAX_FIXED_LABEL_SEQUENCE_RESULTS {
             break;
         }
-        current.push(next_label);
+        current.push(next_label.clone());
         collect_fixed_length_label_sequences(
-            graph,
-            relationship_type,
-            direction,
+            adjacency,
             end_label,
             remaining_hops - 1,
             current,
@@ -5134,36 +5131,39 @@ fn collect_fixed_length_label_sequences(
     }
 }
 
-fn next_fixed_length_labels(
+fn fixed_length_label_adjacency(
     graph: &Declaration,
     relationship_type: &str,
     direction: Direction,
-    current_label: &str,
-) -> BTreeSet<String> {
-    let mut labels = BTreeSet::new();
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut adjacency = BTreeMap::new();
     for relationship in graph.relationships_for_type(relationship_type) {
         match direction {
             Direction::Outgoing => {
-                if relationship.from.label == current_label {
-                    labels.insert(relationship.to.label.clone());
-                }
+                adjacency
+                    .entry(relationship.from.label.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(relationship.to.label.clone());
             }
             Direction::Incoming => {
-                if relationship.to.label == current_label {
-                    labels.insert(relationship.from.label.clone());
-                }
+                adjacency
+                    .entry(relationship.to.label.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(relationship.from.label.clone());
             }
             Direction::Undirected => {
-                if relationship.from.label == current_label {
-                    labels.insert(relationship.to.label.clone());
-                }
-                if relationship.to.label == current_label {
-                    labels.insert(relationship.from.label.clone());
-                }
+                adjacency
+                    .entry(relationship.from.label.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(relationship.to.label.clone());
+                adjacency
+                    .entry(relationship.to.label.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(relationship.from.label.clone());
             }
         }
     }
-    labels
+    adjacency
 }
 
 struct FixedLengthExpansion<'a> {
