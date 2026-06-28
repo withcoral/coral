@@ -123,7 +123,9 @@ The supported foundation subset is intentionally narrow:
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;
 - literal-left and chained comparisons normalized into property predicates;
 - integer and finite floating-point predicate literals;
-- `IN` predicates over scalar literal lists, including numeric and null members;
+- `IN` predicates over scalar literal lists, including numeric and null members,
+  and parenthesized static folded list expressions such as
+  `property IN (['prod'] + $tiers)`;
 - typed Cypher parameters bound through the explicit parameter API, where
   scalar parameters are accepted in literal positions and list parameters are
   accepted as `IN` right-hand sides and static metadata-list comparison
@@ -151,6 +153,14 @@ The supported foundation subset is intentionally narrow:
   parameters, and static metadata lists, folded at compile time with `NULL` for
   empty matched lists in `head(...)` / `last(...)`, typed empty-list results for
   `tail(...)`, and optional null preservation for nullable graph bindings;
+- static list concatenation with `+` over literal lists, list parameters,
+  `tail(...)`, `labels(...)`, and declaration-aware `keys(...)`, folded at
+  compile time and preserved as typed list IR in projections, `ORDER BY`,
+  `size(...)`, endpoint list functions, static collection predicates, and
+  parenthesized `IN` right-hand sides. Concatenation rejects mixed non-null
+  element types, unknowable projected element types, dynamic operands, and
+  optional RHS `IN` lists until predicate-level nullable-list semantics are
+  represented directly;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal

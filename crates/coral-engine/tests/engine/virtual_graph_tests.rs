@@ -9528,6 +9528,56 @@ async fn cypher_static_list_tail_functions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "prefixes".to_string(),
+        GraphCypherParameterValue::List(vec![GraphLiteral::String("prefix".to_string())]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE head($prefixes + tail(keys(service))) = 'prefix' \
+           AND size(labels(service) + tail(labels(service))) = 1 \
+           AND any(key IN ['active'] + tail(keys(service)) WHERE key = 'tier') \
+           AND service.tier IN (['prod'] + ['dev']) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                $prefixes + tail(keys(service)) AS keys_with_prefix, \
+                labels(service) + [] AS labels_copy, \
+                [null] + tail(keys(service)) AS nullable_keys, \
+                tail($prefixes + tail(keys(service))) AS concat_tail, \
+                size($prefixes + tail(keys(service))) AS concat_size \
+         ORDER BY $prefixes + tail(keys(service)), owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static list concatenation should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "make_array('prefix', 'id', 'name', 'risk', 'team', 'tier') AS \"keys_with_prefix\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "keys_with_prefix": ["prefix", "id", "name", "risk", "team", "tier"], "labels_copy": ["Service"], "nullable_keys": [null, "id", "name", "risk", "team", "tier"], "concat_tail": ["id", "name", "risk", "team", "tier"], "concat_size": 6}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "keys_with_prefix": ["prefix", "id", "name", "risk", "team", "tier"], "labels_copy": ["Service"], "nullable_keys": [null, "id", "name", "risk", "team", "tier"], "concat_tail": ["id", "name", "risk", "team", "tier"], "concat_size": 6}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "keys_with_prefix": ["prefix", "id", "name", "risk", "team", "tier"], "labels_copy": ["Service"], "nullable_keys": [null, "id", "name", "risk", "team", "tier"], "concat_tail": ["id", "name", "risk", "team", "tier"], "concat_size": 6}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -5663,6 +5663,14 @@ fn compile_order_expression_after_metadata_list_index(
             ..
         } => compile_arithmetic_order_expression(expression, path, projections, plan, context),
         Expression::BinaryOp { .. } => {
+            if let Some(expression) = compile_optional_static_list_scalar_expression(
+                expression,
+                path.clone(),
+                Some(plan),
+                context,
+            )? {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
             if let Some(expression) =
                 compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
             {
@@ -6216,6 +6224,12 @@ fn compile_optional_static_list_value(
         Expression::Parenthesized(inner) => {
             compile_optional_static_list_value(inner, path, plan, context)
         }
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Add,
+            lhs,
+            rhs,
+            ..
+        } => compile_optional_static_list_concat_value(lhs, rhs, path, plan, context),
         Expression::FunctionCall(function) if is_tail_function(function) => {
             let [argument] = function.arguments.as_slice() else {
                 return Err(unsupported(
@@ -6252,9 +6266,7 @@ fn compile_optional_static_list_value(
                 }));
             }
             match expression {
-                Expression::Literal(CypherLiteral::List(_))
-                | Expression::ListSlice { .. }
-                | Expression::Parameter(_) => {
+                Expression::Literal(CypherLiteral::List(_)) | Expression::ListSlice { .. } => {
                     let literals = compile_literal_list(expression, path, context)?;
                     Ok(Some(StaticListValue {
                         presence_variable: None,
@@ -6262,9 +6274,108 @@ fn compile_optional_static_list_value(
                         literals,
                     }))
                 }
+                Expression::Parameter(parameter) => {
+                    match context.parameter_value(parameter, path)? {
+                        CypherParameterValue::List(literals) => Ok(Some(StaticListValue {
+                            presence_variable: None,
+                            element_type: infer_literal_list_element_type(literals),
+                            literals: literals.clone(),
+                        })),
+                        CypherParameterValue::Literal(_) => Ok(None),
+                    }
+                }
                 _ => Ok(None),
             }
         }
+    }
+}
+
+fn compile_optional_static_list_concat_value(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let lhs = compile_optional_static_list_value(lhs, format!("{path}.lhs"), plan, context)?;
+    let rhs = compile_optional_static_list_value(rhs, format!("{path}.rhs"), plan, context)?;
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => Ok(Some(concat_static_list_values(lhs, rhs, path)?)),
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(unsupported(
+            path,
+            "static list concatenation requires both operands to be literal lists, list parameters, tail(...), or static labels()/keys() metadata lists",
+        )),
+    }
+}
+
+fn concat_static_list_values(
+    lhs: StaticListValue,
+    rhs: StaticListValue,
+    path: impl Into<String>,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    validate_static_list_concat_operand(&lhs, format!("{path}.lhs"))?;
+    validate_static_list_concat_operand(&rhs, format!("{path}.rhs"))?;
+    let presence_variable =
+        merge_static_list_presence_variables(lhs.presence_variable, rhs.presence_variable, &path)?;
+    let element_type = merge_static_list_element_types(lhs.element_type, rhs.element_type, &path)?;
+    let mut literals = lhs.literals;
+    literals.extend(rhs.literals);
+    Ok(StaticListValue {
+        presence_variable,
+        literals,
+        element_type,
+    })
+}
+
+fn validate_static_list_concat_operand(
+    value: &StaticListValue,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    if value.element_type.is_none()
+        && infer_literal_list_element_type(&value.literals).is_none()
+        && value
+            .literals
+            .iter()
+            .any(|literal| literal_list_element_kind(literal).is_some())
+    {
+        return Err(unsupported(
+            path,
+            "static list concatenation requires each operand to have a single non-null element type",
+        ));
+    }
+    Ok(())
+}
+
+fn merge_static_list_presence_variables(
+    lhs: Option<String>,
+    rhs: Option<String>,
+    path: &str,
+) -> Result<Option<String>, CoreError> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs != rhs => Err(unsupported(
+            path,
+            "static list concatenation across different optional graph bindings is not supported yet",
+        )),
+        (Some(variable), _) | (_, Some(variable)) => Ok(Some(variable)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn merge_static_list_element_types(
+    lhs: Option<LiteralListElementType>,
+    rhs: Option<LiteralListElementType>,
+    path: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs != rhs => Err(unsupported(
+            path,
+            "static list concatenation requires compatible non-null element types",
+        )),
+        (Some(element_type), _) | (_, Some(element_type)) => Ok(Some(element_type)),
+        (None, None) => Ok(None),
     }
 }
 
@@ -6283,14 +6394,17 @@ fn infer_literal_list_element_type(literals: &[Literal]) -> Option<LiteralListEl
     expected
 }
 
-fn static_list_tail_expression(
+fn static_list_value_scalar_expression(
     value: StaticListValue,
     path: impl Into<String>,
 ) -> Result<ScalarExpression, CoreError> {
-    let value = tail_static_list_value(value, path)?;
-    let element_type = value
-        .element_type
-        .ok_or_else(|| CoreError::internal("typed tail value lost its element type"))?;
+    let path = path.into();
+    let Some(element_type) = value.element_type else {
+        return Err(unsupported(
+            path,
+            "static list expressions require a known non-null element type",
+        ));
+    };
     Ok(presence_gate_scalar_expression(
         value.presence_variable,
         ScalarExpression::TypedLiteralList {
@@ -6298,6 +6412,29 @@ fn static_list_tail_expression(
             element_type,
         },
     ))
+}
+
+fn compile_optional_static_list_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(value) = compile_optional_static_list_value(expression, path.clone(), plan, context)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(static_list_value_scalar_expression(value, path)?))
+}
+
+fn static_list_tail_expression(
+    value: StaticListValue,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let value = tail_static_list_value(value, path.clone())?;
+    static_list_value_scalar_expression(value, path)
 }
 
 fn tail_static_list_value(
@@ -6502,8 +6639,15 @@ fn compile_projection(
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             ..
+        } => compile_arithmetic_projection(item, path, plan, context),
+        Expression::BinaryOp { .. } => {
+            if let Some(projection) =
+                compile_optional_static_list_projection(item, path.clone(), plan, context)?
+            {
+                return Ok(projection);
+            }
+            compile_arithmetic_projection(item, path, plan, context)
         }
-        | Expression::BinaryOp { .. } => compile_arithmetic_projection(item, path, plan, context),
         Expression::Case(case) => compile_case_projection(case, item, path, plan, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_projection(function, item, path, plan, context)
@@ -6556,6 +6700,31 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_optional_static_list_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let Some(expression) = compile_optional_static_list_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(plan),
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Projection::Expression {
+        expression,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "list".to_string(), variable_name),
+    }))
 }
 
 fn compile_optional_graph_scalar_projection(
@@ -7267,14 +7436,13 @@ fn compile_static_list_function_length_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_static_list_function_length_scalar_expression(inner, path, plan, context)
         }
-        Expression::FunctionCall(function) if is_tail_function(function) => {
+        expression => {
             let Some(value) = compile_optional_static_list_value(expression, path, plan, context)?
             else {
                 return Ok(None);
             };
             Ok(Some(static_list_length_scalar_expression(value)?))
         }
-        _ => Ok(None),
     }
 }
 
@@ -8074,21 +8242,31 @@ fn compile_scalar_expression_in_mode(
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
-        Expression::BinaryOp { op, lhs, rhs, .. } => Ok(ScalarExpression::Arithmetic {
-            operator: compile_arithmetic_operator(*op, format!("{path}.operator"))?,
-            left: Box::new(compile_scalar_expression_in_mode(
-                lhs,
-                format!("{path}.lhs"),
+        Expression::BinaryOp { op, lhs, rhs, .. } => {
+            if let Some(expression) = compile_optional_static_list_scalar_expression(
+                expression,
+                path.clone(),
                 plan,
                 context,
-            )?),
-            right: Box::new(compile_scalar_expression_in_mode(
-                rhs,
-                format!("{path}.rhs"),
-                plan,
-                context,
-            )?),
-        }),
+            )? {
+                return Ok(expression);
+            }
+            Ok(ScalarExpression::Arithmetic {
+                operator: compile_arithmetic_operator(*op, format!("{path}.operator"))?,
+                left: Box::new(compile_scalar_expression_in_mode(
+                    lhs,
+                    format!("{path}.lhs"),
+                    plan,
+                    context,
+                )?),
+                right: Box::new(compile_scalar_expression_in_mode(
+                    rhs,
+                    format!("{path}.rhs"),
+                    plan,
+                    context,
+                )?),
+            })
+        }
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,
@@ -10743,9 +10921,10 @@ fn compile_projection_in_predicate(
     Ok(ProjectionPredicate {
         alias: compile_projection_alias_ref(lhs, format!("{path}.lhs"))?,
         operator: ComparisonOperator::In,
-        rhs: ProjectionPredicateRhs::List(compile_literal_list(
+        rhs: ProjectionPredicateRhs::List(compile_static_list_in_rhs_literals(
             rhs,
             format!("{path}.rhs"),
+            None,
             context,
         )?),
     })
@@ -12051,7 +12230,12 @@ fn compile_in_predicate(
             return Ok(predicate);
         }
     }
-    let literals = compile_literal_list(rhs, format!("{path}.rhs"), context)?;
+    let literals = compile_static_list_in_rhs_literals(
+        rhs,
+        format!("{path}.rhs"),
+        mode.static_metadata_plan(),
+        context,
+    )?;
     if let Some(lhs) =
         compile_optional_path_length_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
     {
@@ -13154,6 +13338,26 @@ fn compile_literal_list(
             "IN predicates require a literal list right-hand side",
         )),
     }
+}
+
+fn compile_static_list_in_rhs_literals(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Literal>, CoreError> {
+    let path = path.into();
+    let Some(value) = compile_optional_static_list_value(expression, path.clone(), plan, context)?
+    else {
+        return compile_literal_list(expression, path, context);
+    };
+    if value.presence_variable.is_some() {
+        return Err(unsupported(
+            path,
+            "IN predicates over optional static list right-hand sides are not supported yet",
+        ));
+    }
+    Ok(value.literals)
 }
 
 fn compile_literal_list_slice(
@@ -17210,6 +17414,140 @@ relationships:
                 nulls: None,
             }]
         );
+    }
+
+    #[test]
+    fn compiles_static_list_concatenation() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "prefixes".to_string(),
+            CypherParameterValue::List(vec![Literal::String("prefix".to_string())]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE head($prefixes + tail(keys(service))) = 'prefix' \
+               AND size(labels(service) + tail(labels(service))) = 1 \
+               AND any(key IN ['active'] + tail(keys(service)) WHERE key = 'tier') \
+               AND service.tier IN (['prod'] + ['dev']) \
+             RETURN $prefixes + tail(keys(service)) AS keys_with_prefix, \
+                    labels(service) + [] AS labels_copy, \
+                    [null] + tail(keys(service)) AS nullable_keys, \
+                    tail($prefixes + tail(keys(service))) AS concat_tail, \
+                    size($prefixes + tail(keys(service))) AS concat_size \
+             ORDER BY $prefixes + tail(keys(service))",
+            &parameters,
+        )
+        .expect("static list concatenation should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("prefix".to_string()),
+                            Literal::String("tier".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "keys_with_prefix".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("Service".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "labels_copy".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Null, Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "nullable_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "concat_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(2)),
+                    alias: "concat_size".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::String("prefix".to_string()),
+                        Literal::String("tier".to_string())
+                    ],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_concatenation_as_presence_gated_scalar() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN labels(person) + keys(person) AS owner_metadata",
+        )
+        .expect("optional static list concatenation should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::PresenceGated {
+                    presence_variable: "person".to_string(),
+                    expression: Box::new(ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("Person".to_string()),
+                            Literal::String("name".to_string()),
+                            Literal::String("team".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    }),
+                },
+                alias: "owner_metadata".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_incompatible_static_list_concatenation() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) RETURN ['a'] + [1] AS values",
+                "static list concatenation requires compatible non-null element types",
+            ),
+            (
+                "MATCH (service:Service) RETURN ['a', 1] + [] AS values",
+                "static list concatenation requires each operand to have a single non-null element type",
+            ),
+            (
+                "MATCH (service:Service) RETURN [] + [null] AS values",
+                "static list expressions require a known non-null element type",
+            ),
+        ] {
+            let error = compile_cypher_for_graph(&star_test_graph(), cypher).expect_err(expected);
+            assert!(
+                error.to_string().contains(expected),
+                "expected '{expected}' in error: {error}"
+            );
+        }
     }
 
     #[test]
