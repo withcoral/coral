@@ -40,17 +40,18 @@ tables:
     request:
       method: POST
       path: /collections.list
-      body:
-        from: literal
-        value: "{}"
+      body: []
     response:
       row_strategy: direct
       rows_path: [data]
     pagination:
       mode: offset
-      offset_key: offset
-      limit_key: limit
-      limit: 100
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        query_param: limit
+        default: 100
+        max: 100
     columns:
       - name: id
         type: Utf8
@@ -86,17 +87,18 @@ tables:
     request:
       method: POST
       path: /documents.list
-      body:
-        from: literal
-        value: "{}"
+      body: []
     response:
       row_strategy: direct
       rows_path: [data]
     pagination:
       mode: offset
-      offset_key: offset
-      limit_key: limit
-      limit: 100
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        query_param: limit
+        default: 100
+        max: 100
     columns:
       - name: id
         type: Utf8
@@ -105,8 +107,8 @@ tables:
         expr: {kind: path, path: [id]}
       - name: collection_id
         type: Utf8
-        nullable: false
-        description: Parent collection identifier.
+        nullable: true
+        description: Parent collection identifier. Null for documents not in a collection.
         expr: {kind: path, path: [collectionId]}
       - name: title
         type: Utf8
@@ -137,7 +139,7 @@ tables:
       - name: archived_at
         type: Timestamp
         nullable: true
-        description: "Timestamp when the document was archived."
+        description: Timestamp when the document was archived.
         expr:
           kind: format_timestamp
           input: iso8601
@@ -156,17 +158,18 @@ tables:
     request:
       method: POST
       path: /users.list
-      body:
-        from: literal
-        value: "{}"
+      body: []
     response:
       row_strategy: direct
       rows_path: [data]
     pagination:
       mode: offset
-      offset_key: offset
-      limit_key: limit
-      limit: 100
+      offset_param: offset
+      offset_start: 0
+      page_size:
+        query_param: limit
+        default: 100
+        max: 100
     columns:
       - name: id
         type: Utf8
