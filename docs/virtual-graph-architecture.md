@@ -355,7 +355,13 @@ The supported foundation subset is intentionally narrow:
   `MATCH ... WHERE ... FINISH` planner path as explicit existential subqueries.
   Inline property maps remain compact property predicates, while scoped
   `WHERE` clauses are carried as predicate-expression IR and rendered with
-  subquery-local node/relationship aliases. Nested scoped subqueries still
+  subquery-local node/relationship aliases. Nested scoped `EXISTS { MATCH ... }`
+  predicates inside existential subquery `WHERE` clauses are supported
+  recursively for relationship and node-only patterns, with endpoint
+  correlations resolved through child-local aliases, parent scoped aliases, or
+  outer `MATCH` bindings. Nested scoped boolean/scalar predicates over the
+  nested subquery scope use the same renderer as top-level scoped `EXISTS`;
+  nested `COUNT { ... }`, `OPTIONAL MATCH`, `WITH`, `RETURN`, and `UNION` still
   require staged planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
   `COUNT { MATCH pattern WHERE ... FINISH }`, allowing Coral to support GQL-style

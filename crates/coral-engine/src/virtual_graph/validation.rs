@@ -2625,6 +2625,16 @@ impl<'a> GraphPlanValidator<'a> {
             &relationship.right,
             format!("{path}.right"),
         )?;
+        self.resolve_relationship_mapping_for_nodes(relationship, left_node, right_node, path)
+    }
+
+    fn resolve_relationship_mapping_for_nodes(
+        &self,
+        relationship: &RelationshipPattern,
+        left_node: &Node,
+        right_node: &Node,
+        path: String,
+    ) -> Result<&'a Relationship, CoreError> {
         let candidates = self
             .graph
             .relationships_for_type(&relationship.relationship_type)
@@ -2686,6 +2696,37 @@ impl<'a> GraphPlanValidator<'a> {
                     right_node.label,
                     matches.len()
                 ),
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn nested_scoped_exists_node_binding_for_path<'b>(
+        &self,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_scope: ExistsPredicateValidationContext<'a, '_>,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<&'a Node, CoreError> {
+        if let Some(node) = local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        if let Some(node) = parent_scope.local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        let path = path.into();
+        match self.bindings.get(variable).map(ValidatedBinding::kind) {
+            Some(ValidatedBindingKind::Node(node)) => Ok(*node),
+            Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
+                "INVALID_ENDPOINT_VARIABLE",
+                path,
+                format!("relationship endpoint '{variable}' is not a node variable"),
+            )
+            .into_core_error()),
+            None => Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path,
+                format!("relationship references unknown node variable '{variable}'"),
             )
             .into_core_error()),
         }
@@ -2868,12 +2909,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateExpression::PropertyKeyMembership(predicate) => {
                 self.validate_scoped_property_key_membership_predicate(predicate, scope, path)
             }
-            PredicateExpression::ExistsPattern(_) => Err(Diagnostic::new(
-                "UNSUPPORTED_SCOPED_SUBQUERY",
-                path,
-                "nested EXISTS { ... } predicates inside scoped subqueries require staged subquery planning and are not supported yet",
-            )
-            .into_core_error()),
+            PredicateExpression::ExistsPattern(predicate) => {
+                self.validate_nested_scoped_exists_pattern_predicate(predicate, scope, path)
+            }
             PredicateExpression::ScalarComparison(predicate) => {
                 self.validate_scoped_scalar_predicate(predicate, scope, path)
             }
@@ -2883,9 +2921,11 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_scoped_predicate_expression(left, scope, format!("{path}.left"))?;
                 self.validate_scoped_predicate_expression(right, scope, format!("{path}.right"))
             }
-            PredicateExpression::Not { expression } => {
-                self.validate_scoped_predicate_expression(expression, scope, format!("{path}.expression"))
-            }
+            PredicateExpression::Not { expression } => self.validate_scoped_predicate_expression(
+                expression,
+                scope,
+                format!("{path}.expression"),
+            ),
         }
     }
 
@@ -2924,6 +2964,92 @@ impl<'a> GraphPlanValidator<'a> {
             )?;
         }
         Ok(())
+    }
+
+    fn validate_nested_scoped_exists_pattern_predicate<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        parent_scope: ExistsPredicateValidationContext<'a, '_>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let local_nodes = self.validate_exists_pattern_nodes(predicate, &path)?;
+        self.validate_exists_relationship_variables(predicate, &local_nodes, &path)?;
+        let relationships = self.resolve_nested_scoped_exists_relationship_mappings(
+            predicate,
+            &local_nodes,
+            parent_scope,
+            &path,
+        )?;
+        Self::validate_exists_pattern_not_empty(predicate, &path)?;
+        let scope = ExistsPredicateValidationContext {
+            relationships: &relationships,
+            local_nodes: &local_nodes,
+        };
+        for (index, property_predicate) in predicate.predicates.iter().enumerate() {
+            self.validate_exists_property_predicate(
+                property_predicate,
+                scope,
+                format!("{path}.predicates[{index}]"),
+            )?;
+        }
+        if let Some(predicate_expression) = predicate.predicate.as_ref() {
+            self.validate_scoped_predicate_expression(
+                predicate_expression,
+                scope,
+                format!("{path}.predicate"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn resolve_nested_scoped_exists_relationship_mappings<'b>(
+        &self,
+        predicate: &'b ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_scope: ExistsPredicateValidationContext<'a, '_>,
+        path: &str,
+    ) -> Result<Vec<ExistsRelationshipValidation<'a, 'b>>, CoreError> {
+        predicate
+            .relationships
+            .iter()
+            .enumerate()
+            .map(|(index, relationship)| {
+                self.resolve_nested_scoped_exists_relationship_mapping(
+                    relationship,
+                    local_nodes,
+                    parent_scope,
+                    format!("{path}.relationships[{index}]"),
+                )
+                .map(|mapping| ExistsRelationshipValidation {
+                    pattern: relationship,
+                    relationship: mapping,
+                })
+            })
+            .collect()
+    }
+
+    fn resolve_nested_scoped_exists_relationship_mapping<'b>(
+        &self,
+        relationship: &'b RelationshipPattern,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_scope: ExistsPredicateValidationContext<'a, '_>,
+        path: impl Into<String>,
+    ) -> Result<&'a Relationship, CoreError> {
+        let path = path.into();
+        let left_node = self.nested_scoped_exists_node_binding_for_path(
+            local_nodes,
+            parent_scope,
+            &relationship.left,
+            format!("{path}.left"),
+        )?;
+        let right_node = self.nested_scoped_exists_node_binding_for_path(
+            local_nodes,
+            parent_scope,
+            &relationship.right,
+            format!("{path}.right"),
+        )?;
+        self.resolve_relationship_mapping_for_nodes(relationship, left_node, right_node, path)
     }
 
     fn validate_scoped_scalar_predicate<'b>(

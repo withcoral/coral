@@ -3204,13 +3204,13 @@ async fn cypher_exists_pattern_where_supports_non_conjunctive_predicates() {
 }
 
 #[tokio::test]
-async fn cypher_exists_match_subqueries_reject_nested_scoped_subqueries() {
+async fn cypher_exists_match_subqueries_support_nested_scoped_exists() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher(
         &[source],
         test_runtime(),
         &graph,
@@ -3222,13 +3222,119 @@ async fn cypher_exists_match_subqueries_reject_nested_scoped_subqueries() {
          RETURN service.name AS service",
     )
     .await
-    .expect_err("nested scoped EXISTS should remain rejected");
+    .expect("nested scoped EXISTS should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_exists_boolean_composition() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE target.tier = 'prod' OR EXISTS { MATCH (target)-[:DEPENDS_ON]->(:Service) } \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("nested scoped EXISTS inside boolean composition should execute");
 
     assert!(
-        error
-            .to_string()
-            .contains("nested EXISTS { ... } and COUNT { ... } predicates"),
-        "{error}"
+        execution
+            .translated_sql()
+            .contains("OR EXISTS (SELECT 1 FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_exists_property_where() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE EXISTS { \
+             MATCH (target)-[:DEPENDS_ON]->(leaf:Service) \
+             WHERE leaf.tier = 'dev' \
+           } \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("nested scoped EXISTS property predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_nested_exists_n0\".\"tier\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_exists_complex_own_where() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE EXISTS { \
+             MATCH (target)-[:DEPENDS_ON]->(leaf:Service) \
+             WHERE leaf.tier = 'dev' OR leaf.tier = 'prod' \
+           } \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("nested scoped EXISTS complex predicates should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "(\"__coral_nested_exists_n0\".\"tier\" = 'dev' OR \"__coral_nested_exists_n0\".\"tier\" = 'prod')"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
     );
 }
 

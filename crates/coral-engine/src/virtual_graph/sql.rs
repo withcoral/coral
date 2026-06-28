@@ -3323,9 +3323,13 @@ impl<'a> Lowerer<'a> {
                     local_nodes,
                     local_aliases,
                 ),
-            PredicateExpression::ExistsPattern(_) => Err(CoreError::internal(
-                "nested scoped EXISTS predicate reached scoped SQL renderer",
-            )),
+            PredicateExpression::ExistsPattern(predicate) => self
+                .render_nested_scoped_exists_pattern_predicate(
+                    predicate,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                ),
             PredicateExpression::ScalarComparison(predicate) => self
                 .render_scoped_scalar_predicate(
                     predicate,
@@ -3388,6 +3392,296 @@ impl<'a> Lowerer<'a> {
                 )?
             )),
         }
+    }
+
+    fn render_nested_scoped_exists_pattern_predicate<'b, 'c>(
+        &self,
+        predicate: &'c ExistsPatternPredicate,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.scoped_local_node_map(&predicate.nodes)?;
+        let relationship_bindings = self.nested_scoped_exists_relationship_bindings(
+            predicate,
+            &local_nodes,
+            parent_local_nodes,
+        )?;
+        let local_aliases = Self::nested_exists_local_node_aliases(predicate);
+        if relationship_bindings.is_empty() {
+            return Ok(format!(
+                "EXISTS {}",
+                self.render_scoped_node_select(
+                    &predicate.nodes,
+                    &predicate.predicates,
+                    predicate.predicate.as_deref(),
+                    "1",
+                    &local_nodes,
+                    &local_aliases,
+                    "nested EXISTS",
+                )?
+            ));
+        }
+
+        let mut from_clause = relationship_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let table_ref = format!(
+                    "{} AS {}",
+                    render_table_ref(&binding.relationship.table),
+                    quote_ident(&binding.alias)
+                );
+                if index == 0 {
+                    table_ref
+                } else {
+                    format!("JOIN {table_ref} ON TRUE")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for node in &predicate.nodes {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated nested EXISTS local node mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated nested EXISTS local node alias was missing")
+            })?;
+            write!(
+                from_clause,
+                " JOIN {} AS {} ON TRUE",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render nested EXISTS pattern SQL"))?;
+        }
+
+        let mut conditions = Vec::with_capacity(
+            relationship_bindings
+                .len()
+                .saturating_add(predicate.predicates.len())
+                .saturating_add(usize::from(predicate.predicate.is_some())),
+        );
+        for binding in &relationship_bindings {
+            conditions.push(self.nested_scoped_exists_relationship_condition(
+                binding,
+                &local_nodes,
+                &local_aliases,
+                parent_relationships,
+                parent_local_nodes,
+                parent_local_aliases,
+            )?);
+        }
+        conditions.extend(self.render_scoped_conditions(
+            &predicate.predicates,
+            predicate.predicate.as_deref(),
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?);
+        Ok(format!(
+            "EXISTS (SELECT 1 FROM {from_clause} WHERE {})",
+            conditions.join(" AND ")
+        ))
+    }
+
+    fn nested_exists_local_node_aliases(
+        predicate: &ExistsPatternPredicate,
+    ) -> BTreeMap<&str, String> {
+        predicate
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                (
+                    node.variable.as_str(),
+                    format!("__coral_nested_exists_n{index}"),
+                )
+            })
+            .collect()
+    }
+
+    fn nested_scoped_exists_relationship_bindings<'b, 'c>(
+        &self,
+        predicate: &'c ExistsPatternPredicate,
+        local_nodes: &BTreeMap<&'c str, &'a Node>,
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<Vec<ExistsRelationshipSqlBinding<'a, 'c>>, CoreError> {
+        predicate
+            .relationships
+            .iter()
+            .enumerate()
+            .map(|(index, pattern)| {
+                self.nested_scoped_exists_relationship_mapping(
+                    pattern,
+                    local_nodes,
+                    parent_local_nodes,
+                )
+                .map(|relationship| ExistsRelationshipSqlBinding {
+                    pattern,
+                    relationship,
+                    alias: format!("__coral_nested_exists_r{index}"),
+                })
+            })
+            .collect()
+    }
+
+    fn nested_scoped_exists_relationship_mapping<'b, 'c>(
+        &self,
+        pattern: &'c RelationshipPattern,
+        local_nodes: &BTreeMap<&'c str, &'a Node>,
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<&'a Relationship, CoreError> {
+        let left_node =
+            self.nested_scoped_exists_node_mapping(&pattern.left, local_nodes, parent_local_nodes)?;
+        let right_node = self.nested_scoped_exists_node_mapping(
+            &pattern.right,
+            local_nodes,
+            parent_local_nodes,
+        )?;
+        let matches = self
+            .validated
+            .graph()
+            .relationships_for_type(&pattern.relationship_type)
+            .filter(|relationship| {
+                Self::relationship_matches_labels(
+                    relationship,
+                    pattern.direction,
+                    &left_node.label,
+                    &right_node.label,
+                )
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [relationship] => Ok(*relationship),
+            [] => Err(CoreError::internal(
+                "validated nested EXISTS relationship mapping was not resolvable",
+            )),
+            _ => Err(CoreError::internal(
+                "validated nested EXISTS relationship mapping was ambiguous",
+            )),
+        }
+    }
+
+    fn nested_scoped_exists_relationship_condition<'b, 'c>(
+        &self,
+        binding: &ExistsRelationshipSqlBinding<'a, 'c>,
+        local_nodes: &BTreeMap<&'c str, &'a Node>,
+        local_aliases: &BTreeMap<&'c str, String>,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let left_node = self.nested_scoped_exists_node_mapping(
+            &binding.pattern.left,
+            local_nodes,
+            parent_local_nodes,
+        )?;
+        let right_node = self.nested_scoped_exists_node_mapping(
+            &binding.pattern.right,
+            local_nodes,
+            parent_local_nodes,
+        )?;
+        let orientations = Self::relationship_orientations_for_labels(
+            binding.relationship,
+            binding.pattern.direction,
+            &left_node.label,
+            &right_node.label,
+        )?;
+        let has_multiple_orientations = orientations.len() > 1;
+        let conditions = orientations
+            .iter()
+            .map(|orientation| {
+                let left_ref = self.nested_scoped_exists_node_key_ref(
+                    &binding.pattern.left,
+                    left_node,
+                    local_nodes,
+                    local_aliases,
+                    parent_relationships,
+                    parent_local_nodes,
+                    parent_local_aliases,
+                )?;
+                let right_ref = self.nested_scoped_exists_node_key_ref(
+                    &binding.pattern.right,
+                    right_node,
+                    local_nodes,
+                    local_aliases,
+                    parent_relationships,
+                    parent_local_nodes,
+                    parent_local_aliases,
+                )?;
+                let condition = format!(
+                    "{}.{} = {} AND {}.{} = {}",
+                    quote_ident(&binding.alias),
+                    quote_ident(&orientation.left_relationship_key),
+                    left_ref,
+                    quote_ident(&binding.alias),
+                    quote_ident(&orientation.right_relationship_key),
+                    right_ref
+                );
+                if has_multiple_orientations {
+                    Ok(format!("({condition})"))
+                } else {
+                    Ok(condition)
+                }
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        Self::render_condition_disjunction(&conditions)
+    }
+
+    fn nested_scoped_exists_node_mapping<'b, 'c>(
+        &self,
+        variable: &str,
+        local_nodes: &BTreeMap<&'c str, &'a Node>,
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<&'a Node, CoreError> {
+        if let Some(node) = local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        if let Some(node) = parent_local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated nested EXISTS endpoint resolved to a non-node top-level binding",
+            ));
+        };
+        Ok(*node)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Nested EXISTS key resolution needs child, parent scoped, and top-level alias contexts"
+    )]
+    fn nested_scoped_exists_node_key_ref<'b, 'c>(
+        &self,
+        variable: &str,
+        node: &Node,
+        local_nodes: &BTreeMap<&'c str, &'a Node>,
+        local_aliases: &BTreeMap<&'c str, String>,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if local_nodes.contains_key(variable) {
+            let alias = local_aliases.get(variable).ok_or_else(|| {
+                CoreError::internal("validated nested EXISTS node alias was missing")
+            })?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
+        }
+        if parent_local_nodes.contains_key(variable) {
+            let alias = parent_local_aliases.get(variable).ok_or_else(|| {
+                CoreError::internal("validated parent EXISTS node alias was missing")
+            })?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
+        }
+        if Self::exists_relationship_for_variable(parent_relationships, variable).is_some() {
+            return Err(CoreError::internal(
+                "validated nested EXISTS endpoint resolved to a parent relationship variable",
+            ));
+        }
+        self.render_binding_key_ref(variable)
     }
 
     fn render_scoped_simple_predicate<'b>(

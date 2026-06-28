@@ -7863,6 +7863,190 @@ fn scalar_expression_contains_correlated_subquery(expression: &ScalarExpression)
     scalar_expression_correlated_subquery_count(expression) > 0
 }
 
+fn predicate_expression_contains_count_subquery(predicate: &PredicateExpression) -> bool {
+    match predicate {
+        PredicateExpression::ExistsPattern(predicate) => predicate
+            .predicate
+            .as_deref()
+            .is_some_and(predicate_expression_contains_count_subquery),
+        PredicateExpression::ScalarComparison(predicate) => {
+            scalar_expression_contains_count_subquery(&predicate.lhs)
+                || match &predicate.rhs {
+                    ScalarPredicateRhs::Expression(expression) => {
+                        scalar_expression_contains_count_subquery(expression)
+                    }
+                    ScalarPredicateRhs::List(_) => false,
+                }
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            predicate_expression_contains_count_subquery(left)
+                || predicate_expression_contains_count_subquery(right)
+        }
+        PredicateExpression::Not { expression } => {
+            predicate_expression_contains_count_subquery(expression)
+        }
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::Comparison(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_) => false,
+    }
+}
+
+fn scalar_expression_contains_count_subquery(expression: &ScalarExpression) -> bool {
+    if let Some(operand) = unary_scalar_expression_operand(expression) {
+        return scalar_expression_contains_count_subquery(operand);
+    }
+
+    if let Some(contains_count) = compound_scalar_expression_contains_count_subquery(expression) {
+        return contains_count;
+    }
+
+    scalar_expression_leaf_contains_count_subquery(expression)
+}
+
+fn compound_scalar_expression_contains_count_subquery(
+    expression: &ScalarExpression,
+) -> Option<bool> {
+    match expression {
+        ScalarExpression::PresenceGated { expression, .. } => {
+            Some(scalar_expression_contains_count_subquery(expression))
+        }
+        ScalarExpression::Coalesce { expressions } => Some(
+            expressions
+                .iter()
+                .any(scalar_expression_contains_count_subquery),
+        ),
+        ScalarExpression::NullIf { expression, value } => Some(
+            scalar_expression_contains_count_subquery(expression)
+                || scalar_expression_contains_count_subquery(value),
+        ),
+        ScalarExpression::Round { expression, places } => Some(
+            scalar_expression_contains_count_subquery(expression)
+                || places
+                    .as_deref()
+                    .is_some_and(scalar_expression_contains_count_subquery),
+        ),
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count }
+        | ScalarExpression::Arithmetic {
+            left: expression,
+            right: count,
+            ..
+        } => Some(
+            scalar_expression_contains_count_subquery(expression)
+                || scalar_expression_contains_count_subquery(count),
+        ),
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => Some(
+            scalar_expression_contains_count_subquery(expression)
+                || scalar_expression_contains_count_subquery(search)
+                || scalar_expression_contains_count_subquery(replacement),
+        ),
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => Some(
+            scalar_expression_contains_count_subquery(expression)
+                || scalar_expression_contains_count_subquery(start)
+                || length
+                    .as_deref()
+                    .is_some_and(scalar_expression_contains_count_subquery),
+        ),
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => Some(
+            alternatives.iter().any(|alternative| {
+                predicate_expression_contains_count_subquery(&alternative.when)
+                    || scalar_expression_contains_count_subquery(&alternative.then)
+            }) || else_expression
+                .as_deref()
+                .is_some_and(scalar_expression_contains_count_subquery),
+        ),
+        ScalarExpression::Atan2 { y, x } => Some(
+            scalar_expression_contains_count_subquery(y)
+                || scalar_expression_contains_count_subquery(x),
+        ),
+        _ => None,
+    }
+}
+
+fn scalar_expression_leaf_contains_count_subquery(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Predicate(predicate) => {
+            predicate_expression_contains_count_subquery(predicate)
+        }
+        ScalarExpression::CountSubquery { .. } => true,
+        ScalarExpression::Property(_)
+        | ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. } => false,
+        ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => {
+            unreachable!("unary scalar expressions handled before count-subquery check")
+        }
+        ScalarExpression::PresenceGated { .. }
+        | ScalarExpression::Coalesce { .. }
+        | ScalarExpression::NullIf { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Case { .. }
+        | ScalarExpression::Atan2 { .. } => {
+            unreachable!("compound scalar expressions handled before count-subquery leaf check")
+        }
+    }
+}
+
 fn scalar_expression_correlated_subquery_count(expression: &ScalarExpression) -> usize {
     if let Some(count) = compound_scalar_expression_correlated_subquery_count(expression) {
         return count;
@@ -18228,12 +18412,12 @@ fn take_scoped_plan_delta_predicates(
         .to_vec();
     let predicate = plan.predicate.take();
     if let Some(predicate) = predicate.as_ref()
-        && predicate_expression_correlated_subquery_count(predicate) > 0
+        && predicate_expression_contains_count_subquery(predicate)
     {
         return Err(unsupported(
             format!("{path}.where"),
             format!(
-                "nested EXISTS {{ ... }} and COUNT {{ ... }} predicates inside {feature_name} require staged subquery planning and are not supported yet"
+                "nested COUNT {{ ... }} predicates inside {feature_name} require staged subquery planning and are not supported yet"
             ),
         ));
     }
@@ -31726,8 +31910,8 @@ relationships:
     }
 
     #[test]
-    fn rejects_nested_scoped_subquery_predicates() {
-        let error = compile_cypher(
+    fn compiles_nested_scoped_exists_predicates() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              WHERE EXISTS { \
                MATCH (service)-[:DEPENDS_ON]->(target:Service) \
@@ -31735,12 +31919,32 @@ relationships:
              } \
              RETURN service.name AS service",
         )
-        .expect_err("nested scoped subqueries should be rejected");
+        .expect("nested scoped EXISTS predicates should compile");
+
+        let Some(PredicateExpression::ExistsPattern(pattern)) = plan.predicate else {
+            panic!("expected outer EXISTS predicate");
+        };
+        let Some(PredicateExpression::ExistsPattern(_)) = pattern.predicate.as_deref() else {
+            panic!("expected nested EXISTS predicate");
+        };
+    }
+
+    #[test]
+    fn rejects_nested_scoped_count_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE EXISTS { \
+               MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+               WHERE COUNT { MATCH (target)-[:DEPENDS_ON]->(:Service) } > 0 \
+             } \
+             RETURN service.name AS service",
+        )
+        .expect_err("nested scoped COUNT predicates should remain rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("nested EXISTS { ... } and COUNT { ... } predicates"),
+                .contains("nested COUNT { ... } predicates"),
             "{error}"
         );
     }
