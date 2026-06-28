@@ -5525,27 +5525,13 @@ fn compile_reading_clauses_into(
         ));
     }
 
-    let mut optional_match_variables = BTreeSet::new();
     for (index, clause) in reading_clauses.iter().enumerate() {
         match clause {
             ReadingClause::Match(match_clause) => {
-                if !match_clause.optional {
-                    reject_match_dependencies_on_optional_variables(
-                        match_clause,
-                        &optional_match_variables,
-                        format!("{path}[{index}]"),
-                    )?;
-                }
-                let introduced_optional_variables = if match_clause.optional {
-                    match_clause_introduced_variables(match_clause, plan)
-                } else {
-                    BTreeSet::new()
-                };
                 let predicate_start = plan.predicates.len();
                 let relationship_start = plan.relationships.len();
                 compile_match_into(match_clause, plan, state, context)?;
                 if match_clause.optional {
-                    optional_match_variables.extend(introduced_optional_variables);
                     let predicate = match_clause
                         .where_clause
                         .as_ref()
@@ -6682,69 +6668,6 @@ fn bind_path_variable(
             presence_variable,
         },
     );
-}
-
-fn match_clause_introduced_variables(match_clause: &Match, plan: &GraphPlan) -> BTreeSet<String> {
-    match_clause_pattern_variables(match_clause)
-        .into_iter()
-        .filter(|variable| !plan_uses_variable(plan, variable))
-        .collect()
-}
-
-fn reject_match_dependencies_on_optional_variables(
-    match_clause: &Match,
-    optional_variables: &BTreeSet<String>,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    if optional_variables.is_empty() {
-        return Ok(());
-    }
-    let path = path.into();
-    let mut referenced_variables = match_clause_pattern_variables(match_clause);
-    if let Some(where_clause) = &match_clause.where_clause {
-        expression_variables(where_clause, &mut referenced_variables);
-    }
-    if let Some(variable) = referenced_variables
-        .iter()
-        .find(|variable| optional_variables.contains(*variable))
-    {
-        return Err(unsupported(
-            path,
-            format!(
-                "MATCH after OPTIONAL MATCH can only reference variables bound before the optional scope; variable '{variable}' is introduced by OPTIONAL MATCH"
-            ),
-        ));
-    }
-    Ok(())
-}
-
-fn match_clause_pattern_variables(match_clause: &Match) -> BTreeSet<String> {
-    let mut variables = BTreeSet::new();
-    for part in &match_clause.pattern.parts {
-        pattern_part_variables(part, &mut variables);
-    }
-    variables
-}
-
-fn pattern_part_variables(pattern_part: &PatternPart, variables: &mut BTreeSet<String>) {
-    if let Some(variable) = pattern_part.variable.as_ref() {
-        variables.insert(variable_name(variable));
-    }
-    pattern_element_variables(&pattern_part.anonymous.element, variables);
-}
-
-fn pattern_element_variables(element: &PatternElement, variables: &mut BTreeSet<String>) {
-    match element {
-        PatternElement::Path { start, chains } => {
-            node_pattern_variables(start, variables);
-            for chain in chains {
-                relationship_pattern_variables(&chain.relationship, variables);
-                node_pattern_variables(&chain.node, variables);
-            }
-        }
-        PatternElement::Parenthesized(inner) => pattern_element_variables(inner, variables),
-        PatternElement::Quantified { element, .. } => pattern_element_variables(element, variables),
-    }
 }
 
 fn relationships_pattern_variables(
@@ -36599,6 +36522,45 @@ relationships:
     }
 
     #[test]
+    fn compiles_match_after_optional_when_it_uses_optional_bindings() {
+        let dependent_match = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             MATCH (target)-[:DEPENDS_ON]->(next:Service) \
+             RETURN service.name AS service, target.name AS target, next.name AS next",
+        )
+        .expect("MATCH after OPTIONAL MATCH should compile when it depends on optional bindings");
+
+        assert_eq!(dependent_match.optional_relationships, vec![0]);
+        assert_eq!(
+            dependent_match.optional_matches,
+            vec![OptionalMatchScope {
+                relationship_indices: vec![0],
+                predicate: None,
+            }]
+        );
+        assert_eq!(
+            dependent_match.relationships,
+            vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "service".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "target".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "next".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_optional_fixed_length_relationship_ranges() {
         for cypher in [
             "MATCH (source:Service) OPTIONAL MATCH (source)-[:DEPENDS_ON*2]->(target:Service) RETURN target.name",
@@ -36786,12 +36748,6 @@ relationships:
     #[test]
     fn rejects_unsupported_optional_match_shapes() {
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
-        assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",
-        );
-        assert_unsupported(
-            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (owner:Person)-[:OWNS]->(service) WHERE target.tier = 'dev' RETURN owner.name",
-        );
     }
 
     #[test]

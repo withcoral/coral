@@ -114,17 +114,20 @@ The supported foundation subset is intentionally narrow:
   disconnected mandatory parts lowered as explicit cartesian products;
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
   including single-hop directed optional-local predicates and inline property
-  maps placed in the join scope; optional plans still require mandatory
-  bindings to stay anchored to the first component, and later mandatory
-  `MATCH` clauses are allowed only when dependency analysis proves their pattern
-  and local `WHERE` avoid variables introduced by the optional scope. Exact
-  positive optional ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop
-  expansion inside one nullable optional scope. Same-label exact zero-hop
-  optional ranges such as `*0` lower to an identity predicate for newly
-  introduced endpoints when no named path needs optional presence gating;
-  zero-hop optional ranges over endpoints that were already bound are
-  row-preserving and do not add equality filters. Multi-length optional branch
-  expansion remains deferred;
+  maps placed in the join scope. Optional plans still require mandatory
+  bindings to stay anchored to the first component, but later mandatory
+  `MATCH` clauses may continue from optional-introduced node bindings. The SQL
+  lowerer keeps ordinary mandatory joins first when possible, then joins
+  optional scopes before a mandatory relationship that is blocked on an
+  optional endpoint, so unmatched optional rows are dropped by the following
+  inner join. Global `WHERE` predicates over still-optional bindings remain
+  rejected unless they are placed inside the optional scope. Exact positive
+  optional ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop expansion
+  inside one nullable optional scope. Same-label exact zero-hop optional ranges
+  such as `*0` lower to an identity predicate for newly introduced endpoints
+  when no named path needs optional presence gating; zero-hop optional ranges
+  over endpoints that were already bound are row-preserving and do not add
+  equality filters. Multi-length optional branch expansion remains deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)` and `size(path)` over optional relationships via the
   presence-gated scalar expression IR and compiler-generated internal

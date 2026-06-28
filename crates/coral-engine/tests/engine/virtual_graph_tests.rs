@@ -6697,6 +6697,68 @@ async fn cypher_match_after_optional_match_executes_when_independent() {
 }
 
 #[tokio::test]
+async fn cypher_match_after_optional_match_can_depend_on_optional_binding() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+         MATCH (target)-[:DEPENDS_ON]->(next:Service) \
+         RETURN service.name AS service, target.name AS target, next.name AS next \
+         ORDER BY service, target, next",
+    )
+    .await
+    .expect("dependent MATCH after OPTIONAL MATCH should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "billing-api",
+            "target": "deployments",
+            "next": "experiments",
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_match_after_optional_match_rejects_global_filter_on_optional_binding() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+         MATCH (owner:Person)-[:OWNS]->(service) \
+         WHERE target.tier = 'dev' \
+         RETURN service.name AS service, owner.name AS owner, target.name AS target \
+         ORDER BY service, owner, target",
+    )
+    .await
+    .expect_err("post-optional WHERE filters over optional bindings should remain rejected");
+
+    assert!(
+        error.to_string().contains("UNSUPPORTED_OPTIONAL_PREDICATE"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

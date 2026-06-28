@@ -106,6 +106,7 @@ impl Declaration {
 struct Lowerer<'a> {
     validated: ValidatedGraphPlan<'a>,
     joined_nodes: BTreeSet<&'a str>,
+    optional_relationships_joined: bool,
     from_clause: String,
     precomputed_scalar_subqueries: Vec<PrecomputedScalarSubquery>,
     next_scalar_subquery_alias: Cell<usize>,
@@ -177,6 +178,7 @@ impl<'a> Lowerer<'a> {
         Self {
             validated,
             joined_nodes: BTreeSet::new(),
+            optional_relationships_joined: false,
             from_clause: String::new(),
             precomputed_scalar_subqueries: Vec::new(),
             next_scalar_subquery_alias: Cell::new(0),
@@ -224,7 +226,7 @@ impl<'a> Lowerer<'a> {
 
         self.join_mandatory_relationships()?;
         self.cross_join_isolated_nodes()?;
-        self.join_optional_relationships()?;
+        self.ensure_optional_relationships_joined()?;
 
         Ok(())
     }
@@ -1206,6 +1208,7 @@ impl<'a> Lowerer<'a> {
     fn join_mandatory_relationships(&mut self) -> Result<(), CoreError> {
         let plan = self.validated.plan();
         let validated = &self.validated;
+        let optional_nodes = self.optional_relationship_node_variables();
         let mut remaining_relationships = (0..plan.relationships.len())
             .filter(|index| !validated.relationship_is_optional(*index))
             .collect::<BTreeSet<_>>();
@@ -1221,9 +1224,27 @@ impl<'a> Lowerer<'a> {
             let pattern = plan.relationships.get(index).ok_or_else(|| {
                 CoreError::internal("validated relationship index was out of bounds")
             })?;
+            if !self.optional_relationships_joined
+                && [pattern.left.as_str(), pattern.right.as_str()]
+                    .iter()
+                    .any(|variable| optional_nodes.contains(*variable))
+            {
+                self.ensure_optional_relationships_joined()?;
+                continue;
+            }
             self.cross_join_node(pattern.left.as_str())?;
         }
         Ok(())
+    }
+
+    fn optional_relationship_node_variables(&self) -> BTreeSet<&'a str> {
+        self.validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .filter_map(|index| self.validated.plan().relationships.get(*index))
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+            .collect()
     }
 
     fn join_relationship_index_set(
@@ -1264,6 +1285,15 @@ impl<'a> Lowerer<'a> {
             .filter(|index| !scoped_relationships.contains(index))
             .collect::<BTreeSet<_>>();
         self.join_relationship_index_set(&mut remaining_relationships, true)
+    }
+
+    fn ensure_optional_relationships_joined(&mut self) -> Result<(), CoreError> {
+        if self.optional_relationships_joined {
+            return Ok(());
+        }
+        self.join_optional_relationships()?;
+        self.optional_relationships_joined = true;
+        Ok(())
     }
 
     fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
