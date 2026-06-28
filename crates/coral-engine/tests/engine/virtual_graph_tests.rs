@@ -12443,6 +12443,43 @@ async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehensions_over_case_and_coalesce_sources_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                [k IN coalesce(keys(person), ['fallback', 'owner']) WHERE k <> 'owner' | toUpper(k)] AS owner_key_tokens, \
+                [k IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END WHERE k STARTS WITH 't' | k] AS team_keys \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list comprehensions over CASE/coalesce sources should execute");
+
+    assert!(
+        execution.translated_sql().contains("COALESCE("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_key_tokens": ["NAME", "TEAM"], "team_keys": ["team"]}),
+            json!({"service": "deployments", "owner_key_tokens": ["NAME", "TEAM"], "team_keys": ["team"]}),
+            json!({"service": "experiments", "owner_key_tokens": ["NAME", "TEAM"], "team_keys": ["team"]}),
+            json!({"service": "legacy-sync", "owner_key_tokens": ["FALLBACK"], "team_keys": []}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehension_length_maps_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
