@@ -5836,7 +5836,7 @@ async fn cypher_literal_only_predicates_execute_against_synthetic_sources() {
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         WHERE 2 < 1 OR 'stage' IN ['prod', 'dev'] \
+         WHERE 'prod' IN ['dev', null] \
          RETURN service.name AS service",
     )
     .await

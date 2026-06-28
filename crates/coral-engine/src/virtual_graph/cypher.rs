@@ -16665,23 +16665,14 @@ fn evaluate_literal_in_list(
         ));
     }
 
-    let mut saw_null = false;
     for candidate in literals {
         if matches!(candidate, Literal::Null) {
-            saw_null = true;
             continue;
         }
         if evaluate_literal_comparison(literal, ComparisonOperator::Equal, candidate, path.clone())?
         {
             return Ok(true);
         }
-    }
-
-    if saw_null {
-        return Err(unsupported(
-            path,
-            "literal IN predicates with null members cannot be folded unless a non-null match is found",
-        ));
     }
 
     Ok(false)
@@ -26472,6 +26463,10 @@ relationships:
                 "MATCH (service:Service) WHERE 'stage' IN ['dev', 'prod'] RETURN service.name",
                 false,
             ),
+            (
+                "MATCH (service:Service) WHERE 'prod' IN ['dev', null] RETURN service.name",
+                false,
+            ),
         ] {
             let plan = compile_cypher(cypher).expect("literal-only predicate should compile");
             assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(expected)));
@@ -26499,10 +26494,6 @@ relationships:
             (
                 "MATCH (service:Service) WHERE null IN ['prod'] RETURN service.name",
                 "null left-hand side",
-            ),
-            (
-                "MATCH (service:Service) WHERE 'prod' IN ['dev', null] RETURN service.name",
-                "null members cannot be folded",
             ),
         ] {
             let error = compile_cypher(cypher).expect_err("query should be rejected");
