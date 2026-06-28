@@ -34,24 +34,70 @@ test_queries:
 
 tables:
   - name: entities
-    description: Software ecosystem objects tracked inside the Backstage software catalog.
+    description: Software catalog entities tracked inside Backstage, from the paginated by-query endpoint.
+    guide: |
+      Each row is one Backstage catalog entity from `GET /entities/by-query`.
+      Rows are read from `items` and pages are followed via
+      `pageInfo.nextCursor`. For advanced server-side filtering, set
+      `catalog_filter` to a Backstage filter string, e.g.
+      `WHERE catalog_filter = 'kind=component,spec.type=service'`.
+    filters:
+      - name: catalog_filter
+        required: false
+        description: Raw Backstage filter string passed through to the `filter` query parameter.
     request:
       method: GET
-      path: /entities
+      path: /entities/by-query
       query:
         - name: fields
-          from: query
-          key: fields
+          from: literal
+          value: >-
+            kind,metadata.uid,metadata.name,metadata.namespace,metadata.title,metadata.description,spec.type,spec.lifecycle,spec.owner,relations
+        - name: filter
+          from: filter
+          key: catalog_filter
     response:
       row_strategy: direct
-      rows_path: []
+      rows_path: [items]
     pagination:
-      mode: none
+      mode: cursor_query
+      cursor_param: cursor
+      response_cursor_path: [pageInfo, nextCursor]
+      page_size:
+        query_param: limit
+        default: 100
+        max: 500
     columns:
-      - name: uid
+      - name: entity_ref
         type: Utf8
         nullable: false
-        description: Globally unique ID assigned by Backstage.
+        description: >-
+          Durable Backstage entity reference (kind:namespace/name), derived from
+          the entity's immutable kind, namespace, and name. Prefer this over
+          `uid` for joins and external references.
+        expr:
+          kind: template
+          template: "{{expr.kind}}:{{expr.ns}}/{{expr.name}}"
+          values:
+            kind: {kind: path, path: [kind]}
+            ns:
+              kind: coalesce
+              exprs:
+                - {kind: path, path: [metadata, namespace]}
+                - {kind: literal, value: default}
+            name: {kind: path, path: [metadata, name]}
+      - name: catalog_filter
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Raw Backstage filter string pushdown (e.g., kind=component).
+        expr: {kind: from_filter, key: catalog_filter}
+      - name: uid
+        type: Utf8
+        nullable: true
+        description: >-
+          Backstage-assigned UID. Output-only and not stable for external
+          references; use `entity_ref` for durable identification.
         expr: {kind: path, path: [metadata, uid]}
       - name: name
         type: Utf8
@@ -61,7 +107,7 @@ tables:
       - name: namespace
         type: Utf8
         nullable: true
-        description: Isolation namespace grouping the entity (defaults to 'default').
+        description: Namespace grouping the entity (defaults to 'default' when omitted).
         expr: {kind: path, path: [metadata, namespace]}
       - name: kind
         type: Utf8
@@ -71,7 +117,7 @@ tables:
       - name: type
         type: Utf8
         nullable: true
-        description: Sub-categorization type defined within the specific entity kind.
+        description: Sub-categorization type defined within the entity kind.
         expr: {kind: path, path: [spec, type]}
       - name: lifecycle
         type: Utf8
@@ -81,8 +127,40 @@ tables:
       - name: owner
         type: Utf8
         nullable: true
-        description: Group or User entity reference declaring responsibility for the object.
+        description: Declared owner from `spec.owner` (the raw spec value before processing).
         expr: {kind: path, path: [spec, owner]}
+      - name: owned_by
+        type: Utf8
+        nullable: true
+        description: >-
+          Processed ownership from the catalog `relations` graph: target refs of
+          `ownedBy` relations, joined with ", ". Reflects Backstage's resolved
+          ownership, which can differ from the raw `spec.owner`.
+        expr:
+          kind: join_tag_values
+          path: [relations]
+          key: ownedBy
+          key_field: type
+          value_field: targetRef
+          separator: ", "
+      - name: relation_types
+        type: Utf8
+        nullable: true
+        description: Distinct relation types present on the entity (e.g., ownedBy, dependsOn), joined with ", ".
+        expr:
+          kind: join_array_path
+          path: [relations]
+          item_path: [type]
+          separator: ", "
+      - name: relation_targets
+        type: Utf8
+        nullable: true
+        description: All related entity refs from the `relations` graph, joined with ", ".
+        expr:
+          kind: join_array_path
+          path: [relations]
+          item_path: [targetRef]
+          separator: ", "
       - name: title
         type: Utf8
         nullable: true

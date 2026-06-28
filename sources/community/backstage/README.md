@@ -5,11 +5,11 @@
 **Tables:** 1
 **Base URL:** `{{input.BACKSTAGE_URL}}/api/catalog`
 
-Query metadata definitions, dependency ownership structures, and ecosystem blueprints indexed inside your internal developer portal using Coral SQL.
+Query software catalog entities, ownership relationships, and service metadata from your internal developer portal using Coral SQL.
 
-This integration serves as a global service registry auditor, allowing engineers and managers to run relational analysis over software architectures, ownership mapping gaps, or microservice lifecycle distribution metrics.
+This integration acts as a service registry auditor, letting engineers and managers run relational analysis over software architecture, ownership gaps, and lifecycle distribution.
 
-Coral exposes read-only `GET` tables. Modifying catalog structures, registering new locations, or triggering ingestion mutations are out of scope.
+Coral exposes read-only `GET` tables. Modifying catalog structures, registering locations, or triggering ingestion mutations are out of scope.
 
 ---
 
@@ -35,16 +35,20 @@ coral source add --file <path-to-manifest>
 
 | Input | Kind | Required | Description |
 |---|---|---|---|
-| `BACKSTAGE_URL` | variable | yes | Backstage base URL without trailing slash and without `/api/catalog`, for example `http://localhost:7007` or `https://backstage.infra.local` |
-| `BACKSTAGE_TOKEN` | secret | yes | Backstage Auth Service Bearer Token or Identity Token |
+| `BACKSTAGE_URL` | variable | yes | Backstage base URL without trailing slash and without `/api/catalog`, for example `http://localhost:7007` |
+| `BACKSTAGE_TOKEN` | secret | yes | Backstage Auth Service bearer token or identity token |
+
+Coral sends the token as `Authorization: Bearer <token>`.
 
 ---
 
 # Tables Overview
 
-| Table | API Endpoint | Required Filters | Pagination |
+| Table | API Endpoint | Filters | Pagination |
 |---|---|---|---|
-| `entities` | `GET /entities` | — | None (returns direct flat JSON array with column field pushdown support) |
+| `entities` | `GET /entities/by-query` | optional pushdown: `catalog_filter` | Cursor (`limit` / `pageInfo.nextCursor`) |
+
+The source uses Backstage's recommended paginated query endpoint, `GET /entities/by-query`. Coral reads rows from `items` and follows `pageInfo.nextCursor` automatically, so large catalogs are fetched page by page rather than in one unbounded request.
 
 ---
 
@@ -52,51 +56,76 @@ coral source add --file <path-to-manifest>
 
 ## backstage.entities
 
-Ecosystem assets tracked inside the Backstage software catalog.
+Entities tracked inside the Backstage software catalog.
 
 | Column | Type | Description |
 |---|---|---|
-| `uid` | Utf8 | Globally unique ID assigned by Backstage |
+| `entity_ref` | Utf8 | Durable entity reference `kind:namespace/name` — prefer this for joins/external refs |
+| `catalog_filter` | Utf8 | Backstage filter-string pushdown (virtual) |
+| `uid` | Utf8 | Backstage-assigned UID (output-only, not stable for external references) |
 | `name` | Utf8 | Technical name of the entity |
-| `namespace` | Utf8 | Isolation namespace grouping the entity (defaults to `default`) |
-| `kind` | Utf8 | High-level category of the entity (for example `Component`, `API`, or `User`) |
-| `type` | Utf8 | Sub-categorization type defined within the specific entity kind |
-| `lifecycle` | Utf8 | Operational maturity phase of the software |
-| `owner` | Utf8 | Group or User entity reference declaring responsibility for the object |
-| `title` | Utf8 | Display title shown in Backstage interfaces |
-| `description` | Utf8 | Description associated with the catalog entity |
+| `namespace` | Utf8 | Namespace grouping the entity (defaults to `default`) |
+| `kind` | Utf8 | High-level category (`Component`, `API`, `User`, ...) |
+| `type` | Utf8 | Sub-categorization within the kind |
+| `lifecycle` | Utf8 | Operational maturity phase |
+| `owner` | Utf8 | Raw declared owner from `spec.owner` (pre-processing) |
+| `owned_by` | Utf8 | Processed ownership from the `relations` graph (`ownedBy` target refs), joined with `, ` |
+| `relation_types` | Utf8 | Relation types present on the entity (e.g., `ownedBy`, `dependsOn`), joined with `, ` |
+| `relation_targets` | Utf8 | All related entity refs from the `relations` graph, joined with `, ` |
+| `title` | Utf8 | Display title |
+| `description` | Utf8 | Entity description |
+
+### Entity references
+
+Backstage documents `metadata.uid` as output-only and not stable for external references. The `entity_ref` column provides the durable `kind:namespace/name` identifier built from the entity's immutable fields; use it for joins and audit workflows. Note that Backstage's internal relation target refs are lowercased, so compare on a normalized form if you join `entity_ref` against `relation_targets`.
+
+### Ownership and relations
+
+`spec.owner` is the raw declared owner. After Backstage processes the catalog, ownership is represented in the entity's `relations` graph as `ownedBy` edges. The `owned_by` column surfaces those processed owner refs, and `relation_types` / `relation_targets` expose the broader relationship graph (e.g., `dependsOn`, `partOf`).
+
+### Pushdown filtering
+
+`catalog_filter` is passed straight to Backstage's `filter` query parameter for server-side filtering:
+
+```sql
+SELECT name, kind, type
+FROM backstage.entities
+WHERE catalog_filter = 'kind=component,spec.type=service'
+LIMIT 25;
+```
+
+Predicates on other columns are applied locally by Coral after the page is fetched.
 
 ---
 
 # Example Queries
 
-## Find Production Components Missing an Owner
+## Find Production Components and Their Processed Owners
 
 ```sql
-SELECT
-  name,
-  type,
-  lifecycle,
-  description
+SELECT name, lifecycle, owned_by
 FROM backstage.entities
 WHERE kind = 'Component'
   AND lifecycle = 'production'
-  AND owner IS NULL
 ORDER BY name ASC;
 ```
 
----
-
-## Catalog Breakdown by Architecture Type
+## Catalog Breakdown by Kind and Type
 
 ```sql
-SELECT
-  kind,
-  type,
-  COUNT(*) AS entity_count
+SELECT kind, type, COUNT(*) AS entity_count
 FROM backstage.entities
 GROUP BY kind, type
 ORDER BY entity_count DESC;
+```
+
+## Components Owned by a Specific Group (server-side filter)
+
+```sql
+SELECT entity_ref, name, owned_by
+FROM backstage.entities
+WHERE catalog_filter = 'kind=component,relations.ownedBy=group:default/platform'
+LIMIT 50;
 ```
 
 ---
@@ -125,11 +154,15 @@ export BACKSTAGE_TOKEN=your-backstage-token-here
 
 coral source add --file sources/community/backstage/manifest.yaml
 coral source test backstage
+coral sql "SELECT entity_ref, kind, owned_by FROM backstage.entities LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test backstage`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test backstage
@@ -143,24 +176,14 @@ $ coral source test backstage
   1 declared · 1 passed · 0 failed
 
 ✓ SELECT name, kind FROM backstage.entities LIMIT 1
-
-+----------------+-----------+
-| name           | kind      |
-+----------------+-----------+
-| catalog-broker | Component |
-+----------------+-----------+
-
-1 row
+  1 row
 ```
 
 ---
 
 # Limitations
 
-- Read-only retrieval scope
-- Entity registration via locations or model lifecycle mutation paths are unsupported
-- Targets raw flat entities payloads directly
-- Complex graph resolution fields such as `relations[]` or downstream entity ancestry dependencies are out of scope for the base schema
-- Backstage uses a specialized array-based query string syntax for filtering (for example `?filter=kind=Component`)
-- This integration evaluates filtering engine-side using standard Coral SQL processing
-- To reduce network overhead across large enterprise catalogs, the driver supports field selection optimization using Backstage `?fields=` query projections where supported
+- Read-only retrieval scope; catalog mutations and location registration are unsupported.
+- `catalog_filter` is pushed to Backstage's `filter` parameter; other predicates are applied locally after each page is fetched.
+- Relation columns (`owned_by`, `relation_types`, `relation_targets`) are flattened/joined representations of the `relations` graph, not a normalized relations table.
+- Visibility depends on the permissions of the supplied token.
