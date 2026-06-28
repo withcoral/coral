@@ -6947,6 +6947,15 @@ relationships:
             "Person(where: PersonWhere, orderBy: [PersonOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Person!]!"
         ));
         assert!(sdl.contains(
+            "service(where: ServiceWhere, orderBy: [ServiceOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Service!]!"
+        ));
+        assert!(sdl.contains(
+            "Services(where: ServiceWhere, orderBy: [ServiceOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Service!]!"
+        ));
+        assert!(sdl.contains(
+            "services(where: ServiceWhere, orderBy: [ServiceOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Service!]!"
+        ));
+        assert!(sdl.contains(
             "input PersonOrderBy {\n  field: PersonOrderField!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n}"
         ));
         assert!(sdl.contains("input PersonWhere {"));
@@ -7095,6 +7104,38 @@ relationships:
             error
                 .to_string()
                 .contains("GraphQL field 'out_OWNS' would be generated more than once"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_graphql_schema_sdl_for_ambiguous_root_aliases() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: ambiguous_roots
+nodes:
+  - label: User
+    table: { schema: ops, name: users }
+    key: id
+    properties:
+      name: name
+  - label: user
+    table: { schema: ops, name: lower_users }
+    key: id
+    properties:
+      name: name
+",
+        )
+        .expect("graph should parse");
+
+        let error = graphql_schema_sdl_for_graph(&graph)
+            .expect_err("ambiguous root aliases should fail SDL generation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL query root field 'user' would be generated more than once"),
             "unexpected error: {error}"
         );
     }

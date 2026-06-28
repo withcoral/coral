@@ -430,11 +430,12 @@ submitted GraphQL document into the shared graph IR before validation and SQL
 lowering. Because v1 graph declarations do not include source column type
 metadata, mapped graph properties use a custom `CoralGraphValue` scalar while
 reserved identity fields use `_id: CoralGraphValue` and `_elementId: String`.
-The schema includes root node fields, node `where` and `orderBy` inputs,
-relationship traversal fields with endpoint enum defaults for unambiguous
-mappings, relationship-existence filter inputs inside node `where` inputs,
-relationship `relationshipWhere` inputs, and relationship object types for the
-properties and identity fields available through `_edge` selections. Standard
+The schema includes exact-label and generated-client alias root node fields,
+node `where` and `orderBy` inputs, relationship traversal fields with endpoint
+enum defaults for unambiguous mappings, relationship-existence filter inputs
+inside node `where` inputs, relationship `relationshipWhere` inputs, and
+relationship object types for the properties and identity fields available
+through `_edge` selections. Standard
 GraphQL SDL cannot express Coral's
 context-specific `_edge` field without changing the query contract to wrapper
 objects, so SDL generation exposes the relationship object shapes while the

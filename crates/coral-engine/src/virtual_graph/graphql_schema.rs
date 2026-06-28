@@ -195,6 +195,7 @@ const GRAPHQL_ELEMENT_ID_FILTER_SDL: &str = r"input CoralGraphElementIdFilter {
 pub fn graphql_schema_sdl_for_graph(graph: &Declaration) -> Result<String, CoreError> {
     graph.validate()?;
     validate_graphql_schema_names(graph)?;
+    validate_query_root_field_shapes(graph)?;
     validate_relationship_field_shapes(graph)?;
     validate_generated_type_names_are_unique(graph)?;
     let relationship_shapes = collect_relationship_schema_shapes(graph)?;
@@ -255,15 +256,17 @@ fn push_schema_prelude(sdl: &mut String) {
 fn push_query_type(sdl: &mut String, graph: &Declaration) {
     sdl.push_str("type Query {\n");
     for node in &graph.nodes {
-        writeln!(
-            sdl,
-            "  {}(where: {}, orderBy: [{}!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [{}!]!",
-            node.label,
-            node_where_type(&node.label),
-            node_order_by_type(&node.label),
-            node.label
-        )
-        .expect("writing GraphQL SDL to string should not fail");
+        for field_name in root_field_names_for_label(&node.label) {
+            writeln!(
+                sdl,
+                "  {}(where: {}, orderBy: [{}!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [{}!]!",
+                field_name,
+                node_where_type(&node.label),
+                node_order_by_type(&node.label),
+                node.label
+            )
+            .expect("writing GraphQL SDL to string should not fail");
+        }
     }
     sdl.push_str("}\n\n");
 }
@@ -419,6 +422,9 @@ fn validate_graphql_schema_names(graph: &Declaration) -> Result<(), CoreError> {
     for (index, node) in graph.nodes.iter().enumerate() {
         let path = format!("nodes[{index}]");
         validate_graphql_name(&node.label, format!("{path}.label"))?;
+        for field_name in root_field_names_for_label(&node.label) {
+            validate_graphql_name(&field_name, format!("{path}.label"))?;
+        }
         validate_graphql_name(&node_where_type(&node.label), format!("{path}.label"))?;
         validate_graphql_name(&node_order_by_type(&node.label), format!("{path}.label"))?;
         validate_graphql_name(&node_order_field_type(&node.label), format!("{path}.label"))?;
@@ -453,6 +459,26 @@ fn validate_graphql_schema_names(graph: &Declaration) -> Result<(), CoreError> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_query_root_field_shapes(graph: &Declaration) -> Result<(), CoreError> {
+    let mut fields = BTreeMap::new();
+    for node in &graph.nodes {
+        for field_name in root_field_names_for_label(&node.label) {
+            if let Some(existing) = fields.insert(field_name.clone(), node.label.clone()) {
+                return Err(Diagnostic::new(
+                    "UNSUPPORTED_GRAPHQL_SCHEMA",
+                    format!("nodes.{}", node.label),
+                    format!(
+                        "GraphQL query root field '{field_name}' would be generated more than once for node labels '{existing}' and '{}'",
+                        node.label
+                    ),
+                )
+                .into_core_error());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -737,6 +763,30 @@ fn node_order_field_type(label: &str) -> String {
 
 fn node_aggregate_field_type(label: &str) -> String {
     format!("{label}AggregateField")
+}
+
+fn root_field_names_for_label(label: &str) -> BTreeSet<String> {
+    let mut field_names = BTreeSet::from([label.to_string()]);
+    field_names.extend(root_field_aliases_for_label(label));
+    field_names
+}
+
+fn root_field_aliases_for_label(label: &str) -> BTreeSet<String> {
+    let lower_first = variable_for_label(label);
+    let mut aliases = BTreeSet::from([lower_first.clone()]);
+    if !label.ends_with('s') {
+        aliases.insert(format!("{label}s"));
+        aliases.insert(format!("{lower_first}s"));
+    }
+    aliases
+}
+
+fn variable_for_label(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => "node".to_string(),
+    }
 }
 
 fn relationship_where_type(relationship_type: &str) -> String {
