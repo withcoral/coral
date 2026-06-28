@@ -12480,6 +12480,44 @@ async fn cypher_static_list_comprehensions_over_case_and_coalesce_sources_execut
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehensions_as_in_rhs_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                coalesce(service.tier, 'missing') IN [tier IN ['prod', 'dev'] WHERE tier <> 'dev' | tier] AS tier_is_prod, \
+                'TEAM' IN [k IN coalesce(keys(person), ['fallback']) | toUpper(k)] AS owner_has_team_key, \
+                'team' IN [k IN CASE WHEN person IS NULL THEN ['fallback'] ELSE keys(person) END | k] AS case_has_team_key \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list comprehensions should execute as IN RHS values");
+
+    assert!(
+        execution.translated_sql().contains(" IN ('prod')"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier_is_prod": true, "owner_has_team_key": true, "case_has_team_key": true}),
+            json!({"service": "deployments", "tier_is_prod": true, "owner_has_team_key": true, "case_has_team_key": true}),
+            json!({"service": "experiments", "tier_is_prod": false, "owner_has_team_key": true, "case_has_team_key": true}),
+            json!({"service": "legacy-sync", "tier_is_prod": false, "owner_has_team_key": false, "case_has_team_key": false}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehension_length_maps_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
