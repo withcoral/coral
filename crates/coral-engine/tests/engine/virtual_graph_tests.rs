@@ -11972,6 +11972,83 @@ async fn cypher_static_list_case_and_coalesce_indexes_execute_against_synthetic_
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_slices_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[0..1] AS case_key_window, \
+                coalesce(keys(person), ['fallback', 'owner'])[0..1] AS coalesced_key_window, \
+                (CASE WHEN service.tier = 'prod' THEN [] ELSE ['not-prod'] END)[0..1] AS tier_window \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE/coalesce slices should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_key_window": ["name"], "coalesced_key_window": ["name"], "tier_window": []}),
+            json!({"service": "deployments", "case_key_window": ["name"], "coalesced_key_window": ["name"], "tier_window": []}),
+            json!({"service": "experiments", "case_key_window": ["name"], "coalesced_key_window": ["name"], "tier_window": ["not-prod"]}),
+            json!({"service": "legacy-sync", "case_key_window": ["fallback"], "coalesced_key_window": ["fallback"], "tier_window": ["not-prod"]}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_list_case_and_coalesce_slice_reducers_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                size((CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[0..1]) AS case_window_size, \
+                isEmpty(coalesce(keys(person), ['fallback'])[2..]) AS coalesced_tail_empty, \
+                size((CASE WHEN service.tier = 'prod' THEN [] ELSE null END)[0..1]) AS empty_window_size, \
+                isEmpty((CASE WHEN service.tier = 'prod' THEN [] ELSE null END)[0..1]) AS empty_window_is_empty \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE/coalesce slice reducers should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_window_size": 1, "coalesced_tail_empty": true, "empty_window_size": 0, "empty_window_is_empty": true}),
+            json!({"service": "deployments", "case_window_size": 1, "coalesced_tail_empty": true, "empty_window_size": 0, "empty_window_is_empty": true}),
+            json!({"service": "experiments", "case_window_size": 1, "coalesced_tail_empty": true}),
+            json!({"service": "legacy-sync", "case_window_size": 1, "coalesced_tail_empty": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -221,11 +221,13 @@ The supported foundation subset is intentionally narrow:
   Collection predicates such as `any(k IN coalesce(...) WHERE ...)` use the same
   branch-local strategy, with each branch evaluated by the existing folded static
   collection predicate evaluator.
-  Scalar index expressions such as `coalesce(keys(optionalNode), ['fallback'])[0]`
-  are lowered by indexing each static branch and wrapping optional metadata
-  branches in presence-gated scalar `CASE` expressions. `head(...)`,
-  `last(...)`, `size(...)`, and `isEmpty(...)` over list-valued `coalesce(...)`
-  are handled as scalar reducers over those same static branches, e.g.
+  Scalar index and slice expressions such as
+  `coalesce(keys(optionalNode), ['fallback'])[0]` and
+  `coalesce(keys(optionalNode), ['fallback'])[0..1]` are lowered by reducing each
+  static branch and wrapping optional metadata branches in presence-gated scalar
+  `CASE` expressions. `head(...)`, `last(...)`, `size(...)`, and `isEmpty(...)`
+  over list-valued `coalesce(...)` are handled as scalar reducers over those
+  same static branches, e.g.
   `coalesce(size(branch1), size(branch2))`, so optional metadata fallbacks work
   without adding runtime array endpoint or array-length operators. Because
   reducer outputs do not render an array value, all-empty branches such as
@@ -245,10 +247,11 @@ The supported foundation subset is intentionally narrow:
   empty or null branches in predicate position without rendering an untyped array
   value. Static collection predicates over `CASE` collections lower the same way,
   except each branch result is the folded outcome of `all` / `any` / `none` /
-  `single` over that branch's list. Indexed CASE collections such as
-  `(CASE ... END)[0]` also lower branch-locally, so empty or null branches become
-  `NULL` scalar branch results while metadata branches keep their optional
-  presence gates. `head(CASE ... END)`, `last(CASE ... END)`,
+  `single` over that branch's list. Indexed and sliced CASE collections such as
+  `(CASE ... END)[0]` and `(CASE ... END)[0..1]` also lower branch-locally, so
+  empty or null branches become typed empty-list or `NULL` branch results while
+  metadata branches keep their optional presence gates. `head(CASE ... END)`,
+  `last(CASE ... END)`,
   `size(CASE ... END)`, and `isEmpty(CASE ... END)` are scalar reducers over the
   same branch parts, so they compile all-empty branch sets by lowering to scalar
   `CASE` expressions rather than rendering an untyped list;
