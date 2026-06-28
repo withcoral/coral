@@ -141,12 +141,14 @@ The supported foundation subset is intentionally narrow:
   `keys(...) = [...]`, `keys(...) <> [...]`, and `tail(...)` static-list
   predicates folded from static label/property metadata or typed folded-list
   expressions, including reversed operands and list-parameter operands;
-- zero-based positive and negative index expressions over static
-  `labels(...)` and declaration-aware `keys(...)` metadata lists, folded at
-  compile time with out-of-range indexes returning `NULL`;
-- start-inclusive/end-exclusive slice expressions over static `labels(...)`
-  and declaration-aware `keys(...)` metadata lists, folded at compile time
-  and preserving optional nulls for nullable bindings. Empty static slices are
+- zero-based positive and negative index expressions over static folded lists,
+  including `labels(...)`, declaration-aware `keys(...)`, `tail(...)`,
+  `reverse(...)`, and static list concatenation, folded at compile time with
+  out-of-range indexes returning `NULL`;
+- start-inclusive/end-exclusive slice expressions over static folded lists,
+  including `labels(...)`, declaration-aware `keys(...)`, `tail(...)`,
+  `reverse(...)`, and static list concatenation, folded at compile time and
+  preserving optional nulls for nullable bindings. Empty static slices are
   carried through the IR as typed folded lists so DataFusion can render typed
   empty arrays instead of ambiguous `make_array()` values;
 - `head(...)`, `last(...)`, `tail(...)`, and list-valued `reverse(...)` over

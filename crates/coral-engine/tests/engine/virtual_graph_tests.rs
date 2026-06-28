@@ -9579,6 +9579,42 @@ async fn cypher_static_list_reverse_functions_execute_against_synthetic_sources(
 }
 
 #[tokio::test]
+async fn cypher_static_list_indexes_and_slices_over_folded_lists_execute_against_synthetic_sources()
+{
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE reverse(keys(service))[0] = 'tier' \
+           AND size((labels(service) + keys(service))[1..]) = 6 \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                reverse(keys(service))[1] AS second_reversed_key, \
+                reverse(keys(service))[1..3] AS reversed_key_window, \
+                (labels(service) + keys(service))[1..] AS metadata_tail, \
+                tail(reverse(keys(service))[1..]) AS reversed_tail_tail \
+         ORDER BY reverse(keys(service))[0], owner, service",
+    )
+    .await
+    .expect("static list indexes and slices over folded lists should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "second_reversed_key": "team", "reversed_key_window": ["team", "risk"], "metadata_tail": ["active", "id", "name", "risk", "team", "tier"], "reversed_tail_tail": ["risk", "name", "id", "active"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "second_reversed_key": "team", "reversed_key_window": ["team", "risk"], "metadata_tail": ["active", "id", "name", "risk", "team", "tier"], "reversed_tail_tail": ["risk", "name", "id", "active"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "second_reversed_key": "team", "reversed_key_window": ["team", "risk"], "metadata_tail": ["active", "id", "name", "risk", "team", "tier"], "reversed_tail_tail": ["risk", "name", "id", "active"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -5624,6 +5624,16 @@ fn compile_order_expression(
             )? {
                 return compile_scalar_order_expression(expression, projections, path);
             }
+            if let Some(expression) =
+                compile_optional_non_literal_static_list_index_scalar_expression(
+                    expression,
+                    path.clone(),
+                    Some(plan),
+                    context,
+                )?
+            {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
             if is_list_slice_expression(expression)
                 && let Some(value) =
                     compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
@@ -5633,6 +5643,16 @@ fn compile_order_expression(
                     projections,
                     path,
                 );
+            }
+            if is_non_literal_static_list_slice_expression(expression)
+                && let Some(expression) = compile_optional_static_list_scalar_expression(
+                    expression,
+                    path.clone(),
+                    Some(plan),
+                    context,
+                )?
+            {
+                return compile_scalar_order_expression(expression, projections, path);
             }
             compile_order_expression_after_metadata_list_index(
                 expression,
@@ -6224,6 +6244,16 @@ fn compile_optional_static_list_value(
         Expression::Parenthesized(inner) => {
             compile_optional_static_list_value(inner, path, plan, context)
         }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => compile_optional_static_list_slice_value(
+            list,
+            start.as_deref(),
+            end.as_deref(),
+            path,
+            plan,
+            context,
+        ),
         Expression::BinaryOp {
             op: CypherBinaryOperator::Add,
             lhs,
@@ -6231,49 +6261,10 @@ fn compile_optional_static_list_value(
             ..
         } => compile_optional_static_list_concat_value(lhs, rhs, path, plan, context),
         Expression::FunctionCall(function) if is_reverse_function(function) => {
-            let [argument] = function.arguments.as_slice() else {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    "reverse() requires exactly one argument",
-                ));
-            };
-            let Some(value) = compile_optional_static_list_value(
-                argument,
-                format!("{path}.arguments[0]"),
-                plan,
-                context,
-            )?
-            else {
-                return Ok(None);
-            };
-            Ok(Some(reverse_static_list_value(
-                value,
-                format!("{path}.arguments[0]"),
-            )?))
+            compile_optional_static_list_reverse_value(function, path, plan, context)
         }
         Expression::FunctionCall(function) if is_tail_function(function) => {
-            let [argument] = function.arguments.as_slice() else {
-                return Err(unsupported(
-                    format!("{path}.arguments"),
-                    "tail() requires exactly one list argument",
-                ));
-            };
-            let Some(value) = compile_optional_static_list_value(
-                argument,
-                format!("{path}.arguments[0]"),
-                plan,
-                context,
-            )?
-            else {
-                return Err(unsupported(
-                    format!("{path}.arguments[0]"),
-                    "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
-                ));
-            };
-            Ok(Some(tail_static_list_value(
-                value,
-                format!("{path}.arguments[0]"),
-            )?))
+            compile_optional_static_list_tail_value(function, path, plan, context)
         }
         expression => {
             if let Some(plan) = plan
@@ -6309,6 +6300,90 @@ fn compile_optional_static_list_value(
             }
         }
     }
+}
+
+fn compile_optional_static_list_slice_value(
+    list: &Expression,
+    start: Option<&Expression>,
+    end: Option<&Expression>,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let Some(mut value) =
+        compile_optional_static_list_value(list, format!("{path}.list"), plan, context)?
+    else {
+        return Ok(None);
+    };
+    value.literals = compile_list_slice_literals(
+        &value.literals,
+        start,
+        end,
+        path,
+        context,
+        "static list slice bounds require integer literals or scalar integer parameters",
+    )?;
+    Ok(Some(value))
+}
+
+fn compile_optional_static_list_reverse_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "reverse() requires exactly one argument",
+        ));
+    };
+    let Some(value) = compile_optional_static_list_value(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(reverse_static_list_value(
+        value,
+        format!("{path}.arguments[0]"),
+    )?))
+}
+
+fn compile_optional_static_list_tail_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "tail() requires exactly one list argument",
+        ));
+    };
+    let Some(value) = compile_optional_static_list_value(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            "tail() requires a literal list, list parameter, or static labels()/keys() metadata list",
+        ));
+    };
+    Ok(Some(tail_static_list_value(
+        value,
+        format!("{path}.arguments[0]"),
+    )?))
 }
 
 fn reverse_static_list_value(
@@ -6805,7 +6880,57 @@ fn compile_optional_graph_scalar_projection(
                 .map_or_else(|| "expression".to_string(), variable_name),
         }));
     }
+    if let Some(expression) = compile_optional_non_literal_static_list_index_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(plan),
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "expression".to_string(), variable_name),
+        }));
+    }
+    if let Some(projection) =
+        compile_optional_non_literal_static_list_slice_projection(item, path, plan, context)?
+    {
+        return Ok(Some(projection));
+    }
     Ok(None)
+}
+
+fn compile_optional_non_literal_static_list_slice_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let Expression::ListSlice { list, .. } = &item.expression else {
+        return Ok(None);
+    };
+    if is_literal_list_source_expression(list) {
+        return Ok(None);
+    }
+    let Some(expression) = compile_optional_static_list_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(plan),
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Projection::Expression {
+        expression,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "list".to_string(), variable_name),
+    }))
 }
 
 fn compile_optional_metadata_list_slice_projection(
@@ -7451,6 +7576,7 @@ fn compile_literal_list_length_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_literal_list_length_scalar_expression(inner, path, context)
         }
+        Expression::ListSlice { list, .. } if !is_literal_list_source_expression(list) => Ok(None),
         Expression::Literal(CypherLiteral::List(_)) | Expression::ListSlice { .. } => Ok(Some(
             list_length_scalar_expression(compile_literal_list(expression, path, context)?.len())?,
         )),
@@ -8258,6 +8384,36 @@ fn compile_scalar_expression_with_plan(
     compile_scalar_expression_in_mode(expression, path, Some(plan), context)
 }
 
+fn compile_list_index_scalar_expression_in_mode(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if let Some(plan) = plan
+        && let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+            expression,
+            path.clone(),
+            plan,
+            context,
+        )?
+    {
+        return Ok(expression);
+    }
+    if let Some(expression) = compile_optional_static_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        plan,
+        context,
+    )? {
+        return Ok(expression);
+    }
+    Ok(ScalarExpression::Literal(compile_literal(
+        expression, path, context,
+    )?))
+}
+
 fn compile_scalar_expression_in_mode(
     expression: &Expression,
     path: impl Into<String>,
@@ -8283,19 +8439,7 @@ fn compile_scalar_expression_in_mode(
             )?))
         }
         Expression::ListIndex { .. } => {
-            if let Some(plan) = plan
-                && let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
-                    expression,
-                    path.clone(),
-                    plan,
-                    context,
-                )?
-            {
-                return Ok(expression);
-            }
-            Ok(ScalarExpression::Literal(compile_literal(
-                expression, path, context,
-            )?))
+            compile_list_index_scalar_expression_in_mode(expression, path, plan, context)
         }
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
@@ -8739,9 +8883,22 @@ fn compile_optional_predicate_scalar_expression(
             compile_optional_predicate_scalar_expression(inner, path, plan, context)
         }
         Expression::ListIndex { .. } => match plan {
-            Some(plan) => compile_optional_metadata_list_index_scalar_expression(
-                expression, path, plan, context,
-            ),
+            Some(plan) => {
+                if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+                    expression,
+                    path.clone(),
+                    plan,
+                    context,
+                )? {
+                    return Ok(Some(expression));
+                }
+                compile_optional_static_list_index_scalar_expression(
+                    expression,
+                    path,
+                    Some(plan),
+                    context,
+                )
+            }
             None => Ok(None),
         },
         Expression::PropertyLookup { .. } => Ok(
@@ -12105,6 +12262,72 @@ fn compile_optional_metadata_list_index_scalar_expression(
             )))
         }
         _ => Ok(None),
+    }
+}
+
+fn compile_optional_non_literal_static_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Expression::ListIndex { list, .. } = expression else {
+        return Ok(None);
+    };
+    if is_literal_list_source_expression(list) {
+        return Ok(None);
+    }
+    compile_optional_static_list_index_scalar_expression(expression, path, plan, context)
+}
+
+fn compile_optional_static_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_index_scalar_expression(inner, path, plan, context)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(value) =
+                compile_optional_static_list_value(list, format!("{path}.list"), plan, context)?
+            else {
+                return Ok(None);
+            };
+            let literal = compile_list_index_literal(
+                &value.literals,
+                index,
+                &path,
+                context,
+                "static list indexes require an integer literal or scalar integer parameter",
+            )?;
+            Ok(Some(presence_gate_scalar_expression(
+                value.presence_variable,
+                ScalarExpression::Literal(literal),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn is_non_literal_static_list_slice_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_non_literal_static_list_slice_expression(inner),
+        Expression::ListSlice { list, .. } => !is_literal_list_source_expression(list),
+        _ => false,
+    }
+}
+
+fn is_literal_list_source_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_literal_list_source_expression(inner),
+        Expression::Literal(CypherLiteral::List(_)) | Expression::Parameter(_) => true,
+        Expression::ListSlice { list, .. } => is_literal_list_source_expression(list),
+        _ => false,
     }
 }
 
@@ -17605,6 +17828,100 @@ relationships:
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn compiles_static_list_indexes_and_slices_over_folded_lists() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             WHERE reverse(keys(service))[0] = 'tier' \
+               AND size((labels(service) + keys(service))[1..]) = 2 \
+             RETURN reverse(keys(service))[1] AS second_reversed_key, \
+                    (labels(service) + keys(service))[1..] AS metadata_tail, \
+                    tail(reverse(keys(service))[1..]) AS reversed_tail_tail \
+             ORDER BY reverse(keys(service))[0]",
+        )
+        .expect("static list indexes and slices over folded lists should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("name".to_string())),
+                    alias: "second_reversed_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("tier".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "metadata_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: Vec::new(),
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "reversed_tail_tail".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::String(
+                    "tier".to_string()
+                ))),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_indexes_and_slices_as_presence_gated_scalars() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN reverse(labels(person) + keys(person))[0] AS owner_last_metadata, \
+                    reverse(labels(person) + keys(person))[1..] AS owner_metadata_tail",
+        )
+        .expect("optional static list indexes and slices should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::String(
+                            "team".to_string()
+                        ))),
+                    },
+                    alias: "owner_last_metadata".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::TypedLiteralList {
+                            literals: vec![
+                                Literal::String("name".to_string()),
+                                Literal::String("Person".to_string())
+                            ],
+                            element_type: LiteralListElementType::String,
+                        }),
+                    },
+                    alias: "owner_metadata_tail".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
