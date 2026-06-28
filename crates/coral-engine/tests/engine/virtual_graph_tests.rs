@@ -192,6 +192,41 @@ async fn cypher_graph_aware_anonymous_label_inference_executes_against_synthetic
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_relationship_type_inference_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-->(service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY owner",
+    )
+    .await
+    .expect("graph-aware Cypher should infer the OWNS relationship type");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_label_inference_preserves_unmatched_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

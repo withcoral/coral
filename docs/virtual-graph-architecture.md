@@ -143,7 +143,10 @@ The supported foundation subset is intentionally narrow:
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
-  original edge orientation;
+  original edge orientation. Declaration-aware compilation may infer the type
+  for an untyped exact single-hop relationship when the endpoint labels and
+  direction select exactly one relationship type; untyped ranges and ambiguous
+  endpoint pairs remain rejected;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;

@@ -6060,7 +6060,12 @@ fn compile_path_chain_into(
         options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
     let relationship = compile_relationship(
         &chain.relationship,
-        (&chain_state.previous_variable, &next_variable),
+        RelationshipCompileEndpoints {
+            left_variable: &chain_state.previous_variable,
+            right_variable: &next_variable,
+            left_label: &chain_state.previous_label,
+            right_label: &next_label,
+        },
         relationship_index,
         plan,
         relationship_path,
@@ -6911,9 +6916,17 @@ fn compile_inline_properties(
     Ok(predicates)
 }
 
+#[derive(Clone, Copy)]
+struct RelationshipCompileEndpoints<'a> {
+    left_variable: &'a str,
+    right_variable: &'a str,
+    left_label: &'a str,
+    right_label: &'a str,
+}
+
 fn compile_relationship(
     pattern: &CypherRelationshipPattern,
-    endpoints: (&str, &str),
+    endpoints: RelationshipCompileEndpoints<'_>,
     index: usize,
     plan: &GraphPlan,
     path: impl Into<String>,
@@ -6921,7 +6934,6 @@ fn compile_relationship(
     context: &CypherCompileContext,
 ) -> Result<CompiledRelationship, CoreError> {
     let path = path.into();
-    let (left, right) = endpoints;
     let length = relationship_fixed_length(pattern, &path)?;
 
     let direction = match pattern.direction {
@@ -6932,43 +6944,46 @@ fn compile_relationship(
         }
     };
 
-    let detail = pattern.detail.as_ref().ok_or_else(|| {
-        unsupported(
-            format!("{path}.detail"),
-            "relationship type is required for virtual graph queries",
-        )
-    })?;
-    if length == 0 && detail.variable.is_some() {
+    let detail = pattern.detail.as_ref();
+    let relationship_variable = detail.and_then(|detail| detail.variable.as_ref());
+    if length == 0 && relationship_variable.is_some() {
         return Err(unsupported(
             format!("{path}.variable"),
             "zero-hop relationship ranges cannot bind a relationship variable because Coral does not materialize relationship lists yet",
         ));
     }
-    if length > 1 && detail.variable.is_some() {
+    if length > 1 && relationship_variable.is_some() {
         return Err(unsupported(
             format!("{path}.variable"),
             "fixed-length relationship ranges greater than 1 cannot bind a relationship variable because Coral does not materialize relationship lists yet",
         ));
     }
-    let relationship_type = detail.types.as_ref().ok_or_else(|| {
-        unsupported(
-            format!("{path}.types"),
-            "relationship type is required for virtual graph queries",
-        )
-    })?;
-    let variable = detail
-        .variable
-        .as_ref()
+    let relationship_type = compile_relationship_type(
+        detail,
+        direction,
+        length,
+        (endpoints.left_label, endpoints.right_label),
+        path.clone(),
+        context,
+    )?;
+    let variable = relationship_variable
         .map(validate_variable)
         .transpose()?
         .or_else(|| {
-            (length > 0 && (force_variable || detail.properties.is_some()))
-                .then(|| fresh_internal_relationship_variable(plan, right, index))
+            (length > 0
+                && (force_variable
+                    || detail
+                        .and_then(|detail| detail.properties.as_ref())
+                        .is_some()))
+            .then(|| fresh_internal_relationship_variable(plan, endpoints.right_variable, index))
         });
     let predicates = if length == 0 {
         Vec::new()
     } else {
-        match (&detail.properties, &variable) {
+        match (
+            detail.and_then(|detail| detail.properties.as_ref()),
+            &variable,
+        ) {
             (Some(properties), Some(variable)) => compile_inline_properties(
                 properties,
                 variable,
@@ -6987,17 +7002,71 @@ fn compile_relationship(
     Ok(CompiledRelationship {
         pattern: RelationshipPattern {
             variable,
-            relationship_type: single_static_label(
-                std::slice::from_ref(relationship_type),
-                format!("{path}.types"),
-            )?,
-            left: left.to_string(),
+            relationship_type,
+            left: endpoints.left_variable.to_string(),
             direction,
-            right: right.to_string(),
+            right: endpoints.right_variable.to_string(),
         },
         predicates,
         length,
     })
+}
+
+fn compile_relationship_type(
+    detail: Option<&decypher::ast::pattern::RelationshipDetail>,
+    direction: Direction,
+    length: usize,
+    endpoint_labels: (&str, &str),
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    if let Some(relationship_type) = detail.and_then(|detail| detail.types.as_ref()) {
+        return single_static_label(
+            std::slice::from_ref(relationship_type),
+            format!("{path}.types"),
+        );
+    }
+    if length != 1 {
+        return Err(unsupported(
+            format!("{path}.types"),
+            "untyped relationship ranges require an explicit relationship type",
+        ));
+    }
+    let Some(graph) = context.graph.as_ref() else {
+        return Err(unsupported(
+            format!("{path}.types"),
+            "relationship type is required for virtual graph queries unless a graph declaration can infer one from endpoint labels",
+        ));
+    };
+    let (left_label, right_label) = endpoint_labels;
+    let candidates = graph
+        .relationships
+        .iter()
+        .filter(|relationship| {
+            relationship_mapping_matches_pattern(relationship, direction, left_label, right_label)
+        })
+        .map(|relationship| relationship.relationship_type.as_str())
+        .collect::<BTreeSet<_>>();
+    match candidates.len() {
+        0 => Err(unsupported(
+            format!("{path}.types"),
+            format!(
+                "relationship pattern could not infer a relationship type from {left_label} to {right_label}; add an explicit relationship type"
+            ),
+        )),
+        1 => Ok(candidates
+            .into_iter()
+            .next()
+            .expect("candidate relationship type set length was checked")
+            .to_string()),
+        _ => Err(unsupported(
+            format!("{path}.types"),
+            format!(
+                "relationship pattern could not infer a unique relationship type from {left_label} to {right_label}; add an explicit relationship type"
+            ),
+        )),
+    }
 }
 
 fn relationship_fixed_length(
@@ -30421,6 +30490,110 @@ relationships:
             error
                 .to_string()
                 .contains("anonymous node at path position 0"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_untyped_relationship_types() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-->(service:Service) RETURN service.name",
+        )
+        .expect("graph declaration should infer an untyped relationship");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_untyped_relationship_variables() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[ownership]->(service:Service) RETURN type(ownership)",
+        )
+        .expect("graph declaration should infer an untyped relationship variable");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: Some("ownership".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_ambiguous_untyped_relationship_types() {
+        let graph = route_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-->(service:Service) RETURN service.name",
+        )
+        .expect_err("ambiguous untyped relationship should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("could not infer a unique relationship type"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_unmapped_untyped_relationship_types() {
+        let graph = route_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (incident:Incident)-->(person:Person) RETURN incident.title",
+        )
+        .expect_err("unmapped untyped relationship should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("could not infer a relationship type"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_untyped_relationship_ranges() {
+        let graph = route_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[*2]->(incident:Incident) RETURN incident.title",
+        )
+        .expect_err("untyped relationship ranges should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("untyped relationship ranges require an explicit relationship type"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_untyped_relationships_without_graph_declaration() {
+        let error = compile_cypher("MATCH (person:Person)-->(service:Service) RETURN service.name")
+            .expect_err("declaration-free untyped relationships should be rejected");
+
+        assert!(
+            error.to_string().contains("relationship type is required"),
             "{error:?}"
         );
     }
