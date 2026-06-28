@@ -348,10 +348,11 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
     for field in relationship_schema_fields_for_node(graph, &node.label) {
         writeln!(
             sdl,
-            "  {}({}: {}!, where: {}, relationshipWhere: {}): [{}!]!",
+            "  {}({}: {} = {}, where: {}, relationshipWhere: {}): [{}!]!",
             field.name,
             field.endpoint_argument,
             field.endpoint_enum,
+            field.target_label,
             field.target_where,
             field.relationship_where,
             field.target_label

@@ -870,9 +870,16 @@ fn compile_relationship_field(
     let path = path.into();
     let (direction, relationship_type, endpoint_argument) =
         compile_relationship_field_name(&field.name, format!("{path}.name"))?;
-    let target_label = compile_relationship_target_label(
-        field,
+    let endpoint = RelationshipEndpointContext {
+        graph,
+        source_label: &source.label,
+        relationship_type: &relationship_type,
+        direction,
         endpoint_argument,
+    };
+    let target_label = compile_relationship_target_label(
+        &endpoint,
+        field,
         format!("{path}.arguments"),
         compile_context,
     )?;
@@ -1302,35 +1309,111 @@ fn non_empty_relationship_type(
     Ok((direction, relationship_type.to_string(), endpoint_argument))
 }
 
+struct RelationshipEndpointContext<'a> {
+    graph: &'a Declaration,
+    source_label: &'a str,
+    relationship_type: &'a str,
+    direction: Direction,
+    endpoint_argument: &'static str,
+}
+
 fn compile_relationship_target_label(
+    endpoint: &RelationshipEndpointContext<'_>,
     field: &Field<'_, String>,
-    endpoint_argument: &str,
     path: impl Into<String>,
     context: &GraphqlCompileContext<'_, '_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     let mut target_label = None;
     for (index, (name, value)) in field.arguments.iter().enumerate() {
-        if name == endpoint_argument {
+        if name == endpoint.endpoint_argument {
             if target_label.is_some() {
                 return Err(unsupported(
                     format!("{path}[{index}]"),
-                    format!("GraphQL relationship argument '{endpoint_argument}' is duplicated"),
+                    format!(
+                        "GraphQL relationship argument '{}' is duplicated",
+                        endpoint.endpoint_argument
+                    ),
                 ));
             }
             target_label = Some(compile_name_value(
                 value,
-                format!("{path}.{endpoint_argument}"),
+                format!("{path}.{}", endpoint.endpoint_argument),
                 context,
             )?);
         }
     }
-    target_label.ok_or_else(|| {
-        unsupported(
+    match target_label {
+        Some(target_label) => Ok(target_label),
+        None => infer_relationship_target_label(endpoint, path),
+    }
+}
+
+fn infer_relationship_target_label(
+    endpoint: &RelationshipEndpointContext<'_>,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    if endpoint
+        .graph
+        .relationships_for_type(endpoint.relationship_type)
+        .next()
+        .is_none()
+    {
+        return Err(unsupported(
             path,
-            format!("GraphQL relationship field requires '{endpoint_argument}'"),
-        )
-    })
+            format!(
+                "unknown GraphQL relationship type '{}'",
+                endpoint.relationship_type
+            ),
+        ));
+    }
+    let labels = endpoint
+        .graph
+        .relationships_for_type(endpoint.relationship_type)
+        .filter_map(|relationship| match endpoint.direction {
+            Direction::Outgoing if relationship.from.label == endpoint.source_label => {
+                Some(relationship.to.label.clone())
+            }
+            Direction::Incoming if relationship.to.label == endpoint.source_label => {
+                Some(relationship.from.label.clone())
+            }
+            Direction::Undirected => match (
+                relationship.from.label == endpoint.source_label,
+                relationship.to.label == endpoint.source_label,
+            ) {
+                (true, _) => Some(relationship.to.label.clone()),
+                (false, true) => Some(relationship.from.label.clone()),
+                (false, false) => None,
+            },
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    match labels.len() {
+        1 => Ok(labels
+            .into_iter()
+            .next()
+            .expect("relationship target label set length was checked")),
+        0 => Err(unsupported(
+            path,
+            format!(
+                "GraphQL relationship field requires '{endpoint_argument}' because no {relationship_type} mapping starts at graph label '{source_label}'",
+                endpoint_argument = endpoint.endpoint_argument,
+                relationship_type = endpoint.relationship_type,
+                source_label = endpoint.source_label,
+            ),
+        )),
+        _ => Err(unsupported(
+            path,
+            format!(
+                "GraphQL relationship field requires '{endpoint_argument}' because relationship type '{relationship_type}' maps graph label '{source_label}' to multiple endpoint labels: {}",
+                labels.into_iter().collect::<Vec<_>>().join(", "),
+                endpoint_argument = endpoint.endpoint_argument,
+                relationship_type = endpoint.relationship_type,
+                source_label = endpoint.source_label,
+            ),
+        )),
+    }
 }
 
 fn ensure_node_label(
@@ -5465,6 +5548,52 @@ nodes:
     }
 
     #[test]
+    fn compiles_nested_relationship_query_with_inferred_endpoint_label() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r#"
+            {
+              Person {
+                owner: name
+                out_OWNS(where: { tier: { eq: "prod" } }) {
+                  service: name
+                }
+              }
+            }
+            "#,
+        )
+        .expect("unambiguous GraphQL relationship endpoint labels should infer from declaration");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service1".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service1".to_string(),
+            }]
+        );
+        assert!(plan.predicates.iter().any(|predicate| {
+            predicate.property.variable == "service1" && predicate.property.property == "tier"
+        }));
+    }
+
+    #[test]
     fn compiles_nested_relationship_query_with_object_variables() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let variables = BTreeMap::from([
@@ -5842,6 +5971,77 @@ nodes:
     }
 
     #[test]
+    fn rejects_ambiguous_inferred_nested_graphql_relationship_endpoints() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: ambiguous_relationship_endpoint
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+relationships:
+  - type: OWNS
+    table: { schema: ops, name: person_service_ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: ops, name: person_team_ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Team, key: team_id }
+",
+        )
+        .expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS { _id }
+              }
+            }
+            ",
+        )
+        .expect_err("ambiguous inferred endpoint should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("maps graph label 'Person' to multiple endpoint labels"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_inferred_nested_graphql_relationship_types() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_MANAGES { _id }
+              }
+            }
+            ",
+        )
+        .expect_err("unknown inferred relationship type should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown GraphQL relationship type 'MANAGES'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_nested_graphql_relationship_row_modifiers() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let error = compile_graphql_for_graph(
@@ -5936,7 +6136,7 @@ nodes:
         assert!(sdl.contains("  _minDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains("  _maxDistinct(field: PersonAggregateField!): CoralGraphValue"));
         assert!(sdl.contains(
-            "out_OWNS(to: PersonOutOWNSToLabel!, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
+            "out_OWNS(to: PersonOutOWNSToLabel = Service, where: ServiceWhere, relationshipWhere: OWNSRelationshipWhere): [Service!]!"
         ));
         assert!(sdl.contains("enum PersonOutOWNSToLabel {\n  Service\n}"));
         assert!(sdl.contains("type OWNS {"));

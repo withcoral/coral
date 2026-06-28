@@ -382,7 +382,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
   non-negative integer positions, including scalar variables used as shorthand
   equality filters;
 - nested relationship fields named `out_TYPE(to: Label)`, `in_TYPE(from:
-  Label)`, or `any_TYPE(label: Label)`;
+  Label)`, or `any_TYPE(label: Label)`, with the endpoint argument optional
+  when the graph declaration has exactly one matching endpoint label for the
+  current source label, relationship type, and direction;
 - nested relationship target filters via `where` and relationship property
   filters via `relationshipWhere`, with the same boolean composition support
   as root filters;
@@ -392,7 +394,9 @@ remain separate. The supported slice is intentionally graph-query oriented:
 
 Nested relationship fields compile directly to `NodePattern` and
 `RelationshipPattern` IR entries. Endpoint labels are checked against the graph
-declaration before lowering, and the existing graph validator still resolves the
+declaration before lowering, or inferred from the declaration only when there is
+one possible target; ambiguous relationship overloads must still pass `to`,
+`from`, or `label` explicitly. The existing graph validator still resolves the
 final relationship mapping. Selected nested node properties and `_edge`
 relationship properties are flattened into the tabular result set; GraphQL
 object materialization is intentionally out of scope for the DataFusion
@@ -413,9 +417,10 @@ lowering. Because v1 graph declarations do not include source column type
 metadata, mapped graph properties use a custom `CoralGraphValue` scalar while
 reserved identity fields use `_id: CoralGraphValue` and `_elementId: String`.
 The schema includes root node fields, node `where` and `orderBy` inputs,
-relationship traversal fields, relationship `relationshipWhere` inputs, and
-relationship object types for the properties and identity fields available
-through `_edge` selections. Standard GraphQL SDL cannot express Coral's
+relationship traversal fields with endpoint enum defaults for unambiguous
+mappings, relationship `relationshipWhere` inputs, and relationship object
+types for the properties and identity fields available through `_edge`
+selections. Standard GraphQL SDL cannot express Coral's
 context-specific `_edge` field without changing the query contract to wrapper
 objects, so SDL generation exposes the relationship object shapes while the
 compiler remains the authority for validating `_edge` placement inside traversal
