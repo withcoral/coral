@@ -2095,7 +2095,7 @@ fn bounded_relationship_range_alternatives(
             range.start,
             range.end,
             format!("{path}.range"),
-            "variable-length relationship ranges require finite positive bounds such as *1..3; zero-hop and unbounded ranges are not supported yet",
+            "variable-length relationship ranges require finite non-negative bounds such as *0..3 or *1..3; unbounded ranges are not supported yet",
         )
         .map(|alternatives| alternatives.map(|alternatives| (RelationshipRangeTarget::DetailRange, alternatives)));
     }
@@ -2104,7 +2104,7 @@ fn bounded_relationship_range_alternatives(
             quantifier.start,
             quantifier.end,
             format!("{path}.quantifier"),
-            "relationship quantifiers require finite positive bounds such as {1,3}; zero-hop and unbounded quantifiers are not supported yet",
+            "relationship quantifiers require finite non-negative bounds such as {0,3} or {1,3}; unbounded quantifiers are not supported yet",
         )
         .map(|alternatives| alternatives.map(|alternatives| (RelationshipRangeTarget::Quantifier, alternatives)));
     }
@@ -2124,7 +2124,7 @@ fn bounded_range_alternatives(
     if start == end {
         return Ok(None);
     }
-    if start < 1 || end < 1 || start > end {
+    if start < 0 || end < 0 || start > end {
         return Err(unsupported(path, message));
     }
     let start = usize::try_from(start).map_err(|error| {
@@ -4658,7 +4658,9 @@ fn compile_path_chain_into(
         mark_graph_variable_in_scope(state, &pattern.variable);
         plan.nodes.push(pattern);
     }
-    if relationship.length == 1 {
+    if relationship.length == 0 {
+        append_zero_length_relationship(&relationship, &next_label, options, plan, chain_state)?;
+    } else if relationship.length == 1 {
         append_single_relationship(
             relationship,
             relationship_index,
@@ -4680,6 +4682,37 @@ fn compile_path_chain_into(
     }
     chain_state.previous_variable = next_variable;
     chain_state.previous_label = next_label;
+    Ok(())
+}
+
+fn append_zero_length_relationship(
+    relationship: &CompiledRelationship,
+    next_label: &str,
+    options: PathChainCompileOptions,
+    plan: &mut GraphPlan,
+    chain_state: &PathChainCompileState,
+) -> Result<(), CoreError> {
+    if options.optional {
+        return Err(unsupported(
+            format!(
+                "match.pattern.parts[{}].relationships[{}]",
+                options.part_index, options.chain_index
+            ),
+            "OPTIONAL MATCH with zero-hop relationship ranges is not supported yet because optional path length requires a relationship presence binding",
+        ));
+    }
+    let predicate = if chain_state.previous_label == next_label {
+        PredicateExpression::KeyComparison(KeyPredicate {
+            variable: relationship.pattern.left.clone(),
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Key {
+                variable: relationship.pattern.right.clone(),
+            },
+        })
+    } else {
+        PredicateExpression::Boolean(false)
+    };
+    append_predicate_expression(predicate, plan);
     Ok(())
 }
 
@@ -5075,6 +5108,12 @@ fn compile_relationship(
             "relationship type is required for virtual graph queries",
         )
     })?;
+    if length == 0 && detail.variable.is_some() {
+        return Err(unsupported(
+            format!("{path}.variable"),
+            "zero-hop relationship ranges cannot bind a relationship variable because Coral does not materialize relationship lists yet",
+        ));
+    }
     if length > 1 && detail.variable.is_some() {
         return Err(unsupported(
             format!("{path}.variable"),
@@ -5093,19 +5132,26 @@ fn compile_relationship(
         .map(validate_variable)
         .transpose()?
         .or_else(|| {
-            (force_variable || detail.properties.is_some())
+            (length > 0 && (force_variable || detail.properties.is_some()))
                 .then(|| fresh_internal_relationship_variable(plan, right, index))
         });
-    let predicates = match (&detail.properties, &variable) {
-        (Some(properties), Some(variable)) => {
-            compile_inline_properties(properties, variable, format!("{path}.properties"), context)?
+    let predicates = if length == 0 {
+        Vec::new()
+    } else {
+        match (&detail.properties, &variable) {
+            (Some(properties), Some(variable)) => compile_inline_properties(
+                properties,
+                variable,
+                format!("{path}.properties"),
+                context,
+            )?,
+            (Some(_), None) => {
+                return Err(CoreError::internal(
+                    "relationship property predicates require a relationship variable",
+                ));
+            }
+            (None, _) => Vec::new(),
         }
-        (Some(_), None) => {
-            return Err(CoreError::internal(
-                "relationship property predicates require a relationship variable",
-            ));
-        }
-        (None, _) => Vec::new(),
     };
 
     Ok(CompiledRelationship {
@@ -5136,7 +5182,7 @@ fn relationship_fixed_length(
                 quantifier.start,
                 quantifier.end,
                 format!("{path}.quantifier"),
-                "relationship quantifiers must be exact positive fixed lengths such as {2}",
+                "relationship quantifiers must be exact non-negative fixed lengths such as {0} or {2}",
             )
         })
         .transpose()?;
@@ -5149,7 +5195,7 @@ fn relationship_fixed_length(
                 range.start,
                 range.end,
                 format!("{path}.range"),
-                "variable-length relationship ranges must be exact positive fixed lengths such as *2 or *2..2",
+                "variable-length relationship ranges must be exact non-negative fixed lengths such as *0, *2, or *2..2",
             )
         })
         .transpose()?;
@@ -5175,7 +5221,7 @@ fn fixed_length_bounds(
     let (Some(start), Some(end)) = (start, end) else {
         return Err(unsupported(path, message));
     };
-    if start != end || start < 1 {
+    if start != end || start < 0 {
         return Err(unsupported(path, message));
     }
     let length = usize::try_from(start).map_err(|error| {
@@ -22117,17 +22163,67 @@ relationships:
     fn rejects_variable_length_relationships() {
         for cypher in [
             "MATCH (a:Service)-[:DEPENDS_ON*]->(b:Service) RETURN a.name",
-            "MATCH (a:Service)-[:DEPENDS_ON*0..1]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*..3]->(b:Service) RETURN a.name",
-            "MATCH (a:Service)-[:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON]->{1,}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*9..9]->(b:Service) RETURN a.name",
             "MATCH (a:Service) OPTIONAL MATCH (a)-[:DEPENDS_ON*1..2]->(b:Service) RETURN a.name",
+            "MATCH (a:Service) OPTIONAL MATCH (a)-[:DEPENDS_ON*0]->(b:Service) RETURN a.name",
             "MATCH (a:Service)-[:DEPENDS_ON*2]->(b:Person) RETURN a.name",
+            "MATCH (a:Service)-[r:DEPENDS_ON*0]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[r:DEPENDS_ON]->{0,1}(b:Service) RETURN a.name",
             "MATCH (a:Service)-[r:DEPENDS_ON*2]->(b:Service) RETURN a.name",
         ] {
             assert_unsupported(cypher);
         }
+    }
+
+    #[test]
+    fn compiles_exact_zero_relationship_ranges_as_same_node_identity() {
+        for cypher in [
+            "MATCH (a:Service)-[:DEPENDS_ON*0]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON*0..0]->(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{0}(b:Service) RETURN a.name",
+            "MATCH (a:Service)-[:DEPENDS_ON]->{0,0}(b:Service) RETURN a.name",
+        ] {
+            let plan = compile_cypher(cypher).expect("exact zero-hop relationship should compile");
+
+            assert_eq!(
+                plan.nodes,
+                vec![
+                    NodePattern {
+                        variable: "a".to_string(),
+                        label: "Service".to_string(),
+                    },
+                    NodePattern {
+                        variable: "b".to_string(),
+                        label: "Service".to_string(),
+                    },
+                ]
+            );
+            assert!(plan.relationships.is_empty());
+            assert_eq!(
+                plan.predicate,
+                Some(PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "a".to_string(),
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Key {
+                        variable: "b".to_string(),
+                    },
+                }))
+            );
+        }
+    }
+
+    #[test]
+    fn compiles_exact_zero_cross_label_relationship_ranges_as_false() {
+        let plan = compile_cypher(
+            "MATCH (a:Service)-[:DEPENDS_ON*0]->(b:Person) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("cross-label exact zero-hop relationship should compile as an empty match");
+
+        assert!(plan.relationships.is_empty());
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(false)));
     }
 
     #[test]
@@ -22152,6 +22248,41 @@ relationships:
         assert_eq!(path_length_projection_literal(&union.first), Some(1));
         assert_eq!(path_length_projection_literal(&first_branch.plan), Some(2));
         assert_eq!(path_length_projection_literal(&second_branch.plan), Some(3));
+        assert_eq!(union.order_by.len(), 3);
+    }
+
+    #[test]
+    fn compiles_zero_hop_bounded_variable_length_relationship_ranges_as_union_all() {
+        let query = compile_cypher_query(
+            "MATCH path = (a:Service)-[:DEPENDS_ON*0..2]->(b:Service) \
+             RETURN a.name AS source, b.name AS target, length(path) AS hops \
+             ORDER BY source, target, hops",
+        )
+        .expect("zero-hop bounded relationship range should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected zero-hop bounded relationship range to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 2);
+        let first_branch = union.branches.first().expect("first range branch");
+        let second_branch = union.branches.get(1).expect("second range branch");
+        assert!(union.first.relationships.is_empty());
+        assert_eq!(first_branch.plan.relationships.len(), 1);
+        assert_eq!(second_branch.plan.relationships.len(), 2);
+        assert_eq!(
+            union.first.predicate,
+            Some(PredicateExpression::KeyComparison(KeyPredicate {
+                variable: "a".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Key {
+                    variable: "b".to_string(),
+                },
+            }))
+        );
+        assert!(union.branches.iter().all(|branch| branch.all));
+        assert_eq!(path_length_projection_literal(&union.first), Some(0));
+        assert_eq!(path_length_projection_literal(&first_branch.plan), Some(1));
+        assert_eq!(path_length_projection_literal(&second_branch.plan), Some(2));
         assert_eq!(union.order_by.len(), 3);
     }
 
