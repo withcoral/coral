@@ -7222,7 +7222,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -7406,6 +7406,9 @@ fn evaluate_static_map_function(
     if is_null_if_function(function) {
         return evaluate_static_map_null_if(function, path, evaluation);
     }
+    if is_character_length_function(function) {
+        return evaluate_static_map_character_length(function, path, evaluation);
+    }
     if is_to_string_function(function) {
         return evaluate_static_map_to_string(function, path, evaluation);
     }
@@ -7577,6 +7580,28 @@ fn evaluate_static_map_null_if(
     } else {
         Ok(expression.clone())
     }
+}
+
+fn evaluate_static_map_character_length(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        &function_name,
+    )?;
+    let Some(value) = static_map_string_argument(&literal, &function_name, path.clone())? else {
+        return Ok(Literal::Null);
+    };
+    let length = i64::try_from(value.chars().count()).map_err(|error| {
+        CoreError::internal(format!("static string length overflowed i64: {error}"))
+    })?;
+    Ok(Literal::Integer(length))
 }
 
 fn evaluate_static_map_to_string(
@@ -7916,6 +7941,9 @@ fn static_list_comprehension_map_element_type(
         }
         Expression::FunctionCall(function) if is_null_if_function(function) => {
             static_map_null_if_element_type(function, variable, source_element_type, context)
+        }
+        Expression::FunctionCall(function) if is_character_length_function(function) => {
+            Ok(Some(LiteralListElementType::Integer))
         }
         Expression::FunctionCall(function)
             if is_to_string_function(function)
@@ -21599,6 +21627,46 @@ relationships:
                         element_type: LiteralListElementType::String,
                     },
                     alias: "nullified_second_arg".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_length_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service) | size(k)] AS key_lengths, \
+                    [k IN ['ops', null] | char_length(k)] AS literal_lengths, \
+                    [k IN ['deploy'] | character_length(k)] AS gql_literal_lengths",
+        )
+        .expect("static list comprehension length maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(4), Literal::Integer(4)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "key_lengths".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(3), Literal::Null],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "literal_lengths".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(6)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "gql_literal_lengths".to_string(),
                 },
             ]
         );

@@ -10340,6 +10340,45 @@ async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehension_length_maps_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [k IN keys(service) WHERE k IN ['name', 'tier'] | size(k)] AS key_lengths, \
+                [k IN ['ops', null] | char_length(k)] AS literal_lengths, \
+                [k IN ['deploy'] | character_length(k)] AS gql_literal_lengths \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("static list comprehension length maps should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array(4, 4) AS \"key_lengths\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "key_lengths": [4, 4], "literal_lengths": [3, null], "gql_literal_lengths": [6]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "key_lengths": [4, 4], "literal_lengths": [3, null], "gql_literal_lengths": [6]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "key_lengths": [4, 4], "literal_lengths": [3, null], "gql_literal_lengths": [6]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehension_string_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
