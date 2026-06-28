@@ -10242,6 +10242,55 @@ async fn cypher_static_list_comprehensions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("tier".to_string()),
+            GraphLiteral::String("missing".to_string()),
+            GraphLiteral::String("name".to_string()),
+            GraphLiteral::Null,
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [k IN keys(service) WHERE k IN ['name', 'tier']] AS exposed_keys, \
+                [k IN $selected_keys WHERE k IN keys(service)] AS selected_existing_keys, \
+                [k IN ['name', null, 'tier'] WHERE k IS NOT NULL] AS non_null_literals \
+         ORDER BY owner, service",
+        &parameters,
+    )
+    .await
+    .expect("filtered static list comprehensions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('name', 'tier') AS \"exposed_keys\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

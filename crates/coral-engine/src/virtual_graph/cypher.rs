@@ -197,6 +197,7 @@ struct CollectionFilterCall {
 struct ListComprehensionSource {
     variable: String,
     collection_source: String,
+    filter_source: Option<String>,
     has_map: bool,
 }
 
@@ -7048,6 +7049,24 @@ fn compile_optional_static_list_comprehension_value(
             "static list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
         ));
     };
+    let recovered_filter = if comprehension.filter.is_none() {
+        source
+            .filter_source
+            .as_deref()
+            .map(|filter_source| {
+                parse_cypher_expression_fragment(filter_source, format!("{path}.filter"), context)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let filter = comprehension
+        .filter
+        .as_deref()
+        .or_else(|| recovered_filter.as_ref().map(|(filter, _)| filter));
+    let filter_context = recovered_filter
+        .as_ref()
+        .map_or(context, |(_, filter_context)| filter_context);
 
     let literals = collection
         .literals
@@ -7058,9 +7077,9 @@ fn compile_optional_static_list_comprehension_value(
                 variable: &variable,
                 item,
                 mode: PredicateCompileMode::CaseWhen { plan },
-                context,
+                context: filter_context,
             };
-            let outcome = match comprehension.filter.as_deref() {
+            let outcome = match filter {
                 Some(filter) => evaluate_static_filter_predicate_expression(
                     filter,
                     evaluation,
@@ -10531,9 +10550,21 @@ fn parse_list_comprehension_source(source: &str) -> Option<ListComprehensionSour
     if collection_source.is_empty() {
         return None;
     }
+    let filter_source = where_index.and_then(|where_index| {
+        let filter_end = map_index.unwrap_or(after_in.len());
+        if where_index >= filter_end {
+            return None;
+        }
+        after_in
+            .get(where_index + "WHERE".len()..filter_end)
+            .map(str::trim)
+            .filter(|source| !source.is_empty())
+            .map(str::to_string)
+    });
     Some(ListComprehensionSource {
         variable,
         collection_source: collection_source.to_string(),
+        filter_source,
         has_map: map_index.is_some(),
     })
 }
@@ -12924,7 +12955,7 @@ fn parse_cypher_expression_fragment(
         Diagnostic::new(
             "CYPHER_PARSE_ERROR",
             path.clone(),
-            format!("could not parse collection predicate expression fragment: {error}"),
+            format!("could not parse Cypher expression fragment: {error}"),
         )
         .into_core_error()
     })?;
@@ -20038,6 +20069,74 @@ relationships:
     }
 
     #[test]
+    fn compiles_filtered_static_list_comprehensions() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "selected_keys".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("tier".to_string()),
+                Literal::String("missing".to_string()),
+                Literal::String("name".to_string()),
+                Literal::Null,
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service) WHERE k <> 'tier'] AS service_keys_without_tier, \
+                    [k IN ['name', 'tier', null] WHERE k IS NOT NULL] AS non_null_literal_keys, \
+                    [k IN $selected_keys WHERE k IN ['name', 'tier']] AS selected_known_keys \
+             ORDER BY [k IN keys(service) WHERE k = 'name']",
+            &parameters,
+        )
+        .expect("filtered static list comprehensions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("name".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_keys_without_tier".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("tier".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "non_null_literal_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("tier".to_string()),
+                            Literal::String("name".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "selected_known_keys".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![Literal::String("name".to_string())],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
     fn rejects_dynamic_static_list_comprehension_sources() {
         let error = compile_cypher_for_graph(
             &star_test_graph(),
@@ -20049,6 +20148,22 @@ relationships:
             error
                 .to_string()
                 .contains("static list comprehensions require"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_mapped_static_list_comprehensions() {
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [k IN keys(service) | toUpper(k)] AS upper_keys",
+        )
+        .expect_err("mapped static list comprehensions should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("static list comprehensions currently support identity map"),
             "{error}"
         );
     }

@@ -88,18 +88,21 @@ that Coral supports. Coral keeps these recovery paths narrow and source-backed:
 for `all` / `any` / `none` / `single` collection predicates, the frontend
 recovers the filter variable and collection expression from the lossless CST by
 function span, reparses only the collection expression fragment through
-`decypher`, and then routes it through the normal static-list compiler. This is
-limited to static folded collections and exists so collection predicates remain
-semantically correct without introducing SQL-rendering shortcuts in the
-frontend.
+`decypher`, and then routes it through the normal static-list compiler. Static
+identity list comprehensions use the same source-backed recovery for the
+`variable IN collection` header and optional `WHERE` filter expression, while
+the typed AST still owns the comprehension variable and validates that any map
+expression is an identity map. This is limited to static folded collections and
+exists so collection predicates and static comprehensions remain semantically
+correct without introducing SQL-rendering shortcuts in the frontend.
 
 Some Cypher constructs are blocked before Coral compilation because the current
 parser dependency does not accept or fully preserve their standard syntax. Known
-frontend blockers include filtered or mapped list comprehensions such as
-`[k IN keys(n) WHERE k STARTS WITH 't']` and `[k IN keys(n) | toUpper(k)]`,
-plus the built-in `range(start, end[, step])` function. These should be
-addressed in the parser frontend rather than by query-string rewriting in
-Coral.
+frontend blockers include mapped list comprehensions such as
+`[k IN keys(n) | toUpper(k)]`, unsupported dynamic list-comprehension sources,
+and the built-in `range(start, end[, step])` function. These should be
+addressed in the parser frontend or shared expression IR rather than by
+query-string rewriting in Coral.
 
 The supported foundation subset is intentionally narrow:
 
@@ -181,9 +184,12 @@ The supported foundation subset is intentionally narrow:
   gating used by scalar metadata expressions. Concatenation rejects mixed
   non-null element types, unknowable projected element types, dynamic operands,
   and lists from different optional bindings;
-- parser-accepted identity list comprehensions such as `[k IN keys(node)]`,
-  `[l IN labels(node)]`, `[x IN ['a', 'b']]`, and `[x IN $list]`, folded as
-  typed static-list copies in projections and `ORDER BY`;
+- parser-accepted static identity list comprehensions such as
+  `[k IN keys(node)]`, `[l IN labels(node)]`, `[x IN ['a', 'b']]`, and
+  `[x IN $list]`, folded as typed static-list copies in projections and
+  `ORDER BY`. Static `WHERE` filters over the item variable, literals, scalar
+  parameters, comparisons, `IN` static lists, `IS NULL`, and
+  `AND`/`OR`/`XOR`/`NOT` are evaluated before SQL lowering;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal
