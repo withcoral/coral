@@ -4455,6 +4455,59 @@ async fn graphql_relationship_existence_filters_execute_against_synthetic_source
 }
 
 #[tokio::test]
+async fn graphql_named_operation_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([(
+        "tier".to_string(),
+        GraphGraphqlVariableValue::Literal(GraphLiteral::String("prod".to_string())),
+    )]);
+
+    let execution = CoralQuery::execute_graphql_with_variables_and_operation_name(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query ProdServices($tier: String!) {
+          Service(
+            where: { tier: { eq: $tier } }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            service: name
+          }
+        }
+
+        query RequiresMissingVariable($missing: String!) {
+          Person(where: { team: { eq: $missing } }) {
+            owner: name
+          }
+        }
+        ",
+        &variables,
+        "ProdServices",
+    )
+    .await
+    .expect("selected GraphQL operation should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"tier\" = 'prod'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_infers_unambiguous_endpoint_labels() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

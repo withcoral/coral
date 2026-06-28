@@ -346,7 +346,9 @@ The GraphQL frontend follows the same rule as Cypher: parse GraphQL into the
 shared graph IR and let validation, catalog checks, SQL lowering, and execution
 remain separate. The supported slice is intentionally graph-query oriented:
 
-- exactly one query operation or anonymous selection set;
+- exactly one query operation or anonymous selection set by default, with
+  generated-client-style multi-operation documents accepted when callers provide
+  an `operationName` for one named query operation;
 - exactly one included root field whose field name is the graph node label, or
   a declaration-aware generated-client alias such as `service`, `Services`, or
   `services` when the alias resolves to exactly one declared label;

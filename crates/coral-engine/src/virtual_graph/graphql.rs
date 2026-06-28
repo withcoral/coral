@@ -104,6 +104,23 @@ pub fn compile_graphql(graphql: &str) -> Result<GraphPlan, CoreError> {
     compile_graphql_with_variables(graphql, &BTreeMap::new())
 }
 
+/// Parses and compiles the named operation from a GraphQL document.
+///
+/// Use this when a generated client sends a document containing multiple
+/// operations and selects one with `operationName`.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, the
+/// operation name is not present, the selected operation is not a query, or the
+/// selected operation uses unsupported GraphQL features.
+pub fn compile_graphql_with_operation_name(
+    graphql: &str,
+    operation_name: &str,
+) -> Result<GraphPlan, CoreError> {
+    compile_graphql_with_variables_and_operation_name(graphql, &BTreeMap::new(), operation_name)
+}
+
 /// Parses and compiles GraphQL with typed variable values into a shared graph plan.
 ///
 /// Variables are bound before SQL lowering and only in positions where the
@@ -119,10 +136,34 @@ pub fn compile_graphql_with_variables(
     graphql: &str,
     variables: &BTreeMap<String, GraphqlVariableValue>,
 ) -> Result<GraphPlan, CoreError> {
+    compile_graphql_document(graphql, None, variables, None)
+}
+
+/// Parses and compiles a named GraphQL operation with typed variable values.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported GraphQL features, references a missing variable in the selected
+/// operation, or binds a variable value in an unsupported position.
+pub fn compile_graphql_with_variables_and_operation_name(
+    graphql: &str,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
+    operation_name: &str,
+) -> Result<GraphPlan, CoreError> {
+    compile_graphql_document(graphql, None, variables, Some(operation_name))
+}
+
+fn compile_graphql_document(
+    graphql: &str,
+    graph: Option<&Declaration>,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
+    operation_name: Option<&str>,
+) -> Result<GraphPlan, CoreError> {
     let document = parse_query::<String>(graphql).map_err(|error| {
         Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
-    compile_document(&document, None, variables)
+    compile_document(&document, graph, variables, operation_name)
 }
 
 /// Parses and compiles the Coral-supported read-only GraphQL virtual graph
@@ -139,6 +180,27 @@ pub fn compile_graphql_for_graph(
     compile_graphql_for_graph_with_variables(graph, graphql, &BTreeMap::new())
 }
 
+/// Parses and compiles a named operation using a graph declaration for
+/// relationship nesting.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, the
+/// operation name is not present, the selected operation is not a query, or the
+/// selected operation uses unsupported GraphQL features.
+pub fn compile_graphql_for_graph_with_operation_name(
+    graph: &Declaration,
+    graphql: &str,
+    operation_name: &str,
+) -> Result<GraphPlan, CoreError> {
+    compile_graphql_for_graph_with_variables_and_operation_name(
+        graph,
+        graphql,
+        &BTreeMap::new(),
+        operation_name,
+    )
+}
+
 /// Parses and compiles GraphQL with typed variable values and a graph declaration.
 ///
 /// # Errors
@@ -150,28 +212,49 @@ pub fn compile_graphql_for_graph_with_variables(
     graphql: &str,
     variables: &BTreeMap<String, GraphqlVariableValue>,
 ) -> Result<GraphPlan, CoreError> {
-    let document = parse_query::<String>(graphql).map_err(|error| {
-        Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
-    })?;
-    compile_document(&document, Some(graph), variables)
+    compile_graphql_document(graphql, Some(graph), variables, None)
 }
 
-fn compile_document(
-    document: &graphql_parser::query::Document<'_, String>,
+/// Parses and compiles a named GraphQL operation with typed variables and a
+/// graph declaration.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the query cannot be parsed, uses
+/// unsupported GraphQL features, references a missing variable in the selected
+/// operation, or binds a variable value in an unsupported position.
+pub fn compile_graphql_for_graph_with_variables_and_operation_name(
+    graph: &Declaration,
+    graphql: &str,
+    variables: &BTreeMap<String, GraphqlVariableValue>,
+    operation_name: &str,
+) -> Result<GraphPlan, CoreError> {
+    compile_graphql_document(graphql, Some(graph), variables, Some(operation_name))
+}
+
+fn compile_document<'query>(
+    document: &'query graphql_parser::query::Document<'query, String>,
     graph: Option<&Declaration>,
     variables: &BTreeMap<String, GraphqlVariableValue>,
+    operation_name: Option<&str>,
 ) -> Result<GraphPlan, CoreError> {
-    let mut operation = None;
+    let mut operations = Vec::new();
+    let mut operation_names = BTreeMap::new();
     let mut fragments = BTreeMap::new();
     for (index, definition) in document.definitions.iter().enumerate() {
         match definition {
             Definition::Operation(next_operation) => {
-                if operation.replace(next_operation).is_some() {
+                if let Some(name) = graphql_operation_name(next_operation)
+                    && let Some(previous_index) = operation_names.insert(name.to_string(), index)
+                {
                     return Err(unsupported(
-                        format!("query.definitions[{index}]"),
-                        "GraphQL virtual graph queries must contain exactly one operation",
+                        format!("query.definitions[{index}].name"),
+                        format!(
+                            "GraphQL operation '{name}' is defined more than once; first definition was at query.definitions[{previous_index}]",
+                        ),
                     ));
                 }
+                operations.push((index, next_operation));
             }
             Definition::Fragment(fragment) => {
                 if !fragment.directives.is_empty() {
@@ -195,13 +278,48 @@ fn compile_document(
             }
         }
     }
-    let operation = operation.ok_or_else(|| {
-        unsupported(
-            "query",
-            "GraphQL virtual graph queries must contain exactly one operation",
-        )
-    })?;
+    let operation = select_graphql_operation(&operations, operation_name)?;
     compile_operation(operation, graph, variables, fragments)
+}
+
+fn select_graphql_operation<'query>(
+    operations: &[(usize, &'query OperationDefinition<'query, String>)],
+    operation_name: Option<&str>,
+) -> Result<&'query OperationDefinition<'query, String>, CoreError> {
+    if let Some(operation_name) = operation_name {
+        return operations
+            .iter()
+            .find_map(|(_, operation)| {
+                (graphql_operation_name(operation) == Some(operation_name)).then_some(*operation)
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    "query.operationName",
+                    format!("GraphQL operation '{operation_name}' was not found"),
+                )
+            });
+    }
+
+    let [(_, operation)] = operations else {
+        let message = if operations.is_empty() {
+            "GraphQL virtual graph queries must contain one query operation"
+        } else {
+            "GraphQL virtual graph documents with multiple operations require an operationName"
+        };
+        return Err(unsupported("query", message));
+    };
+    Ok(*operation)
+}
+
+fn graphql_operation_name<'query>(
+    operation: &'query OperationDefinition<'query, String>,
+) -> Option<&'query str> {
+    match operation {
+        OperationDefinition::Query(query) => query.name.as_deref(),
+        OperationDefinition::Mutation(mutation) => mutation.name.as_deref(),
+        OperationDefinition::Subscription(subscription) => subscription.name.as_deref(),
+        OperationDefinition::SelectionSet(_) => None,
+    }
 }
 
 fn compile_operation<'query>(
@@ -4518,10 +4636,145 @@ mod tests {
         assert!(plan.predicates.iter().any(|predicate| {
             predicate.property.property == "name"
                 && matches!(
-                    &predicate.rhs,
-                    PredicateRhs::List(values) if values.len() == 2
-                )
+                        &predicate.rhs,
+                PredicateRhs::List(values) if values.len() == 2
+                    )
         }));
+    }
+
+    #[test]
+    fn compiles_named_operation_from_multi_operation_document() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph_with_operation_name(
+            &graph,
+            r"
+            query Services {
+              Service { name }
+            }
+
+            query People {
+              Person { name }
+            }
+            ",
+            "People",
+        )
+        .expect("named operation should compile from multi-operation document");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "person".to_string(),
+                label: "Person".to_string(),
+            }]
+        );
+        assert!(plan.projections.iter().any(|projection| {
+            matches!(
+                projection,
+                Projection::Property {
+                    property: PropertyRef { variable, property },
+                    alias: Some(alias),
+                } if variable == "person" && property == "name" && alias == "name"
+            )
+        }));
+    }
+
+    #[test]
+    fn named_operation_selection_ignores_unselected_operation_variables() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph_with_variables_and_operation_name(
+            &graph,
+            r"
+            query Services {
+              Service { name }
+            }
+
+            query RequiresVariable($missing: String!) {
+              Service(where: { tier: { eq: $missing } }) { name }
+            }
+            ",
+            &BTreeMap::new(),
+            "Services",
+        )
+        .expect("unselected operation variables should not be required");
+
+        assert_eq!(
+            plan.nodes
+                .first()
+                .expect("selected operation should bind a node")
+                .label,
+            "Service"
+        );
+        assert!(plan.predicates.is_empty());
+    }
+
+    #[test]
+    fn rejects_multi_operation_graphql_without_operation_name() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            query Services { Service { name } }
+            query People { Person { name } }
+            ",
+        )
+        .expect_err("multi-operation document should require operationName");
+
+        assert!(
+            error.to_string().contains("require an operationName"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_duplicate_graphql_operation_names() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let missing = compile_graphql_for_graph_with_operation_name(
+            &graph,
+            "query Services { Service { name } }",
+            "People",
+        )
+        .expect_err("missing operation name should fail");
+        assert!(
+            missing
+                .to_string()
+                .contains("GraphQL operation 'People' was not found"),
+            "{missing}"
+        );
+
+        let duplicate = compile_graphql_for_graph_with_operation_name(
+            &graph,
+            r"
+            query Services { Service { name } }
+            query Services { Service { tier } }
+            ",
+            "Services",
+        )
+        .expect_err("duplicate operation names should fail");
+        assert!(
+            duplicate.to_string().contains("defined more than once"),
+            "{duplicate}"
+        );
+    }
+
+    #[test]
+    fn rejects_selected_non_query_graphql_operation() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph_with_operation_name(
+            &graph,
+            r"
+            query Services { Service { name } }
+            mutation MutateService { updateService { id } }
+            ",
+            "MutateService",
+        )
+        .expect_err("selected mutation should remain unsupported");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL mutations and subscriptions are not supported"),
+            "{error}"
+        );
     }
 
     #[test]

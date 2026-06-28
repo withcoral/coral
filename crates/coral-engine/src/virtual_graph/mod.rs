@@ -26,7 +26,10 @@ pub use diagnostic::Diagnostic;
 pub use execution::{GraphExecution, GraphQueryPlan};
 pub use graphql::{
     GraphqlVariableValue, compile_graphql, compile_graphql_for_graph,
-    compile_graphql_for_graph_with_variables, compile_graphql_with_variables,
+    compile_graphql_for_graph_with_operation_name, compile_graphql_for_graph_with_variables,
+    compile_graphql_for_graph_with_variables_and_operation_name,
+    compile_graphql_with_operation_name, compile_graphql_with_variables,
+    compile_graphql_with_variables_and_operation_name,
 };
 pub use graphql_schema::graphql_schema_sdl_for_graph;
 pub use ir::{

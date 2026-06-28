@@ -97,8 +97,11 @@ pub use virtual_graph::{
     compile_cypher_for_graph, compile_cypher_for_graph_with_parameters, compile_cypher_query,
     compile_cypher_query_for_graph, compile_cypher_query_for_graph_with_parameters,
     compile_cypher_query_with_parameters, compile_cypher_with_parameters, compile_graphql,
-    compile_graphql_for_graph, compile_graphql_for_graph_with_variables,
-    compile_graphql_with_variables, graphql_schema_sdl_for_graph,
+    compile_graphql_for_graph, compile_graphql_for_graph_with_operation_name,
+    compile_graphql_for_graph_with_variables,
+    compile_graphql_for_graph_with_variables_and_operation_name,
+    compile_graphql_with_operation_name, compile_graphql_with_variables,
+    compile_graphql_with_variables_and_operation_name, graphql_schema_sdl_for_graph,
 };
 
 /// High-level query operations for the local query engine.
@@ -467,6 +470,66 @@ impl CoralQuery {
         Self::execute_graph_plan(sources, runtime, graph, &plan).await
     }
 
+    /// Executes one named operation from a supported read-only GraphQL document.
+    ///
+    /// Use this when a client sends multiple query operations and selects one
+    /// with `operationName`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, the named
+    /// operation is missing or not a query, graph lowering fails, source
+    /// compilation fails, or the generated SQL cannot execute.
+    pub async fn execute_graphql_with_operation_name(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        operation_name: &str,
+    ) -> Result<GraphExecution, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_operation_name(graph, graphql, operation_name)?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Executes one named operation from a supported read-only GraphQL document
+    /// with typed variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, the named
+    /// operation is missing or not a query, a required selected-operation
+    /// variable is missing, a variable value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot execute.
+    pub async fn execute_graphql_with_variables_and_operation_name(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        variables: &BTreeMap<String, GraphGraphqlVariableValue>,
+        operation_name: &str,
+    ) -> Result<GraphExecution, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_variables_and_operation_name(
+            graph,
+            graphql,
+            variables,
+            operation_name,
+        )?;
+        Self::execute_graph_plan(sources, runtime, graph, &plan).await
+    }
+
     /// Explains one supported read-only GraphQL virtual graph query.
     ///
     /// # Errors
@@ -512,6 +575,63 @@ impl CoralQuery {
         }
 
         let plan = compile_graphql_for_graph_with_variables(graph, graphql, variables)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one named operation from a supported read-only GraphQL document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, the named
+    /// operation is missing or not a query, graph lowering fails, source
+    /// compilation fails, or the generated SQL cannot be planned.
+    pub async fn explain_graphql_with_operation_name(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        operation_name: &str,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_operation_name(graph, graphql, operation_name)?;
+        Self::explain_graph_plan(sources, runtime, graph, &plan).await
+    }
+
+    /// Explains one named operation from a supported read-only GraphQL document
+    /// with typed variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoreError`] if parsing or subset validation fails, the named
+    /// operation is missing or not a query, a required selected-operation
+    /// variable is missing, a variable value is used in an unsupported
+    /// position, graph lowering fails, source compilation fails, or the
+    /// generated SQL cannot be planned.
+    pub async fn explain_graphql_with_variables_and_operation_name(
+        sources: &[QuerySource],
+        runtime: QueryRuntimeConfig,
+        graph: &GraphDeclaration,
+        graphql: &str,
+        variables: &BTreeMap<String, GraphGraphqlVariableValue>,
+        operation_name: &str,
+    ) -> Result<GraphQueryPlan, CoreError> {
+        if graphql.trim().is_empty() {
+            return Err(CoreError::InvalidInput(
+                "GraphQL query must not be empty".to_string(),
+            ));
+        }
+
+        let plan = compile_graphql_for_graph_with_variables_and_operation_name(
+            graph,
+            graphql,
+            variables,
+            operation_name,
+        )?;
         Self::explain_graph_plan(sources, runtime, graph, &plan).await
     }
 
