@@ -241,7 +241,10 @@ The supported foundation subset is intentionally narrow:
 - exact fixed relationship ranges greater than one hop lowered as repeated
   fixed-hop joins when the graph declaration yields one unambiguous intermediate
   label sequence, including cross-label paths such as
-  `(:Person)-[:ROUTES*2]->(:Incident)` through `Service`;
+  `(:Person)-[:ROUTES*2]->(:Incident)` through `Service`. Intermediate-label
+  inference stops collecting after two candidate sequences because two is
+  enough to prove ambiguity and avoids combinatorial search across cyclic or
+  highly connected declarations;
 - exact zero-hop relationship ranges lowered as same-node identity predicates,
   and finite non-negative bounded mandatory relationship ranges and GQL
   relationship quantifiers lowered as fixed-hop alternatives, with outer row

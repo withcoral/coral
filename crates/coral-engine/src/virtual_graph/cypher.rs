@@ -56,6 +56,7 @@ struct CompiledRelationship {
 
 const MAX_PATTERN_ALTERNATIVE_BRANCHES: usize = 64;
 const MAX_FIXED_RELATIONSHIP_LENGTH: usize = 8;
+const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
 
@@ -2356,7 +2357,7 @@ fn feasible_fixed_relationship_length(
         count => Err(unsupported(
             path,
             format!(
-                "bounded relationship range found {count} possible {length}-hop '{relationship_type}' label paths from {start_label} to {end_label}; use explicit intermediate nodes to disambiguate"
+                "bounded relationship range found at least {count} possible {length}-hop '{relationship_type}' label paths from {start_label} to {end_label}; use explicit intermediate nodes to disambiguate"
             ),
         )),
     }
@@ -5063,7 +5064,7 @@ fn infer_fixed_length_intermediate_labels(
         _ => Err(unsupported(
             path,
             format!(
-                "fixed-length relationship range found {} possible {length}-hop '{relationship_type}' label paths from {start_label} to {end_label}; use explicit intermediate nodes to disambiguate",
+                "fixed-length relationship range found at least {} possible {length}-hop '{relationship_type}' label paths from {start_label} to {end_label}; use explicit intermediate nodes to disambiguate",
                 sequences.len()
             ),
         )),
@@ -5101,6 +5102,9 @@ fn collect_fixed_length_label_sequences(
     current: &mut Vec<String>,
     sequences: &mut Vec<Vec<String>>,
 ) {
+    if sequences.len() >= MAX_FIXED_LABEL_SEQUENCE_RESULTS {
+        return;
+    }
     let Some(current_label) = current.last().cloned() else {
         return;
     };
@@ -5113,6 +5117,9 @@ fn collect_fixed_length_label_sequences(
 
     for next_label in next_fixed_length_labels(graph, relationship_type, direction, &current_label)
     {
+        if sequences.len() >= MAX_FIXED_LABEL_SEQUENCE_RESULTS {
+            break;
+        }
         current.push(next_label);
         collect_fixed_length_label_sequences(
             graph,
@@ -14721,6 +14728,57 @@ relationships:
         .expect("route test graph should parse")
     }
 
+    fn fanout_test_graph() -> Declaration {
+        Declaration::from_yaml(
+            r"
+version: 1
+name: fanout_test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+  - label: Queue
+    table: { schema: ops, name: queues }
+    key: id
+  - label: Incident
+    table: { schema: ops, name: incidents }
+    key: id
+relationships:
+  - type: FANS_OUT
+    table: { schema: ops, name: person_service_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: FANS_OUT
+    table: { schema: ops, name: person_team_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Team, key: team_id }
+  - type: FANS_OUT
+    table: { schema: ops, name: person_queue_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Queue, key: queue_id }
+  - type: FANS_OUT
+    table: { schema: ops, name: service_incident_routes }
+    from: { label: Service, key: service_id }
+    to: { label: Incident, key: incident_id }
+  - type: FANS_OUT
+    table: { schema: ops, name: team_incident_routes }
+    from: { label: Team, key: team_id }
+    to: { label: Incident, key: incident_id }
+  - type: FANS_OUT
+    table: { schema: ops, name: queue_incident_routes }
+    from: { label: Queue, key: queue_id }
+    to: { label: Incident, key: incident_id }
+",
+        )
+        .expect("fanout test graph should parse")
+    }
+
     #[test]
     fn compiles_match_where_return_order_limit() {
         let plan = compile_cypher(
@@ -22670,7 +22728,9 @@ relationships:
         .expect_err("ambiguous intermediate labels should be rejected");
 
         assert!(
-            error.to_string().contains("found 2 possible 2-hop"),
+            error
+                .to_string()
+                .contains("found at least 2 possible 2-hop"),
             "{error}"
         );
         assert!(
@@ -22679,6 +22739,20 @@ relationships:
                 .contains("use explicit intermediate nodes to disambiguate"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn caps_fixed_length_label_sequence_collection_after_ambiguity_detected() {
+        let sequences = fixed_length_label_sequences(
+            &fanout_test_graph(),
+            "FANS_OUT",
+            Direction::Outgoing,
+            "Person",
+            "Incident",
+            2,
+        );
+
+        assert_eq!(sequences.len(), MAX_FIXED_LABEL_SEQUENCE_RESULTS);
     }
 
     #[test]
@@ -22779,7 +22853,7 @@ relationships:
         assert!(
             error
                 .to_string()
-                .contains("found 2 possible 2-hop 'ESCALATES_TO' label paths"),
+                .contains("found at least 2 possible 2-hop 'ESCALATES_TO' label paths"),
             "{error}"
         );
     }
