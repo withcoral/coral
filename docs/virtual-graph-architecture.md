@@ -164,8 +164,9 @@ The supported foundation subset is intentionally narrow:
 - `EXISTS { MATCH ... }` lowered to SQL semi-joins in `WHERE`; scalar
   `EXISTS` projections lower as correlated `COUNT(*) > 0` expressions so they
   are executable by DataFusion in `RETURN`, can be sorted through their
-  projected alias, can appear in searched `CASE` expressions when a scalar
-  expression has only one correlated subquery, and compact pattern
+  projected alias or an exact repeated projected expression, can appear in
+  searched `CASE` expressions when a scalar expression has only one correlated
+  subquery, and compact pattern
   `EXISTS { ... }` supports inline property maps when no compact `WHERE` clause
   is present;
 - property projections, identity projections, standalone and grouped `count(*)`,

@@ -1614,6 +1614,80 @@ async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
 }
 
 #[tokio::test]
+async fn cypher_projected_correlated_subquery_order_expressions_use_aliases() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS has_dependency \
+         ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC, service",
+    )
+    .await
+    .expect("projected correlated subquery ORDER BY expression should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"has_dependency\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "has_dependency": true}),
+            json!({"service": "deployments", "has_dependency": true}),
+            json!({"service": "experiments", "has_dependency": false}),
+            json!({"service": "legacy-sync", "has_dependency": false}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_projected_count_subquery_order_expressions_use_aliases() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS dependency_count \
+         ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC, service",
+    )
+    .await
+    .expect("projected COUNT subquery ORDER BY expression should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY \"dependency_count\" DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_count": 2}),
+            json!({"service": "deployments", "dependency_count": 1}),
+            json!({"service": "experiments", "dependency_count": 0}),
+            json!({"service": "legacy-sync", "dependency_count": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exists_subqueries_execute_inside_boolean_composition() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

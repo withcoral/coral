@@ -5539,6 +5539,7 @@ fn compile_order_expression(
         }
         Expression::CountSubquery(count) => compile_scalar_order_expression(
             compile_count_subquery_scalar_expression(count, path.clone(), Some(plan), context)?,
+            projections,
             path,
         ),
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
@@ -5547,21 +5548,24 @@ fn compile_order_expression(
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             ..
-        } => compile_arithmetic_order_expression(expression, path, plan, context),
+        } => compile_arithmetic_order_expression(expression, path, projections, plan, context),
         Expression::BinaryOp { .. } => {
             if let Some(expression) =
                 compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
             {
-                compile_scalar_order_expression(expression, path)
+                compile_scalar_order_expression(expression, projections, path)
             } else {
-                compile_arithmetic_order_expression(expression, path, plan, context)
+                compile_arithmetic_order_expression(expression, path, projections, plan, context)
             }
         }
         expression if is_boolean_scalar_expression(expression) => compile_scalar_order_expression(
             compile_boolean_scalar_expression(expression, path.clone(), plan, context)?,
+            projections,
             path,
         ),
-        Expression::Case(case) => compile_case_order_expression(case, path, plan, context),
+        Expression::Case(case) => {
+            compile_case_order_expression(case, path, projections, plan, context)
+        }
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
         }
@@ -5584,7 +5588,7 @@ fn compile_order_expression(
             if let Some(expression) =
                 compile_scalar_function_expression_with_plan(function, path.clone(), plan, context)?
             {
-                return compile_scalar_order_expression(expression, path);
+                return compile_scalar_order_expression(expression, projections, path);
             }
             if compile_aggregate_function(function).is_some() {
                 return aggregate_order_expression_for_projection(
@@ -5613,15 +5617,32 @@ fn compile_order_expression(
 
 fn compile_scalar_order_expression(
     expression: ScalarExpression,
+    projections: &[Projection],
     path: impl Into<String>,
 ) -> Result<OrderExpression, CoreError> {
     if scalar_expression_contains_correlated_subquery(&expression) {
+        if let Some(alias) = projected_scalar_expression_alias(&expression, projections) {
+            return Ok(OrderExpression::ProjectionAlias(alias));
+        }
         return Err(unsupported(
             path,
             "ORDER BY over correlated subqueries must use a projected alias, for example RETURN EXISTS { MATCH ... } AS has_match ORDER BY has_match",
         ));
     }
     Ok(OrderExpression::Scalar(expression))
+}
+
+fn projected_scalar_expression_alias(
+    expression: &ScalarExpression,
+    projections: &[Projection],
+) -> Option<String> {
+    projections.iter().find_map(|projection| match projection {
+        Projection::Expression {
+            expression: projected,
+            alias,
+        } if projected == expression => Some(alias.clone()),
+        _ => None,
+    })
 }
 
 fn scalar_expression_contains_correlated_subquery(expression: &ScalarExpression) -> bool {
@@ -7866,12 +7887,14 @@ fn compile_keys_order_expression(
 fn compile_arithmetic_order_expression(
     expression: &Expression,
     path: impl Into<String>,
+    projections: &[Projection],
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     compile_scalar_order_expression(
         compile_scalar_expression_with_plan(expression, path.clone(), plan, context)?,
+        projections,
         path,
     )
 }
@@ -7879,12 +7902,14 @@ fn compile_arithmetic_order_expression(
 fn compile_case_order_expression(
     case: &CaseExpression,
     path: impl Into<String>,
+    projections: &[Projection],
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     compile_scalar_order_expression(
         compile_case_scalar_expression_with_plan(case, path.clone(), plan, context)?,
+        projections,
         path,
     )
 }
@@ -15182,6 +15207,36 @@ relationships:
                 nulls: None,
             }] if alias == "has_dependency"
         ));
+    }
+
+    #[test]
+    fn compiles_projected_correlated_subquery_order_expressions_as_aliases() {
+        for (cypher, expected_alias) in [
+            (
+                "MATCH (service:Service) \
+                 RETURN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS has_dependency \
+                 ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+                "has_dependency",
+            ),
+            (
+                "MATCH (service:Service) \
+                 RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS dependency_count \
+                 ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+                "dependency_count",
+            ),
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("projected correlated subquery ORDER BY expression should compile");
+
+            assert!(matches!(
+                plan.order_by.as_slice(),
+                [OrderKey {
+                    expression: OrderExpression::ProjectionAlias(alias),
+                    direction: OrderDirection::Descending,
+                    nulls: None,
+                }] if alias == expected_alias
+            ));
+        }
     }
 
     #[test]
