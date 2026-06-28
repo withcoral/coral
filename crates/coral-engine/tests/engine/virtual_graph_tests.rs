@@ -3104,6 +3104,48 @@ async fn cypher_count_subqueries_preserve_inner_where_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_compact_count_patterns_preserve_property_maps_and_where_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { (service)-[:DEPENDS_ON {source: 'catalog'}]->(dependency:Service) WHERE dependency.tier = 'dev' } AS catalog_dev_dependencies \
+         ORDER BY service",
+    )
+    .await
+    .expect("compact Cypher COUNT pattern should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"source\" = 'catalog'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("\"tier\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "catalog_dev_dependencies": 1}),
+            json!({"service": "deployments", "catalog_dev_dependencies": 0}),
+            json!({"service": "experiments", "catalog_dev_dependencies": 0}),
+            json!({"service": "legacy-sync", "catalog_dev_dependencies": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_subqueries_support_node_only_matches() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

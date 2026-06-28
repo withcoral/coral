@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -587,6 +588,8 @@ fn compile_cypher_query_with_optional_graph(
     parameters: &BTreeMap<String, CypherParameterValue>,
     graph: Option<&Declaration>,
 ) -> Result<GraphQuery, CoreError> {
+    let normalized = normalize_compact_count_subqueries(cypher);
+    let cypher = normalized.as_ref();
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
@@ -13492,6 +13495,201 @@ fn collect_compact_exists_pattern_queries(cypher: &str) -> BTreeMap<(usize, usiz
         .collect()
 }
 
+fn normalize_compact_count_subqueries(cypher: &str) -> Cow<'_, str> {
+    const COUNT_KEYWORD: &str = "COUNT";
+
+    let mut rewrites = Vec::new();
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < cypher.len() {
+        let Some(rest) = cypher.get(index..) else {
+            break;
+        };
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => {
+                in_string = true;
+                index += character_len;
+                continue;
+            }
+            '`' => {
+                in_escaped_identifier = true;
+                index += character_len;
+                continue;
+            }
+            _ => {}
+        }
+
+        if rest
+            .get(..COUNT_KEYWORD.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(COUNT_KEYWORD))
+            && keyword_has_boundaries(cypher, index, COUNT_KEYWORD.len())
+        {
+            let after_keyword = skip_ascii_whitespace(cypher, index + COUNT_KEYWORD.len());
+            if cypher
+                .get(after_keyword..)
+                .is_some_and(|value| value.starts_with('{'))
+                && let Some(close) = find_matching_brace(cypher, after_keyword)
+            {
+                let body_start = after_keyword + '{'.len_utf8();
+                if let Some(body) = cypher.get(body_start..close)
+                    && compact_count_body_should_normalize(body)
+                {
+                    rewrites.push((body_start, close, format!(" MATCH {} FINISH ", body.trim())));
+                }
+                index = close + '}'.len_utf8();
+                continue;
+            }
+        }
+
+        index += character_len;
+    }
+
+    if rewrites.is_empty() {
+        return Cow::Borrowed(cypher);
+    }
+
+    let mut normalized = String::with_capacity(cypher.len() + rewrites.len() * 13);
+    let mut cursor = 0usize;
+    for (start, end, replacement) in rewrites {
+        if let Some(prefix) = cypher.get(cursor..start) {
+            normalized.push_str(prefix);
+        }
+        normalized.push_str(&replacement);
+        cursor = end;
+    }
+    if let Some(suffix) = cypher.get(cursor..) {
+        normalized.push_str(suffix);
+    }
+    Cow::Owned(normalized)
+}
+
+fn compact_count_body_should_normalize(body: &str) -> bool {
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('(') {
+        return true;
+    }
+    let Some(equals_index) = find_top_level_character(trimmed, '=') else {
+        return false;
+    };
+    let Some(path_variable) = trimmed.get(..equals_index).map(str::trim) else {
+        return false;
+    };
+    if parse_collection_filter_variable(path_variable).is_none() {
+        return false;
+    }
+    trimmed
+        .get(equals_index + '='.len_utf8()..)
+        .is_some_and(|pattern| pattern.trim_start().starts_with('('))
+}
+
+fn skip_ascii_whitespace(source: &str, mut index: usize) -> usize {
+    while let Some(rest) = source.get(index..) {
+        let Some(character) = rest.chars().next() else {
+            return index;
+        };
+        if !character.is_ascii_whitespace() {
+            return index;
+        }
+        index += character.len_utf8();
+    }
+    index
+}
+
+fn find_matching_brace(source: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+    let mut index = open;
+
+    while index < source.len() {
+        let rest = source.get(index..)?;
+        let character = rest.chars().next()?;
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('\'') {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('`') {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+
+        index += character_len;
+    }
+
+    None
+}
+
 fn compact_exists_pattern_query_from_cst(
     cypher: &str,
     node: &SyntaxNode,
@@ -25806,6 +26004,48 @@ relationships:
                 && predicate.operator == ComparisonOperator::Equal
                 && predicate.rhs == PredicateRhs::Literal(Literal::String("dev".to_string()))
         }));
+    }
+
+    #[test]
+    fn compiles_compact_count_pattern_where_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN COUNT { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' } AS dev_dependencies",
+        )
+        .expect("compact COUNT pattern WHERE should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::CountSubquery { pattern },
+                alias,
+            }] if alias == "dev_dependencies"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.predicates.iter().any(|predicate| {
+                        predicate.property.variable == "target"
+                            && predicate.property.property == "tier"
+                            && predicate.operator == ComparisonOperator::Equal
+                            && predicate.rhs == PredicateRhs::Literal(Literal::String("dev".to_string()))
+                    }))
+        ));
+    }
+
+    #[test]
+    fn compiles_compact_count_named_path_patterns() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN COUNT { dependency_path = (service)-[:DEPENDS_ON]->(:Service) } AS dependency_paths",
+        )
+        .expect("compact COUNT named path pattern should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::CountSubquery { pattern },
+                alias,
+            }] if alias == "dependency_paths"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
+        ));
     }
 
     #[test]

@@ -267,6 +267,11 @@ The supported foundation subset is intentionally narrow:
   `WHERE` clauses are carried as predicate-expression IR and rendered with
   subquery-local node/relationship aliases. Nested scoped subqueries still
   require staged planning and are rejected before SQL lowering;
+- compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
+  `COUNT { MATCH pattern WHERE ... FINISH }`, allowing Coral to support GQL-style
+  counted pattern syntax without depending on parser-private AST recovery. The
+  normalized form then lowers through the same scoped count-subquery planner as
+  explicit `COUNT { MATCH ... }`;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
