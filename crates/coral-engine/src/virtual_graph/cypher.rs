@@ -16551,6 +16551,19 @@ fn compile_null_predicate(
             ));
         }
     }
+    if let Some(literal) = compile_optional_static_literal_scalar_operand(
+        operand,
+        format!("{path}.operand"),
+        mode,
+        context,
+    )? {
+        let is_null = matches!(literal, Literal::Null);
+        return Ok(PredicateExpression::Boolean(if negated {
+            !is_null
+        } else {
+            is_null
+        }));
+    }
     if let Some(lhs) = compile_optional_path_length_scalar_expression(
         operand,
         format!("{path}.operand"),
@@ -26725,6 +26738,18 @@ relationships:
                 true,
             ),
             (
+                "MATCH (service:Service) WHERE null IS NULL RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE trim(' prod ') IS NOT NULL RETURN service.name",
+                true,
+            ),
+            (
+                "MATCH (service:Service) WHERE nullIf('prod', 'prod') IS NULL RETURN service.name",
+                true,
+            ),
+            (
                 "MATCH (service:Service) WHERE 'prod' IN ['dev', 'prod', null] RETURN service.name",
                 true,
             ),
@@ -26742,6 +26767,10 @@ relationships:
             ),
             (
                 "MATCH (service:Service) WHERE replace('billing-api', '-', '') = 'billing-api' RETURN service.name",
+                false,
+            ),
+            (
+                "MATCH (service:Service) WHERE nullIf('prod', 'prod') IS NOT NULL RETURN service.name",
                 false,
             ),
         ] {
