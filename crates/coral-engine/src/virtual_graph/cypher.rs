@@ -6141,6 +6141,14 @@ fn compile_order_expression_after_metadata_list_index(
             compile_path_length_order_expression(function, path, state, context)
         }
         Expression::FunctionCall(function) => {
+            if let Some(expression) = compile_optional_size_path_length_order_expression(
+                function,
+                path.clone(),
+                state,
+                context,
+            )? {
+                return Ok(expression);
+            }
             if let Some(expression) =
                 compile_scalar_function_expression_with_plan(function, path.clone(), plan, context)?
             {
@@ -7205,21 +7213,7 @@ fn compile_projection(
             compile_path_length_projection(function, item, path, state, context)
         }
         Expression::FunctionCall(function) => {
-            if let Some(projection) =
-                compile_scalar_function_projection(function, item, path.clone(), plan, context)?
-            {
-                return Ok(projection);
-            }
-            if compile_aggregate_function(function).is_some() {
-                return compile_aggregate_projection(function, item, path, plan, context);
-            }
-            Err(unsupported(
-                format!("{path}.expression"),
-                format!(
-                    "RETURN function '{}' is not supported yet",
-                    qualified_function_name(function)
-                ),
-            ))
+            compile_other_function_projection(function, item, path, plan, state, context)
         }
         expression => Ok(Projection::Property {
             property: compile_property_ref(
@@ -7231,6 +7225,37 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_other_function_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    if let Some(projection) =
+        compile_optional_size_path_length_projection(function, item, path.clone(), state, context)?
+    {
+        return Ok(projection);
+    }
+    if let Some(projection) =
+        compile_scalar_function_projection(function, item, path.clone(), plan, context)?
+    {
+        return Ok(projection);
+    }
+    if compile_aggregate_function(function).is_some() {
+        return compile_aggregate_projection(function, item, path, plan, context);
+    }
+    Err(unsupported(
+        format!("{path}.expression"),
+        format!(
+            "RETURN function '{}' is not supported yet",
+            qualified_function_name(function)
+        ),
+    ))
 }
 
 fn compile_optional_static_list_projection(
@@ -7413,8 +7438,34 @@ fn compile_path_length_projection(
         alias: item
             .alias
             .as_ref()
-            .map_or_else(|| "length".to_string(), variable_name),
+            .map_or_else(|| path_length_function_alias(function), variable_name),
     })
+}
+
+fn compile_optional_size_path_length_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let Some(expression) = compile_optional_size_path_length_scalar_expression(
+        function,
+        format!("{path}.expression.arguments"),
+        state,
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Projection::Expression {
+        expression,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| path_length_function_alias(function), variable_name),
+    }))
 }
 
 fn compile_path_length_order_expression(
@@ -7434,6 +7485,28 @@ fn compile_path_length_order_expression(
         ScalarExpression::Literal(literal) => OrderExpression::Literal(literal),
         expression => OrderExpression::Scalar(expression),
     })
+}
+
+fn compile_optional_size_path_length_order_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<OrderExpression>, CoreError> {
+    let path = path.into();
+    let Some(expression) = compile_optional_size_path_length_scalar_expression(
+        function,
+        format!("{path}.arguments"),
+        state,
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(match expression {
+        ScalarExpression::Literal(literal) => OrderExpression::Literal(literal),
+        expression => OrderExpression::Scalar(expression),
+    }))
 }
 
 fn compile_path_length_scalar_expression(
@@ -7471,6 +7544,33 @@ fn compile_path_length_scalar_expression(
         ));
     }
     Ok(expression)
+}
+
+fn compile_optional_size_path_length_scalar_expression(
+    function: &FunctionInvocation,
+    arguments_path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    if !is_size_function(function) {
+        return Ok(None);
+    }
+    let arguments_path = arguments_path.into();
+    let Some(variable) = optional_single_variable_function_argument(function, context) else {
+        return Ok(None);
+    };
+    if !state.path_variables.contains_key(&variable) {
+        return Ok(None);
+    }
+    compile_path_length_scalar_expression(function, arguments_path, state, context).map(Some)
+}
+
+fn path_length_function_alias(function: &FunctionInvocation) -> String {
+    if is_size_function(function) {
+        "size".to_string()
+    } else {
+        "length".to_string()
+    }
 }
 
 fn compile_literal_projection(
@@ -9448,6 +9548,17 @@ fn compile_optional_path_length_scalar_expression(
             return compile_optional_path_length_scalar_expression(inner, path, mode, context);
         }
         Expression::FunctionCall(function) if is_length_function(function) => function,
+        Expression::FunctionCall(function) if is_size_function(function) => {
+            let Some(state) = mode.path_state() else {
+                return Ok(None);
+            };
+            return compile_optional_size_path_length_scalar_expression(
+                function,
+                format!("{path}.arguments"),
+                state,
+                context,
+            );
+        }
         _ => return Ok(None),
     };
     let Some(state) = mode.path_state() else {
@@ -9746,17 +9857,32 @@ fn compile_single_variable_function_argument(
     context: &CypherCompileContext,
 ) -> Result<String, CoreError> {
     let path = path.into();
+    if let Some(variable) = optional_single_variable_function_argument(function, context) {
+        Ok(variable)
+    } else if matches!(
+        function.arguments.as_slice(),
+        [Expression::Parenthesized(_)]
+    ) {
+        Err(unsupported(format!("{path}[0]"), message))
+    } else {
+        Err(unsupported(path, message))
+    }
+}
+
+fn optional_single_variable_function_argument(
+    function: &FunctionInvocation,
+    context: &CypherCompileContext,
+) -> Option<String> {
     match function.arguments.as_slice() {
         [Expression::Parenthesized(inner)] => match inner.as_ref() {
-            Expression::Variable(variable) => Ok(variable_name(variable)),
-            _ => Err(unsupported(format!("{path}[0]"), message)),
+            Expression::Variable(variable) => Some(variable_name(variable)),
+            _ => None,
         },
-        [Expression::Variable(variable)] => Ok(variable_name(variable)),
+        [Expression::Variable(variable)] => Some(variable_name(variable)),
         [] => context
             .variable_function_argument(function)
-            .map(str::to_string)
-            .ok_or_else(|| unsupported(path, message)),
-        _ => Err(unsupported(path, message)),
+            .map(str::to_string),
+        _ => None,
     }
 }
 
@@ -10248,6 +10374,13 @@ fn is_length_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+fn is_size_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("size")
+    )
+}
+
 fn is_coalesce_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
@@ -10387,10 +10520,9 @@ fn is_tail_function(function: &FunctionInvocation) -> bool {
 fn is_character_length_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
-        [name] if name.name.eq_ignore_ascii_case("size")
-            || name.name.eq_ignore_ascii_case("char_length")
+        [name] if name.name.eq_ignore_ascii_case("char_length")
             || name.name.eq_ignore_ascii_case("character_length")
-    )
+    ) || is_size_function(function)
 }
 
 fn is_substring_function(function: &FunctionInvocation) -> bool {
@@ -15689,6 +15821,42 @@ relationships:
     }
 
     #[test]
+    fn compiles_size_over_path_alias() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             WHERE size(path) = 2 \
+             RETURN source.name AS source, target.name AS target, size(path) AS hops \
+             ORDER BY size(path) DESC",
+        )
+        .expect("size(path) should compile as a path-length alias");
+
+        let path_length = ScalarExpression::Literal(Literal::Integer(2));
+        assert_eq!(
+            plan.projections.get(2),
+            Some(&Projection::Expression {
+                expression: path_length.clone(),
+                alias: "hops".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: path_length.clone(),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(2))),
+            }))
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::Integer(2)),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_order_by_path_length() {
         let plan = compile_cypher(
             "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
@@ -15786,6 +15954,37 @@ relationships:
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn compiles_size_over_named_optional_path_variable() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS service, size(path) AS path_length \
+             ORDER BY size(path)",
+        )
+        .expect("size(path) should preserve optional path length nullability");
+
+        let expected = ScalarExpression::PresenceGated {
+            presence_variable: "dependency".to_string(),
+            expression: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        };
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: expected.clone(),
+                alias: "path_length".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
     }
 
     #[test]

@@ -110,9 +110,9 @@ The supported foundation subset is intentionally narrow:
   maps placed in the join scope; optional plans still require mandatory
   bindings to stay anchored to the first component;
 - non-materialized fixed-length path-variable bindings, including nullable
-  `length(path)` over optional relationships via the presence-gated scalar
-  expression IR and compiler-generated internal relationship bindings when an
-  anonymous optional path needs a presence gate;
+  `length(path)` and `size(path)` over optional relationships via the
+  presence-gated scalar expression IR and compiler-generated internal
+  relationship bindings when an anonymous optional path needs a presence gate;
 - declaration-aware `RETURN *` expansion in runtime Cypher execution/explain
   paths and `compile_cypher*_for_graph` helpers. Because Coral does not
   materialize graph objects, star expansion lowers visible graph variables to
@@ -249,12 +249,12 @@ The supported foundation subset is intentionally narrow:
 - exact zero-hop relationship ranges lowered as same-node identity predicates,
   and finite non-negative bounded mandatory relationship ranges and GQL
   relationship quantifiers lowered as fixed-hop alternatives, with outer row
-  modifiers, aggregates, and `length(path)` applied after expansion. Cross-label
-  bounded ranges use declaration metadata to prune impossible hop counts before
-  planning and keep only exact lengths with one unambiguous intermediate label
-  sequence; ranges whose exact alternatives are all pruned lower to ordinary
-  empty-result plans with `WHERE FALSE` so projections and result schemas remain
-  stable;
+  modifiers, aggregates, and `length(path)` / `size(path)` applied after
+  expansion. Cross-label bounded ranges use declaration metadata to prune
+  impossible hop counts before planning and keep only exact lengths with one
+  unambiguous intermediate label sequence; ranges whose exact alternatives are
+  all pruned lower to ordinary empty-result plans with `WHERE FALSE` so
+  projections and result schemas remain stable;
 - non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
   carried by `WITH *` or used as a graph value;
 - integer `SKIP` and `LIMIT`.
@@ -267,9 +267,9 @@ multi-hop ranges, ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar
 projections containing multiple correlated `COUNT`/`EXISTS` subqueries, general
-subqueries with `WITH`, `RETURN`, `UNION`, or procedure calls, path/list length
-via `size`, ordered metadata-list comparisons, dynamic list comparisons or
-indexes, and broad expression semantics.
+subqueries with `WITH`, `RETURN`, `UNION`, or procedure calls, ordered
+metadata-list comparisons, dynamic list comparisons or indexes, and broad
+expression semantics.
 
 ## GraphQL Frontend Boundary
 
