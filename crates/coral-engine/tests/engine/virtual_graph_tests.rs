@@ -2698,6 +2698,50 @@ async fn cypher_projected_count_subquery_order_expressions_use_aliases() {
 }
 
 #[tokio::test]
+async fn cypher_hidden_count_subquery_order_expressions_use_precomputed_joins() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service \
+         ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC, service",
+    )
+    .await
+    .expect("hidden COUNT subquery ORDER BY expression should execute");
+
+    assert!(
+        execution.translated_sql().contains("LEFT JOIN (SELECT")
+            && execution
+                .translated_sql()
+                .contains("COUNT(*) AS \"__coral_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY COALESCE(\"__coral_scalar_subquery_0\".\"__coral_value\", 0) DESC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exists_subqueries_execute_inside_boolean_composition() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -405,7 +405,9 @@ The supported foundation subset is intentionally narrow:
   `collect_list`, `stdev_samp`, and `stdev_pop`; numeric property aggregates,
   property and identity `ORDER BY`, direct aggregate `ORDER BY` expressions
   that match projected aggregates, projection alias `ORDER BY` including
-  aggregate aliases, and explicit null placement on supported sort keys;
+  aggregate aliases, hidden direct `ORDER BY` over precomputable single-anchor
+  relationship-pattern `COUNT { ... }` subqueries, and explicit null placement
+  on supported sort keys;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
   graph-variable `WITH DISTINCT` and row modifiers, and terminal `WITH`
   projection subsets whose final `RETURN` can reorder or rename every projected

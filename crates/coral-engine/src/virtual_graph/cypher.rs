@@ -7879,12 +7879,23 @@ fn compile_scalar_order_expression(
         if let Some(alias) = projected_scalar_expression_alias(&expression, projections) {
             return Ok(OrderExpression::ProjectionAlias(alias));
         }
+        if hidden_subquery_order_expression_can_be_precomputed(&expression) {
+            return Ok(OrderExpression::Scalar(expression));
+        }
         return Err(unsupported(
             path,
             "ORDER BY over correlated subqueries must use a projected alias, for example RETURN EXISTS { MATCH ... } AS has_match ORDER BY has_match",
         ));
     }
     Ok(OrderExpression::Scalar(expression))
+}
+
+fn hidden_subquery_order_expression_can_be_precomputed(expression: &ScalarExpression) -> bool {
+    matches!(
+        expression,
+        ScalarExpression::CountSubquery { pattern }
+            if matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
+    )
 }
 
 fn projected_scalar_expression_alias(
@@ -31883,17 +31894,36 @@ relationships:
     }
 
     #[test]
-    fn rejects_direct_order_by_correlated_subqueries() {
+    fn compiles_hidden_direct_correlated_subquery_order_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+        )
+        .expect("hidden direct correlated COUNT subquery ORDER BY expression should compile");
+
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(_),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_hidden_order_by_non_count_correlated_subqueries() {
         for cypher in [
             "MATCH (service:Service) \
              RETURN service.name AS service \
              ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
             "MATCH (service:Service) \
              RETURN service.name AS service \
-             ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+             ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } OR service.active DESC",
         ] {
-            let error =
-                compile_cypher(cypher).expect_err("direct subquery ordering should be rejected");
+            let error = compile_cypher(cypher)
+                .expect_err("non-count hidden subquery ordering should still be rejected");
             assert!(
                 error.to_string().contains("must use a projected alias"),
                 "{error}"

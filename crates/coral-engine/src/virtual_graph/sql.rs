@@ -146,6 +146,12 @@ struct PrecomputedScalarSubquery {
     value_alias: String,
 }
 
+#[derive(Debug, Clone)]
+struct ScalarSubqueryCandidateUse {
+    candidate: ScalarSubqueryCandidate,
+    required: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct JoinFromKnownNodeOptions<'p> {
     left_is_known: bool,
@@ -224,13 +230,15 @@ impl<'a> Lowerer<'a> {
     }
 
     fn join_precomputed_scalar_subqueries(&mut self) -> Result<(), CoreError> {
-        let candidates = self.projection_scalar_subquery_candidates();
-        if candidates.len() <= 1 {
+        let candidates = self.scalar_subquery_candidates();
+        if candidates.len() <= 1 && !candidates.iter().any(|candidate| candidate.required) {
             return Ok(());
         }
 
         let mut unsupported = 0usize;
-        for candidate in candidates {
+        for candidate_use in candidates {
+            let candidate = candidate_use.candidate;
+            let required = candidate_use.required;
             if self
                 .precomputed_scalar_subqueries
                 .iter()
@@ -246,6 +254,12 @@ impl<'a> Lowerer<'a> {
                 value_alias: "__coral_value".to_string(),
             };
             let Some(join_sql) = self.render_precomputed_scalar_subquery_join(&precomputed)? else {
+                if required {
+                    return Err(CoreError::InvalidInput(
+                        "hidden ORDER BY over correlated scalar subqueries requires a precomputable single-anchor relationship pattern"
+                            .to_string(),
+                    ));
+                }
                 unsupported += 1;
                 continue;
             };
@@ -263,11 +277,24 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    fn projection_scalar_subquery_candidates(&self) -> Vec<ScalarSubqueryCandidate> {
+    fn scalar_subquery_candidates(&self) -> Vec<ScalarSubqueryCandidateUse> {
         let mut candidates = Vec::new();
         for projection in &self.validated.plan().projections {
             if let Projection::Expression { expression, .. } = projection {
-                self.collect_scalar_expression_subquery_candidates(expression, &mut candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression,
+                    false,
+                    &mut candidates,
+                );
+            }
+        }
+        for order_key in &self.validated.plan().order_by {
+            if let OrderExpression::Scalar(expression) = &order_key.expression {
+                self.collect_scalar_expression_subquery_candidates(
+                    expression,
+                    true,
+                    &mut candidates,
+                );
             }
         }
         candidates
@@ -276,22 +303,28 @@ impl<'a> Lowerer<'a> {
     fn collect_scalar_expression_subquery_candidates(
         &self,
         expression: &ScalarExpression,
-        candidates: &mut Vec<ScalarSubqueryCandidate>,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
     ) {
         if let Some(expression) = scalar_expression_unary_operand(expression) {
-            self.collect_scalar_expression_subquery_candidates(expression, candidates);
+            self.collect_scalar_expression_subquery_candidates(expression, required, candidates);
             return;
         }
 
         match expression {
             ScalarExpression::Predicate(predicate) => {
-                self.collect_predicate_expression_subquery_candidates(predicate, candidates);
+                self.collect_predicate_expression_subquery_candidates(
+                    predicate, required, candidates,
+                );
             }
             ScalarExpression::CountSubquery { pattern } => {
                 if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
                     && Self::exists_pattern_has_outer_variables(predicate)
                 {
-                    candidates.push(ScalarSubqueryCandidate::Count((**pattern).clone()));
+                    candidates.push(ScalarSubqueryCandidateUse {
+                        candidate: ScalarSubqueryCandidate::Count((**pattern).clone()),
+                        required,
+                    });
                 }
             }
             ScalarExpression::Property(_)
@@ -340,85 +373,102 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Negate { .. } => {
                 unreachable!("unary scalar expressions handled before candidate collection")
             }
-            _ => self
-                .collect_structural_scalar_expression_subquery_candidates(expression, candidates),
+            _ => self.collect_structural_scalar_expression_subquery_candidates(
+                expression, required, candidates,
+            ),
         }
     }
 
     fn collect_structural_scalar_expression_subquery_candidates(
         &self,
         expression: &ScalarExpression,
-        candidates: &mut Vec<ScalarSubqueryCandidate>,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
     ) {
         match expression {
             ScalarExpression::PresenceGated { expression, .. } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
             }
             ScalarExpression::Coalesce { expressions } => {
                 for expression in expressions {
-                    self.collect_scalar_expression_subquery_candidates(expression, candidates);
+                    self.collect_scalar_expression_subquery_candidates(
+                        expression, required, candidates,
+                    );
                 }
             }
             ScalarExpression::NullIf { expression, value } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
-                self.collect_scalar_expression_subquery_candidates(value, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
+                self.collect_scalar_expression_subquery_candidates(value, required, candidates);
             }
             ScalarExpression::Round { expression, places } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
                 if let Some(places) = places {
-                    self.collect_scalar_expression_subquery_candidates(places, candidates);
+                    self.collect_scalar_expression_subquery_candidates(
+                        places, required, candidates,
+                    );
                 }
             }
             ScalarExpression::Left { expression, count }
             | ScalarExpression::Right { expression, count } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
-                self.collect_scalar_expression_subquery_candidates(count, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
+                self.collect_scalar_expression_subquery_candidates(count, required, candidates);
             }
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
             } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
-                self.collect_scalar_expression_subquery_candidates(search, candidates);
-                self.collect_scalar_expression_subquery_candidates(replacement, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
+                self.collect_scalar_expression_subquery_candidates(search, required, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    replacement,
+                    required,
+                    candidates,
+                );
             }
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
             } => {
-                self.collect_scalar_expression_subquery_candidates(expression, candidates);
-                self.collect_scalar_expression_subquery_candidates(start, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
+                self.collect_scalar_expression_subquery_candidates(start, required, candidates);
                 if let Some(length) = length {
-                    self.collect_scalar_expression_subquery_candidates(length, candidates);
+                    self.collect_scalar_expression_subquery_candidates(
+                        length, required, candidates,
+                    );
                 }
             }
             ScalarExpression::Arithmetic { left, right, .. } => {
-                self.collect_scalar_expression_subquery_candidates(left, candidates);
-                self.collect_scalar_expression_subquery_candidates(right, candidates);
+                self.collect_scalar_expression_subquery_candidates(left, required, candidates);
+                self.collect_scalar_expression_subquery_candidates(right, required, candidates);
             }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
             } => {
-                for alternative in alternatives {
-                    self.collect_predicate_expression_subquery_candidates(
-                        &alternative.when,
-                        candidates,
-                    );
-                    self.collect_scalar_expression_subquery_candidates(
-                        &alternative.then,
-                        candidates,
-                    );
-                }
-                if let Some(else_expression) = else_expression {
-                    self.collect_scalar_expression_subquery_candidates(else_expression, candidates);
-                }
+                self.collect_case_scalar_expression_subquery_candidates(
+                    alternatives,
+                    else_expression.as_deref(),
+                    required,
+                    candidates,
+                );
             }
             ScalarExpression::Atan2 { y, x } => {
-                self.collect_scalar_expression_subquery_candidates(y, candidates);
-                self.collect_scalar_expression_subquery_candidates(x, candidates);
+                self.collect_scalar_expression_subquery_candidates(y, required, candidates);
+                self.collect_scalar_expression_subquery_candidates(x, required, candidates);
             }
             _ => {
                 unreachable!("unary scalar expressions handled before candidate collection")
@@ -426,31 +476,71 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn collect_case_scalar_expression_subquery_candidates(
+        &self,
+        alternatives: &[ScalarCaseAlternative],
+        else_expression: Option<&ScalarExpression>,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
+    ) {
+        for alternative in alternatives {
+            self.collect_predicate_expression_subquery_candidates(
+                &alternative.when,
+                required,
+                candidates,
+            );
+            self.collect_scalar_expression_subquery_candidates(
+                &alternative.then,
+                required,
+                candidates,
+            );
+        }
+        if let Some(else_expression) = else_expression {
+            self.collect_scalar_expression_subquery_candidates(
+                else_expression,
+                required,
+                candidates,
+            );
+        }
+    }
+
     fn collect_predicate_expression_subquery_candidates(
         &self,
         predicate: &PredicateExpression,
-        candidates: &mut Vec<ScalarSubqueryCandidate>,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
     ) {
         match predicate {
             PredicateExpression::ExistsPattern(predicate) => {
                 if Self::exists_pattern_has_outer_variables(predicate) {
-                    candidates.push(ScalarSubqueryCandidate::Exists(predicate.clone()));
+                    candidates.push(ScalarSubqueryCandidateUse {
+                        candidate: ScalarSubqueryCandidate::Exists(predicate.clone()),
+                        required,
+                    });
                 }
             }
             PredicateExpression::ScalarComparison(predicate) => {
-                self.collect_scalar_expression_subquery_candidates(&predicate.lhs, candidates);
+                self.collect_scalar_expression_subquery_candidates(
+                    &predicate.lhs,
+                    required,
+                    candidates,
+                );
                 if let ScalarPredicateRhs::Expression(expression) = &predicate.rhs {
-                    self.collect_scalar_expression_subquery_candidates(expression, candidates);
+                    self.collect_scalar_expression_subquery_candidates(
+                        expression, required, candidates,
+                    );
                 }
             }
             PredicateExpression::And { left, right }
             | PredicateExpression::Or { left, right }
             | PredicateExpression::Xor { left, right } => {
-                self.collect_predicate_expression_subquery_candidates(left, candidates);
-                self.collect_predicate_expression_subquery_candidates(right, candidates);
+                self.collect_predicate_expression_subquery_candidates(left, required, candidates);
+                self.collect_predicate_expression_subquery_candidates(right, required, candidates);
             }
             PredicateExpression::Not { expression } => {
-                self.collect_predicate_expression_subquery_candidates(expression, candidates);
+                self.collect_predicate_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
             }
             PredicateExpression::Boolean(_)
             | PredicateExpression::Comparison(_)
@@ -5053,10 +5143,31 @@ impl<'a> Lowerer<'a> {
             OrderExpression::Scalar(ScalarExpression::Literal(literal)) => {
                 Ok(render_order_literal(literal))
             }
+            OrderExpression::Scalar(ScalarExpression::Predicate(predicate)) => {
+                self.render_order_predicate_expression(predicate)
+            }
             OrderExpression::Scalar(expression) => self.render_scalar_expression(expression),
             OrderExpression::Literal(literal) => Ok(render_order_literal(literal)),
             OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         }
+    }
+
+    fn render_order_predicate_expression(
+        &self,
+        predicate: &PredicateExpression,
+    ) -> Result<String, CoreError> {
+        if let PredicateExpression::ExistsPattern(pattern) = predicate
+            && let Some(precomputed) =
+                self.precomputed_scalar_subqueries
+                    .iter()
+                    .find(|precomputed| {
+                        precomputed.candidate == ScalarSubqueryCandidate::Exists(pattern.clone())
+                    })
+        {
+            let count = Self::render_precomputed_count_ref(precomputed);
+            return Ok(format!("CASE WHEN {count} > 0 THEN 1 ELSE 0 END"));
+        }
+        self.render_scalar_predicate_expression(predicate)
     }
 
     fn render_aggregate_target(
