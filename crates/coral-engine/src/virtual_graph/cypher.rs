@@ -10449,7 +10449,7 @@ enum StaticListCoalesceArgument {
 #[derive(Debug)]
 struct StaticListCoalesceArguments {
     arguments: Vec<StaticListCoalesceArgument>,
-    element_type: LiteralListElementType,
+    element_type: Option<LiteralListElementType>,
 }
 
 fn compile_optional_static_list_coalesce_arguments(
@@ -10499,16 +10499,22 @@ fn compile_optional_static_list_coalesce_arguments(
             "list-valued coalesce() requires every non-null argument to be a static list",
         ));
     }
-    let Some(element_type) = element_type else {
-        return Err(unsupported(
-            format!("{path}.arguments"),
-            "list-valued coalesce() requires at least one non-null list element type",
-        ));
-    };
     Ok(Some(StaticListCoalesceArguments {
         arguments,
         element_type,
     }))
+}
+
+fn require_static_list_coalesce_element_type(
+    coalesce: &StaticListCoalesceArguments,
+    path: impl Into<String>,
+) -> Result<LiteralListElementType, CoreError> {
+    coalesce.element_type.ok_or_else(|| {
+        unsupported(
+            format!("{}.arguments", path.into()),
+            "list-valued coalesce() requires at least one non-null list element type",
+        )
+    })
 }
 
 fn is_static_null_expression(
@@ -10534,10 +10540,11 @@ fn compile_optional_static_list_coalesce_value(
 ) -> Result<Option<StaticListValue>, CoreError> {
     let path = path.into();
     let Some(coalesce) =
-        compile_optional_static_list_coalesce_arguments(function, path, plan, context)?
+        compile_optional_static_list_coalesce_arguments(function, path.clone(), plan, context)?
     else {
         return Ok(None);
     };
+    let element_type = require_static_list_coalesce_element_type(&coalesce, path)?;
 
     let mut first_list = None;
     let mut first_presence = None;
@@ -10545,7 +10552,7 @@ fn compile_optional_static_list_coalesce_value(
         let StaticListCoalesceArgument::List(value) = argument else {
             continue;
         };
-        let value = with_static_list_element_type(value, coalesce.element_type);
+        let value = with_static_list_element_type(value, element_type);
         if first_list.is_none() {
             if value.presence_variable.is_none() {
                 return Ok(Some(value));
@@ -10573,6 +10580,7 @@ fn compile_optional_static_list_coalesce_scalar_expression(
     else {
         return Ok(None);
     };
+    let element_type = require_static_list_coalesce_element_type(&coalesce, path)?;
 
     let expressions = coalesce
         .arguments
@@ -10580,10 +10588,34 @@ fn compile_optional_static_list_coalesce_scalar_expression(
         .map(|argument| match argument {
             StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
             StaticListCoalesceArgument::List(value) => {
-                static_list_value_scalar_expression_with_element_type(value, coalesce.element_type)
+                static_list_value_scalar_expression_with_element_type(value, element_type)
             }
         })
         .collect::<Vec<_>>();
+    Ok(Some(ScalarExpression::Coalesce { expressions }))
+}
+
+fn compile_optional_static_list_coalesce_length_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(coalesce) =
+        compile_optional_static_list_coalesce_arguments(function, path, plan, context)?
+    else {
+        return Ok(None);
+    };
+
+    let expressions = coalesce
+        .arguments
+        .into_iter()
+        .map(|argument| match argument {
+            StaticListCoalesceArgument::Null => Ok(ScalarExpression::Literal(Literal::Null)),
+            StaticListCoalesceArgument::List(value) => static_list_length_scalar_expression(value),
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
     Ok(Some(ScalarExpression::Coalesce { expressions }))
 }
 
@@ -12105,6 +12137,11 @@ fn compile_static_list_function_length_scalar_expression(
         Expression::Parenthesized(inner) => {
             compile_static_list_function_length_scalar_expression(inner, path, plan, context)
         }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_optional_static_list_coalesce_length_scalar_expression(
+                function, path, plan, context,
+            )
+        }
         expression => {
             let Some(value) = compile_optional_static_list_value(expression, path, plan, context)?
             else {
@@ -12122,6 +12159,13 @@ fn static_list_length_scalar_expression(
         value.presence_variable,
         list_length_scalar_expression(value.literals.len())?,
     ))
+}
+
+fn static_list_is_empty_scalar_expression(value: StaticListValue) -> ScalarExpression {
+    presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::Literal(Literal::Boolean(value.literals.is_empty())),
+    )
 }
 
 fn list_length_scalar_expression(length: usize) -> Result<ScalarExpression, CoreError> {
@@ -16686,6 +16730,18 @@ fn compile_is_empty_predicate(
             "isEmpty() supports exactly one scalar string argument",
         ));
     };
+    if let Some(expression) = compile_optional_static_list_coalesce_is_empty_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )? {
+        return Ok(ScalarPredicate {
+            lhs: expression,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+        });
+    }
     if let Some(plan) = plan
         && let Some(expression) = compile_is_empty_metadata_scalar_expression(
             argument,
@@ -16735,6 +16791,41 @@ fn compile_is_empty_predicate(
         operator: ComparisonOperator::Equal,
         rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
     })
+}
+
+fn compile_optional_static_list_coalesce_is_empty_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_coalesce_is_empty_scalar_expression(
+                inner, path, plan, context,
+            )
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            let Some(coalesce) =
+                compile_optional_static_list_coalesce_arguments(function, path, plan, context)?
+            else {
+                return Ok(None);
+            };
+            let expressions = coalesce
+                .arguments
+                .into_iter()
+                .map(|argument| match argument {
+                    StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
+                    StaticListCoalesceArgument::List(value) => {
+                        static_list_is_empty_scalar_expression(value)
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok(Some(ScalarExpression::Coalesce { expressions }))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn compile_is_empty_metadata_scalar_expression(
@@ -28442,6 +28533,91 @@ relationships:
                             element_type: LiteralListElementType::String,
                         },
                     ] if literals == &vec![Literal::String("Service".to_string())]
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Coalesce { expressions }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }] if expressions.len() == 2
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_coalesce_size_and_is_empty() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN size(coalesce(keys(person), [])) AS owner_key_count, \
+                    isEmpty(coalesce(keys(person), [])) AS owner_keys_empty, \
+                    size(coalesce([], [])) AS empty_count, \
+                    isEmpty(coalesce([], [])) AS empty_is_empty \
+             ORDER BY size(coalesce(keys(person), []))",
+        )
+        .expect("static list coalesce size/isEmpty should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions: size_args },
+                    alias: size_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(predicate),
+                    alias: empty_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions: empty_size_args },
+                    alias: empty_size_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(empty_predicate),
+                    alias: empty_predicate_alias,
+                },
+            ] if size_alias == "owner_key_count"
+                && size_args.len() == 2
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Coalesce { expressions },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    }) if expressions.len() == 2
+                )
+                && empty_alias == "owner_keys_empty"
+                && empty_size_alias == "empty_count"
+                && matches!(
+                    empty_size_args.as_slice(),
+                    [
+                        ScalarExpression::Literal(Literal::Integer(0)),
+                        ScalarExpression::Literal(Literal::Integer(0)),
+                    ]
+                )
+                && empty_predicate_alias == "empty_is_empty"
+                && matches!(
+                    empty_predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Coalesce { expressions },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    }) if matches!(
+                        expressions.as_slice(),
+                        [
+                            ScalarExpression::Literal(Literal::Boolean(true)),
+                            ScalarExpression::Literal(Literal::Boolean(true)),
+                        ]
+                    )
                 )
         ));
         assert!(matches!(

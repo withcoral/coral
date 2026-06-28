@@ -214,7 +214,13 @@ The supported foundation subset is intentionally narrow:
   `head(...)`, `tail(...)`, slice, index, and static `UNWIND` handling can reuse
   the same folded-list machinery. Scalar/list mixes, all-null or untyped empty
   list outputs, dynamic list columns, and lists gated by different optional
-  bindings remain rejected;
+  bindings remain rejected. `size(coalesce(...))` and `isEmpty(coalesce(...))`
+  are handled as scalar reducers over those same static branches, e.g.
+  `coalesce(size(branch1), size(branch2))`, so optional metadata fallbacks work
+  without adding a runtime array-length operator. Because reducer outputs do not
+  render an array value, all-empty branches such as `size(coalesce([], []))` can
+  compile even though projecting `coalesce([], [])` remains rejected as an
+  untyped dynamic-list boundary;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the

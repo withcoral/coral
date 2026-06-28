@@ -11201,6 +11201,45 @@ async fn cypher_static_list_coalesce_preserves_optional_fallbacks() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_coalesce_size_and_is_empty_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                size(coalesce(keys(person), [])) AS owner_key_count, \
+                isEmpty(coalesce(keys(person), [])) AS owner_keys_empty, \
+                size(coalesce([], [])) AS empty_count, \
+                isEmpty(coalesce([], [])) AS empty_is_empty \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list coalesce size/isEmpty should execute");
+
+    assert!(
+        execution.translated_sql().contains("COALESCE(CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_key_count": 2, "owner_keys_empty": false, "empty_count": 0, "empty_is_empty": true}),
+            json!({"service": "deployments", "owner_key_count": 2, "owner_keys_empty": false, "empty_count": 0, "empty_is_empty": true}),
+            json!({"service": "experiments", "owner_key_count": 2, "owner_keys_empty": false, "empty_count": 0, "empty_is_empty": true}),
+            json!({"service": "legacy-sync", "owner_key_count": 0, "owner_keys_empty": true, "empty_count": 0, "empty_is_empty": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
