@@ -196,11 +196,13 @@ The supported foundation subset is intentionally narrow:
   until Coral has a dynamic list IR;
 - static list concatenation with `+` over literal lists, list parameters,
   `tail(...)`, static `split(...)`, `labels(...)`, and declaration-aware
-  `keys(...)`, folded at compile time and preserved as typed list IR in
-  projections, `ORDER BY`, `size(...)`, endpoint list functions, static
-  collection predicates, and parenthesized `IN` right-hand sides. Nullable
-  static metadata lists on the right-hand side of `IN` preserve optional-match
-  nulls with the same presence gating used by scalar metadata expressions.
+  `keys(...)`, plus `list + element` and `element + list` when the element is a
+  scalar literal or scalar parameter. Concatenation is folded at compile time
+  and preserved as typed list IR in projections, `ORDER BY`, static `UNWIND`,
+  `size(...)`, endpoint list functions, static collection predicates, static
+  list comprehensions, and parenthesized `IN` right-hand sides. Nullable static
+  metadata lists on the right-hand side of `IN` preserve optional-match nulls
+  with the same presence gating used by scalar metadata expressions.
   Concatenation rejects mixed non-null element types, unknowable projected
   element types, dynamic operands, and lists from different optional bindings;
 - parser-accepted static list comprehensions such as `[k IN keys(node)]`,

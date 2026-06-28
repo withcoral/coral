@@ -276,6 +276,7 @@ struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), VariableFunctionArgument>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
+    unwind_expression_sources: BTreeMap<(usize, usize), String>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
@@ -291,6 +292,7 @@ impl CypherCompileContext {
             variable_function_arguments: collect_variable_function_arguments(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
+            unwind_expression_sources: collect_unwind_expression_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
             parameters,
             graph,
@@ -324,6 +326,12 @@ impl CypherCompileContext {
     ) -> Option<&ListComprehensionSource> {
         self.list_comprehension_sources
             .get(&(comprehension.span.start, comprehension.span.end))
+    }
+
+    fn unwind_expression_source(&self, unwind: &Unwind) -> Option<&str> {
+        self.unwind_expression_sources
+            .get(&(unwind.span.start, unwind.span.end))
+            .map(String::as_str)
     }
 
     fn compact_exists_pattern_query(&self, exists: &ExistsExpression) -> Option<&str> {
@@ -941,21 +949,21 @@ fn compile_static_unwind_values(
     context: &CypherCompileContext,
     path: &str,
 ) -> Result<Vec<Literal>, CoreError> {
-    let value = compile_optional_static_list_value(
-        &unwind.expression,
-        format!("{path}.reading_clauses[{index}].unwind.expression"),
-        None,
-        context,
-    )?
+    let expression_path = format!("{path}.reading_clauses[{index}].unwind.expression");
+    let value = if let Some(source) = context.unwind_expression_source(unwind) {
+        compile_static_list_value_source(source, expression_path.clone(), None, context)?
+    } else {
+        compile_optional_static_list_value(&unwind.expression, expression_path.clone(), None, context)?
+    }
     .ok_or_else(|| {
         unsupported(
-            format!("{path}.reading_clauses[{index}].unwind.expression"),
+            expression_path.clone(),
             "UNWIND currently supports literal lists, list parameters, and folded static list expressions; dynamic graph property lists require row-source planning",
         )
     })?;
     if value.presence_variable.is_some() {
         return Err(unsupported(
-            format!("{path}.reading_clauses[{index}].unwind.expression"),
+            expression_path,
             "UNWIND over optional graph metadata lists requires row-source planning and is not supported yet",
         ));
     }
@@ -10292,15 +10300,43 @@ fn compile_optional_static_list_concat_value(
     context: &CypherCompileContext,
 ) -> Result<Option<StaticListValue>, CoreError> {
     let path = path.into();
-    let lhs = compile_optional_static_list_value(lhs, format!("{path}.lhs"), plan, context)?;
-    let rhs = compile_optional_static_list_value(rhs, format!("{path}.rhs"), plan, context)?;
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => Ok(Some(concat_static_list_values(lhs, rhs, path)?)),
+    let lhs_value = compile_optional_static_list_value(lhs, format!("{path}.lhs"), plan, context)?;
+    let rhs_value = compile_optional_static_list_value(rhs, format!("{path}.rhs"), plan, context)?;
+    match (lhs_value, rhs_value) {
+        (Some(lhs_value), Some(rhs_value)) => {
+            Ok(Some(concat_static_list_values(lhs_value, rhs_value, path)?))
+        }
+        (Some(lhs_value), None) => {
+            let Some(rhs_literal) =
+                compile_optional_static_list_concat_literal(rhs, format!("{path}.rhs"), context)?
+            else {
+                return Err(unsupported(
+                    path,
+                    "static list concatenation with a list left operand requires the right operand to be a literal list, list parameter, static split(...), range(...), tail(...), static labels()/keys() metadata list, scalar literal, or scalar parameter",
+                ));
+            };
+            Ok(Some(append_literal_to_static_list_value(
+                lhs_value,
+                rhs_literal,
+                path,
+            )?))
+        }
+        (None, Some(rhs_value)) => {
+            let Some(lhs_literal) =
+                compile_optional_static_list_concat_literal(lhs, format!("{path}.lhs"), context)?
+            else {
+                return Err(unsupported(
+                    path,
+                    "static list concatenation with a list right operand requires the left operand to be a literal list, list parameter, static split(...), range(...), tail(...), static labels()/keys() metadata list, scalar literal, or scalar parameter",
+                ));
+            };
+            Ok(Some(prepend_literal_to_static_list_value(
+                rhs_value,
+                lhs_literal,
+                path,
+            )?))
+        }
         (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => Err(unsupported(
-            path,
-            "static list concatenation requires both operands to be literal lists, list parameters, static split(...), range(...), tail(...), or static labels()/keys() metadata lists",
-        )),
     }
 }
 
@@ -10324,6 +10360,49 @@ fn concat_static_list_values(
     })
 }
 
+fn compile_optional_static_list_concat_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<Literal>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_concat_literal(inner, path, context)
+        }
+        expression if is_literal_expression(expression) => {
+            compile_literal(expression, path, context).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn append_literal_to_static_list_value(
+    mut value: StaticListValue,
+    literal: Literal,
+    path: impl Into<String>,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    validate_static_list_concat_operand(&value, format!("{path}.lhs"))?;
+    value.element_type =
+        merge_static_list_element_type_with_literal(value.element_type, &literal, &path)?;
+    value.literals.push(literal);
+    Ok(value)
+}
+
+fn prepend_literal_to_static_list_value(
+    mut value: StaticListValue,
+    literal: Literal,
+    path: impl Into<String>,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    validate_static_list_concat_operand(&value, format!("{path}.rhs"))?;
+    value.element_type =
+        merge_static_list_element_type_with_literal(value.element_type, &literal, &path)?;
+    value.literals.insert(0, literal);
+    Ok(value)
+}
+
 fn validate_static_list_concat_operand(
     value: &StaticListValue,
     path: impl Into<String>,
@@ -10341,6 +10420,24 @@ fn validate_static_list_concat_operand(
         ));
     }
     Ok(())
+}
+
+fn merge_static_list_element_type_with_literal(
+    list_element_type: Option<LiteralListElementType>,
+    literal: &Literal,
+    path: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let literal_type = literal_list_element_kind(literal);
+    match (list_element_type, literal_type) {
+        (Some(list_element_type), Some(literal_type)) if list_element_type != literal_type => {
+            Err(unsupported(
+                path,
+                "static list concatenation requires compatible non-null element types",
+            ))
+        }
+        (Some(element_type), _) | (_, Some(element_type)) => Ok(Some(element_type)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn merge_static_list_presence_variables(
@@ -13600,6 +13697,47 @@ fn collect_list_comprehension_sources(
         .filter(|node| node.kind() == SyntaxKind::LIST_COMPREHENSION)
         .filter_map(|node| list_comprehension_source_from_cst(cypher, &node))
         .collect()
+}
+
+fn collect_unwind_expression_sources(cypher: &str) -> BTreeMap<(usize, usize), String> {
+    // decypher's high-level AST can under-represent UNWIND expressions such as
+    // `UNWIND ['a'] + $extra AS value`. Recover the full source expression from
+    // the lossless CST and parse it through Coral's expression-fragment path.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::UNWIND_CLAUSE)
+        .filter_map(|node| unwind_expression_source_from_cst(cypher, &node))
+        .collect()
+}
+
+fn unwind_expression_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), String)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let expression = parse_unwind_expression_source(source)?;
+    Some(((start, end), expression.to_string()))
+}
+
+fn parse_unwind_expression_source(source: &str) -> Option<&str> {
+    const UNWIND_KEYWORD: &str = "UNWIND";
+    let source = source.trim();
+    if !source
+        .get(..UNWIND_KEYWORD.len())
+        .is_some_and(|value| value.eq_ignore_ascii_case(UNWIND_KEYWORD))
+        || !keyword_has_boundaries(source, 0, UNWIND_KEYWORD.len())
+    {
+        return None;
+    }
+    let after_unwind = source.get(UNWIND_KEYWORD.len()..)?.trim();
+    let as_index = find_top_level_keyword(after_unwind, "AS")?;
+    let expression = after_unwind.get(..as_index)?.trim();
+    (!expression.is_empty()).then_some(expression)
 }
 
 fn list_comprehension_source_from_cst(
@@ -24618,6 +24756,86 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_scalar_concatenation() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE 'dev' IN (['prod'] + 'dev') \
+               AND 'prod' IN ('prod' + ['dev']) \
+             RETURN ['prod'] + 'dev' AS appended, \
+                    'prod' + ['dev'] AS prepended, \
+                    [] + 'prod' AS typed_from_append, \
+                    'prod' + [] AS typed_from_prepend, \
+                    ['prod'] + null AS nullable_appended, \
+                    [tier IN 'prod' + ['dev'] | toUpper(tier)] AS mapped",
+        )
+        .expect("static list scalar concatenation should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Boolean(true)),
+            })
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("prod".to_string()),
+                            Literal::String("dev".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "appended".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("prod".to_string()),
+                            Literal::String("dev".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "prepended".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("prod".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "typed_from_append".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("prod".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "typed_from_prepend".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("prod".to_string()), Literal::Null],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "nullable_appended".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("PROD".to_string()),
+                            Literal::String("DEV".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "mapped".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_static_list_comprehensions() {
         let graph = star_test_graph();
         let parameters = BTreeMap::from([(
@@ -25619,6 +25837,10 @@ relationships:
         for (cypher, expected) in [
             (
                 "MATCH (service:Service) RETURN ['a'] + [1] AS values",
+                "static list concatenation requires compatible non-null element types",
+            ),
+            (
+                "MATCH (service:Service) RETURN ['a'] + 1 AS values",
                 "static list concatenation requires compatible non-null element types",
             ),
             (

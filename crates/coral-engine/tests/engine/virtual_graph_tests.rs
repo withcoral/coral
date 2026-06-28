@@ -11681,6 +11681,46 @@ async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_scalar_concatenation_unwinds_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "extra_tier".to_string(),
+        GraphCypherParameterValue::Literal(GraphLiteral::String("dev".to_string())),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND ['prod'] + $extra_tier AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, service.name AS service \
+         ORDER BY tier, service",
+        &parameters,
+    )
+    .await
+    .expect("static list scalar concatenation should execute");
+
+    assert!(
+        execution.translated_sql().contains("'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "service": "experiments"}),
+            json!({"tier": "prod", "service": "billing-api"}),
+            json!({"tier": "prod", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comprehensions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
