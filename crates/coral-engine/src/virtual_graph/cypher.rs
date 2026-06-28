@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, Unwind, With};
+use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, SortItem, Unwind, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
@@ -34,7 +34,7 @@ use super::ir::{
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection,
     GraphUnionOuterProjectionItem, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    NullOrder, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
@@ -306,6 +306,7 @@ struct CypherCompileContext {
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
+    order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
 }
@@ -315,6 +316,7 @@ impl CypherCompileContext {
         cypher: &str,
         parameters: BTreeMap<String, CypherParameterValue>,
         graph: Option<Declaration>,
+        order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     ) -> Self {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
@@ -322,6 +324,7 @@ impl CypherCompileContext {
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
+            order_null_placements,
             parameters,
             graph,
         }
@@ -366,6 +369,13 @@ impl CypherCompileContext {
         self.compact_exists_pattern_queries
             .get(&(exists.span.start, exists.span.end))
             .map(String::as_str)
+    }
+
+    fn order_null_placement(&self, item: &SortItem) -> Option<NullOrder> {
+        let span = expression_span(&item.expression)?;
+        self.order_null_placements
+            .get(&(span.start, span.end))
+            .copied()
     }
 
     fn parameter_value(
@@ -629,14 +639,18 @@ fn compile_cypher_query_with_optional_graph(
 ) -> Result<GraphQuery, CoreError> {
     let count_normalized = normalize_compact_count_subqueries(cypher);
     let range_normalized = normalize_static_range_functions(count_normalized.as_ref());
-    let cypher = range_normalized.as_ref();
+    let null_normalized = normalize_order_null_placements(range_normalized.as_ref());
+    let cypher = null_normalized.cypher.as_ref();
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
     })?;
+    let order_null_placements =
+        collect_order_null_placements_for_query(&query, &null_normalized.placements)?;
     let context = CypherCompileContext::from_source_with_parameters_and_graph(
         cypher,
         parameters.clone(),
         graph.cloned(),
+        order_null_placements,
     );
     compile_query(&query, &context)
 }
@@ -744,6 +758,7 @@ fn compile_single_query_as_graph_query(
         single_query,
         &projection_names,
         hidden_order_plan.as_ref(),
+        context,
         &path,
     )?;
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
@@ -1984,6 +1999,7 @@ fn compile_static_alternative_outer_order_by(
     single_query: &SingleQuery,
     projection_names: &[String],
     hidden_order: Option<&StaticAlternativeHiddenOrderPlan>,
+    context: &CypherCompileContext,
     path: &str,
 ) -> Result<Vec<OrderKey>, CoreError> {
     let return_clause = final_return_clause(single_query, path)?;
@@ -2018,7 +2034,7 @@ fn compile_static_alternative_outer_order_by(
                 Some(SortDirection::Descending) => OrderDirection::Descending,
                 Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
             },
-            nulls: None,
+            nulls: context.order_null_placement(item),
         });
     }
     Ok(order_by)
@@ -3735,7 +3751,7 @@ fn apply_terminal_graph_with_modifiers(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
-                nulls: None,
+                nulls: context.order_null_placement(item),
             });
         }
     }
@@ -3806,7 +3822,7 @@ fn compile_terminal_with_clause(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
-                nulls: None,
+                nulls: context.order_null_placement(item),
             });
         }
     }
@@ -4014,7 +4030,7 @@ fn apply_terminal_return_modifiers(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
-                nulls: None,
+                nulls: context.order_null_placement(item),
             });
         }
     }
@@ -7278,7 +7294,7 @@ fn compile_return(
                     Some(SortDirection::Descending) => OrderDirection::Descending,
                     Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
                 },
-                nulls: None,
+                nulls: context.order_null_placement(item),
             });
         }
     }
@@ -13995,6 +14011,425 @@ fn collect_compact_exists_pattern_queries(cypher: &str) -> BTreeMap<(usize, usiz
         .collect()
 }
 
+#[derive(Debug)]
+struct OrderNullPlacementNormalization<'a> {
+    cypher: Cow<'a, str>,
+    placements: Vec<Option<NullOrder>>,
+}
+
+fn normalize_order_null_placements(cypher: &str) -> OrderNullPlacementNormalization<'_> {
+    let (placements, removals) = collect_order_null_placement_sites(cypher);
+    if removals.is_empty() {
+        return OrderNullPlacementNormalization {
+            cypher: Cow::Borrowed(cypher),
+            placements,
+        };
+    }
+
+    let mut normalized = String::with_capacity(cypher.len());
+    let mut cursor = 0usize;
+    for (start, end) in removals {
+        if let Some(prefix) = cypher.get(cursor..start) {
+            normalized.push_str(prefix);
+        }
+        cursor = end;
+    }
+    if let Some(suffix) = cypher.get(cursor..) {
+        normalized.push_str(suffix);
+    }
+
+    OrderNullPlacementNormalization {
+        cypher: Cow::Owned(normalized),
+        placements,
+    }
+}
+
+fn collect_order_null_placement_sites(
+    cypher: &str,
+) -> (Vec<Option<NullOrder>>, Vec<(usize, usize)>) {
+    const ORDER_KEYWORD: &str = "ORDER";
+    const BY_KEYWORD: &str = "BY";
+
+    let mut placements = Vec::new();
+    let mut removals = Vec::new();
+    let mut index = 0usize;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < cypher.len() {
+        let Some(rest) = cypher.get(index..) else {
+            break;
+        };
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if keyword_at(cypher, index, ORDER_KEYWORD)
+            && previous_non_whitespace(cypher, index) != Some('.')
+        {
+            let after_order = skip_ascii_whitespace(cypher, index + ORDER_KEYWORD.len());
+            if keyword_at(cypher, after_order, BY_KEYWORD) {
+                let after_by = skip_ascii_whitespace(cypher, after_order + BY_KEYWORD.len());
+                index = collect_order_items_until_clause_end(
+                    cypher,
+                    after_by,
+                    depth,
+                    &mut placements,
+                    &mut removals,
+                );
+                continue;
+            }
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+
+        index += character_len;
+    }
+
+    (placements, removals)
+}
+
+fn collect_order_items_until_clause_end(
+    cypher: &str,
+    start: usize,
+    baseline_depth: usize,
+    placements: &mut Vec<Option<NullOrder>>,
+    removals: &mut Vec<(usize, usize)>,
+) -> usize {
+    let mut item_start = skip_ascii_whitespace(cypher, start);
+    let mut index = item_start;
+    let mut depth = baseline_depth;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < cypher.len() {
+        let Some(rest) = cypher.get(index..) else {
+            break;
+        };
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if depth == baseline_depth {
+            if matches!(character, ')' | ']' | '}') {
+                push_order_null_placement_item(cypher, item_start, index, placements, removals);
+                return index;
+            }
+            if character == ',' {
+                push_order_null_placement_item(cypher, item_start, index, placements, removals);
+                item_start = skip_ascii_whitespace(cypher, index + character_len);
+                index = item_start;
+                continue;
+            }
+            if order_clause_end_keyword_at(cypher, index) {
+                push_order_null_placement_item(cypher, item_start, index, placements, removals);
+                return index;
+            }
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+
+        index += character_len;
+    }
+
+    push_order_null_placement_item(cypher, item_start, cypher.len(), placements, removals);
+    cypher.len()
+}
+
+fn push_order_null_placement_item(
+    cypher: &str,
+    start: usize,
+    end: usize,
+    placements: &mut Vec<Option<NullOrder>>,
+    removals: &mut Vec<(usize, usize)>,
+) {
+    let start = skip_ascii_whitespace(cypher, start);
+    let end = trim_ascii_whitespace_end(cypher, end);
+    if start >= end {
+        return;
+    }
+    if let Some((remove_start, remove_end, nulls)) =
+        find_order_item_null_placement(cypher, start, end)
+    {
+        placements.push(Some(nulls));
+        removals.push((remove_start, remove_end));
+    } else {
+        placements.push(None);
+    }
+}
+
+fn find_order_item_null_placement(
+    cypher: &str,
+    start: usize,
+    end: usize,
+) -> Option<(usize, usize, NullOrder)> {
+    const NULLS_KEYWORD: &str = "NULLS";
+
+    let mut index = start;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < end {
+        let rest = cypher.get(index..end)?;
+        let character = rest.chars().next()?;
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..end)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..end)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => {
+                in_string = true;
+                index += character_len;
+                continue;
+            }
+            '`' => {
+                in_escaped_identifier = true;
+                index += character_len;
+                continue;
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                index += character_len;
+                continue;
+            }
+            ')' | ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                index += character_len;
+                continue;
+            }
+            _ => {}
+        }
+
+        if depth == 0
+            && keyword_at(cypher, index, NULLS_KEYWORD)
+            && previous_non_whitespace(cypher, index) != Some('.')
+        {
+            let after_nulls = skip_ascii_whitespace(cypher, index + NULLS_KEYWORD.len());
+            if let Some((placement_end, nulls)) = parse_null_placement_keyword(cypher, after_nulls)
+                && cypher
+                    .get(placement_end..end)
+                    .is_some_and(|tail| tail.trim().is_empty())
+            {
+                let remove_start = include_preceding_ascii_whitespace(cypher, start, index);
+                return Some((remove_start, placement_end, nulls));
+            }
+        }
+
+        index += character_len;
+    }
+
+    None
+}
+
+fn parse_null_placement_keyword(source: &str, index: usize) -> Option<(usize, NullOrder)> {
+    const FIRST_KEYWORD: &str = "FIRST";
+    const LAST_KEYWORD: &str = "LAST";
+
+    if keyword_at(source, index, FIRST_KEYWORD) {
+        Some((index + FIRST_KEYWORD.len(), NullOrder::First))
+    } else if keyword_at(source, index, LAST_KEYWORD) {
+        Some((index + LAST_KEYWORD.len(), NullOrder::Last))
+    } else {
+        None
+    }
+}
+
+fn collect_order_null_placements_for_query(
+    query: &Query,
+    placements: &[Option<NullOrder>],
+) -> Result<BTreeMap<(usize, usize), NullOrder>, CoreError> {
+    #[derive(Default)]
+    struct SortItemCollector<'ast> {
+        items: Vec<&'ast SortItem>,
+    }
+
+    impl<'ast> visit::Visit<'ast> for SortItemCollector<'ast> {
+        fn visit_sort_item(&mut self, node: &'ast SortItem) {
+            self.items.push(node);
+            visit::walk_sort_item(self, node);
+        }
+    }
+
+    let mut collector = SortItemCollector::default();
+    visit::Visit::visit_query(&mut collector, query);
+    if collector.items.len() != placements.len() {
+        if placements.iter().any(Option::is_some) {
+            return Err(CoreError::internal(format!(
+                "recovered {} Cypher ORDER BY null placements for {} parsed sort items",
+                placements.len(),
+                collector.items.len()
+            )));
+        }
+        return Ok(BTreeMap::new());
+    }
+
+    let mut by_expression_span = BTreeMap::new();
+    for (item, nulls) in collector.items.into_iter().zip(placements.iter().copied()) {
+        let Some(nulls) = nulls else {
+            continue;
+        };
+        let Some(span) = expression_span(&item.expression) else {
+            return Err(unsupported(
+                "order.nulls",
+                "NULLS FIRST/LAST currently requires a sort expression with source span",
+            ));
+        };
+        by_expression_span.insert((span.start, span.end), nulls);
+    }
+    Ok(by_expression_span)
+}
+
+fn expression_span(expression: &Expression) -> Option<decypher::error::Span> {
+    match expression {
+        Expression::Literal(literal) => literal_span(literal),
+        Expression::Variable(variable) => Some(variable.name.span),
+        Expression::Parameter(parameter) => Some(parameter.span),
+        Expression::PropertyLookup { span, .. }
+        | Expression::NodeLabels { span, .. }
+        | Expression::BinaryOp { span, .. }
+        | Expression::UnaryOp { span, .. }
+        | Expression::Comparison { span, .. }
+        | Expression::ListIndex { span, .. }
+        | Expression::ListSlice { span, .. }
+        | Expression::In { span, .. }
+        | Expression::IsNull { span, .. }
+        | Expression::CountStar { span } => Some(*span),
+        Expression::FunctionCall(function) => Some(function.span),
+        Expression::Case(case_expression) => Some(case_expression.span),
+        Expression::ListComprehension(comprehension) => Some(comprehension.span),
+        Expression::PatternComprehension(comprehension) => Some(comprehension.span),
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => Some(filter.span),
+        Expression::Parenthesized(inner) => expression_span(inner),
+        Expression::Pattern(pattern) => Some(pattern.span),
+        Expression::Exists(exists) => Some(exists.span),
+        Expression::CountSubquery(count) => Some(count.span),
+        Expression::CollectSubquery(collect) => Some(collect.span),
+        Expression::MapProjection(projection) => Some(projection.span),
+    }
+}
+
+fn literal_span(literal: &CypherLiteral) -> Option<decypher::error::Span> {
+    match literal {
+        CypherLiteral::String(string) => Some(string.span),
+        CypherLiteral::List(list) => Some(list.span),
+        CypherLiteral::Map(map) => Some(map.span),
+        CypherLiteral::Number(_) | CypherLiteral::Boolean(_) | CypherLiteral::Null => None,
+    }
+}
+
 fn normalize_compact_count_subqueries(cypher: &str) -> Cow<'_, str> {
     const COUNT_KEYWORD: &str = "COUNT";
 
@@ -14618,6 +15053,53 @@ fn keyword_has_boundaries(source: &str, index: usize, keyword_len: usize) -> boo
         .get(index + keyword_len..)
         .and_then(|suffix| suffix.chars().next());
     !before.is_some_and(is_identifier_continue) && !after.is_some_and(is_identifier_continue)
+}
+
+fn keyword_at(source: &str, index: usize, keyword: &str) -> bool {
+    source
+        .get(index..index + keyword.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(keyword))
+        && keyword_has_boundaries(source, index, keyword.len())
+}
+
+fn order_clause_end_keyword_at(source: &str, index: usize) -> bool {
+    const CLAUSE_END_KEYWORDS: &[&str] = &[
+        "CALL", "CREATE", "DELETE", "FINISH", "LIMIT", "MATCH", "MERGE", "OPTIONAL", "REMOVE",
+        "RETURN", "SET", "SKIP", "UNION", "UNWIND", "WHERE", "WITH",
+    ];
+
+    CLAUSE_END_KEYWORDS
+        .iter()
+        .any(|keyword| keyword_at(source, index, keyword))
+}
+
+fn trim_ascii_whitespace_end(source: &str, mut end: usize) -> usize {
+    while let Some(prefix) = source.get(..end) {
+        let Some(character) = prefix.chars().next_back() else {
+            return end;
+        };
+        if !character.is_ascii_whitespace() {
+            return end;
+        }
+        end -= character.len_utf8();
+    }
+    end
+}
+
+fn include_preceding_ascii_whitespace(source: &str, lower_bound: usize, mut index: usize) -> usize {
+    while index > lower_bound {
+        let Some(prefix) = source.get(lower_bound..index) else {
+            return index;
+        };
+        let Some(character) = prefix.chars().next_back() else {
+            return index;
+        };
+        if !character.is_ascii_whitespace() {
+            return index;
+        }
+        index -= character.len_utf8();
+    }
+    index
 }
 
 fn is_identifier_continue(character: char) -> bool {
@@ -15563,6 +16045,7 @@ fn compile_compact_exists_pattern_query(
         source,
         context.parameters.clone(),
         context.graph.clone(),
+        BTreeMap::new(),
     );
     compile_exists_regular_query_predicate(&regular_query, path, plan, &fragment_context)
 }
@@ -17130,6 +17613,7 @@ fn parse_cypher_expression_fragment(
         &fragment,
         context.parameters.clone(),
         context.graph.clone(),
+        BTreeMap::new(),
     );
     Ok((expression, fragment_context))
 }
@@ -20376,6 +20860,40 @@ relationships:
     }
 
     #[test]
+    fn compiles_order_by_null_placement() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service, service.tier AS tier \
+             ORDER BY service.tier ASC NULLS LAST, service.name DESC NULLS FIRST \
+             LIMIT 5",
+        )
+        .expect("query should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: Some(NullOrder::Last),
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Descending,
+                    nulls: Some(NullOrder::First),
+                },
+            ]
+        );
+        assert_eq!(plan.limit, Some(5));
+    }
+
+    #[test]
     fn compiles_union_query() {
         let query = compile_cypher_query(
             "MATCH (service:Service) \
@@ -20569,6 +21087,38 @@ relationships:
                     expression: OrderExpression::ProjectionAlias("service".to_string()),
                     direction: OrderDirection::Ascending,
                     nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_unwind_outer_order_null_placement() {
+        let query = compile_cypher_query(
+            "UNWIND ['prod', 'dev'] AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN service.name AS service \
+             ORDER BY CASE WHEN tier = 'prod' THEN service.name ELSE NULL END NULLS LAST, \
+                      service DESC NULLS FIRST",
+        )
+        .expect("static UNWIND ORDER BY NULLS FIRST/LAST should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static UNWIND to expand into a union query");
+        };
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("__coral_order_0".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: Some(NullOrder::Last),
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("service".to_string()),
+                    direction: OrderDirection::Descending,
+                    nulls: Some(NullOrder::First),
                 },
             ]
         );

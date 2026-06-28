@@ -288,6 +288,14 @@ The supported foundation subset is intentionally narrow:
   counted pattern syntax without depending on parser-private AST recovery. The
   normalized form then lowers through the same scoped count-subquery planner as
   explicit `COUNT { MATCH ... }`;
+- explicit Cypher `ORDER BY ... NULLS FIRST/LAST` is normalized before typed AST
+  construction because the current parser version accepts sort direction but
+  does not model null placement. The Cypher frontend records null placement per
+  sort item from the source text, parses the normalized query, then keys the
+  recovered placement by the typed sort expression span. Normal order lowering
+  carries that into the shared `OrderKey.nulls` field, so single plans, terminal
+  `WITH`, static pattern alternatives, and static `UNWIND` outer ordering all
+  render the same DataFusion `NULLS FIRST` / `NULLS LAST` SQL;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
@@ -307,9 +315,8 @@ The supported foundation subset is intentionally narrow:
   keys from different mappings do not collide. GQL aggregate aliases include
   `collect_list`, `stdev_samp`, and `stdev_pop`; numeric property aggregates,
   property and identity `ORDER BY`, direct aggregate `ORDER BY` expressions
-  that match
-  projected aggregates, and projection alias `ORDER BY` including aggregate
-  aliases;
+  that match projected aggregates, projection alias `ORDER BY` including
+  aggregate aliases, and explicit null placement on supported sort keys;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal
   graph-variable `WITH` row modifiers, and terminal `WITH` projection subsets
   whose final `RETURN` can reorder or rename every projected alias, including
@@ -328,7 +335,8 @@ The supported foundation subset is intentionally narrow:
   preserved, aggregate projections are hoisted through the same outer union
   aggregation path used by static pattern alternatives, and empty lists compile
   to a forced-empty graph plan. Row-preserving hidden `ORDER BY` expressions are
-  evaluated inside each expanded branch and stripped by the outer projection.
+  evaluated inside each expanded branch and stripped by the outer projection;
+  explicit null placement is preserved on the final outer order keys.
   Dynamic list-valued columns and `WITH`-scoped unwinds remain future row-source
   IR work rather than SQL-rendering shortcuts;
 - exact fixed relationship ranges greater than one hop lowered as repeated
