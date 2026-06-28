@@ -4670,10 +4670,22 @@ fn compile_path_chain_into(
             chain_state,
         );
     } else {
+        let intermediate_labels = infer_fixed_length_intermediate_labels(
+            context.graph.as_ref(),
+            &relationship.pattern.relationship_type,
+            relationship.pattern.direction,
+            &chain_state.previous_label,
+            &next_label,
+            relationship.length,
+            format!(
+                "match.pattern.parts[{}].relationships[{}]",
+                options.part_index, options.chain_index
+            ),
+        )?;
         append_repeated_relationship(
             &relationship,
             &next_variable,
-            &next_label,
+            &intermediate_labels,
             options,
             plan,
             state,
@@ -4743,7 +4755,7 @@ fn append_single_relationship(
 fn append_repeated_relationship(
     relationship: &CompiledRelationship,
     next_variable: &str,
-    next_label: &str,
+    intermediate_labels: &[String],
     options: PathChainCompileOptions,
     plan: &mut GraphPlan,
     state: &mut CypherCompileState,
@@ -4751,15 +4763,6 @@ fn append_repeated_relationship(
 ) -> Result<(), CoreError> {
     let force_relationship_variable =
         options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
-    if chain_state.previous_label != next_label {
-        return Err(unsupported(
-            format!(
-                "match.pattern.parts[{}].relationships[{}]",
-                options.part_index, options.chain_index
-            ),
-            "fixed-length relationship ranges greater than 1 currently require same-label endpoints so Coral can infer intermediate node mappings",
-        ));
-    }
     let relationship_variables = append_fixed_length_relationship(
         plan,
         state,
@@ -4771,10 +4774,10 @@ fn append_repeated_relationship(
             chain_index: options.chain_index,
             left_variable: &chain_state.previous_variable,
             right_variable: next_variable,
-            node_label: &chain_state.previous_label,
+            intermediate_labels,
             optional: options.optional,
         },
-    );
+    )?;
     if force_relationship_variable {
         record_path_presence_variables(chain_state, relationship_variables);
     }
@@ -4802,12 +4805,154 @@ fn record_path_presence_variable(chain_state: &mut PathChainCompileState, variab
     }
 }
 
+fn infer_fixed_length_intermediate_labels(
+    graph: Option<&Declaration>,
+    relationship_type: &str,
+    direction: Direction,
+    start_label: &str,
+    end_label: &str,
+    length: usize,
+    path: impl Into<String>,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
+    if length <= 1 {
+        return Ok(Vec::new());
+    }
+
+    let Some(graph) = graph else {
+        if start_label == end_label {
+            return Ok(vec![start_label.to_string(); length - 1]);
+        }
+        return Err(unsupported(
+            path,
+            "fixed-length relationship ranges greater than 1 with different endpoint labels require a graph declaration so Coral can infer intermediate node mappings",
+        ));
+    };
+
+    let sequences = fixed_length_label_sequences(
+        graph,
+        relationship_type,
+        direction,
+        start_label,
+        end_label,
+        length,
+    );
+    match sequences.as_slice() {
+        [sequence] => sequence
+            .get(1..sequence.len().saturating_sub(1))
+            .map(<[String]>::to_vec)
+            .ok_or_else(|| CoreError::internal("fixed-hop label sequence was too short")),
+        [] => Err(unsupported(
+            path,
+            format!(
+                "fixed-length relationship range could not infer a {length}-hop '{relationship_type}' label path from {start_label} to {end_label}"
+            ),
+        )),
+        _ => Err(unsupported(
+            path,
+            format!(
+                "fixed-length relationship range found {} possible {length}-hop '{relationship_type}' label paths from {start_label} to {end_label}; use explicit intermediate nodes to disambiguate",
+                sequences.len()
+            ),
+        )),
+    }
+}
+
+fn fixed_length_label_sequences(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+    start_label: &str,
+    end_label: &str,
+    length: usize,
+) -> Vec<Vec<String>> {
+    let mut sequences = Vec::new();
+    let mut current = vec![start_label.to_string()];
+    collect_fixed_length_label_sequences(
+        graph,
+        relationship_type,
+        direction,
+        end_label,
+        length,
+        &mut current,
+        &mut sequences,
+    );
+    sequences
+}
+
+fn collect_fixed_length_label_sequences(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+    end_label: &str,
+    remaining_hops: usize,
+    current: &mut Vec<String>,
+    sequences: &mut Vec<Vec<String>>,
+) {
+    let Some(current_label) = current.last().cloned() else {
+        return;
+    };
+    if remaining_hops == 0 {
+        if current_label == end_label {
+            sequences.push(current.clone());
+        }
+        return;
+    }
+
+    for next_label in next_fixed_length_labels(graph, relationship_type, direction, &current_label)
+    {
+        current.push(next_label);
+        collect_fixed_length_label_sequences(
+            graph,
+            relationship_type,
+            direction,
+            end_label,
+            remaining_hops - 1,
+            current,
+            sequences,
+        );
+        current.pop();
+    }
+}
+
+fn next_fixed_length_labels(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+    current_label: &str,
+) -> BTreeSet<String> {
+    let mut labels = BTreeSet::new();
+    for relationship in graph.relationships_for_type(relationship_type) {
+        match direction {
+            Direction::Outgoing => {
+                if relationship.from.label == current_label {
+                    labels.insert(relationship.to.label.clone());
+                }
+            }
+            Direction::Incoming => {
+                if relationship.to.label == current_label {
+                    labels.insert(relationship.from.label.clone());
+                }
+            }
+            Direction::Undirected => {
+                if relationship.from.label == current_label {
+                    labels.insert(relationship.to.label.clone());
+                }
+                if relationship.to.label == current_label {
+                    labels.insert(relationship.from.label.clone());
+                }
+            }
+        }
+    }
+    labels
+}
+
 struct FixedLengthExpansion<'a> {
     part_index: usize,
     chain_index: usize,
     left_variable: &'a str,
     right_variable: &'a str,
-    node_label: &'a str,
+    intermediate_labels: &'a [String],
     optional: bool,
 }
 
@@ -4818,13 +4963,16 @@ fn append_fixed_length_relationship(
     predicates: &[PropertyPredicate],
     length: usize,
     expansion: &FixedLengthExpansion<'_>,
-) -> Vec<String> {
+) -> Result<Vec<String>, CoreError> {
     let mut left = expansion.left_variable.to_string();
     let mut relationship_variables = Vec::new();
     for hop in 1..=length {
         let right = if hop == length {
             expansion.right_variable.to_string()
         } else {
+            let label = expansion.intermediate_labels.get(hop - 1).ok_or_else(|| {
+                CoreError::internal("fixed-length expansion label sequence was incomplete")
+            })?;
             let variable = fresh_internal_node_variable_avoiding(
                 plan,
                 expansion.part_index,
@@ -4834,7 +4982,7 @@ fn append_fixed_length_relationship(
             mark_graph_variable_in_scope(state, &variable);
             plan.nodes.push(NodePattern {
                 variable: variable.clone(),
-                label: expansion.node_label.to_string(),
+                label: label.clone(),
             });
             variable
         };
@@ -4861,7 +5009,7 @@ fn append_fixed_length_relationship(
         plan.relationships.push(pattern);
         left = right;
     }
-    relationship_variables
+    Ok(relationship_variables)
 }
 
 fn rebind_property_predicate_variable(
@@ -14305,6 +14453,62 @@ relationships:
         .expect("star test graph should parse")
     }
 
+    fn route_test_graph() -> Declaration {
+        Declaration::from_yaml(
+            r"
+version: 1
+name: route_test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+  - label: Incident
+    table: { schema: ops, name: incidents }
+    key: id
+    properties:
+      title: title
+  - label: Team
+    table: { schema: ops, name: teams }
+    key: id
+    properties:
+      name: team_name
+relationships:
+  - type: ROUTES
+    table: { schema: ops, name: person_service_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: ROUTES
+    table: { schema: ops, name: service_incident_routes }
+    from: { label: Service, key: service_id }
+    to: { label: Incident, key: incident_id }
+  - type: ESCALATES_TO
+    table: { schema: ops, name: person_service_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: ESCALATES_TO
+    table: { schema: ops, name: person_team_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Team, key: team_id }
+  - type: ESCALATES_TO
+    table: { schema: ops, name: service_incident_routes }
+    from: { label: Service, key: service_id }
+    to: { label: Incident, key: incident_id }
+  - type: ESCALATES_TO
+    table: { schema: ops, name: team_incident_routes }
+    from: { label: Team, key: team_id }
+    to: { label: Incident, key: incident_id }
+",
+        )
+        .expect("route test graph should parse")
+    }
+
     #[test]
     fn compiles_match_where_return_order_limit() {
         let plan = compile_cypher(
@@ -22175,6 +22379,106 @@ relationships:
         ] {
             assert_unsupported(cypher);
         }
+    }
+
+    #[test]
+    fn compiles_cross_label_fixed_relationship_ranges_from_graph_declaration() {
+        let graph = route_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH path = (person:Person)-[:ROUTES*2]->(incident:Incident) \
+             RETURN person.name AS person, incident.title AS incident, length(path) AS hops",
+        )
+        .expect("cross-label fixed-hop path should compile from declaration metadata");
+
+        let service = plan
+            .nodes
+            .iter()
+            .find(|node| node.label == "Service")
+            .expect("intermediate Service node should be inferred");
+        assert_eq!(plan.relationships.len(), 2);
+        let first_relationship = plan.relationships.first().expect("first relationship");
+        let second_relationship = plan.relationships.get(1).expect("second relationship");
+        assert_eq!(
+            first_relationship,
+            &RelationshipPattern {
+                variable: None,
+                relationship_type: "ROUTES".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: service.variable.clone(),
+            }
+        );
+        assert_eq!(
+            second_relationship,
+            &RelationshipPattern {
+                variable: None,
+                relationship_type: "ROUTES".to_string(),
+                left: service.variable.clone(),
+                direction: Direction::Outgoing,
+                right: "incident".to_string(),
+            }
+        );
+        assert_eq!(path_length_projection_literal(&plan), Some(2));
+    }
+
+    #[test]
+    fn compiles_incoming_cross_label_fixed_relationship_ranges_from_graph_declaration() {
+        let graph = route_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH path = (incident:Incident)<-[:ROUTES*2]-(person:Person) \
+             RETURN person.name AS person, incident.title AS incident, length(path) AS hops",
+        )
+        .expect("incoming cross-label fixed-hop path should infer reverse labels");
+
+        let service = plan
+            .nodes
+            .iter()
+            .find(|node| node.label == "Service")
+            .expect("intermediate Service node should be inferred");
+        assert_eq!(plan.relationships.len(), 2);
+        let first_relationship = plan.relationships.first().expect("first relationship");
+        let second_relationship = plan.relationships.get(1).expect("second relationship");
+        assert_eq!(first_relationship.left, "incident");
+        assert_eq!(first_relationship.right, service.variable);
+        assert_eq!(first_relationship.direction, Direction::Incoming);
+        assert_eq!(second_relationship.left, first_relationship.right);
+        assert_eq!(second_relationship.right, "person");
+        assert_eq!(second_relationship.direction, Direction::Incoming);
+    }
+
+    #[test]
+    fn rejects_ambiguous_cross_label_fixed_relationship_ranges() {
+        let error = compile_cypher_for_graph(
+            &route_test_graph(),
+            "MATCH (person:Person)-[:ESCALATES_TO*2]->(incident:Incident) \
+             RETURN person.name AS person, incident.title AS incident",
+        )
+        .expect_err("ambiguous intermediate labels should be rejected");
+
+        assert!(
+            error.to_string().contains("found 2 possible 2-hop"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("use explicit intermediate nodes to disambiguate"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unmapped_cross_label_fixed_relationship_ranges() {
+        let error = compile_cypher_for_graph(
+            &route_test_graph(),
+            "MATCH (team:Team)-[:ROUTES*2]->(incident:Incident) \
+             RETURN team.name AS team, incident.title AS incident",
+        )
+        .expect_err("unmapped fixed-hop label paths should be rejected");
+
+        assert!(error.to_string().contains("could not infer"), "{error}");
     }
 
     #[test]

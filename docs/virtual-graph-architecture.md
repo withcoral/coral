@@ -239,7 +239,9 @@ The supported foundation subset is intentionally narrow:
   with identical output names, column order, and catalog-compatible output
   types;
 - exact fixed relationship ranges greater than one hop lowered as repeated
-  fixed-hop joins when the endpoints share one static node label;
+  fixed-hop joins when the graph declaration yields one unambiguous intermediate
+  label sequence, including cross-label paths such as
+  `(:Person)-[:ROUTES*2]->(:Incident)` through `Service`;
 - exact zero-hop relationship ranges lowered as same-node identity predicates,
   and finite non-negative bounded mandatory relationship ranges and GQL
   relationship quantifiers lowered as `UNION ALL` branches, with outer row
@@ -252,12 +254,13 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, unbounded variable-length paths, bounded ranges
 inside `OPTIONAL MATCH`, relationship-variable list bindings for zero-hop or
-multi-hop ranges, parameterized property maps, keyless relationship identity
-operations, non-terminal projection boundaries, post-union result processing,
-scalar projections containing multiple correlated `COUNT`/`EXISTS` subqueries,
-general subqueries with `WITH`, `RETURN`, `UNION`, or procedure calls, path/list
-length via `size`, ordered metadata-list comparisons, dynamic list comparisons
-or indexes, and broad expression semantics.
+multi-hop ranges, ambiguous or unmapped cross-label fixed-hop paths,
+parameterized property maps, keyless relationship identity operations,
+non-terminal projection boundaries, post-union result processing, scalar
+projections containing multiple correlated `COUNT`/`EXISTS` subqueries, general
+subqueries with `WITH`, `RETURN`, `UNION`, or procedure calls, path/list length
+via `size`, ordered metadata-list comparisons, dynamic list comparisons or
+indexes, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

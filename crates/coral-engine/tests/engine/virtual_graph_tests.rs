@@ -1093,6 +1093,47 @@ async fn cypher_exact_fixed_relationship_ranges_execute_as_repeated_hops() {
 }
 
 #[tokio::test]
+async fn cypher_cross_label_fixed_relationship_ranges_infer_intermediate_labels() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[:ROUTES*2]->(incident:Incident) \
+         RETURN person.name AS person, incident.title AS incident, length(path) AS hops \
+         ORDER BY person, incident",
+    )
+    .await
+    .expect("cross-label fixed-hop path should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"person_service_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_incident_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"person": "Ada Lovelace", "incident": "billing latency", "hops": 2}),
+            json!({"person": "Grace Hopper", "incident": "deploy failed", "hops": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exact_gql_relationship_quantifiers_execute_as_repeated_hops() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -10360,6 +10401,110 @@ fn ops_manifest(dir: &Path) -> Value {
     })
 }
 
+fn write_route_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "route_people.jsonl",
+        &[
+            json!({"id": 1, "full_name": "Ada Lovelace"}),
+            json!({"id": 2, "full_name": "Grace Hopper"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "route_services.jsonl",
+        &[
+            json!({"id": 10, "service_name": "billing-api"}),
+            json!({"id": 20, "service_name": "deployments"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "route_incidents.jsonl",
+        &[
+            json!({"id": 100, "title": "billing latency"}),
+            json!({"id": 200, "title": "deploy failed"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "person_service_routes.jsonl",
+        &[
+            json!({"person_id": 1, "service_id": 10}),
+            json!({"person_id": 2, "service_id": 20}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "service_incident_routes.jsonl",
+        &[
+            json!({"service_id": 10, "incident_id": 100}),
+            json!({"service_id": 20, "incident_id": 200}),
+        ],
+    );
+}
+
+fn route_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "ops",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "route_people",
+                "description": "Synthetic route people fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "route_people.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "full_name", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "route_services",
+                "description": "Synthetic route services fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "route_services.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "service_name", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "route_incidents",
+                "description": "Synthetic route incidents fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "route_incidents.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "title", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "person_service_routes",
+                "description": "Synthetic person-to-service route edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "person_service_routes.jsonl" },
+                "columns": [
+                    { "name": "person_id", "type": "Int64" },
+                    { "name": "service_id", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "service_incident_routes",
+                "description": "Synthetic service-to-incident route edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "service_incident_routes.jsonl" },
+                "columns": [
+                    { "name": "service_id", "type": "Int64" },
+                    { "name": "incident_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
 const OPS_GRAPH: &str = r"
 version: 1
 name: ops
@@ -10409,4 +10554,35 @@ relationships:
     properties:
       criticality: criticality
       source: source
+";
+
+const ROUTE_GRAPH: &str = r"
+version: 1
+name: routes
+description: Synthetic cross-label route graph
+nodes:
+  - label: Person
+    table: { schema: ops, name: route_people }
+    key: id
+    properties:
+      name: full_name
+  - label: Service
+    table: { schema: ops, name: route_services }
+    key: id
+    properties:
+      name: service_name
+  - label: Incident
+    table: { schema: ops, name: route_incidents }
+    key: id
+    properties:
+      title: title
+relationships:
+  - type: ROUTES
+    table: { schema: ops, name: person_service_routes }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+  - type: ROUTES
+    table: { schema: ops, name: service_incident_routes }
+    from: { label: Service, key: service_id }
+    to: { label: Incident, key: incident_id }
 ";
