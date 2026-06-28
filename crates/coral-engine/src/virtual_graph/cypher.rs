@@ -7222,7 +7222,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), abs(), sqrt(), sign(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -7400,92 +7400,15 @@ fn evaluate_static_map_function(
     evaluation: StaticFilterEvaluation<'_>,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
-    if is_coalesce_function(function) {
-        return evaluate_static_map_coalesce(function, path, evaluation);
+    if let Some(literal) = evaluate_static_map_null_or_length_function(function, &path, evaluation)?
+    {
+        return Ok(literal);
     }
-    if is_null_if_function(function) {
-        return evaluate_static_map_null_if(function, path, evaluation);
+    if let Some(literal) = evaluate_static_map_numeric_function(function, &path, evaluation)? {
+        return Ok(literal);
     }
-    if is_character_length_function(function) {
-        return evaluate_static_map_character_length(function, path, evaluation);
-    }
-    if is_abs_function(function) {
-        return evaluate_static_map_abs(function, path, evaluation);
-    }
-    if is_sqrt_function(function) {
-        return evaluate_static_map_sqrt(function, path, evaluation);
-    }
-    if is_sign_function(function) {
-        return evaluate_static_map_sign(function, path, evaluation);
-    }
-    if is_to_string_function(function) {
-        return evaluate_static_map_to_string(function, path, evaluation);
-    }
-    if is_to_lower_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "toLower",
-            str::to_lowercase,
-        );
-    }
-    if is_to_upper_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "toUpper",
-            str::to_uppercase,
-        );
-    }
-    if is_trim_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "trim",
-            |value| value.trim().to_string(),
-        );
-    }
-    if is_ltrim_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "lTrim",
-            |value| value.trim_start().to_string(),
-        );
-    }
-    if is_rtrim_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "rTrim",
-            |value| value.trim_end().to_string(),
-        );
-    }
-    if is_replace_function(function) {
-        return evaluate_static_map_replace(function, path, evaluation);
-    }
-    if is_substring_function(function) {
-        return evaluate_static_map_substring(function, path, evaluation);
-    }
-    if is_left_function(function) {
-        return evaluate_static_map_left(function, path, evaluation);
-    }
-    if is_right_function(function) {
-        return evaluate_static_map_right(function, path, evaluation);
-    }
-    if is_reverse_function(function) {
-        return evaluate_static_map_unary_string_function(
-            function,
-            path,
-            evaluation,
-            "reverse",
-            |value| value.chars().rev().collect(),
-        );
+    if let Some(literal) = evaluate_static_map_string_function(function, &path, evaluation)? {
+        return Ok(literal);
     }
     Err(unsupported(
         path,
@@ -7494,6 +7417,163 @@ fn evaluate_static_map_function(
             qualified_function_name(function)
         ),
     ))
+}
+
+fn evaluate_static_map_null_or_length_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_coalesce_function(function) {
+        return evaluate_static_map_coalesce(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_null_if_function(function) {
+        return evaluate_static_map_null_if(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_character_length_function(function) {
+        return evaluate_static_map_character_length(function, path.to_string(), evaluation)
+            .map(Some);
+    }
+    Ok(None)
+}
+
+fn evaluate_static_map_numeric_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_abs_function(function) {
+        return evaluate_static_map_abs(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_ceil_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "ceil",
+            f64::ceil,
+        )
+        .map(Some);
+    }
+    if is_floor_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "floor",
+            f64::floor,
+        )
+        .map(Some);
+    }
+    if is_round_function(function) {
+        return evaluate_static_map_round(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_sqrt_function(function) {
+        return evaluate_static_map_sqrt(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_sign_function(function) {
+        return evaluate_static_map_sign(function, path.to_string(), evaluation).map(Some);
+    }
+    Ok(None)
+}
+
+fn evaluate_static_map_string_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_to_string_function(function) {
+        return evaluate_static_map_to_string(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_to_lower_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "toLower",
+            str::to_lowercase,
+        )
+        .map(Some);
+    }
+    if is_to_upper_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "toUpper",
+            str::to_uppercase,
+        )
+        .map(Some);
+    }
+    evaluate_static_map_more_string_function(function, path, evaluation)
+}
+
+fn evaluate_static_map_more_string_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_trim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "trim",
+            |value| value.trim().to_string(),
+        )
+        .map(Some);
+    }
+    if is_ltrim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "lTrim",
+            |value| value.trim_start().to_string(),
+        )
+        .map(Some);
+    }
+    if is_rtrim_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "rTrim",
+            |value| value.trim_end().to_string(),
+        )
+        .map(Some);
+    }
+    evaluate_static_map_composite_string_function(function, path, evaluation)
+}
+
+fn evaluate_static_map_composite_string_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_replace_function(function) {
+        return evaluate_static_map_replace(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_substring_function(function) {
+        return evaluate_static_map_substring(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_left_function(function) {
+        return evaluate_static_map_left(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_right_function(function) {
+        return evaluate_static_map_right(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_reverse_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "reverse",
+            |value| value.chars().rev().collect(),
+        )
+        .map(Some);
+    }
+    Ok(None)
 }
 
 fn evaluate_static_map_function_arguments(
@@ -7636,6 +7716,97 @@ fn evaluate_static_map_abs(
         }
         StaticNumericLiteral::Float(value) => Ok(Literal::Float(OrderedFloat(value.abs()))),
     }
+}
+
+fn evaluate_static_map_unary_numeric_float_function(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+    transform: impl FnOnce(f64) -> f64,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        function_name,
+    )?;
+    let Some(value) = StaticNumericLiteral::from_literal(&literal, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    let value = transform(value.as_f64());
+    if !value.is_finite() {
+        return Err(unsupported(
+            path,
+            format!(
+                "{function_name}() in static list comprehension maps produced a non-finite float"
+            ),
+        ));
+    }
+    Ok(Literal::Float(OrderedFloat(value)))
+}
+
+fn evaluate_static_map_round(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let arguments = evaluate_static_map_function_arguments(function, &path, evaluation, "round")?;
+    let (value, places) = match arguments.as_slice() {
+        [value] => (value, None),
+        [value, places] => (value, Some(places)),
+        _ => {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                "round() in static list comprehension maps requires exactly one or two arguments",
+            ));
+        }
+    };
+    let Some(value) = StaticNumericLiteral::from_literal(value, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    let places = match places {
+        Some(Literal::Integer(places)) => Some(i32::try_from(*places).map_err(|error| {
+            unsupported(
+                format!("{path}.arguments[1]"),
+                format!("round() precision argument is out of range: {error}"),
+            )
+        })?),
+        Some(Literal::Null) | None => None,
+        Some(_) => {
+            return Err(unsupported(
+                format!("{path}.arguments[1]"),
+                "round() in static list comprehension maps requires integer precision arguments",
+            ));
+        }
+    };
+    let value = match places {
+        Some(places) => round_static_float(value.as_f64(), places, path.clone())?,
+        None => value.as_f64().round(),
+    };
+    if !value.is_finite() {
+        return Err(unsupported(
+            path,
+            "round() in static list comprehension maps produced a non-finite float",
+        ));
+    }
+    Ok(Literal::Float(OrderedFloat(value)))
+}
+
+fn round_static_float(value: f64, places: i32, path: impl Into<String>) -> Result<f64, CoreError> {
+    let path = path.into();
+    let scale = 10_f64.powi(places);
+    if !scale.is_finite() || scale == 0.0 {
+        return Err(unsupported(
+            path,
+            "round() precision argument is out of supported range",
+        ));
+    }
+    Ok((value * scale).round() / scale)
 }
 
 fn evaluate_static_map_sqrt(
@@ -8026,41 +8197,90 @@ fn static_list_comprehension_map_element_type(
             source_element_type,
             context,
         ),
-        Expression::FunctionCall(function) if is_coalesce_function(function) => {
-            static_map_coalesce_element_type(function, variable, source_element_type, context)
-        }
-        Expression::FunctionCall(function) if is_null_if_function(function) => {
-            static_map_null_if_element_type(function, variable, source_element_type, context)
-        }
-        Expression::FunctionCall(function) if is_character_length_function(function) => {
-            Ok(Some(LiteralListElementType::Integer))
-        }
-        Expression::FunctionCall(function) if is_abs_function(function) => {
-            static_map_abs_element_type(function, variable, source_element_type, context)
-        }
-        Expression::FunctionCall(function) if is_sqrt_function(function) => {
-            static_map_sqrt_element_type(function, variable, source_element_type, context)
-        }
-        Expression::FunctionCall(function) if is_sign_function(function) => {
-            static_map_sign_element_type(function, variable, source_element_type, context)
-        }
-        Expression::FunctionCall(function)
-            if is_to_string_function(function)
-                || is_to_lower_function(function)
-                || is_to_upper_function(function)
-                || is_trim_function(function)
-                || is_ltrim_function(function)
-                || is_rtrim_function(function)
-                || is_replace_function(function)
-                || is_substring_function(function)
-                || is_left_function(function)
-                || is_right_function(function)
-                || is_reverse_function(function) =>
-        {
-            Ok(Some(LiteralListElementType::String))
+        Expression::FunctionCall(function) => {
+            static_map_function_element_type(function, variable, source_element_type, context)
         }
         _ => Ok(None),
     }
+}
+
+fn static_map_function_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    if is_coalesce_function(function) {
+        return static_map_coalesce_element_type(function, variable, source_element_type, context);
+    }
+    if is_null_if_function(function) {
+        return static_map_null_if_element_type(function, variable, source_element_type, context);
+    }
+    if is_character_length_function(function) {
+        return Ok(Some(LiteralListElementType::Integer));
+    }
+    if let Some(element_type) =
+        static_map_numeric_function_element_type(function, variable, source_element_type, context)?
+    {
+        return Ok(Some(element_type));
+    }
+    if static_map_string_function_returns_string(function) {
+        return Ok(Some(LiteralListElementType::String));
+    }
+    Ok(None)
+}
+
+fn static_map_numeric_function_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    if is_abs_function(function) {
+        return static_map_abs_element_type(function, variable, source_element_type, context);
+    }
+    if is_ceil_function(function) {
+        return static_map_unary_numeric_float_element_type(
+            function,
+            variable,
+            source_element_type,
+            context,
+            "ceil",
+        );
+    }
+    if is_floor_function(function) {
+        return static_map_unary_numeric_float_element_type(
+            function,
+            variable,
+            source_element_type,
+            context,
+            "floor",
+        );
+    }
+    if is_round_function(function) {
+        return static_map_round_element_type(function, variable, source_element_type, context);
+    }
+    if is_sqrt_function(function) {
+        return static_map_sqrt_element_type(function, variable, source_element_type, context);
+    }
+    if is_sign_function(function) {
+        return static_map_sign_element_type(function, variable, source_element_type, context);
+    }
+    Ok(None)
+}
+
+fn static_map_string_function_returns_string(function: &FunctionInvocation) -> bool {
+    is_to_string_function(function)
+        || is_to_lower_function(function)
+        || is_to_upper_function(function)
+        || is_trim_function(function)
+        || is_ltrim_function(function)
+        || is_rtrim_function(function)
+        || is_replace_function(function)
+        || is_substring_function(function)
+        || is_left_function(function)
+        || is_right_function(function)
+        || is_reverse_function(function)
 }
 
 fn static_map_function_argument_element_types(
@@ -8177,6 +8397,63 @@ fn static_map_null_if_element_type(
         ));
     };
     Ok(*expression)
+}
+
+fn static_map_unary_numeric_float_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+    function_name: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let argument = static_map_single_function_argument_element_type(
+        function,
+        variable,
+        source_element_type,
+        context,
+        function_name,
+    )?;
+    Ok(match argument {
+        Some(LiteralListElementType::Integer | LiteralListElementType::Float) => {
+            Some(LiteralListElementType::Float)
+        }
+        _ => None,
+    })
+}
+
+fn static_map_round_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let element_types = static_map_function_argument_element_types(
+        function,
+        variable,
+        source_element_type,
+        context,
+    )?;
+    match element_types.as_slice() {
+        [Some(LiteralListElementType::Integer | LiteralListElementType::Float)] => {
+            Ok(Some(LiteralListElementType::Float))
+        }
+        [
+            Some(LiteralListElementType::Integer | LiteralListElementType::Float),
+            Some(LiteralListElementType::Integer) | None,
+        ] => Ok(Some(LiteralListElementType::Float)),
+        [
+            _,
+            Some(LiteralListElementType::String | LiteralListElementType::Boolean),
+        ] => Err(unsupported(
+            "list_comprehension.map.arguments[1]",
+            "round() in static list comprehension maps requires integer precision arguments",
+        )),
+        [_] | [_, _] => Ok(None),
+        _ => Err(unsupported(
+            "list_comprehension.map.arguments",
+            "round() in static list comprehension maps requires exactly one or two arguments",
+        )),
+    }
 }
 
 fn static_map_abs_element_type(
@@ -21931,6 +22208,70 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_rounding_function_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [1.2, 2.8, null] | ceiling(x)] AS ceilings, \
+                    [x IN [1.2, 2.8, null] | floor(x)] AS floors, \
+                    [x IN [1.24, 1.25, 1.26] | round(x, 1)] AS rounded_tenths, \
+                    [x IN [1.4, 1.5, 1.6] | round(x)] AS rounded_wholes",
+        )
+        .expect("static list comprehension rounding function maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Float(OrderedFloat(3.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "ceilings".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.0)),
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "floors".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.2)),
+                            Literal::Float(OrderedFloat(1.3)),
+                            Literal::Float(OrderedFloat(1.3))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "rounded_tenths".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.0)),
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Float(OrderedFloat(2.0))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "rounded_wholes".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_static_list_comprehension_null_maps_with_invalid_arguments() {
         let error = compile_cypher_for_graph(
             &star_test_graph(),
@@ -21984,6 +22325,19 @@ relationships:
             error
                 .to_string()
                 .contains("static numeric map expressions require numeric operands"),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN [1.2] | round(x, '1')] AS values",
+        )
+        .expect_err("round() should reject non-integer precision");
+
+        assert!(
+            error.to_string().contains(
+                "round() in static list comprehension maps requires integer precision arguments"
+            ),
             "{error}"
         );
     }
