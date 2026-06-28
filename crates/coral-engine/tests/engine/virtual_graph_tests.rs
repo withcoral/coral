@@ -10272,7 +10272,8 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
                 [k IN keys(service) WHERE toUpper(k) STARTS WITH 'T'] AS upper_t_keys, \
                 [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
                 [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values, \
-                [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings \
+                [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings, \
+                [x IN ['', 'a', null] WHERE isEmpty(x) = false] AS non_empty_strings \
          ORDER BY owner, service",
         &parameters,
     )
@@ -10289,9 +10290,9 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""], "non_empty_strings": ["a"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""], "non_empty_strings": ["a"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""], "non_empty_strings": ["a"]}),
         ]
     );
 }

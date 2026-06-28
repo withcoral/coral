@@ -15170,6 +15170,7 @@ fn is_static_map_operand_function(function: &FunctionInvocation) -> bool {
     is_coalesce_function(function)
         || is_null_if_function(function)
         || is_character_length_function(function)
+        || is_empty_function(function)
         || is_static_map_cast_function(function)
         || is_static_map_numeric_function(function)
         || static_map_string_function_returns_string(function)
@@ -22215,7 +22216,8 @@ relationships:
                     [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
                     [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values, \
                     [x IN [1.2, 2.8] WHERE floor(x) = 2.0] AS floored_values, \
-                    [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings",
+                    [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings, \
+                    [x IN ['', 'a', null] WHERE isEmpty(x) = false] AS non_empty_strings",
         )
         .expect("static list comprehension expression filters should compile");
 
@@ -22256,6 +22258,13 @@ relationships:
                         element_type: LiteralListElementType::String,
                     },
                     alias: "empty_strings".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("a".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "non_empty_strings".to_string(),
                 },
             ]
         );
