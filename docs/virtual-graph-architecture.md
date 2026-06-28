@@ -221,7 +221,7 @@ The supported foundation subset is intentionally narrow:
   Collection predicates such as `any(k IN coalesce(...) WHERE ...)` use the same
   branch-local strategy, with each branch evaluated by the existing folded static
   collection predicate evaluator.
-  Scalar index, slice, and sliced-endpoint expressions such as
+  Scalar index, slice, sliced-list comparison, and sliced-endpoint expressions such as
   `coalesce(keys(optionalNode), ['fallback'])[0]` and
   `coalesce(keys(optionalNode), ['fallback'])[0..1][0]` are lowered by reducing
   each static branch and wrapping optional metadata branches in presence-gated
@@ -247,10 +247,10 @@ The supported foundation subset is intentionally narrow:
   empty or null branches in predicate position without rendering an untyped array
   value. Static collection predicates over `CASE` collections lower the same way,
   except each branch result is the folded outcome of `all` / `any` / `none` /
-  `single` over that branch's list. Indexed, sliced, and sliced-index CASE
+  `single` over that branch's list. Indexed, sliced, sliced-comparison, and sliced-index CASE
   collections such as `(CASE ... END)[0]`, `(CASE ... END)[0..1]`, and
   `((CASE ... END)[0..1])[0]` also lower branch-locally, so empty or null
-  branches become typed empty-list or `NULL` branch results while metadata
+  branches become typed empty-list, scalar predicate, or `NULL` branch results while metadata
   branches keep their optional presence gates. `head(CASE ... END)`,
   `last(CASE ... END)`, `size(CASE ... END)`, `isEmpty(CASE ... END)`, and the
   same reducers over sliced CASE collections are scalar reducers over the same
@@ -429,8 +429,8 @@ parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar
 projections containing multiple correlated `COUNT`/`EXISTS` subqueries, dynamic
 or multipart `UNWIND`, general subqueries with `WITH`, `RETURN`, `UNION`, or
-procedure calls, ordered metadata-list comparisons, dynamic list comparisons or
-indexes, and broad expression semantics.
+procedure calls, dynamic list comparisons or indexes, branch-local sliced lists
+in static collection/list-comprehension contexts, and broad expression semantics.
 
 ## GraphQL Frontend Boundary
 

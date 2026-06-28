@@ -12088,6 +12088,48 @@ async fn cypher_static_list_case_and_coalesce_slice_indexes_execute_against_synt
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_slice_comparisons_execute_against_synthetic_sources()
+{
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         WHERE (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[0..1] = ['name'] \
+            OR ['fallback'] = coalesce(keys(person), ['fallback', 'owner'])[0..1] \
+         RETURN service.name AS service, \
+                (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[0..1] = ['name'] AS case_slice_matches, \
+                ['fallback'] = coalesce(keys(person), ['fallback', 'owner'])[0..1] AS coalesced_slice_fallback, \
+                coalesce(keys(person), ['fallback', 'owner'])[0..1] > ['fallback'] AS coalesced_slice_after_fallback, \
+                (CASE WHEN service.tier = 'prod' THEN [] ELSE ['not-prod'] END)[0..1] <> [] AS tier_window_non_empty \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE/coalesce slice comparisons should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_slice_matches": true, "coalesced_slice_fallback": false, "coalesced_slice_after_fallback": true, "tier_window_non_empty": false}),
+            json!({"service": "deployments", "case_slice_matches": true, "coalesced_slice_fallback": false, "coalesced_slice_after_fallback": true, "tier_window_non_empty": false}),
+            json!({"service": "experiments", "case_slice_matches": true, "coalesced_slice_fallback": false, "coalesced_slice_after_fallback": true, "tier_window_non_empty": true}),
+            json!({"service": "legacy-sync", "case_slice_matches": false, "coalesced_slice_fallback": true, "coalesced_slice_after_fallback": false, "tier_window_non_empty": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
