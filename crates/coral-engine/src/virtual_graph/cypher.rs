@@ -5609,10 +5609,18 @@ fn compile_pattern_part_into(
         ));
     };
 
+    let label_hints = infer_path_node_label_hints(
+        start,
+        chains,
+        plan,
+        context.graph.as_ref(),
+        format!("match.pattern.parts[{part_index}]"),
+    )?;
     let start_node = compile_node(
         start,
         plan,
         fresh_internal_node_variable(plan, part_index, 0),
+        node_label_hint(start, &label_hints),
         format!("match.pattern.parts[{part_index}].nodes[0]"),
         context,
     )?;
@@ -5641,6 +5649,7 @@ fn compile_pattern_part_into(
                 force_optional_path_presence,
             },
             &mut chain_state,
+            &label_hints,
             plan,
             state,
             context,
@@ -5680,10 +5689,250 @@ struct PathChainCompileOptions {
     force_optional_path_presence: bool,
 }
 
+fn infer_path_node_label_hints(
+    start: &CypherNodePattern,
+    chains: &[PatternElementChain],
+    plan: &GraphPlan,
+    graph: Option<&Declaration>,
+    path: impl Into<String>,
+) -> Result<BTreeMap<String, String>, CoreError> {
+    let path = path.into();
+    let Some(graph) = graph else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut nodes = Vec::with_capacity(chains.len() + 1);
+    nodes.push(start);
+    nodes.extend(chains.iter().map(|chain| &chain.node));
+
+    let mut labels = explicit_and_bound_path_node_labels(&nodes, plan, &path)?;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (index, chain) in chains.iter().enumerate() {
+            let Some((direction, relationship_type)) =
+                relationship_label_inference_descriptor(&chain.relationship)
+            else {
+                continue;
+            };
+            let pairs = relationship_label_pairs(graph, &relationship_type, direction);
+            if pairs.is_empty() {
+                continue;
+            }
+
+            let left_node = nodes
+                .get(index)
+                .ok_or_else(|| CoreError::internal("path label inference left node missing"))?;
+            let right_node = nodes
+                .get(index + 1)
+                .ok_or_else(|| CoreError::internal("path label inference right node missing"))?;
+            let left_variable = path_node_variable(left_node);
+            let right_variable = path_node_variable(right_node);
+            let left_label = left_variable
+                .as_ref()
+                .and_then(|variable| labels.get(variable))
+                .cloned();
+            let right_label = right_variable
+                .as_ref()
+                .and_then(|variable| labels.get(variable))
+                .cloned();
+            let compatible_pairs = pairs
+                .iter()
+                .filter(|(left, right)| {
+                    left_label.as_ref().is_none_or(|label| label == left)
+                        && right_label.as_ref().is_none_or(|label| label == right)
+                })
+                .collect::<Vec<_>>();
+            if compatible_pairs.is_empty() {
+                continue;
+            }
+
+            let relationship_path = format!("{path}.relationships[{index}]");
+            if left_label.is_none()
+                && let Some(variable) = left_variable
+            {
+                changed |= infer_path_node_label(
+                    &mut labels,
+                    &variable,
+                    compatible_pairs.iter().map(|(left, _)| left.as_str()),
+                    &relationship_type,
+                    &relationship_path,
+                )?;
+            }
+            if right_label.is_none()
+                && let Some(variable) = right_variable
+            {
+                changed |= infer_path_node_label(
+                    &mut labels,
+                    &variable,
+                    compatible_pairs.iter().map(|(_, right)| right.as_str()),
+                    &relationship_type,
+                    &relationship_path,
+                )?;
+            }
+        }
+    }
+    Ok(labels)
+}
+
+fn explicit_and_bound_path_node_labels(
+    nodes: &[&CypherNodePattern],
+    plan: &GraphPlan,
+    path: &str,
+) -> Result<BTreeMap<String, String>, CoreError> {
+    let mut labels = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let Some(variable) = path_node_variable(node) else {
+            continue;
+        };
+        if let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable) {
+            labels.insert(variable.clone(), existing.label.clone());
+        }
+        if let Some(label) =
+            optional_single_static_label(&node.labels, format!("{path}.nodes[{index}].labels"))?
+        {
+            record_path_node_label(
+                &mut labels,
+                &variable,
+                label,
+                format!("{path}.nodes[{index}]"),
+            )?;
+        }
+    }
+    Ok(labels)
+}
+
+fn record_path_node_label(
+    labels: &mut BTreeMap<String, String>,
+    variable: &str,
+    label: String,
+    path: impl Into<String>,
+) -> Result<bool, CoreError> {
+    match labels.get(variable) {
+        Some(existing) if existing == &label => Ok(false),
+        Some(existing) => Err(unsupported(
+            path,
+            format!(
+                "node variable '{variable}' has conflicting inferred labels '{existing}' and '{label}'"
+            ),
+        )),
+        None => {
+            labels.insert(variable.to_string(), label);
+            Ok(true)
+        }
+    }
+}
+
+fn infer_path_node_label<'a>(
+    labels: &mut BTreeMap<String, String>,
+    variable: &str,
+    candidates: impl Iterator<Item = &'a str>,
+    relationship_type: &str,
+    path: &str,
+) -> Result<bool, CoreError> {
+    let candidates = candidates.collect::<BTreeSet<_>>();
+    match candidates.len() {
+        0 => Ok(false),
+        1 => record_path_node_label(
+            labels,
+            variable,
+            candidates
+                .into_iter()
+                .next()
+                .expect("candidate label set length was checked")
+                .to_string(),
+            path,
+        ),
+        _ => Err(unsupported(
+            path,
+            format!(
+                "relationship pattern could not infer a unique label for node variable '{variable}' from '{relationship_type}' mappings; add an explicit node label"
+            ),
+        )),
+    }
+}
+
+fn relationship_label_inference_descriptor(
+    pattern: &CypherRelationshipPattern,
+) -> Option<(Direction, String)> {
+    if relationship_fixed_length(pattern, "relationship").ok()? != 1 {
+        return None;
+    }
+    let detail = pattern.detail.as_ref()?;
+    let relationship_type = detail.types.as_ref()?;
+    let relationship_type = single_static_label(
+        std::slice::from_ref(relationship_type),
+        "relationship.types",
+    )
+    .ok()?;
+    let direction = match pattern.direction {
+        CypherRelationshipDirection::Right => Direction::Outgoing,
+        CypherRelationshipDirection::Left => Direction::Incoming,
+        CypherRelationshipDirection::Both | CypherRelationshipDirection::Undirected => {
+            Direction::Undirected
+        }
+    };
+    Some((direction, relationship_type))
+}
+
+fn relationship_label_pairs(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+) -> BTreeSet<(String, String)> {
+    graph
+        .relationships_for_type(relationship_type)
+        .flat_map(|relationship| relationship_label_pairs_for_direction(relationship, direction))
+        .collect()
+}
+
+fn relationship_label_pairs_for_direction(
+    relationship: &DeclaredRelationship,
+    direction: Direction,
+) -> Vec<(String, String)> {
+    match direction {
+        Direction::Outgoing => vec![(
+            relationship.from.label.clone(),
+            relationship.to.label.clone(),
+        )],
+        Direction::Incoming => vec![(
+            relationship.to.label.clone(),
+            relationship.from.label.clone(),
+        )],
+        Direction::Undirected => {
+            let forward = (
+                relationship.from.label.clone(),
+                relationship.to.label.clone(),
+            );
+            let reverse = (
+                relationship.to.label.clone(),
+                relationship.from.label.clone(),
+            );
+            if forward == reverse {
+                vec![forward]
+            } else {
+                vec![forward, reverse]
+            }
+        }
+    }
+}
+
+fn path_node_variable(node: &CypherNodePattern) -> Option<String> {
+    node.variable.as_ref().map(variable_name)
+}
+
+fn node_label_hint<'a>(
+    node: &CypherNodePattern,
+    hints: &'a BTreeMap<String, String>,
+) -> Option<&'a str> {
+    path_node_variable(node).and_then(|variable| hints.get(&variable).map(String::as_str))
+}
+
 fn compile_path_chain_into(
     chain: &PatternElementChain,
     options: PathChainCompileOptions,
     chain_state: &mut PathChainCompileState,
+    label_hints: &BTreeMap<String, String>,
     plan: &mut GraphPlan,
     state: &mut CypherCompileState,
     context: &CypherCompileContext,
@@ -5697,6 +5946,7 @@ fn compile_path_chain_into(
         &chain.node,
         plan,
         fresh_internal_node_variable(plan, options.part_index, options.chain_index + 1),
+        node_label_hint(&chain.node, label_hints),
         node_path,
         context,
     )?;
@@ -6472,6 +6722,7 @@ fn compile_node(
     pattern: &CypherNodePattern,
     plan: &GraphPlan,
     anonymous_variable: String,
+    label_hint: Option<&str>,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<CompiledNode, CoreError> {
@@ -6481,7 +6732,12 @@ fn compile_node(
         Some(variable) => validate_variable(variable)?,
         None => anonymous_variable,
     };
-    let label = optional_single_static_label(&pattern.labels, format!("{path}.labels"))?;
+    let label =
+        optional_single_static_label(&pattern.labels, format!("{path}.labels"))?.or_else(|| {
+            (!is_anonymous)
+                .then(|| label_hint.map(str::to_string))
+                .flatten()
+        });
     if is_anonymous && label.is_none() {
         return Err(unsupported(
             format!("{path}.labels"),
@@ -29787,6 +30043,109 @@ relationships:
     #[test]
     fn rejects_unlabeled_first_node_binding() {
         assert_unsupported("MATCH (source)-[:DEPENDS_ON]->(target:Service) RETURN target.name");
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_unlabeled_outgoing_endpoint_labels() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:OWNS]->(service) RETURN service.name",
+        )
+        .expect("graph declaration should infer the unlabeled outgoing endpoint");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_unlabeled_incoming_endpoint_labels() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service)<-[:OWNS]-(person:Person) RETURN service.name",
+        )
+        .expect("graph declaration should infer the unlabeled incoming endpoint");
+
+        assert_eq!(
+            plan.nodes,
+            vec![
+                NodePattern {
+                    variable: "service".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "person".to_string(),
+                    label: "Person".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "OWNS".to_string(),
+                left: "service".to_string(),
+                direction: Direction::Incoming,
+                right: "person".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_unlabeled_exact_one_endpoint_labels() {
+        let graph = star_test_graph();
+        for cypher in [
+            "MATCH (person:Person)-[:OWNS*1]->(service) RETURN service.name",
+            "MATCH (person:Person)-[:OWNS*1..1]->(service) RETURN service.name",
+            "MATCH (person:Person)-[:OWNS]->{1}(service) RETURN service.name",
+        ] {
+            let plan = compile_cypher_for_graph(&graph, cypher)
+                .expect("graph declaration should infer exact-one endpoint labels");
+            assert!(
+                plan.nodes
+                    .iter()
+                    .any(|node| { node.variable == "service" && node.label == "Service" }),
+                "service endpoint label was not inferred for {cypher}: {:?}",
+                plan.nodes
+            );
+        }
+    }
+
+    #[test]
+    fn graph_aware_cypher_rejects_ambiguous_unlabeled_endpoint_labels() {
+        let graph = star_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (owner)-[:OWNS]->(service:Service) RETURN service.name",
+        )
+        .expect_err("ambiguous unlabeled endpoint labels should be rejected");
+
+        assert!(
+            error.to_string().contains("could not infer a unique label"),
+            "{error:?}"
+        );
     }
 
     #[test]

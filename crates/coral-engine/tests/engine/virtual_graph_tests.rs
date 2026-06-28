@@ -123,6 +123,79 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_label_inference_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service) \
+         WHERE service.tier = 'prod' \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY person.name ASC",
+    )
+    .await
+    .expect("graph-aware Cypher should infer the unlabeled service endpoint");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_label_inference_preserves_unmatched_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service) \
+         OPTIONAL MATCH (source)-[:DEPENDS_ON]->(target) \
+         RETURN source.name AS source, target.name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("optional Cypher should infer the unlabeled dependency endpoint");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("LEFT JOIN \"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+            json!({"source": "deployments", "target": "experiments"}),
+            json!({"source": "experiments"}),
+            json!({"source": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_return_star_expands_graph_declaration_properties() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
