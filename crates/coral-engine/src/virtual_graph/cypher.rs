@@ -7222,7 +7222,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), abs(), sqrt(), sign(), toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -7408,6 +7408,15 @@ fn evaluate_static_map_function(
     }
     if is_character_length_function(function) {
         return evaluate_static_map_character_length(function, path, evaluation);
+    }
+    if is_abs_function(function) {
+        return evaluate_static_map_abs(function, path, evaluation);
+    }
+    if is_sqrt_function(function) {
+        return evaluate_static_map_sqrt(function, path, evaluation);
+    }
+    if is_sign_function(function) {
+        return evaluate_static_map_sign(function, path, evaluation);
     }
     if is_to_string_function(function) {
         return evaluate_static_map_to_string(function, path, evaluation);
@@ -7602,6 +7611,87 @@ fn evaluate_static_map_character_length(
         CoreError::internal(format!("static string length overflowed i64: {error}"))
     })?;
     Ok(Literal::Integer(length))
+}
+
+fn evaluate_static_map_abs(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal =
+        evaluate_static_map_single_function_argument(function, path.clone(), evaluation, "abs")?;
+    let Some(value) = StaticNumericLiteral::from_literal(&literal, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    match value {
+        StaticNumericLiteral::Integer(value) => {
+            value.checked_abs().map(Literal::Integer).ok_or_else(|| {
+                unsupported(
+                    path,
+                    "abs() in static list comprehension maps overflowed i64",
+                )
+            })
+        }
+        StaticNumericLiteral::Float(value) => Ok(Literal::Float(OrderedFloat(value.abs()))),
+    }
+}
+
+fn evaluate_static_map_sqrt(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal =
+        evaluate_static_map_single_function_argument(function, path.clone(), evaluation, "sqrt")?;
+    let Some(value) = StaticNumericLiteral::from_literal(&literal, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    let value = value.as_f64();
+    if value < 0.0 {
+        return Err(unsupported(
+            path,
+            "sqrt() in static list comprehension maps requires non-negative numeric arguments",
+        ));
+    }
+    let value = value.sqrt();
+    if !value.is_finite() {
+        return Err(unsupported(
+            path,
+            "sqrt() in static list comprehension maps produced a non-finite float",
+        ));
+    }
+    Ok(Literal::Float(OrderedFloat(value)))
+}
+
+fn evaluate_static_map_sign(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal =
+        evaluate_static_map_single_function_argument(function, path.clone(), evaluation, "sign")?;
+    let Some(value) = StaticNumericLiteral::from_literal(&literal, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    let sign = match value {
+        StaticNumericLiteral::Integer(value) => value.signum(),
+        StaticNumericLiteral::Float(value) => {
+            if value > 0.0 {
+                1
+            } else if value < 0.0 {
+                -1
+            } else {
+                0
+            }
+        }
+    };
+    Ok(Literal::Integer(sign))
 }
 
 fn evaluate_static_map_to_string(
@@ -7945,6 +8035,15 @@ fn static_list_comprehension_map_element_type(
         Expression::FunctionCall(function) if is_character_length_function(function) => {
             Ok(Some(LiteralListElementType::Integer))
         }
+        Expression::FunctionCall(function) if is_abs_function(function) => {
+            static_map_abs_element_type(function, variable, source_element_type, context)
+        }
+        Expression::FunctionCall(function) if is_sqrt_function(function) => {
+            static_map_sqrt_element_type(function, variable, source_element_type, context)
+        }
+        Expression::FunctionCall(function) if is_sign_function(function) => {
+            static_map_sign_element_type(function, variable, source_element_type, context)
+        }
         Expression::FunctionCall(function)
             if is_to_string_function(function)
                 || is_to_lower_function(function)
@@ -8009,6 +8108,30 @@ fn static_map_function_argument_element_types(
     Ok(element_types)
 }
 
+fn static_map_single_function_argument_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+    function_name: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let element_types = static_map_function_argument_element_types(
+        function,
+        variable,
+        source_element_type,
+        context,
+    )?;
+    let [argument] = element_types.as_slice() else {
+        return Err(unsupported(
+            "list_comprehension.map.arguments",
+            format!(
+                "{function_name}() in static list comprehension maps requires exactly one argument"
+            ),
+        ));
+    };
+    Ok(*argument)
+}
+
 fn static_map_coalesce_element_type(
     function: &FunctionInvocation,
     variable: &str,
@@ -8054,6 +8177,68 @@ fn static_map_null_if_element_type(
         ));
     };
     Ok(*expression)
+}
+
+fn static_map_abs_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let argument = static_map_single_function_argument_element_type(
+        function,
+        variable,
+        source_element_type,
+        context,
+        "abs",
+    )?;
+    Ok(match argument {
+        Some(LiteralListElementType::Integer) => Some(LiteralListElementType::Integer),
+        Some(LiteralListElementType::Float) => Some(LiteralListElementType::Float),
+        _ => None,
+    })
+}
+
+fn static_map_sqrt_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let argument = static_map_single_function_argument_element_type(
+        function,
+        variable,
+        source_element_type,
+        context,
+        "sqrt",
+    )?;
+    Ok(match argument {
+        Some(LiteralListElementType::Integer | LiteralListElementType::Float) => {
+            Some(LiteralListElementType::Float)
+        }
+        _ => None,
+    })
+}
+
+fn static_map_sign_element_type(
+    function: &FunctionInvocation,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let argument = static_map_single_function_argument_element_type(
+        function,
+        variable,
+        source_element_type,
+        context,
+        "sign",
+    )?;
+    Ok(match argument {
+        Some(LiteralListElementType::Integer | LiteralListElementType::Float) => {
+            Some(LiteralListElementType::Integer)
+        }
+        _ => None,
+    })
 }
 
 fn merge_static_map_element_types(
@@ -11900,11 +12085,9 @@ fn variable_function_argument_from_cst(
         .iter()
         .enumerate()
         .filter_map(|(index, argument)| {
-            parse_collection_filter_variable(argument).map(|variable| (index, variable))
+            parse_variable_function_argument_source(argument).map(|variable| (index, variable))
         });
-    let Some((index, variable)) = variables.next() else {
-        return variable_function_argument_from_children(node, start, end);
-    };
+    let (index, variable) = variables.next()?;
     if variables.next().is_some() {
         return None;
     }
@@ -11916,6 +12099,17 @@ fn variable_function_argument_from_cst(
             count: arguments.len(),
         },
     ))
+}
+
+fn parse_variable_function_argument_source(source: &str) -> Option<String> {
+    let source = source.trim();
+    let source = source
+        .get(.."DISTINCT".len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case("DISTINCT"))
+        .filter(|_| keyword_has_boundaries(source, 0, "DISTINCT".len()))
+        .and_then(|_| source.get("DISTINCT".len()..))
+        .map_or(source, str::trim_start);
+    parse_collection_filter_variable(source)
 }
 
 fn variable_function_argument_from_children(
@@ -21673,6 +21867,70 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_numeric_function_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [1, 3, 6] | abs(x - 3)] AS absolute_ints, \
+                    [x IN [1.5, null, 5.5] | abs(x - 3.0)] AS absolute_floats, \
+                    [x IN [4, 9] | sqrt(x)] AS roots, \
+                    [x IN [1.0, 3.0, 6.5, null] | sign(x - 3.0)] AS signs",
+        )
+        .expect("static list comprehension numeric function maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Integer(2),
+                            Literal::Integer(0),
+                            Literal::Integer(3)
+                        ],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "absolute_ints".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.5)),
+                            Literal::Null,
+                            Literal::Float(OrderedFloat(2.5))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "absolute_floats".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Float(OrderedFloat(3.0))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "roots".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Integer(-1),
+                            Literal::Integer(0),
+                            Literal::Integer(1),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "signs".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_static_list_comprehension_null_maps_with_invalid_arguments() {
         let error = compile_cypher_for_graph(
             &star_test_graph(),
@@ -21697,6 +21955,35 @@ relationships:
             error.to_string().contains(
                 "nullIf() in static list comprehension maps requires exactly two arguments"
             ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_static_list_comprehension_numeric_function_maps_with_invalid_arguments() {
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN [1] | sqrt(x - 2)] AS roots",
+        )
+        .expect_err("sqrt() should reject negative static values");
+
+        assert!(
+            error.to_string().contains(
+                "sqrt() in static list comprehension maps requires non-negative numeric arguments"
+            ),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN ['not-numeric'] | abs(x)] AS values",
+        )
+        .expect_err("abs() should reject non-numeric static values");
+
+        assert!(
+            error
+                .to_string()
+                .contains("static numeric map expressions require numeric operands"),
             "{error}"
         );
     }

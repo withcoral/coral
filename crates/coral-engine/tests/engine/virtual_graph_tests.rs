@@ -10445,6 +10445,10 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
                 [x IN [1, 2, 3] | x + 1] AS incremented, \
                 [x IN [1.5, 2.5] | x * 2] AS doubled, \
                 [x IN $weights | x / 2] AS halved_weights, \
+                [x IN [1, 3, 6] | abs(x - 3)] AS absolute_ints, \
+                [x IN [1.5, null, 5.5] | abs(x - 3.0)] AS absolute_floats, \
+                [x IN [4, 9] | sqrt(x)] AS roots, \
+                [x IN [1.0, 3.0, 6.5, null] | sign(x - 3.0)] AS signs, \
                 [k IN keys(service) | k STARTS WITH 't'] AS t_flags \
          ORDER BY owner, service",
         &parameters,
@@ -10459,12 +10463,19 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array(2, 0, 3) AS \"absolute_ints\""),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "t_flags": [false, false, false, false, true, true]}),
         ]
     );
 }
