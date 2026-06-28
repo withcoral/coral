@@ -2690,7 +2690,80 @@ async fn cypher_exists_match_subqueries_support_disconnected_inner_components() 
 }
 
 #[tokio::test]
-async fn cypher_exists_match_subqueries_reject_non_conjunctive_inner_where() {
+async fn cypher_exists_match_subqueries_support_non_conjunctive_inner_where() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE target.tier = 'dev' OR target.tier = 'prod' \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("non-conjunctive EXISTS MATCH WHERE should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "(\"__coral_exists_n0\".\"tier\" = 'dev' OR \"__coral_exists_n0\".\"tier\" = 'prod')"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_pattern_where_supports_non_conjunctive_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' OR target.tier = 'prod' } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("non-conjunctive compact EXISTS pattern WHERE should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "(\"__coral_exists_n0\".\"tier\" = 'dev' OR \"__coral_exists_n0\".\"tier\" = 'prod')"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_reject_nested_scoped_subqueries() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
@@ -2703,43 +2776,17 @@ async fn cypher_exists_match_subqueries_reject_non_conjunctive_inner_where() {
         "MATCH (service:Service) \
          WHERE EXISTS { \
            MATCH (service)-[:DEPENDS_ON]->(target:Service) \
-           WHERE target.tier = 'dev' OR target.tier = 'prod' \
+           WHERE EXISTS { MATCH (target)-[:DEPENDS_ON]->(:Service) } \
          } \
          RETURN service.name AS service",
     )
     .await
-    .expect_err("non-conjunctive EXISTS MATCH WHERE should be rejected");
+    .expect_err("nested scoped EXISTS should remain rejected");
 
     assert!(
         error
             .to_string()
-            .contains("WHERE clauses with property comparisons joined by AND"),
-        "{error}"
-    );
-}
-
-#[tokio::test]
-async fn cypher_exists_pattern_where_rejects_non_conjunctive_predicates() {
-    let temp = TempDir::new().expect("temp dir");
-    write_ops_fixture(temp.path());
-    let source = build_source(ops_manifest(temp.path()));
-    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
-
-    let error = CoralQuery::execute_cypher(
-        &[source],
-        test_runtime(),
-        &graph,
-        "MATCH (service:Service) \
-         WHERE EXISTS { (service)-[:DEPENDS_ON]->(target:Service) WHERE target.tier = 'dev' OR target.tier = 'prod' } \
-         RETURN service.name AS service",
-    )
-    .await
-    .expect_err("non-conjunctive compact EXISTS pattern WHERE should be rejected");
-
-    assert!(
-        error
-            .to_string()
-            .contains("WHERE clauses with property comparisons joined by AND"),
+            .contains("nested EXISTS { ... } and COUNT { ... } predicates"),
         "{error}"
     );
 }
@@ -2857,9 +2904,10 @@ async fn cypher_count_subqueries_support_node_only_matches() {
         test_runtime(),
         &graph,
         "MATCH (team:Team) \
-         WHERE COUNT { MATCH (service:Service) WHERE service.tier = 'prod' } = 2 \
+         WHERE COUNT { MATCH (service:Service) WHERE service.tier = 'prod' OR service.tier = 'dev' } = 3 \
          RETURN team.name AS team, \
-                COUNT { MATCH (service:Service) WHERE service.tier = 'dev' } AS dev_services \
+                COUNT { MATCH (service:Service) WHERE service.tier = 'dev' } AS dev_services, \
+                COUNT { MATCH (service:Service) WHERE lower(service.name) CONTAINS 'api' } AS api_services \
          ORDER BY team",
     )
     .await
@@ -2872,12 +2920,19 @@ async fn cypher_count_subqueries_support_node_only_matches() {
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("contains(LOWER(\"__coral_count_n0\".\"service_name\"), 'api')"),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"team": "analytics", "dev_services": 1}),
-            json!({"team": "infra", "dev_services": 1}),
-            json!({"team": "platform", "dev_services": 1}),
+            json!({"team": "analytics", "dev_services": 1, "api_services": 1}),
+            json!({"team": "infra", "dev_services": 1, "api_services": 1}),
+            json!({"team": "platform", "dev_services": 1, "api_services": 1}),
         ]
     );
 }

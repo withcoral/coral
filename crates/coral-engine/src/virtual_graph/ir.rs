@@ -489,6 +489,9 @@ pub enum CountSubqueryPattern {
         nodes: Vec<NodePattern>,
         /// Inline node property predicates applied inside the count subquery.
         predicates: Vec<PropertyPredicate>,
+        /// Scoped `WHERE` predicate expression applied inside the count
+        /// subquery after local node bindings are introduced.
+        predicate: Option<Box<PredicateExpression>>,
     },
 }
 
@@ -754,6 +757,9 @@ pub struct ExistsPatternPredicate {
     /// Inline node/relationship property predicates applied inside the
     /// existential subquery.
     pub predicates: Vec<PropertyPredicate>,
+    /// Scoped `WHERE` predicate expression applied inside the existential
+    /// subquery after local node and relationship bindings are introduced.
+    pub predicate: Option<Box<PredicateExpression>>,
 }
 
 /// Predicate over scalar graph expressions such as `coalesce(...)`.

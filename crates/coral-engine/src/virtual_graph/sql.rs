@@ -1879,10 +1879,54 @@ impl<'a> Lowerer<'a> {
             CountSubqueryPattern::Relationships(predicate) => {
                 self.render_scoped_pattern_select(predicate, "COUNT(*)")
             }
-            CountSubqueryPattern::Nodes { nodes, predicates } => {
-                self.render_count_node_subquery(nodes, predicates)
-            }
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => self.render_count_node_subquery(nodes, predicates, predicate.as_deref()),
         }
+    }
+
+    fn scoped_condition_capacity(
+        relationship_count: usize,
+        property_predicate_count: usize,
+        predicate: Option<&PredicateExpression>,
+    ) -> usize {
+        relationship_count
+            .saturating_add(property_predicate_count)
+            .saturating_add(usize::from(predicate.is_some()))
+    }
+
+    fn render_scoped_conditions<'b>(
+        &self,
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Vec<String>, CoreError> {
+        let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
+            0,
+            predicates.len(),
+            predicate,
+        ));
+        for property_predicate in predicates {
+            conditions.push(self.render_exists_property_predicate(
+                property_predicate,
+                relationship_bindings,
+                local_nodes,
+                local_aliases,
+            )?);
+        }
+        if let Some(predicate) = predicate {
+            conditions.push(self.render_scoped_predicate_expression(
+                predicate,
+                relationship_bindings,
+                local_nodes,
+                local_aliases,
+            )?);
+        }
+        Ok(conditions)
     }
 
     fn render_scoped_pattern_select(
@@ -1897,6 +1941,7 @@ impl<'a> Lowerer<'a> {
             return self.render_scoped_node_select(
                 &predicate.nodes,
                 &predicate.predicates,
+                predicate.predicate.as_deref(),
                 select_expression,
                 &local_nodes,
                 &local_aliases,
@@ -1936,11 +1981,11 @@ impl<'a> Lowerer<'a> {
             .map_err(|_| CoreError::internal("failed to render EXISTS pattern SQL"))?;
         }
 
-        let mut conditions = Vec::with_capacity(
-            relationship_bindings
-                .len()
-                .saturating_add(predicate.predicates.len()),
-        );
+        let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
+            relationship_bindings.len(),
+            predicate.predicates.len(),
+            predicate.predicate.as_deref(),
+        ));
         for binding in &relationship_bindings {
             conditions.push(self.exists_relationship_condition(
                 binding.pattern,
@@ -1950,14 +1995,13 @@ impl<'a> Lowerer<'a> {
                 &local_aliases,
             )?);
         }
-        for property_predicate in &predicate.predicates {
-            conditions.push(self.render_exists_property_predicate(
-                property_predicate,
-                &relationship_bindings,
-                &local_nodes,
-                &local_aliases,
-            )?);
-        }
+        conditions.extend(self.render_scoped_conditions(
+            &predicate.predicates,
+            predicate.predicate.as_deref(),
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?);
         Ok(format!(
             "(SELECT {select_expression} FROM {from_clause} WHERE {})",
             conditions.join(" AND ")
@@ -1968,6 +2012,7 @@ impl<'a> Lowerer<'a> {
         &self,
         nodes: &[NodePattern],
         predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
     ) -> Result<String, CoreError> {
         if nodes.is_empty() {
             return Err(CoreError::internal(
@@ -1979,6 +2024,7 @@ impl<'a> Lowerer<'a> {
         self.render_scoped_node_select(
             nodes,
             predicates,
+            predicate,
             "COUNT(*)",
             &local_nodes,
             &local_aliases,
@@ -1986,10 +2032,15 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Scoped subquery rendering needs the local node bindings, aliases, and SQL context together"
+    )]
     fn render_scoped_node_select<'b>(
         &self,
         nodes: &'b [NodePattern],
         predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
         select_expression: &str,
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
@@ -2028,17 +2079,13 @@ impl<'a> Lowerer<'a> {
         }
 
         let relationships = Vec::new();
-        let conditions = predicates
-            .iter()
-            .map(|property_predicate| {
-                self.render_exists_property_predicate(
-                    property_predicate,
-                    &relationships,
-                    local_nodes,
-                    local_aliases,
-                )
-            })
-            .collect::<Result<Vec<_>, CoreError>>()?;
+        let conditions = self.render_scoped_conditions(
+            predicates,
+            predicate,
+            &relationships,
+            local_nodes,
+            local_aliases,
+        )?;
         let where_clause = if conditions.is_empty() {
             String::new()
         } else {
@@ -2305,6 +2352,1031 @@ impl<'a> Lowerer<'a> {
                 )?
             )),
         }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive predicate IR dispatcher mirrors the top-level predicate renderer for scoped aliases"
+    )]
+    fn render_scoped_predicate_expression<'b>(
+        &self,
+        predicate: &PredicateExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
+            PredicateExpression::Comparison(predicate) => self.render_exists_property_predicate(
+                predicate,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
+            PredicateExpression::KeyComparison(predicate) => {
+                let lhs = self.render_scoped_binding_key_ref(
+                    &predicate.variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                self.render_scoped_simple_predicate(
+                    &lhs,
+                    predicate.operator,
+                    &predicate.rhs,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+            }
+            PredicateExpression::ElementIdComparison(predicate) => {
+                let lhs = format!(
+                    "CAST({} AS VARCHAR)",
+                    self.render_scoped_binding_key_ref(
+                        &predicate.variable,
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    )?
+                );
+                self.render_scoped_simple_predicate(
+                    &lhs,
+                    predicate.operator,
+                    &predicate.rhs,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+            }
+            PredicateExpression::Presence(predicate) => {
+                let presence = self.render_scoped_binding_presence_ref(
+                    &predicate.variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                match predicate.operator {
+                    ComparisonOperator::Equal => Ok(format!("{presence} IS NULL")),
+                    ComparisonOperator::NotEqual => Ok(format!("{presence} IS NOT NULL")),
+                    _ => Err(CoreError::internal(
+                        "validated scoped presence predicate contained invalid operator",
+                    )),
+                }
+            }
+            PredicateExpression::PropertyKeyMembership(predicate) => self
+                .render_scoped_property_key_membership_predicate(
+                    predicate,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                ),
+            PredicateExpression::ExistsPattern(_) => Err(CoreError::internal(
+                "nested scoped EXISTS predicate reached scoped SQL renderer",
+            )),
+            PredicateExpression::ScalarComparison(predicate) => self
+                .render_scoped_scalar_predicate(
+                    predicate,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                ),
+            PredicateExpression::And { left, right } => Ok(format!(
+                "({} AND {})",
+                self.render_scoped_predicate_expression(
+                    left,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?,
+                self.render_scoped_predicate_expression(
+                    right,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?
+            )),
+            PredicateExpression::Or { left, right } => Ok(format!(
+                "({} OR {})",
+                self.render_scoped_predicate_expression(
+                    left,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?,
+                self.render_scoped_predicate_expression(
+                    right,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?
+            )),
+            PredicateExpression::Xor { left, right } => {
+                let left = self.render_scoped_predicate_expression(
+                    left,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let right = self.render_scoped_predicate_expression(
+                    right,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                Ok(render_xor_predicate(&left, &right))
+            }
+            PredicateExpression::Not { expression } => Ok(format!(
+                "NOT ({})",
+                self.render_scoped_predicate_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?
+            )),
+        }
+    }
+
+    fn render_scoped_simple_predicate<'b>(
+        &self,
+        lhs: &str,
+        operator: ComparisonOperator,
+        rhs: &PredicateRhs,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        match (operator, rhs) {
+            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{lhs} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated scoped IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                PredicateRhs::Literal(Literal::String(value)),
+            ) => Ok(format!(
+                "{lhs} LIKE {} ESCAPE '\\'",
+                render_like_pattern(operator, value)
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                _,
+            ) => Err(CoreError::internal(
+                "validated scoped string predicate did not contain a string literal",
+            )),
+            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated scoped regex predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
+                lhs,
+                &self.render_exists_predicate_rhs(
+                    rhs,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+            )),
+            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{lhs} IS NULL"))
+            }
+            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
+                Ok(format!("{lhs} IS NOT NULL"))
+            }
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                PredicateRhs::Literal(Literal::Null),
+            ) => Err(CoreError::internal(
+                "validated scoped predicate contained an invalid null comparison",
+            )),
+            _ => Ok(format!(
+                "{lhs} {} {}",
+                render_operator(operator),
+                self.render_exists_predicate_rhs(rhs, relationships, local_nodes, local_aliases)?
+            )),
+        }
+    }
+
+    fn render_scoped_scalar_predicate<'b>(
+        &self,
+        predicate: &ScalarPredicate,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let lhs = self.render_scoped_scalar_expression(
+            &predicate.lhs,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        match (&predicate.operator, &predicate.rhs) {
+            (ComparisonOperator::In, ScalarPredicateRhs::List(literals)) => {
+                if literals.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = literals
+                    .iter()
+                    .map(render_literal)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!("{lhs} IN ({rendered})"))
+            }
+            (ComparisonOperator::In, _) => Err(CoreError::internal(
+                "validated scoped scalar IN predicate did not contain a literal list",
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                ScalarPredicateRhs::Expression(rhs),
+            ) => Ok(render_string_function_predicate(
+                predicate.operator,
+                &lhs,
+                &self.render_scoped_scalar_expression(
+                    rhs,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+            )),
+            (
+                ComparisonOperator::StartsWith
+                | ComparisonOperator::EndsWith
+                | ComparisonOperator::Contains,
+                ScalarPredicateRhs::List(_),
+            ) => Err(CoreError::internal(
+                "validated scoped scalar string predicate did not contain a scalar RHS",
+            )),
+            (ComparisonOperator::RegexMatch, ScalarPredicateRhs::List(_)) => {
+                Err(CoreError::internal(
+                    "validated scoped scalar regex predicate did not contain a scalar RHS",
+                ))
+            }
+            (ComparisonOperator::RegexMatch, ScalarPredicateRhs::Expression(rhs)) => {
+                Ok(render_regex_predicate(
+                    &lhs,
+                    &self.render_scoped_scalar_expression(
+                        rhs,
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    )?,
+                ))
+            }
+            (
+                ComparisonOperator::Equal,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Ok(format!("{lhs} IS NULL")),
+            (
+                ComparisonOperator::NotEqual,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Ok(format!("{lhs} IS NOT NULL")),
+            (
+                ComparisonOperator::GreaterThan
+                | ComparisonOperator::GreaterThanOrEqual
+                | ComparisonOperator::LessThan
+                | ComparisonOperator::LessThanOrEqual,
+                ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
+            ) => Err(CoreError::internal(
+                "validated scoped scalar predicate contained an invalid null comparison",
+            )),
+            (_, ScalarPredicateRhs::Expression(rhs)) => Ok(format!(
+                "{lhs} {} {}",
+                render_operator(predicate.operator),
+                self.render_scoped_scalar_expression(
+                    rhs,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?
+            )),
+            (_, ScalarPredicateRhs::List(_)) => Err(CoreError::internal(
+                "validated scoped scalar literal list predicate reached generic RHS renderer",
+            )),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scalar IR dispatcher mirrors the top-level scalar renderer for scoped aliases"
+    )]
+    fn render_scoped_scalar_expression<'b>(
+        &self,
+        expression: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if let Some(rendered) = self.render_scoped_simple_scalar_expression(
+            expression,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )? {
+            return Ok(rendered);
+        }
+        if let Some(rendered) = self.render_scoped_graph_metadata_scalar_expression(
+            expression,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )? {
+            return Ok(rendered);
+        }
+
+        match expression {
+            ScalarExpression::Property(property) => {
+                self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
+            }
+            ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
+            ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
+            ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            } => Ok(render_typed_literal_list(literals, *element_type)),
+            ScalarExpression::Predicate(predicate) => self.render_scoped_predicate_expression(
+                predicate,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
+            ScalarExpression::CountSubquery { .. } => Err(CoreError::internal(
+                "nested scoped COUNT subquery reached scoped SQL renderer",
+            )),
+            ScalarExpression::PresenceGated {
+                presence_variable,
+                expression,
+            } => {
+                let presence = self.render_scoped_binding_presence_ref(
+                    presence_variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let expression = self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                Ok(format!(
+                    "CASE WHEN {presence} IS NULL THEN NULL ELSE {expression} END"
+                ))
+            }
+            ScalarExpression::Coalesce { expressions } => {
+                let rendered = expressions
+                    .iter()
+                    .map(|expression| {
+                        self.render_scoped_scalar_expression(
+                            expression,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(", ");
+                Ok(format!("COALESCE({rendered})"))
+            }
+            ScalarExpression::NullIf { expression, value } => Ok(format!(
+                "NULLIF({}, {})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+                self.render_scoped_scalar_expression(
+                    value,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?
+            )),
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => Ok(format!(
+                "REPLACE({}, {}, {})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+                self.render_scoped_scalar_expression(
+                    search,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?,
+                self.render_scoped_scalar_expression(
+                    replacement,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            )),
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => {
+                let mut sql = format!(
+                    "SUBSTRING({} FROM ({} + 1)",
+                    self.render_scoped_scalar_expression(
+                        expression,
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    )?,
+                    self.render_scoped_scalar_expression(
+                        start,
+                        relationships,
+                        local_nodes,
+                        local_aliases
+                    )?
+                );
+                if let Some(length) = length {
+                    write!(
+                        &mut sql,
+                        " FOR {}",
+                        self.render_scoped_scalar_expression(
+                            length,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?
+                    )
+                    .map_err(|error| CoreError::internal(error.to_string()))?;
+                }
+                sql.push(')');
+                Ok(sql)
+            }
+            ScalarExpression::Round { expression, places } => {
+                let expression_sql = self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let Some(places) = places else {
+                    return Ok(format!("round({expression_sql})"));
+                };
+                Ok(format!(
+                    "round({expression_sql}, {})",
+                    self.render_scoped_scalar_expression(
+                        places,
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    )?
+                ))
+            }
+            ScalarExpression::Arithmetic {
+                operator,
+                left,
+                right,
+            } => {
+                let left = self.render_scoped_scalar_expression(
+                    left,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                let right = self.render_scoped_scalar_expression(
+                    right,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?;
+                if *operator == ArithmeticOperator::Power {
+                    return Ok(format!("power({left}, {right})"));
+                }
+                Ok(format!(
+                    "({left} {} {right})",
+                    render_arithmetic_operator(*operator)
+                ))
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                let mut sql = String::from("CASE");
+                for alternative in alternatives {
+                    write!(
+                        &mut sql,
+                        " WHEN {} THEN {}",
+                        self.render_scoped_predicate_expression(
+                            &alternative.when,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?,
+                        self.render_scoped_scalar_expression(
+                            &alternative.then,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?
+                    )
+                    .map_err(|error| CoreError::internal(error.to_string()))?;
+                }
+                if let Some(else_expression) = else_expression {
+                    write!(
+                        &mut sql,
+                        " ELSE {}",
+                        self.render_scoped_scalar_expression(
+                            else_expression,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?
+                    )
+                    .map_err(|error| CoreError::internal(error.to_string()))?;
+                }
+                sql.push_str(" END");
+                Ok(sql)
+            }
+            ScalarExpression::Atan2 { y, x } => Ok(format!(
+                "atan2({}, {})",
+                self.render_scoped_scalar_expression(y, relationships, local_nodes, local_aliases)?,
+                self.render_scoped_scalar_expression(x, relationships, local_nodes, local_aliases)?
+            )),
+            ScalarExpression::ToString { .. }
+            | ScalarExpression::ToInteger { .. }
+            | ScalarExpression::ToFloat { .. }
+            | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToStringOrNull { .. }
+            | ScalarExpression::ToIntegerOrNull { .. }
+            | ScalarExpression::ToFloatOrNull { .. }
+            | ScalarExpression::ToBooleanOrNull { .. }
+            | ScalarExpression::ToLower { .. }
+            | ScalarExpression::ToUpper { .. }
+            | ScalarExpression::Trim { .. }
+            | ScalarExpression::LTrim { .. }
+            | ScalarExpression::RTrim { .. }
+            | ScalarExpression::CharacterLength { .. }
+            | ScalarExpression::Left { .. }
+            | ScalarExpression::Right { .. }
+            | ScalarExpression::Reverse { .. }
+            | ScalarExpression::Abs { .. }
+            | ScalarExpression::Ceil { .. }
+            | ScalarExpression::Floor { .. }
+            | ScalarExpression::Sqrt { .. }
+            | ScalarExpression::Sign { .. }
+            | ScalarExpression::Exp { .. }
+            | ScalarExpression::Log { .. }
+            | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Sin { .. }
+            | ScalarExpression::Cos { .. }
+            | ScalarExpression::Tan { .. }
+            | ScalarExpression::Cot { .. }
+            | ScalarExpression::Asin { .. }
+            | ScalarExpression::Acos { .. }
+            | ScalarExpression::Atan { .. }
+            | ScalarExpression::Degrees { .. }
+            | ScalarExpression::Radians { .. }
+            | ScalarExpression::Negate { .. }
+            | ScalarExpression::Key { .. }
+            | ScalarExpression::ElementId { .. }
+            | ScalarExpression::GraphIdentity { .. }
+            | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::NodeLabels { .. }
+            | ScalarExpression::PropertyKeys { .. }
+            | ScalarExpression::RelationshipType { .. } => {
+                unreachable!("scoped scalar expression handled above")
+            }
+        }
+    }
+
+    fn render_scoped_simple_scalar_expression<'b>(
+        &self,
+        expression: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        if let Some(rendered) = self.render_scoped_scalar_cast_expression(
+            expression,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )? {
+            return Ok(Some(rendered));
+        }
+
+        let unary = |function_name: &str, expression: &ScalarExpression| {
+            Ok(Some(format!(
+                "{function_name}({})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            )))
+        };
+        let binary = |function_name: &str, left: &ScalarExpression, right: &ScalarExpression| {
+            Ok(Some(format!(
+                "{function_name}({}, {})",
+                self.render_scoped_scalar_expression(
+                    left,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+                self.render_scoped_scalar_expression(
+                    right,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            )))
+        };
+
+        match expression {
+            ScalarExpression::ToLower { expression } => unary("LOWER", expression),
+            ScalarExpression::ToUpper { expression } => unary("UPPER", expression),
+            ScalarExpression::Trim { expression } => unary("TRIM", expression),
+            ScalarExpression::LTrim { expression } => unary("LTRIM", expression),
+            ScalarExpression::RTrim { expression } => unary("RTRIM", expression),
+            ScalarExpression::CharacterLength { expression } => {
+                unary("character_length", expression)
+            }
+            ScalarExpression::Left { expression, count } => binary("left", expression, count),
+            ScalarExpression::Right { expression, count } => binary("right", expression, count),
+            ScalarExpression::Reverse { expression } => unary("reverse", expression),
+            ScalarExpression::Abs { expression } => unary("abs", expression),
+            ScalarExpression::Ceil { expression } => unary("ceil", expression),
+            ScalarExpression::Floor { expression } => unary("floor", expression),
+            ScalarExpression::Sqrt { expression } => unary("sqrt", expression),
+            ScalarExpression::Sign { expression } => unary("signum", expression),
+            ScalarExpression::Exp { expression } => unary("exp", expression),
+            ScalarExpression::Log { expression } => unary("ln", expression),
+            ScalarExpression::Log10 { expression } => unary("log10", expression),
+            ScalarExpression::Sin { expression } => unary("sin", expression),
+            ScalarExpression::Cos { expression } => unary("cos", expression),
+            ScalarExpression::Tan { expression } => unary("tan", expression),
+            ScalarExpression::Cot { expression } => unary("cot", expression),
+            ScalarExpression::Asin { expression } => unary("asin", expression),
+            ScalarExpression::Acos { expression } => unary("acos", expression),
+            ScalarExpression::Atan { expression } => unary("atan", expression),
+            ScalarExpression::Atan2 { y, x } => binary("atan2", y, x),
+            ScalarExpression::Degrees { expression } => unary("degrees", expression),
+            ScalarExpression::Radians { expression } => unary("radians", expression),
+            ScalarExpression::Negate { expression } => Ok(Some(format!(
+                "-({})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            ))),
+            _ => Ok(None),
+        }
+    }
+
+    fn render_scoped_scalar_cast_expression<'b>(
+        &self,
+        expression: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        let cast = |expression: &ScalarExpression, target_type: &str| {
+            Ok(Some(format!(
+                "CAST({} AS {target_type})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            )))
+        };
+        let try_cast = |expression: &ScalarExpression, target_type: &str| {
+            Ok(Some(format!(
+                "TRY_CAST({} AS {target_type})",
+                self.render_scoped_scalar_expression(
+                    expression,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            )))
+        };
+        match expression {
+            ScalarExpression::ToString { expression } => cast(expression, "VARCHAR"),
+            ScalarExpression::ToInteger { expression } => cast(expression, "BIGINT"),
+            ScalarExpression::ToFloat { expression } => cast(expression, "DOUBLE"),
+            ScalarExpression::ToBoolean { expression } => cast(expression, "BOOLEAN"),
+            ScalarExpression::ToStringOrNull { expression } => try_cast(expression, "VARCHAR"),
+            ScalarExpression::ToIntegerOrNull { expression } => try_cast(expression, "BIGINT"),
+            ScalarExpression::ToFloatOrNull { expression } => try_cast(expression, "DOUBLE"),
+            ScalarExpression::ToBooleanOrNull { expression } => try_cast(expression, "BOOLEAN"),
+            _ => Ok(None),
+        }
+    }
+
+    fn render_scoped_graph_metadata_scalar_expression<'b>(
+        &self,
+        expression: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::Key { variable } => self
+                .render_scoped_binding_key_ref(variable, relationships, local_nodes, local_aliases)
+                .map(Some),
+            ScalarExpression::ElementId { variable } => Ok(Some(format!(
+                "CAST({} AS VARCHAR)",
+                self.render_scoped_binding_key_ref(
+                    variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            ))),
+            ScalarExpression::GraphIdentity { variable } => self
+                .render_scoped_graph_identity_ref(
+                    variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::GraphPresence { variable } => Ok(Some(format!(
+                "CAST({} AS VARCHAR)",
+                self.render_scoped_binding_presence_ref(
+                    variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?
+            ))),
+            ScalarExpression::NodeLabels { variable, label } => self
+                .render_scoped_node_labels_ref(
+                    variable,
+                    label,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::PropertyKeys { variable } => self
+                .render_scoped_property_keys_ref(
+                    variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::RelationshipType {
+                variable,
+                relationship_type,
+            } => self
+                .render_scoped_relationship_type_ref(
+                    variable,
+                    relationship_type,
+                    relationships,
+                    local_nodes,
+                )
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    fn render_scoped_binding_key_ref<'b>(
+        &self,
+        variable: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        self.render_exists_key_ref(variable, relationships, local_nodes, local_aliases)
+    }
+
+    fn render_scoped_binding_presence_ref<'b>(
+        &self,
+        variable: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if let Some(relationship) = Self::exists_relationship_for_variable(relationships, variable)
+        {
+            let column = relationship
+                .relationship
+                .key
+                .as_deref()
+                .unwrap_or(&relationship.relationship.from.key);
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(&relationship.alias),
+                quote_ident(column)
+            ));
+        }
+        if let Some(node) = local_nodes.get(variable).copied() {
+            let alias = local_aliases
+                .get(variable)
+                .ok_or_else(|| CoreError::internal("validated scoped node alias was missing"))?;
+            return Ok(format!("{}.{}", quote_ident(alias), quote_ident(&node.key)));
+        }
+        self.render_binding_presence_ref(variable)
+    }
+
+    fn render_scoped_graph_identity_ref<'b>(
+        &self,
+        variable: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let prefix = if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, variable)
+        {
+            format!(
+                "relationship:{}:",
+                relationship.relationship.relationship_type
+            )
+        } else if let Some(node) = local_nodes.get(variable).copied() {
+            format!("node:{}:", node.label)
+        } else {
+            return self.render_binding_graph_identity_ref(variable);
+        };
+        let key = self.render_scoped_binding_key_ref(
+            variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        Ok(format!(
+            "CASE WHEN {key} IS NULL THEN NULL ELSE concat({}, CAST({key} AS VARCHAR)) END",
+            quote_string_literal(&prefix)
+        ))
+    }
+
+    fn render_scoped_relationship_type_ref<'b>(
+        &self,
+        variable: &str,
+        relationship_type: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<String, CoreError> {
+        if let Some(relationship) = Self::exists_relationship_for_variable(relationships, variable)
+        {
+            if relationship.relationship.relationship_type != relationship_type {
+                return Err(CoreError::internal(
+                    "validated scoped relationship type expression did not match relationship type",
+                ));
+            }
+            let column = relationship
+                .relationship
+                .key
+                .as_deref()
+                .unwrap_or(&relationship.relationship.from.key);
+            let presence = format!(
+                "{}.{}",
+                quote_ident(&relationship.alias),
+                quote_ident(column)
+            );
+            return Ok(format!(
+                "CASE WHEN {presence} IS NULL THEN NULL ELSE {} END",
+                quote_string_literal(relationship_type)
+            ));
+        }
+        if local_nodes.contains_key(variable) {
+            return Err(CoreError::internal(
+                "validated scoped relationship type expression referenced a node",
+            ));
+        }
+        self.render_relationship_type_ref(variable, relationship_type)
+    }
+
+    fn render_scoped_node_labels_ref<'b>(
+        &self,
+        variable: &str,
+        label: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if Self::exists_relationship_for_variable(relationships, variable).is_some() {
+            return Err(CoreError::internal(
+                "validated scoped labels expression referenced a relationship",
+            ));
+        }
+        if let Some(node) = local_nodes.get(variable).copied() {
+            if node.label != label {
+                return Err(CoreError::internal(
+                    "validated scoped labels expression did not match node label",
+                ));
+            }
+            let presence = self.render_scoped_binding_presence_ref(
+                variable,
+                relationships,
+                local_nodes,
+                local_aliases,
+            )?;
+            return Ok(format!(
+                "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({}) END",
+                quote_string_literal(label)
+            ));
+        }
+        self.render_node_labels_ref(variable, label)
+    }
+
+    fn render_scoped_property_keys_ref<'b>(
+        &self,
+        variable: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let property_names = if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, variable)
+        {
+            Some(relationship.relationship.properties.keys())
+        } else {
+            local_nodes.get(variable).map(|node| node.properties.keys())
+        };
+        let Some(property_names) = property_names else {
+            return self.render_property_keys_ref(variable);
+        };
+        let property_names = property_names
+            .map(|property| quote_string_literal(property))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let presence = self.render_scoped_binding_presence_ref(
+            variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({property_names}) END"
+        ))
+    }
+
+    fn render_scoped_property_key_membership_predicate<'b>(
+        &self,
+        predicate: &PropertyKeyMembershipPredicate,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let has_key = if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, &predicate.variable)
+        {
+            Some(
+                relationship
+                    .relationship
+                    .properties
+                    .contains_key(&predicate.key),
+            )
+        } else {
+            local_nodes
+                .get(predicate.variable.as_str())
+                .map(|node| node.properties.contains_key(&predicate.key))
+        };
+        let Some(has_key) = has_key else {
+            return self.render_property_key_membership_predicate(predicate);
+        };
+        let presence_variable = predicate
+            .presence_variable
+            .as_deref()
+            .unwrap_or(&predicate.variable);
+        let presence = self.render_scoped_binding_presence_ref(
+            presence_variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let value = if has_key { "TRUE" } else { "FALSE" };
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE {value} END"
+        ))
     }
 
     fn render_exists_predicate_rhs<'b>(
@@ -6042,6 +7114,10 @@ relationships: []
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test builds a complete graph plan fixture inline for SQL assertion readability"
+    )]
     fn lower_graph_plan_renders_exists_pattern_predicates_as_correlated_subqueries() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = GraphPlan {
@@ -6091,6 +7167,7 @@ relationships: []
                         rhs: PredicateRhs::Literal(Literal::String("runtime".to_string())),
                     },
                 ],
+                predicate: None,
             })),
             post_projection_predicate: None,
             order_by: Vec::new(),

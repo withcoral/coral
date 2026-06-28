@@ -254,7 +254,11 @@ The supported foundation subset is intentionally narrow:
   expression has only one correlated subquery. Compact pattern `WHERE` is
   recovered from decypher's lossless CST when the high-level AST classifies the
   `WHERE` as a subquery clause, then rewritten through the same scoped
-  `MATCH ... WHERE ... FINISH` planner path as explicit existential subqueries;
+  `MATCH ... WHERE ... FINISH` planner path as explicit existential subqueries.
+  Inline property maps remain compact property predicates, while scoped
+  `WHERE` clauses are carried as predicate-expression IR and rendered with
+  subquery-local node/relationship aliases. Nested scoped subqueries still
+  require staged planning and are rejected before SQL lowering;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,

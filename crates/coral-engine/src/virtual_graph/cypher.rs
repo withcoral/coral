@@ -4377,6 +4377,9 @@ fn rename_predicate_expression_variables(
             for predicate in &mut predicate.predicates {
                 rename_property_predicate_variables(predicate, renames);
             }
+            if let Some(predicate) = &mut predicate.predicate {
+                rename_predicate_expression_variables(predicate, renames);
+            }
         }
         PredicateExpression::ScalarComparison(predicate) => {
             rename_scalar_expression_variables(&mut predicate.lhs, renames);
@@ -5101,7 +5104,11 @@ fn reject_ignored_path_variable_references_in_count_subquery(
         CountSubqueryPattern::Relationships(pattern) => {
             reject_ignored_path_variable_references_in_exists_pattern(pattern, state, path)?;
         }
-        CountSubqueryPattern::Nodes { nodes, predicates } => {
+        CountSubqueryPattern::Nodes {
+            nodes,
+            predicates,
+            predicate,
+        } => {
             for (index, node) in nodes.iter().enumerate() {
                 reject_ignored_path_variable(
                     &node.variable,
@@ -5114,6 +5121,13 @@ fn reject_ignored_path_variable_references_in_count_subquery(
                     predicate,
                     state,
                     format!("{path}.predicates[{index}]"),
+                )?;
+            }
+            if let Some(predicate) = predicate {
+                reject_ignored_path_variable_references_in_predicate(
+                    predicate,
+                    state,
+                    format!("{path}.predicate"),
                 )?;
             }
         }
@@ -5158,6 +5172,13 @@ fn reject_ignored_path_variable_references_in_exists_pattern(
             predicate,
             state,
             format!("{path}.predicates[{index}]"),
+        )?;
+    }
+    if let Some(predicate) = &pattern.predicate {
+        reject_ignored_path_variable_references_in_predicate(
+            predicate,
+            state,
+            format!("{path}.predicate"),
         )?;
     }
     Ok(())
@@ -14571,13 +14592,14 @@ fn compile_scoped_plan_delta_relationship_pattern(
         ));
     }
 
-    let predicates =
+    let predicate_parts =
         take_scoped_plan_delta_predicates(&mut exists_plan, delta, &path, feature_name)?;
 
     Ok(ExistsPatternPredicate {
         nodes,
         relationships,
-        predicates,
+        predicates: predicate_parts.predicates,
+        predicate: predicate_parts.predicate.map(Box::new),
     })
 }
 
@@ -14614,9 +14636,19 @@ fn compile_scoped_plan_delta_count_subquery(
             "COUNT subqueries without relationship patterns must bind at least one local node",
         ));
     }
-    let predicates =
+    let predicate_parts =
         take_scoped_plan_delta_predicates(&mut count_plan, delta, &path, feature_name)?;
-    Ok(CountSubqueryPattern::Nodes { nodes, predicates })
+    Ok(CountSubqueryPattern::Nodes {
+        nodes,
+        predicates: predicate_parts.predicates,
+        predicate: predicate_parts.predicate.map(Box::new),
+    })
+}
+
+#[derive(Debug)]
+struct ScopedPredicateParts {
+    predicates: Vec<PropertyPredicate>,
+    predicate: Option<PredicateExpression>,
 }
 
 fn take_scoped_plan_delta_predicates(
@@ -14624,24 +14656,27 @@ fn take_scoped_plan_delta_predicates(
     delta: ScopedPlanDelta,
     path: &str,
     feature_name: &str,
-) -> Result<Vec<PropertyPredicate>, CoreError> {
-    let mut predicates = plan
+) -> Result<ScopedPredicateParts, CoreError> {
+    let predicates = plan
         .predicates
         .get(delta.predicate_offset..)
         .ok_or_else(|| CoreError::internal("scoped predicate slice was invalid"))?
         .to_vec();
-    if let Some(predicate) = plan.predicate.take() {
-        if !is_conjunctive_expression(&predicate) {
-            return Err(unsupported(
-                format!("{path}.where"),
-                format!(
-                    "{feature_name} currently support WHERE clauses with property comparisons joined by AND"
-                ),
-            ));
-        }
-        append_conjunctive_expression(predicate, &mut predicates);
+    let predicate = plan.predicate.take();
+    if let Some(predicate) = predicate.as_ref()
+        && predicate_expression_correlated_subquery_count(predicate) > 0
+    {
+        return Err(unsupported(
+            format!("{path}.where"),
+            format!(
+                "nested EXISTS {{ ... }} and COUNT {{ ... }} predicates inside {feature_name} require staged subquery planning and are not supported yet"
+            ),
+        ));
     }
-    Ok(predicates)
+    Ok(ScopedPredicateParts {
+        predicates,
+        predicate,
+    })
 }
 
 fn compile_is_empty_predicate(
@@ -25308,6 +25343,49 @@ relationships:
                 && predicate.operator == ComparisonOperator::Equal
                 && predicate.rhs == PredicateRhs::Literal(Literal::String("dev".to_string()))
         }));
+    }
+
+    #[test]
+    fn compiles_scoped_exists_where_boolean_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE EXISTS { \
+               MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+               WHERE target.tier = 'dev' OR lower(target.name) CONTAINS 'api' \
+             } \
+             RETURN service.name AS service",
+        )
+        .expect("scoped EXISTS WHERE boolean expressions should compile");
+
+        let Some(PredicateExpression::ExistsPattern(pattern)) = plan.predicate else {
+            panic!("expected EXISTS subquery to compile as an EXISTS predicate");
+        };
+        assert!(matches!(
+            pattern.predicate.as_deref(),
+            Some(PredicateExpression::Or { left, right })
+                if matches!(left.as_ref(), PredicateExpression::Comparison(_))
+                    && matches!(right.as_ref(), PredicateExpression::ScalarComparison(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_nested_scoped_subquery_predicates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE EXISTS { \
+               MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+               WHERE EXISTS { MATCH (target)-[:DEPENDS_ON]->(:Service) } \
+             } \
+             RETURN service.name AS service",
+        )
+        .expect_err("nested scoped subqueries should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nested EXISTS { ... } and COUNT { ... } predicates"),
+            "{error}"
+        );
     }
 
     #[test]
