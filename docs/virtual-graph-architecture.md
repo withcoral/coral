@@ -260,10 +260,14 @@ The supported foundation subset is intentionally narrow:
   `collect(DISTINCT property)`, `collect(node)`, `collect(DISTINCT node)`, and
   keyed relationship or endpoint collections lowered through null-filtered
   `ARRAY_AGG` with an empty-list fallback. Graph-variable collection returns
-  mapped stable keys rather than materialized graph objects. GQL aggregate
-  aliases include `collect_list`, `stdev_samp`, and `stdev_pop`; numeric
-  property aggregates, property and identity `ORDER BY`, direct aggregate
-  `ORDER BY` expressions that match
+  mapped stable keys rather than materialized graph objects. Aggregate scalar
+  expression targets such as `collect(coalesce(n.tier, 'unknown'))`,
+  `count(coalesce(n.tier, 'unknown'))`, and `sum(n.risk + 1)` lower through
+  the same scalar-expression renderer; correlated scalar subqueries are still
+  rejected inside aggregate targets. GQL aggregate aliases include
+  `collect_list`, `stdev_samp`, and `stdev_pop`; numeric property aggregates,
+  property and identity `ORDER BY`, direct aggregate `ORDER BY` expressions
+  that match
   projected aggregates, and projection alias `ORDER BY` including aggregate
   aliases;
 - transparent `WITH` pass-through, graph-variable aliasing, terminal

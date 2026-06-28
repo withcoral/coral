@@ -3321,6 +3321,10 @@ impl<'a> GraphPlanValidator<'a> {
                     })?;
                 self.validate_aggregate_property_type(function, property, path)
             }
+            AggregateTarget::Expression(expression) => {
+                self.validate_scalar_expression(expression, format!("{path}.expression"))?;
+                self.validate_aggregate_expression_type(function, expression, path)
+            }
             AggregateTarget::VariableKey { variable } => {
                 self.validate_graph_variable_aggregate_target(function, variable, path)
             }
@@ -3391,6 +3395,21 @@ impl<'a> GraphPlanValidator<'a> {
         validate_aggregate_scalar_type(function, scalar_type, path)
     }
 
+    fn validate_aggregate_expression_type(
+        &self,
+        function: AggregateFunction,
+        expression: &ScalarExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        if !aggregate_function_requires_numeric_target(function) {
+            return Ok(());
+        }
+        let scalar_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        validate_aggregate_scalar_type(function, scalar_type, path)
+    }
+
     fn infer_aggregate_projection_type(
         &self,
         function: AggregateFunction,
@@ -3410,6 +3429,9 @@ impl<'a> GraphPlanValidator<'a> {
                 AggregateTarget::Property(property)
                 | AggregateTarget::PresenceGatedProperty { property, .. } => {
                     self.property_ref_scalar_type(property)
+                }
+                AggregateTarget::Expression(expression) => {
+                    self.infer_scalar_expression_type(expression, "expression")
                 }
                 AggregateTarget::VariableKey { .. }
                 | AggregateTarget::PresenceGatedVariableKey { .. } => Ok(ScalarType::Unknown),

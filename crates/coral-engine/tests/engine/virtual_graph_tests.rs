@@ -8462,6 +8462,50 @@ async fn cypher_collect_property_projection_drops_null_values() {
 }
 
 #[tokio::test]
+async fn cypher_aggregate_expression_targets_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN collect(coalesce(service.tier, 'unknown')) AS tiers, \
+                count(coalesce(service.tier, 'unknown')) AS tier_count, \
+                sum(service.risk + 1) AS adjusted_risk",
+    )
+    .await
+    .expect("aggregate expression target Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(COALESCE(\"n0\".\"tier\", 'unknown'))"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUM((\"n0\".\"risk_score\" + 1)) AS \"adjusted_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("aggregate expression target query should return one row");
+    sort_string_array_field(row, "tiers");
+    assert_eq!(row["tiers"], json!(["dev", "prod", "prod", "unknown"]));
+    assert_eq!(row["tier_count"], json!(4));
+    assert_close(row["adjusted_risk"].as_f64().unwrap(), 6.6);
+}
+
+#[tokio::test]
 async fn cypher_collect_graph_variable_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -9277,6 +9321,29 @@ async fn cypher_catalog_typed_aggregate_target_errors_reject_before_sql_executio
     )
     .await
     .expect_err("catalog-typed aggregate target mismatch should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("numeric"), "{error:?}");
+}
+
+#[tokio::test]
+async fn cypher_catalog_typed_aggregate_expression_errors_reject_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) RETURN sum(toString(service.risk)) AS bad_sum",
+    )
+    .await
+    .expect_err("catalog-typed aggregate expression mismatch should fail before SQL execution");
 
     assert!(
         error.to_string().contains("INVALID_AGGREGATE_TARGET"),

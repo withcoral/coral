@@ -671,6 +671,8 @@ pub enum AggregateTarget {
         /// Graph variable whose binding controls nullability.
         presence_variable: String,
     },
+    /// Aggregate a scalar expression.
+    Expression(ScalarExpression),
     /// Aggregate a graph variable by its mapped stable key column.
     VariableKey {
         /// Graph variable to aggregate.

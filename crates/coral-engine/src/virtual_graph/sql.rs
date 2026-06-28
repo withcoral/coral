@@ -2498,6 +2498,7 @@ impl<'a> Lowerer<'a> {
                     "CASE WHEN {presence} IS NULL THEN NULL ELSE {property} END"
                 ))
             }
+            AggregateTarget::Expression(expression) => self.render_scalar_expression(expression),
             AggregateTarget::VariableKey { variable } => {
                 if function == AggregateFunction::Count {
                     self.render_binding_presence_ref(variable)

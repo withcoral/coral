@@ -978,6 +978,12 @@ fn compile_static_alternative_outer_aggregate_item(
                 "pattern alternatives do not support optional relationship endpoint property aggregates yet",
             ));
         }
+        AggregateTarget::Expression(_) => {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}].expression.arguments"),
+                "pattern alternatives do not support aggregate expression targets yet",
+            ));
+        }
         AggregateTarget::VariableKey { variable } => {
             if function_kind != AggregateFunction::Count {
                 return Err(unsupported(
@@ -3534,6 +3540,9 @@ fn rename_aggregate_target_variables(
             rename_property_ref_variables(property, renames);
             rename_string(presence_variable, renames);
         }
+        AggregateTarget::Expression(expression) => {
+            rename_scalar_expression_variables(expression, renames);
+        }
         AggregateTarget::VariableKey { variable } => rename_string(variable, renames),
         AggregateTarget::PresenceGatedVariableKey {
             variable,
@@ -3917,6 +3926,9 @@ fn reject_ignored_path_variable_references_in_aggregate_target(
                 state,
                 format!("{path}.presence_variable"),
             )
+        }
+        AggregateTarget::Expression(expression) => {
+            reject_ignored_path_variable_references_in_scalar_expression(expression, state, path)
         }
         AggregateTarget::VariableKey { variable } => {
             reject_ignored_path_variable(variable, state, path)
@@ -9738,6 +9750,19 @@ fn validate_scalar_projection_correlated_subqueries(
     Ok(())
 }
 
+fn validate_aggregate_scalar_target_correlated_subqueries(
+    expression: &ScalarExpression,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    if scalar_expression_contains_correlated_subquery(expression) {
+        return Err(unsupported(
+            path,
+            "aggregate expression targets do not support correlated COUNT { ... } or EXISTS { MATCH ... } subqueries",
+        ));
+    }
+    Ok(())
+}
+
 fn default_scalar_function_alias(function: &FunctionInvocation) -> String {
     if is_character_length_function(function) {
         return "size".to_string();
@@ -12633,7 +12658,7 @@ fn compile_aggregate_target(
                 },
             })
         }
-        _ => {
+        Expression::PropertyLookup { .. } => {
             if let Some(plan) = plan
                 && let Some((property, presence_variable, _)) =
                     compile_optional_endpoint_property_ref(expression, path.clone(), plan, context)?
@@ -12646,6 +12671,22 @@ fn compile_aggregate_target(
             Ok(AggregateTarget::Property(compile_property_ref(
                 expression, path, plan, context,
             )?))
+        }
+        _ => {
+            let Some(plan) = plan else {
+                return Ok(AggregateTarget::Property(compile_property_ref(
+                    expression, path, plan, context,
+                )?));
+            };
+            let expression = compile_scalar_expression_with_path_state(
+                expression,
+                path.clone(),
+                plan,
+                None,
+                context,
+            )?;
+            validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
+            Ok(AggregateTarget::Expression(expression))
         }
     }
 }
@@ -28873,6 +28914,52 @@ relationships:
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_aggregate_scalar_expression_targets() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN collect(coalesce(service.tier, 'unknown')) AS tiers, \
+                    count(coalesce(service.tier, 'unknown')) AS tier_count, \
+                    sum(service.risk + 1) AS adjusted_risk",
+        )
+        .expect("aggregate expression target query should compile");
+
+        assert_eq!(plan.projections.len(), 3);
+        assert!(matches!(
+            plan.projections
+                .first()
+                .expect("collect projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Collect,
+                target: AggregateTarget::Expression(ScalarExpression::Coalesce { .. }),
+                alias,
+                ..
+            } if alias == "tiers"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(1)
+                .expect("count projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Count,
+                target: AggregateTarget::Expression(ScalarExpression::Coalesce { .. }),
+                alias,
+                ..
+            } if alias == "tier_count"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(2)
+                .expect("sum projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Sum,
+                target: AggregateTarget::Expression(ScalarExpression::Arithmetic { .. }),
+                alias,
+                ..
+            } if alias == "adjusted_risk"
+        ));
     }
 
     #[test]
