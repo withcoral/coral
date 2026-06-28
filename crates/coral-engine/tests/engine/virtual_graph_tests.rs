@@ -1596,7 +1596,9 @@ async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
     .expect("Cypher EXISTS scalar projection should execute");
 
     assert!(
-        execution.translated_sql().contains("(SELECT COUNT(*) FROM"),
+        execution
+            .translated_sql()
+            .contains("(SELECT COUNT(*) AS \"__coral_exists_count_0\" FROM"),
         "{}",
         execution.translated_sql()
     );
@@ -1608,6 +1610,97 @@ async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
             json!({"service": "experiments", "has_dependency": false}),
             json!({"service": "legacy-sync", "has_dependency": false}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_subqueries_execute_inside_boolean_composition() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE NOT EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } \
+            OR service.name = 'billing-api' \
+            AND EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service {tier: 'dev'}) } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS boolean composition should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_subqueries_execute_inside_searched_case() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                CASE \
+                  WHEN EXISTS { MATCH (service)-[:DEPENDS_ON {criticality: 'runtime'}]->(:Service) } THEN 'runtime-dependency' \
+                  ELSE 'no-runtime-dependency' \
+                END AS dependency_state \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher EXISTS searched CASE should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency_state": "runtime-dependency"}),
+            json!({"service": "deployments", "dependency_state": "no-runtime-dependency"}),
+            json!({"service": "experiments", "dependency_state": "no-runtime-dependency"}),
+            json!({"service": "legacy-sync", "dependency_state": "no-runtime-dependency"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_rejects_multiple_correlated_scalar_subqueries_in_one_projection() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN CASE \
+                  WHEN EXISTS { MATCH (service)-[:DEPENDS_ON {criticality: 'runtime'}]->(:Service) } THEN 'runtime-dependency' \
+                  WHEN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } THEN 'non-runtime-dependency' \
+                  ELSE 'isolated' \
+                END AS dependency_state",
+    )
+    .await
+    .expect_err("multiple correlated scalar subqueries should be rejected before SQL execution");
+
+    assert!(
+        error.to_string().contains("at most one correlated"),
+        "{error}"
     );
 }
 

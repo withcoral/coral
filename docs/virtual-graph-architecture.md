@@ -164,8 +164,10 @@ The supported foundation subset is intentionally narrow:
 - `EXISTS { MATCH ... }` lowered to SQL semi-joins in `WHERE`; scalar
   `EXISTS` projections lower as correlated `COUNT(*) > 0` expressions so they
   are executable by DataFusion in `RETURN`, can be sorted through their
-  projected alias, and compact pattern `EXISTS { ... }` supports inline
-  property maps when no compact `WHERE` clause is present;
+  projected alias, can appear in searched `CASE` expressions when a scalar
+  expression has only one correlated subquery, and compact pattern
+  `EXISTS { ... }` supports inline property maps when no compact `WHERE` clause
+  is present;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
@@ -190,7 +192,8 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, variable-length paths, parameterized property
 maps, keyless relationship identity operations, non-terminal projection
-boundaries, post-union result processing, general subqueries with `WITH`,
+boundaries, post-union result processing, scalar projections containing
+multiple correlated `COUNT`/`EXISTS` subqueries, general subqueries with `WITH`,
 `RETURN`, `UNION`, or procedure calls,
 path/list length via `size`, and broad expression semantics.
 

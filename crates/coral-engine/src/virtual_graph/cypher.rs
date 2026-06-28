@@ -5625,87 +5625,92 @@ fn compile_scalar_order_expression(
 }
 
 fn scalar_expression_contains_correlated_subquery(expression: &ScalarExpression) -> bool {
-    if let Some(contains_subquery) =
-        compound_scalar_expression_contains_correlated_subquery(expression)
-    {
-        return contains_subquery;
-    }
-    scalar_expression_leaf_contains_correlated_subquery(expression)
+    scalar_expression_correlated_subquery_count(expression) > 0
 }
 
-fn compound_scalar_expression_contains_correlated_subquery(
+fn scalar_expression_correlated_subquery_count(expression: &ScalarExpression) -> usize {
+    if let Some(count) = compound_scalar_expression_correlated_subquery_count(expression) {
+        return count;
+    }
+    scalar_expression_leaf_correlated_subquery_count(expression)
+}
+
+fn compound_scalar_expression_correlated_subquery_count(
     expression: &ScalarExpression,
-) -> Option<bool> {
+) -> Option<usize> {
     if let Some(operand) = unary_scalar_expression_operand(expression) {
-        return Some(scalar_expression_contains_correlated_subquery(operand));
+        return Some(scalar_expression_correlated_subquery_count(operand));
     }
 
     match expression {
         ScalarExpression::PresenceGated { expression, .. } => {
-            Some(scalar_expression_contains_correlated_subquery(expression))
+            Some(scalar_expression_correlated_subquery_count(expression))
         }
         ScalarExpression::Coalesce { expressions } => Some(
             expressions
                 .iter()
-                .any(scalar_expression_contains_correlated_subquery),
+                .map(scalar_expression_correlated_subquery_count)
+                .sum(),
         ),
         ScalarExpression::NullIf { expression, value } => Some(
-            scalar_expression_contains_correlated_subquery(expression)
-                || scalar_expression_contains_correlated_subquery(value),
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(value),
         ),
         ScalarExpression::Round { expression, places } => Some(
-            scalar_expression_contains_correlated_subquery(expression)
-                || places
-                    .as_deref()
-                    .is_some_and(scalar_expression_contains_correlated_subquery),
+            scalar_expression_correlated_subquery_count(expression)
+                + optional_scalar_expression_correlated_subquery_count(places.as_deref()),
         ),
         ScalarExpression::Left { expression, count }
         | ScalarExpression::Right { expression, count } => Some(
-            scalar_expression_contains_correlated_subquery(expression)
-                || scalar_expression_contains_correlated_subquery(count),
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(count),
         ),
         ScalarExpression::Replace {
             expression,
             search,
             replacement,
         } => Some(
-            scalar_expression_contains_correlated_subquery(expression)
-                || scalar_expression_contains_correlated_subquery(search)
-                || scalar_expression_contains_correlated_subquery(replacement),
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(search)
+                + scalar_expression_correlated_subquery_count(replacement),
         ),
         ScalarExpression::Substring {
             expression,
             start,
             length,
         } => Some(
-            scalar_expression_contains_correlated_subquery(expression)
-                || scalar_expression_contains_correlated_subquery(start)
-                || length
-                    .as_deref()
-                    .is_some_and(scalar_expression_contains_correlated_subquery),
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(start)
+                + optional_scalar_expression_correlated_subquery_count(length.as_deref()),
         ),
         ScalarExpression::Arithmetic { left, right, .. } => Some(
-            scalar_expression_contains_correlated_subquery(left)
-                || scalar_expression_contains_correlated_subquery(right),
+            scalar_expression_correlated_subquery_count(left)
+                + scalar_expression_correlated_subquery_count(right),
         ),
         ScalarExpression::Atan2 { y, x } => Some(
-            scalar_expression_contains_correlated_subquery(y)
-                || scalar_expression_contains_correlated_subquery(x),
+            scalar_expression_correlated_subquery_count(y)
+                + scalar_expression_correlated_subquery_count(x),
         ),
         _ => None,
     }
 }
 
-fn scalar_expression_leaf_contains_correlated_subquery(expression: &ScalarExpression) -> bool {
+fn optional_scalar_expression_correlated_subquery_count(
+    expression: Option<&ScalarExpression>,
+) -> usize {
+    expression.map_or(0, scalar_expression_correlated_subquery_count)
+}
+
+fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpression) -> usize {
     match expression {
         ScalarExpression::Predicate(predicate) => {
-            predicate_expression_contains_correlated_subquery(predicate)
+            predicate_expression_correlated_subquery_count(predicate)
         }
-        ScalarExpression::CountSubquery { .. } => true,
+        ScalarExpression::CountSubquery { .. } => 1,
         ScalarExpression::Case {
             alternatives,
             else_expression,
-        } => scalar_case_expression_contains_correlated_subquery(
+        } => scalar_case_expression_correlated_subquery_count(
             alternatives,
             else_expression.as_deref(),
         ),
@@ -5717,7 +5722,7 @@ fn scalar_expression_leaf_contains_correlated_subquery(expression: &ScalarExpres
         | ScalarExpression::GraphPresence { .. }
         | ScalarExpression::NodeLabels { .. }
         | ScalarExpression::PropertyKeys { .. }
-        | ScalarExpression::RelationshipType { .. } => false,
+        | ScalarExpression::RelationshipType { .. } => 0,
         ScalarExpression::PresenceGated { .. }
         | ScalarExpression::Coalesce { .. }
         | ScalarExpression::NullIf { .. }
@@ -5766,43 +5771,47 @@ fn scalar_expression_leaf_contains_correlated_subquery(expression: &ScalarExpres
     }
 }
 
-fn scalar_case_expression_contains_correlated_subquery(
+fn scalar_case_expression_correlated_subquery_count(
     alternatives: &[ScalarCaseAlternative],
     else_expression: Option<&ScalarExpression>,
-) -> bool {
-    alternatives.iter().any(|alternative| {
-        predicate_expression_contains_correlated_subquery(&alternative.when)
-            || scalar_expression_contains_correlated_subquery(&alternative.then)
-    }) || else_expression.is_some_and(scalar_expression_contains_correlated_subquery)
+) -> usize {
+    alternatives
+        .iter()
+        .map(|alternative| {
+            predicate_expression_correlated_subquery_count(&alternative.when)
+                + scalar_expression_correlated_subquery_count(&alternative.then)
+        })
+        .sum::<usize>()
+        + optional_scalar_expression_correlated_subquery_count(else_expression)
 }
 
-fn predicate_expression_contains_correlated_subquery(predicate: &PredicateExpression) -> bool {
+fn predicate_expression_correlated_subquery_count(predicate: &PredicateExpression) -> usize {
     match predicate {
-        PredicateExpression::ExistsPattern(_) => true,
+        PredicateExpression::ExistsPattern(_) => 1,
         PredicateExpression::ScalarComparison(predicate) => {
-            scalar_expression_contains_correlated_subquery(&predicate.lhs)
-                || match &predicate.rhs {
+            scalar_expression_correlated_subquery_count(&predicate.lhs)
+                + match &predicate.rhs {
                     ScalarPredicateRhs::Expression(expression) => {
-                        scalar_expression_contains_correlated_subquery(expression)
+                        scalar_expression_correlated_subquery_count(expression)
                     }
-                    ScalarPredicateRhs::List(_) => false,
+                    ScalarPredicateRhs::List(_) => 0,
                 }
         }
         PredicateExpression::And { left, right }
         | PredicateExpression::Or { left, right }
         | PredicateExpression::Xor { left, right } => {
-            predicate_expression_contains_correlated_subquery(left)
-                || predicate_expression_contains_correlated_subquery(right)
+            predicate_expression_correlated_subquery_count(left)
+                + predicate_expression_correlated_subquery_count(right)
         }
         PredicateExpression::Not { expression } => {
-            predicate_expression_contains_correlated_subquery(expression)
+            predicate_expression_correlated_subquery_count(expression)
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::Comparison(_)
         | PredicateExpression::KeyComparison(_)
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
-        | PredicateExpression::PropertyKeyMembership(_) => false,
+        | PredicateExpression::PropertyKeyMembership(_) => 0,
     }
 }
 
@@ -6389,13 +6398,15 @@ fn compile_arithmetic_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    let expression = compile_scalar_expression_with_plan(
+        &item.expression,
+        format!("{path}.expression"),
+        plan,
+        context,
+    )?;
+    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
-        expression: compile_scalar_expression_with_plan(
-            &item.expression,
-            format!("{path}.expression"),
-            plan,
-            context,
-        )?,
+        expression,
         alias: item
             .alias
             .as_ref()
@@ -6411,13 +6422,11 @@ fn compile_boolean_scalar_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    let expression =
+        compile_boolean_scalar_expression(expression, format!("{path}.expression"), plan, context)?;
+    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
-        expression: compile_boolean_scalar_expression(
-            expression,
-            format!("{path}.expression"),
-            plan,
-            context,
-        )?,
+        expression,
         alias: item
             .alias
             .as_ref()
@@ -6433,13 +6442,15 @@ fn compile_case_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    let expression = compile_case_scalar_expression_with_plan(
+        case,
+        format!("{path}.expression"),
+        plan,
+        context,
+    )?;
+    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Projection::Expression {
-        expression: compile_case_scalar_expression_with_plan(
-            case,
-            format!("{path}.expression"),
-            plan,
-            context,
-        )?,
+        expression,
         alias: item
             .alias
             .as_ref()
@@ -6464,6 +6475,7 @@ fn compile_scalar_function_projection(
     else {
         return Ok(None);
     };
+    validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
     Ok(Some(Projection::Expression {
         expression,
         alias: item
@@ -6471,6 +6483,20 @@ fn compile_scalar_function_projection(
             .as_ref()
             .map_or_else(|| default_scalar_function_alias(function), variable_name),
     }))
+}
+
+fn validate_scalar_projection_correlated_subqueries(
+    expression: &ScalarExpression,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let count = scalar_expression_correlated_subquery_count(expression);
+    if count > 1 {
+        return Err(unsupported(
+            path,
+            "scalar projection expressions support at most one correlated COUNT { ... } or EXISTS { MATCH ... } subquery; project each subquery separately and compose the projected aliases",
+        ));
+    }
+    Ok(())
 }
 
 fn default_scalar_function_alias(function: &FunctionInvocation) -> String {

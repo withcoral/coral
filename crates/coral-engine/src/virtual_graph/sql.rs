@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -106,6 +107,7 @@ struct Lowerer<'a> {
     validated: ValidatedGraphPlan<'a>,
     joined_nodes: BTreeSet<&'a str>,
     from_clause: String,
+    next_scalar_subquery_alias: Cell<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +149,7 @@ impl<'a> Lowerer<'a> {
             validated,
             joined_nodes: BTreeSet::new(),
             from_clause: String::new(),
+            next_scalar_subquery_alias: Cell::new(0),
         }
     }
 
@@ -1392,10 +1395,13 @@ impl<'a> Lowerer<'a> {
         predicate: &PredicateExpression,
     ) -> Result<String, CoreError> {
         match predicate {
-            PredicateExpression::ExistsPattern(predicate) => Ok(format!(
-                "{} > 0",
-                self.render_scoped_pattern_select(predicate, "COUNT(*)")?
-            )),
+            PredicateExpression::ExistsPattern(predicate) => {
+                let alias = self.next_scalar_subquery_alias("__coral_exists_count");
+                Ok(format!(
+                    "{} > 0",
+                    self.render_scoped_pattern_select(predicate, &format!("COUNT(*) AS {alias}"))?
+                ))
+            }
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
                 self.render_scalar_predicate_expression(left)?,
@@ -1425,6 +1431,12 @@ impl<'a> Lowerer<'a> {
                 self.render_predicate_expression(predicate)
             }
         }
+    }
+
+    fn next_scalar_subquery_alias(&self, prefix: &str) -> String {
+        let index = self.next_scalar_subquery_alias.get();
+        self.next_scalar_subquery_alias.set(index + 1);
+        quote_ident(&format!("{prefix}_{index}"))
     }
 
     fn render_projection_predicate_expression(
@@ -3101,7 +3113,7 @@ impl<'a> Lowerer<'a> {
             write!(
                 &mut sql,
                 " WHEN {} THEN {}",
-                self.render_predicate_expression(&alternative.when)?,
+                self.render_scalar_predicate_expression(&alternative.when)?,
                 self.render_scalar_expression(&alternative.then)?
             )
             .map_err(|error| CoreError::internal(error.to_string()))?;
