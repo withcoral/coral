@@ -218,6 +218,9 @@ The supported foundation subset is intentionally narrow:
   `property IN coalesce(keys(optionalNode), ['fallback'])` lower as branch-local
   scalar predicates, preserving matched optional metadata semantics while letting
   unmatched optional branches fall through to later static-list fallbacks.
+  Sliced RHS membership such as
+  `property IN coalesce(keys(optionalNode), ['fallback'])[0..1]` uses the same
+  branch-local path after slicing each folded branch.
   Collection predicates such as `any(k IN coalesce(...) WHERE ...)` use the same
   branch-local strategy, with each branch evaluated by the existing folded static
   collection predicate evaluator.
@@ -245,7 +248,9 @@ The supported foundation subset is intentionally narrow:
   columns. `property IN CASE ... END` lowers to a scalar boolean `CASE` whose
   branch results are ordinary folded-list membership predicates, which allows
   empty or null branches in predicate position without rendering an untyped array
-  value. Static collection predicates over `CASE` collections lower the same way,
+  value. Sliced RHS membership over `(CASE ... END)[start..end]` slices each
+  folded branch before applying the same membership lowering. Static collection
+  predicates over `CASE` collections lower the same way,
   except each branch result is the folded outcome of `all` / `any` / `none` /
   `single` over that branch's list. Indexed, sliced, sliced-comparison, and sliced-index CASE
   collections such as `(CASE ... END)[0]`, `(CASE ... END)[0..1]`, and
@@ -430,7 +435,8 @@ non-terminal projection boundaries, post-union result processing, scalar
 projections containing multiple correlated `COUNT`/`EXISTS` subqueries, dynamic
 or multipart `UNWIND`, general subqueries with `WITH`, `RETURN`, `UNION`, or
 procedure calls, dynamic list comparisons or indexes, branch-local sliced lists
-in static collection/list-comprehension contexts, and broad expression semantics.
+in static collection/list-comprehension/`UNWIND` contexts, and broad expression
+semantics.
 
 ## GraphQL Frontend Boundary
 

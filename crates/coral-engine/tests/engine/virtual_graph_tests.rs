@@ -11424,6 +11424,46 @@ async fn cypher_static_list_case_and_coalesce_in_rhs_execute_against_synthetic_s
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_and_coalesce_slice_in_rhs_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         WHERE 'name' IN coalesce(keys(person), ['fallback', 'owner'])[0..1] \
+            OR service.name IN coalesce(keys(person), ['legacy-sync', 'fallback'])[0..1] \
+         RETURN service.name AS service, \
+                'team' IN (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[1..2] AS case_slice_has_team, \
+                'fallback' IN coalesce(keys(person), ['fallback', 'owner'])[0..1] AS coalesced_slice_has_fallback, \
+                service.name IN coalesce(keys(person), ['legacy-sync', 'fallback'])[0..1] AS coalesced_slice_has_service \
+         ORDER BY service",
+    )
+    .await
+    .expect("sliced static list CASE/coalesce IN right-hand sides should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "case_slice_has_team": true, "coalesced_slice_has_fallback": false, "coalesced_slice_has_service": false}),
+            json!({"service": "deployments", "case_slice_has_team": true, "coalesced_slice_has_fallback": false, "coalesced_slice_has_service": false}),
+            json!({"service": "experiments", "case_slice_has_team": true, "coalesced_slice_has_fallback": false, "coalesced_slice_has_service": false}),
+            json!({"service": "legacy-sync", "case_slice_has_team": false, "coalesced_slice_has_fallback": true, "coalesced_slice_has_service": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

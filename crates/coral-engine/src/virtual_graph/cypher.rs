@@ -19129,9 +19129,12 @@ fn compile_optional_static_list_slice_comparison_scalar_expression(
         Expression::ListSlice {
             list, start, end, ..
         } => {
-            let comparison = StaticListSliceComparison {
+            let bounds = StaticListSliceBounds {
                 start: start.as_deref(),
                 end: end.as_deref(),
+            };
+            let comparison = StaticListSliceComparison {
+                bounds,
                 operator,
                 expected,
             };
@@ -19158,9 +19161,14 @@ fn compile_optional_static_list_slice_comparison_scalar_expression(
     }
 }
 
-struct StaticListSliceComparison<'a> {
+#[derive(Clone, Copy)]
+struct StaticListSliceBounds<'a> {
     start: Option<&'a Expression>,
     end: Option<&'a Expression>,
+}
+
+struct StaticListSliceComparison<'a> {
+    bounds: StaticListSliceBounds<'a>,
     operator: ComparisonOperator,
     expected: &'a StaticListValue,
 }
@@ -19321,8 +19329,8 @@ fn static_list_value_slice_comparison_scalar_expression(
     let path = path.into();
     let value = slice_static_list_value(
         value,
-        comparison.start,
-        comparison.end,
+        comparison.bounds.start,
+        comparison.bounds.end,
         path.clone(),
         context,
     )?;
@@ -21259,6 +21267,11 @@ fn compile_in_predicate(
         return Ok(predicate);
     }
     if let Some(predicate) =
+        compile_optional_static_list_slice_in_predicate(lhs, rhs, path.clone(), mode, context)?
+    {
+        return Ok(predicate);
+    }
+    if let Some(predicate) =
         compile_optional_static_list_coalesce_in_predicate(lhs, rhs, path.clone(), mode, context)?
     {
         return Ok(predicate);
@@ -21270,6 +21283,235 @@ fn compile_in_predicate(
         context,
     )?;
     compile_static_list_value_in_predicate(lhs, rhs_value, path, mode, context)
+}
+
+fn compile_optional_static_list_slice_in_predicate(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    if !is_branch_local_static_list_slice_expression(rhs) {
+        return Ok(None);
+    }
+    let Some(expression) =
+        compile_optional_static_list_slice_in_scalar_expression(lhs, rhs, path, mode, context)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(boolean_scalar_expression_predicate(expression)))
+}
+
+fn compile_optional_static_list_slice_in_scalar_expression(
+    lhs: &Expression,
+    rhs: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match rhs {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_slice_in_scalar_expression(lhs, inner, path, mode, context)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            let bounds = StaticListSliceBounds {
+                start: start.as_deref(),
+                end: end.as_deref(),
+            };
+            if let Some(expression) = compile_optional_static_list_case_slice_in_scalar_expression(
+                lhs,
+                list,
+                bounds,
+                path.clone(),
+                mode,
+                context,
+            )? {
+                return Ok(Some(expression));
+            }
+            compile_optional_static_list_coalesce_slice_in_scalar_expression(
+                lhs, list, bounds, path, mode, context,
+            )
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_static_list_case_slice_in_scalar_expression(
+    lhs: &Expression,
+    list: &Expression,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match list {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_case_slice_in_scalar_expression(
+                lhs, inner, bounds, path, mode, context,
+            )
+        }
+        Expression::Case(case) => {
+            let Some(parts) = compile_optional_static_list_case_parts(
+                case,
+                format!("{path}.rhs"),
+                mode,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(ScalarExpression::Case {
+                alternatives: parts
+                    .alternatives
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (when, result))| {
+                        Ok(ScalarCaseAlternative {
+                            when,
+                            then: static_list_case_result_slice_in_scalar_expression(
+                                lhs,
+                                result,
+                                bounds,
+                                format!("{path}.rhs.alternatives[{index}].then"),
+                                mode,
+                                context,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CoreError>>()?,
+                else_expression: parts
+                    .default
+                    .map(|result| {
+                        static_list_case_result_slice_in_scalar_expression(
+                            lhs,
+                            result,
+                            bounds,
+                            format!("{path}.rhs.default"),
+                            mode,
+                            context,
+                        )
+                        .map(Box::new)
+                    })
+                    .transpose()?,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_static_list_coalesce_slice_in_scalar_expression(
+    lhs: &Expression,
+    list: &Expression,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match list {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_coalesce_slice_in_scalar_expression(
+                lhs, inner, bounds, path, mode, context,
+            )
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            let Some(coalesce) = compile_optional_static_list_coalesce_arguments(
+                function,
+                format!("{path}.rhs"),
+                mode.static_metadata_plan(),
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            static_list_coalesce_slice_in_scalar_expression(
+                lhs, coalesce, bounds, path, mode, context,
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn static_list_case_result_slice_in_scalar_expression(
+    lhs: &Expression,
+    result: StaticListCaseResult,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match result {
+        StaticListCaseResult::Null => Ok(ScalarExpression::Literal(Literal::Null)),
+        StaticListCaseResult::List(value) => {
+            static_list_value_slice_in_scalar_expression(lhs, value, bounds, path, mode, context)
+        }
+        StaticListCaseResult::Coalesce(coalesce) => {
+            static_list_coalesce_slice_in_scalar_expression(
+                lhs, coalesce, bounds, path, mode, context,
+            )
+        }
+    }
+}
+
+fn static_list_coalesce_slice_in_scalar_expression(
+    lhs: &Expression,
+    coalesce: StaticListCoalesceArguments,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut expression = ScalarExpression::Literal(Literal::Null);
+    for (index, argument) in coalesce.arguments.into_iter().enumerate().rev() {
+        let StaticListCoalesceArgument::List(mut value) = argument else {
+            continue;
+        };
+        let presence_variable = value.presence_variable.take();
+        let membership = static_list_value_slice_in_scalar_expression(
+            lhs,
+            value,
+            bounds,
+            format!("{path}.arguments[{index}]"),
+            mode,
+            context,
+        )?;
+        expression = match presence_variable {
+            Some(variable) => ScalarExpression::Case {
+                alternatives: vec![ScalarCaseAlternative {
+                    when: PredicateExpression::Presence(PresencePredicate {
+                        variable,
+                        operator: ComparisonOperator::NotEqual,
+                    }),
+                    then: membership,
+                }],
+                else_expression: Some(Box::new(expression)),
+            },
+            None => membership,
+        };
+    }
+    Ok(expression)
+}
+
+fn static_list_value_slice_in_scalar_expression(
+    lhs: &Expression,
+    rhs_value: StaticListValue,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let rhs_value =
+        slice_static_list_value(rhs_value, bounds.start, bounds.end, path.clone(), context)?;
+    compile_static_list_value_in_scalar_expression(lhs, rhs_value, path, mode, context)
 }
 
 fn compile_optional_static_list_case_in_predicate(
@@ -33199,6 +33441,63 @@ relationships:
                         ] if variable == "person"
                     )
                 )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Predicate(_)),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_case_and_coalesce_slice_in_rhs_predicates() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             WHERE 'name' IN coalesce(keys(person), ['fallback', 'owner'])[0..1] \
+                OR service.name IN coalesce(keys(person), ['legacy-sync', 'fallback'])[0..1] \
+             RETURN 'team' IN (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[1..2] AS case_slice_has_team, \
+                    'fallback' IN coalesce(keys(person), ['fallback', 'owner'])[0..1] AS coalesced_slice_has_fallback \
+             ORDER BY 'fallback' IN coalesce(keys(person), ['fallback', 'owner'])[0..1]",
+        )
+        .expect("sliced static list CASE/coalesce IN right-hand sides should compile");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        let optional_predicate = &plan
+            .optional_matches
+            .first()
+            .expect("optional match scope")
+            .predicate;
+        assert!(
+            matches!(
+                optional_predicate,
+                Some(PredicateExpression::Or { left, right })
+                    if is_case_boolean_scalar_predicate(left.as_ref())
+                        && is_case_boolean_scalar_predicate(right.as_ref())
+            ),
+            "{optional_predicate:#?}"
+        );
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(case_predicate),
+                    alias: case_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(coalesced_predicate),
+                    alias: coalesced_alias,
+                },
+            ] if case_alias == "case_slice_has_team"
+                && coalesced_alias == "coalesced_slice_has_fallback"
+                && is_case_boolean_scalar_predicate(case_predicate.as_ref())
+                && is_case_boolean_scalar_predicate(coalesced_predicate.as_ref())
         ));
         assert!(matches!(
             plan.order_by.as_slice(),
