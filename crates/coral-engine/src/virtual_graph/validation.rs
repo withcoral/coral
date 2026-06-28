@@ -3003,6 +3003,56 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn validate_nested_scoped_count_subquery_pattern<'b>(
+        &self,
+        pattern: &'b CountSubqueryPattern,
+        parent_scope: ExistsPredicateValidationContext<'a, '_>,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                self.validate_nested_scoped_exists_pattern_predicate(predicate, parent_scope, path)
+            }
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => {
+                if nodes.is_empty() {
+                    return Err(Diagnostic::new(
+                        "UNSUPPORTED_COUNT_SUBQUERY",
+                        format!("{path}.nodes"),
+                        "COUNT subqueries without relationship patterns must bind at least one local node",
+                    )
+                    .into_core_error());
+                }
+                let local_nodes =
+                    self.validate_scoped_node_patterns(nodes, &path, "nested COUNT subquery")?;
+                let relationships = Vec::new();
+                let scope = ExistsPredicateValidationContext {
+                    relationships: &relationships,
+                    local_nodes: &local_nodes,
+                };
+                for (index, property_predicate) in predicates.iter().enumerate() {
+                    self.validate_exists_property_predicate(
+                        property_predicate,
+                        scope,
+                        format!("{path}.predicates[{index}]"),
+                    )?;
+                }
+                if let Some(predicate_expression) = predicate.as_ref() {
+                    self.validate_scoped_predicate_expression(
+                        predicate_expression,
+                        scope,
+                        format!("{path}.predicate"),
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn resolve_nested_scoped_exists_relationship_mappings<'b>(
         &self,
         predicate: &'b ExistsPatternPredicate,
@@ -3155,7 +3205,11 @@ impl<'a> GraphPlanValidator<'a> {
                     scope.local_nodes,
                     path.clone(),
                 )?;
-                self.exists_property_ref_scalar_type(property, scope.relationships, scope.local_nodes)
+                self.exists_property_ref_scalar_type(
+                    property,
+                    scope.relationships,
+                    scope.local_nodes,
+                )
             }
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
             ScalarExpression::LiteralList { literals } => {
@@ -3173,12 +3227,14 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_scoped_predicate_expression(predicate, scope, path)?;
                 Ok(ScalarType::Boolean)
             }
-            ScalarExpression::CountSubquery { .. } => Err(Diagnostic::new(
-                "UNSUPPORTED_SCOPED_SUBQUERY",
-                path,
-                "nested COUNT { ... } expressions inside scoped subqueries require staged subquery planning and are not supported yet",
-            )
-            .into_core_error()),
+            ScalarExpression::CountSubquery { pattern } => {
+                self.validate_nested_scoped_count_subquery_pattern(
+                    pattern,
+                    scope,
+                    format!("{path}.pattern"),
+                )?;
+                Ok(ScalarType::Integer)
+            }
             ScalarExpression::Key { variable } => {
                 self.validate_exists_key_ref(
                     variable,
@@ -3532,11 +3588,8 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::String)
             }
             ScalarExpression::Arithmetic { left, right, .. } => {
-                let left_type = self.infer_scoped_scalar_expression_type(
-                    left,
-                    scope,
-                    format!("{path}.left"),
-                )?;
+                let left_type =
+                    self.infer_scoped_scalar_expression_type(left, scope, format!("{path}.left"))?;
                 let right_type = self.infer_scoped_scalar_expression_type(
                     right,
                     scope,

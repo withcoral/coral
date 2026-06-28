@@ -3401,26 +3401,55 @@ impl<'a> Lowerer<'a> {
         parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
         parent_local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
+        Ok(format!(
+            "EXISTS {}",
+            self.render_nested_scoped_pattern_select(
+                predicate,
+                "1",
+                parent_relationships,
+                parent_local_nodes,
+                parent_local_aliases,
+                "__coral_nested_exists_n",
+                "__coral_nested_exists_r",
+                "nested EXISTS",
+            )?
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Nested scoped pattern rendering needs select SQL plus child and parent alias scopes"
+    )]
+    fn render_nested_scoped_pattern_select<'b, 'c>(
+        &self,
+        predicate: &'c ExistsPatternPredicate,
+        select_expression: &str,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+        node_alias_prefix: &str,
+        relationship_alias_prefix: &str,
+        context: &str,
+    ) -> Result<String, CoreError> {
         let local_nodes = self.scoped_local_node_map(&predicate.nodes)?;
         let relationship_bindings = self.nested_scoped_exists_relationship_bindings(
             predicate,
             &local_nodes,
             parent_local_nodes,
+            relationship_alias_prefix,
         )?;
-        let local_aliases = Self::nested_exists_local_node_aliases(predicate);
+        let local_aliases =
+            Self::nested_scoped_local_node_aliases(&predicate.nodes, node_alias_prefix);
         if relationship_bindings.is_empty() {
-            return Ok(format!(
-                "EXISTS {}",
-                self.render_scoped_node_select(
-                    &predicate.nodes,
-                    &predicate.predicates,
-                    predicate.predicate.as_deref(),
-                    "1",
-                    &local_nodes,
-                    &local_aliases,
-                    "nested EXISTS",
-                )?
-            ));
+            return self.render_scoped_node_select(
+                &predicate.nodes,
+                &predicate.predicates,
+                predicate.predicate.as_deref(),
+                select_expression,
+                &local_nodes,
+                &local_aliases,
+                context,
+            );
         }
 
         let mut from_clause = relationship_bindings
@@ -3480,24 +3509,69 @@ impl<'a> Lowerer<'a> {
             &local_aliases,
         )?);
         Ok(format!(
-            "EXISTS (SELECT 1 FROM {from_clause} WHERE {})",
+            "(SELECT {select_expression} FROM {from_clause} WHERE {})",
             conditions.join(" AND ")
         ))
     }
 
-    fn nested_exists_local_node_aliases(
-        predicate: &ExistsPatternPredicate,
-    ) -> BTreeMap<&str, String> {
-        predicate
-            .nodes
+    fn render_nested_scoped_count_subquery_expression<'b>(
+        &self,
+        pattern: &CountSubqueryPattern,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => self
+                .render_nested_scoped_pattern_select(
+                    predicate,
+                    "COUNT(*)",
+                    parent_relationships,
+                    parent_local_nodes,
+                    parent_local_aliases,
+                    "__coral_nested_count_n",
+                    "__coral_nested_count_r",
+                    "nested COUNT",
+                ),
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => self.render_nested_scoped_count_node_subquery(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+            ),
+        }
+    }
+
+    fn render_nested_scoped_count_node_subquery(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::nested_scoped_local_node_aliases(nodes, "__coral_nested_count_n");
+        self.render_scoped_node_select(
+            nodes,
+            predicates,
+            predicate,
+            "COUNT(*)",
+            &local_nodes,
+            &local_aliases,
+            "nested COUNT",
+        )
+    }
+
+    fn nested_scoped_local_node_aliases<'b>(
+        nodes: &'b [NodePattern],
+        alias_prefix: &str,
+    ) -> BTreeMap<&'b str, String> {
+        nodes
             .iter()
             .enumerate()
-            .map(|(index, node)| {
-                (
-                    node.variable.as_str(),
-                    format!("__coral_nested_exists_n{index}"),
-                )
-            })
+            .map(|(index, node)| (node.variable.as_str(), format!("{alias_prefix}{index}")))
             .collect()
     }
 
@@ -3506,6 +3580,7 @@ impl<'a> Lowerer<'a> {
         predicate: &'c ExistsPatternPredicate,
         local_nodes: &BTreeMap<&'c str, &'a Node>,
         parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        relationship_alias_prefix: &str,
     ) -> Result<Vec<ExistsRelationshipSqlBinding<'a, 'c>>, CoreError> {
         predicate
             .relationships
@@ -3520,7 +3595,7 @@ impl<'a> Lowerer<'a> {
                 .map(|relationship| ExistsRelationshipSqlBinding {
                     pattern,
                     relationship,
-                    alias: format!("__coral_nested_exists_r{index}"),
+                    alias: format!("{relationship_alias_prefix}{index}"),
                 })
             })
             .collect()
@@ -3904,9 +3979,13 @@ impl<'a> Lowerer<'a> {
                 local_nodes,
                 local_aliases,
             ),
-            ScalarExpression::CountSubquery { .. } => Err(CoreError::internal(
-                "nested scoped COUNT subquery reached scoped SQL renderer",
-            )),
+            ScalarExpression::CountSubquery { pattern } => self
+                .render_nested_scoped_count_subquery_expression(
+                    pattern,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                ),
             ScalarExpression::PresenceGated {
                 presence_variable,
                 expression,

@@ -3339,6 +3339,78 @@ async fn cypher_exists_match_subqueries_support_nested_exists_complex_own_where(
 }
 
 #[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_count_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE COUNT { MATCH (target)-[:DEPENDS_ON]->(:Service) } > 0 \
+         } \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("nested scoped COUNT relationship predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_nested_count_r0\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_exists_match_subqueries_support_nested_node_count_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           WHERE COUNT { MATCH (leaf:Service) WHERE leaf.tier = 'dev' } > 0 \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("nested scoped COUNT node predicates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_nested_count_n0\".\"tier\" = 'dev'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_subqueries_execute_as_correlated_scalar_counts() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
