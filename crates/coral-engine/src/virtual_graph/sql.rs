@@ -1387,6 +1387,46 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_scalar_predicate_expression(
+        &self,
+        predicate: &PredicateExpression,
+    ) -> Result<String, CoreError> {
+        match predicate {
+            PredicateExpression::ExistsPattern(predicate) => Ok(format!(
+                "{} > 0",
+                self.render_scoped_pattern_select(predicate, "COUNT(*)")?
+            )),
+            PredicateExpression::And { left, right } => Ok(format!(
+                "({} AND {})",
+                self.render_scalar_predicate_expression(left)?,
+                self.render_scalar_predicate_expression(right)?
+            )),
+            PredicateExpression::Or { left, right } => Ok(format!(
+                "({} OR {})",
+                self.render_scalar_predicate_expression(left)?,
+                self.render_scalar_predicate_expression(right)?
+            )),
+            PredicateExpression::Xor { left, right } => {
+                let left = self.render_scalar_predicate_expression(left)?;
+                let right = self.render_scalar_predicate_expression(right)?;
+                Ok(render_xor_predicate(&left, &right))
+            }
+            PredicateExpression::Not { expression } => Ok(format!(
+                "NOT ({})",
+                self.render_scalar_predicate_expression(expression)?
+            )),
+            PredicateExpression::Boolean(_)
+            | PredicateExpression::Comparison(_)
+            | PredicateExpression::KeyComparison(_)
+            | PredicateExpression::ElementIdComparison(_)
+            | PredicateExpression::Presence(_)
+            | PredicateExpression::PropertyKeyMembership(_)
+            | PredicateExpression::ScalarComparison(_) => {
+                self.render_predicate_expression(predicate)
+            }
+        }
+    }
+
     fn render_projection_predicate_expression(
         &self,
         predicate: &ProjectionPredicateExpression,
@@ -2678,7 +2718,9 @@ impl<'a> Lowerer<'a> {
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
-            ScalarExpression::Predicate(predicate) => self.render_predicate_expression(predicate),
+            ScalarExpression::Predicate(predicate) => {
+                self.render_scalar_predicate_expression(predicate)
+            }
             ScalarExpression::CountSubquery { pattern } => {
                 self.render_count_subquery_expression(pattern)
             }

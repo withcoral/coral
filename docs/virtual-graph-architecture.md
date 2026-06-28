@@ -161,6 +161,11 @@ The supported foundation subset is intentionally narrow:
 - inline relationship property maps normalized to equality predicates, with
   internal relationship variables for anonymous edges;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
+- `EXISTS { MATCH ... }` lowered to SQL semi-joins in `WHERE`; scalar
+  `EXISTS` projections lower as correlated `COUNT(*) > 0` expressions so they
+  are executable by DataFusion in `RETURN`, can be sorted through their
+  projected alias, and compact pattern `EXISTS { ... }` supports inline
+  property maps when no compact `WHERE` clause is present;
 - property projections, identity projections, standalone and grouped `count(*)`,
   `count(property)`, `count(DISTINCT property)`, `count(node)`,
   `count(DISTINCT node)`, `count(relationship)` with keyed or keyless mappings,
@@ -185,7 +190,8 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, variable-length paths, parameterized property
 maps, keyless relationship identity operations, non-terminal projection
-boundaries, post-union result processing, subqueries, procedure calls,
+boundaries, post-union result processing, general subqueries with `WITH`,
+`RETURN`, `UNION`, or procedure calls,
 path/list length via `size`, and broad expression semantics.
 
 ## GraphQL Frontend Boundary

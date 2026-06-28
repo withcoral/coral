@@ -1577,6 +1577,41 @@ async fn cypher_exists_match_subqueries_apply_inner_where_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS has_dependency \
+         ORDER BY has_dependency DESC, service",
+    )
+    .await
+    .expect("Cypher EXISTS scalar projection should execute");
+
+    assert!(
+        execution.translated_sql().contains("(SELECT COUNT(*) FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "has_dependency": true}),
+            json!({"service": "deployments", "has_dependency": true}),
+            json!({"service": "experiments", "has_dependency": false}),
+            json!({"service": "legacy-sync", "has_dependency": false}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exists_match_subqueries_support_multihop_patterns() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

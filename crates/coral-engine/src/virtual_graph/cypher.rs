@@ -5537,9 +5537,10 @@ fn compile_order_expression(
         Expression::CountStar { .. } => {
             count_star_order_expression_for_projection(projections, path)
         }
-        Expression::CountSubquery(count) => Ok(OrderExpression::Scalar(
-            compile_count_subquery_scalar_expression(count, path, Some(plan), context)?,
-        )),
+        Expression::CountSubquery(count) => compile_scalar_order_expression(
+            compile_count_subquery_scalar_expression(count, path.clone(), Some(plan), context)?,
+            path,
+        ),
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
@@ -5551,14 +5552,15 @@ fn compile_order_expression(
             if let Some(expression) =
                 compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
             {
-                Ok(OrderExpression::Scalar(expression))
+                compile_scalar_order_expression(expression, path)
             } else {
                 compile_arithmetic_order_expression(expression, path, plan, context)
             }
         }
-        expression if is_boolean_scalar_expression(expression) => Ok(OrderExpression::Scalar(
-            compile_boolean_scalar_expression(expression, path, plan, context)?,
-        )),
+        expression if is_boolean_scalar_expression(expression) => compile_scalar_order_expression(
+            compile_boolean_scalar_expression(expression, path.clone(), plan, context)?,
+            path,
+        ),
         Expression::Case(case) => compile_case_order_expression(case, path, plan, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
             compile_id_order_expression(function, path, plan, context)
@@ -5582,7 +5584,7 @@ fn compile_order_expression(
             if let Some(expression) =
                 compile_scalar_function_expression_with_plan(function, path.clone(), plan, context)?
             {
-                return Ok(OrderExpression::Scalar(expression));
+                return compile_scalar_order_expression(expression, path);
             }
             if compile_aggregate_function(function).is_some() {
                 return aggregate_order_expression_for_projection(
@@ -5606,6 +5608,201 @@ fn compile_order_expression(
             Some(plan),
             context,
         )?)),
+    }
+}
+
+fn compile_scalar_order_expression(
+    expression: ScalarExpression,
+    path: impl Into<String>,
+) -> Result<OrderExpression, CoreError> {
+    if scalar_expression_contains_correlated_subquery(&expression) {
+        return Err(unsupported(
+            path,
+            "ORDER BY over correlated subqueries must use a projected alias, for example RETURN EXISTS { MATCH ... } AS has_match ORDER BY has_match",
+        ));
+    }
+    Ok(OrderExpression::Scalar(expression))
+}
+
+fn scalar_expression_contains_correlated_subquery(expression: &ScalarExpression) -> bool {
+    if let Some(contains_subquery) =
+        compound_scalar_expression_contains_correlated_subquery(expression)
+    {
+        return contains_subquery;
+    }
+    scalar_expression_leaf_contains_correlated_subquery(expression)
+}
+
+fn compound_scalar_expression_contains_correlated_subquery(
+    expression: &ScalarExpression,
+) -> Option<bool> {
+    if let Some(operand) = unary_scalar_expression_operand(expression) {
+        return Some(scalar_expression_contains_correlated_subquery(operand));
+    }
+
+    match expression {
+        ScalarExpression::PresenceGated { expression, .. } => {
+            Some(scalar_expression_contains_correlated_subquery(expression))
+        }
+        ScalarExpression::Coalesce { expressions } => Some(
+            expressions
+                .iter()
+                .any(scalar_expression_contains_correlated_subquery),
+        ),
+        ScalarExpression::NullIf { expression, value } => Some(
+            scalar_expression_contains_correlated_subquery(expression)
+                || scalar_expression_contains_correlated_subquery(value),
+        ),
+        ScalarExpression::Round { expression, places } => Some(
+            scalar_expression_contains_correlated_subquery(expression)
+                || places
+                    .as_deref()
+                    .is_some_and(scalar_expression_contains_correlated_subquery),
+        ),
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => Some(
+            scalar_expression_contains_correlated_subquery(expression)
+                || scalar_expression_contains_correlated_subquery(count),
+        ),
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => Some(
+            scalar_expression_contains_correlated_subquery(expression)
+                || scalar_expression_contains_correlated_subquery(search)
+                || scalar_expression_contains_correlated_subquery(replacement),
+        ),
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => Some(
+            scalar_expression_contains_correlated_subquery(expression)
+                || scalar_expression_contains_correlated_subquery(start)
+                || length
+                    .as_deref()
+                    .is_some_and(scalar_expression_contains_correlated_subquery),
+        ),
+        ScalarExpression::Arithmetic { left, right, .. } => Some(
+            scalar_expression_contains_correlated_subquery(left)
+                || scalar_expression_contains_correlated_subquery(right),
+        ),
+        ScalarExpression::Atan2 { y, x } => Some(
+            scalar_expression_contains_correlated_subquery(y)
+                || scalar_expression_contains_correlated_subquery(x),
+        ),
+        _ => None,
+    }
+}
+
+fn scalar_expression_leaf_contains_correlated_subquery(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Predicate(predicate) => {
+            predicate_expression_contains_correlated_subquery(predicate)
+        }
+        ScalarExpression::CountSubquery { .. } => true,
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => scalar_case_expression_contains_correlated_subquery(
+            alternatives,
+            else_expression.as_deref(),
+        ),
+        ScalarExpression::Property(_)
+        | ScalarExpression::Literal(_)
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. } => false,
+        ScalarExpression::PresenceGated { .. }
+        | ScalarExpression::Coalesce { .. }
+        | ScalarExpression::NullIf { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::Atan2 { .. }
+        | ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => {
+            unreachable!("child-bearing scalar expressions handled above")
+        }
+    }
+}
+
+fn scalar_case_expression_contains_correlated_subquery(
+    alternatives: &[ScalarCaseAlternative],
+    else_expression: Option<&ScalarExpression>,
+) -> bool {
+    alternatives.iter().any(|alternative| {
+        predicate_expression_contains_correlated_subquery(&alternative.when)
+            || scalar_expression_contains_correlated_subquery(&alternative.then)
+    }) || else_expression.is_some_and(scalar_expression_contains_correlated_subquery)
+}
+
+fn predicate_expression_contains_correlated_subquery(predicate: &PredicateExpression) -> bool {
+    match predicate {
+        PredicateExpression::ExistsPattern(_) => true,
+        PredicateExpression::ScalarComparison(predicate) => {
+            scalar_expression_contains_correlated_subquery(&predicate.lhs)
+                || match &predicate.rhs {
+                    ScalarPredicateRhs::Expression(expression) => {
+                        scalar_expression_contains_correlated_subquery(expression)
+                    }
+                    ScalarPredicateRhs::List(_) => false,
+                }
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            predicate_expression_contains_correlated_subquery(left)
+                || predicate_expression_contains_correlated_subquery(right)
+        }
+        PredicateExpression::Not { expression } => {
+            predicate_expression_contains_correlated_subquery(expression)
+        }
+        PredicateExpression::Boolean(_)
+        | PredicateExpression::Comparison(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_) => false,
     }
 }
 
@@ -7646,8 +7843,11 @@ fn compile_arithmetic_order_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
-    compile_scalar_expression_with_plan(expression, path, plan, context)
-        .map(OrderExpression::Scalar)
+    let path = path.into();
+    compile_scalar_order_expression(
+        compile_scalar_expression_with_plan(expression, path.clone(), plan, context)?,
+        path,
+    )
 }
 
 fn compile_case_order_expression(
@@ -7656,7 +7856,11 @@ fn compile_case_order_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
-    compile_case_scalar_expression_with_plan(case, path, plan, context).map(OrderExpression::Scalar)
+    let path = path.into();
+    compile_scalar_order_expression(
+        compile_case_scalar_expression_with_plan(case, path.clone(), plan, context)?,
+        path,
+    )
 }
 
 fn compile_optional_boolean_scalar_expression(
@@ -7696,7 +7900,8 @@ fn is_boolean_scalar_expression(expression: &Expression) -> bool {
         | Expression::Comparison { .. }
         | Expression::In { .. }
         | Expression::IsNull { .. }
-        | Expression::NodeLabels { .. } => true,
+        | Expression::NodeLabels { .. }
+        | Expression::Exists(_) => true,
         Expression::FunctionCall(function) => {
             is_exists_function(function) || is_empty_function(function)
         }
@@ -14924,6 +15129,52 @@ relationships:
                 nulls: None,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_exists_subqueries_as_boolean_scalar_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } AS has_dependency \
+             ORDER BY has_dependency DESC",
+        )
+        .expect("EXISTS subquery scalar projection should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            }] if alias == "has_dependency"
+                && matches!(predicate.as_ref(), PredicateExpression::ExistsPattern(_))
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::ProjectionAlias(alias),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }] if alias == "has_dependency"
+        ));
+    }
+
+    #[test]
+    fn rejects_direct_order_by_correlated_subqueries() {
+        for cypher in [
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } DESC",
+        ] {
+            let error =
+                compile_cypher(cypher).expect_err("direct subquery ordering should be rejected");
+            assert!(
+                error.to_string().contains("must use a projected alias"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
