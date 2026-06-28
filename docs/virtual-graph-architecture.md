@@ -205,6 +205,16 @@ The supported foundation subset is intentionally narrow:
   with the same presence gating used by scalar metadata expressions.
   Concatenation rejects mixed non-null element types, unknowable projected
   element types, dynamic operands, and lists from different optional bindings;
+- list-valued `coalesce(...)` over static lists and `NULL` values. The frontend
+  accepts only arguments that already compile through the static-list path,
+  infers one compatible element type, and lowers nullable metadata fallbacks as
+  scalar `Coalesce(PresenceGated(TypedLiteralList), TypedLiteralList)` instead
+  of introducing dynamic list values. Purely static cases whose first non-null
+  list is unconditional remain foldable as `StaticListValue` so downstream
+  `head(...)`, `tail(...)`, slice, index, and static `UNWIND` handling can reuse
+  the same folded-list machinery. Scalar/list mixes, all-null or untyped empty
+  list outputs, dynamic list columns, and lists gated by different optional
+  bindings remain rejected;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the

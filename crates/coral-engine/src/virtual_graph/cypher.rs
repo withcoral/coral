@@ -8335,6 +8335,9 @@ fn compile_optional_static_list_value(
         Expression::FunctionCall(function) if is_static_list_cast_function(function) => {
             compile_static_list_cast_value(function, path, plan, context).map(Some)
         }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_optional_static_list_coalesce_value(function, path, plan, context)
+        }
         Expression::FunctionCall(function) if is_reverse_function(function) => {
             compile_optional_static_list_reverse_value(function, path, plan, context)
         }
@@ -10437,6 +10440,153 @@ fn compile_optional_static_list_reverse_value(
     )?))
 }
 
+#[derive(Debug)]
+enum StaticListCoalesceArgument {
+    Null,
+    List(StaticListValue),
+}
+
+#[derive(Debug)]
+struct StaticListCoalesceArguments {
+    arguments: Vec<StaticListCoalesceArgument>,
+    element_type: LiteralListElementType,
+}
+
+fn compile_optional_static_list_coalesce_arguments(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListCoalesceArguments>, CoreError> {
+    let path = path.into();
+    if function.arguments.len() < 2 {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "coalesce() requires at least two arguments",
+        ));
+    }
+
+    let mut arguments = Vec::with_capacity(function.arguments.len());
+    let mut element_type = None;
+    let mut saw_list = false;
+    let mut saw_non_list = false;
+
+    for (index, argument) in function.arguments.iter().enumerate() {
+        let argument_path = format!("{path}.arguments[{index}]");
+        if let Some(value) =
+            compile_optional_static_list_value(argument, argument_path.clone(), plan, context)?
+        {
+            element_type = merge_static_list_coalesce_element_types(
+                element_type,
+                value.element_type,
+                &argument_path,
+            )?;
+            saw_list = true;
+            arguments.push(StaticListCoalesceArgument::List(value));
+        } else if is_static_null_expression(argument, context)? {
+            arguments.push(StaticListCoalesceArgument::Null);
+        } else {
+            saw_non_list = true;
+        }
+    }
+
+    if !saw_list {
+        return Ok(None);
+    }
+    if saw_non_list {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "list-valued coalesce() requires every non-null argument to be a static list",
+        ));
+    }
+    let Some(element_type) = element_type else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "list-valued coalesce() requires at least one non-null list element type",
+        ));
+    };
+    Ok(Some(StaticListCoalesceArguments {
+        arguments,
+        element_type,
+    }))
+}
+
+fn is_static_null_expression(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_null_expression(inner, context),
+        Expression::Literal(CypherLiteral::Null) => Ok(true),
+        Expression::Parameter(parameter) => Ok(matches!(
+            context.parameter_value(parameter, "coalesce.arguments")?,
+            CypherParameterValue::Literal(Literal::Null)
+        )),
+        _ => Ok(false),
+    }
+}
+
+fn compile_optional_static_list_coalesce_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let Some(coalesce) =
+        compile_optional_static_list_coalesce_arguments(function, path, plan, context)?
+    else {
+        return Ok(None);
+    };
+
+    let mut first_list = None;
+    let mut first_presence = None;
+    for argument in coalesce.arguments {
+        let StaticListCoalesceArgument::List(value) = argument else {
+            continue;
+        };
+        let value = with_static_list_element_type(value, coalesce.element_type);
+        if first_list.is_none() {
+            if value.presence_variable.is_none() {
+                return Ok(Some(value));
+            }
+            first_presence.clone_from(&value.presence_variable);
+            first_list = Some(value);
+            continue;
+        }
+        if value.presence_variable != first_presence {
+            return Ok(None);
+        }
+    }
+    Ok(first_list)
+}
+
+fn compile_optional_static_list_coalesce_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(coalesce) =
+        compile_optional_static_list_coalesce_arguments(function, path.clone(), plan, context)?
+    else {
+        return Ok(None);
+    };
+
+    let expressions = coalesce
+        .arguments
+        .into_iter()
+        .map(|argument| match argument {
+            StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
+            StaticListCoalesceArgument::List(value) => {
+                static_list_value_scalar_expression_with_element_type(value, coalesce.element_type)
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(Some(ScalarExpression::Coalesce { expressions }))
+}
+
 fn compile_optional_static_list_tail_value(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -10666,6 +10816,31 @@ fn merge_static_list_element_types(
     }
 }
 
+fn merge_static_list_coalesce_element_types(
+    lhs: Option<LiteralListElementType>,
+    rhs: Option<LiteralListElementType>,
+    path: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs != rhs => Err(unsupported(
+            path,
+            "list-valued coalesce() requires compatible non-null list element types",
+        )),
+        (Some(element_type), _) | (_, Some(element_type)) => Ok(Some(element_type)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn with_static_list_element_type(
+    mut value: StaticListValue,
+    element_type: LiteralListElementType,
+) -> StaticListValue {
+    if value.element_type.is_none() {
+        value.element_type = Some(element_type);
+    }
+    value
+}
+
 fn infer_literal_list_element_type(literals: &[Literal]) -> Option<LiteralListElementType> {
     let mut expected = None;
     for literal in literals {
@@ -10701,6 +10876,19 @@ fn static_list_value_scalar_expression(
     ))
 }
 
+fn static_list_value_scalar_expression_with_element_type(
+    value: StaticListValue,
+    element_type: LiteralListElementType,
+) -> ScalarExpression {
+    presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::TypedLiteralList {
+            literals: value.literals,
+            element_type: value.element_type.unwrap_or(element_type),
+        },
+    )
+}
+
 fn compile_optional_static_list_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
@@ -10708,6 +10896,13 @@ fn compile_optional_static_list_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
+    if let Expression::FunctionCall(function) = expression
+        && is_coalesce_function(function)
+    {
+        return compile_optional_static_list_coalesce_scalar_expression(
+            function, path, plan, context,
+        );
+    }
     let Some(value) = compile_optional_static_list_value(expression, path.clone(), plan, context)?
     else {
         return Ok(None);
@@ -11508,6 +11703,14 @@ fn compile_coalesce_scalar_expression(
             format!("{path}.arguments"),
             "coalesce() requires at least two arguments",
         ));
+    }
+    if let Some(expression) = compile_optional_static_list_coalesce_scalar_expression(
+        function,
+        path.clone(),
+        mode.static_metadata_plan(),
+        context,
+    )? {
+        return Ok(expression);
     }
     let expressions = function
         .arguments
@@ -28178,6 +28381,80 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_coalesce_projection_and_ordering() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN coalesce(keys(person), []) AS owner_keys, \
+                    coalesce(null, labels(service)) AS service_labels \
+             ORDER BY coalesce(keys(person), ['missing'])",
+        )
+        .expect("static list coalesce should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions: owner_key_args },
+                    alias: owner_key_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions: service_label_args },
+                    alias: service_label_alias,
+                },
+            ] if owner_key_alias == "owner_keys"
+                && owner_key_args.len() == 2
+                && matches!(
+                    owner_key_args.as_slice(),
+                    [
+                        ScalarExpression::PresenceGated {
+                            presence_variable,
+                            expression,
+                        },
+                        ScalarExpression::TypedLiteralList {
+                            literals,
+                            element_type: LiteralListElementType::String,
+                        },
+                    ] if presence_variable == "person"
+                        && matches!(
+                            expression.as_ref(),
+                            ScalarExpression::TypedLiteralList {
+                                literals,
+                                element_type: LiteralListElementType::String,
+                            } if literals == &vec![
+                                Literal::String("name".to_string()),
+                                Literal::String("team".to_string()),
+                            ]
+                        )
+                        && literals.is_empty()
+                )
+                && service_label_alias == "service_labels"
+                && matches!(
+                    service_label_args.as_slice(),
+                    [
+                        ScalarExpression::Literal(Literal::Null),
+                        ScalarExpression::TypedLiteralList {
+                            literals,
+                            element_type: LiteralListElementType::String,
+                        },
+                    ] if literals == &vec![Literal::String("Service".to_string())]
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Coalesce { expressions }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }] if expressions.len() == 2
+        ));
+    }
+
+    #[test]
     fn compiles_null_if_scalar_expressions() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -30068,7 +30345,7 @@ relationships:
             ),
             (
                 "MATCH (service:Service) RETURN coalesce(labels(service), 'unknown') AS owner_team",
-                "scalar function 'labels'",
+                "list-valued coalesce() requires every non-null argument to be a static list",
             ),
         ] {
             let error = compile_cypher(cypher).expect_err("query should be rejected");

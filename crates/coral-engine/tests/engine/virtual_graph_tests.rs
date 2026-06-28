@@ -11157,6 +11157,50 @@ async fn cypher_keys_projection_preserves_optional_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_coalesce_preserves_optional_fallbacks() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                coalesce(keys(person), []) AS owner_keys, \
+                coalesce(null, labels(service)) AS service_labels \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list coalesce should execute");
+
+    assert!(
+        execution.translated_sql().contains("COALESCE(CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("array_resize(make_array(CAST(NULL AS VARCHAR)), 0)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_keys": ["name", "team"], "service_labels": ["Service"]}),
+            json!({"service": "deployments", "owner_keys": ["name", "team"], "service_labels": ["Service"]}),
+            json!({"service": "experiments", "owner_keys": ["name", "team"], "service_labels": ["Service"]}),
+            json!({"service": "legacy-sync", "owner_keys": [], "service_labels": ["Service"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
