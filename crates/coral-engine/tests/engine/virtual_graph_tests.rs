@@ -4546,6 +4546,41 @@ async fn cypher_transparent_with_star_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_transparent_with_star_carries_path_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON]->(target:Service) \
+         WITH * \
+         RETURN source.name AS source, target.name AS target, length(path) AS hops, size(path) AS path_size \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("WITH * should carry path length metadata");
+
+    assert!(
+        execution.translated_sql().contains("1 AS \"hops\"")
+            && execution.translated_sql().contains("1 AS \"path_size\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments", "hops": 1, "path_size": 1}),
+            json!({"source": "billing-api", "target": "experiments", "hops": 1, "path_size": 1}),
+            json!({"source": "deployments", "target": "experiments", "hops": 1, "path_size": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multiple_match_clauses_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

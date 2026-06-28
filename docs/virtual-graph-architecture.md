@@ -255,8 +255,9 @@ The supported foundation subset is intentionally narrow:
   unambiguous intermediate label sequence; ranges whose exact alternatives are
   all pruned lower to ordinary empty-result plans with `WHERE FALSE` so
   projections and result schemas remain stable;
-- non-materialized path variable bindings in `MATCH p = (...)` when `p` is not
-  carried by `WITH *` or used as a graph value;
+- non-materialized path variable bindings in `MATCH p = (...)`, including
+  `WITH *` pass-through when the path is later used only for supported metadata
+  such as `length(path)` or `size(path)` and not as a graph value;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.

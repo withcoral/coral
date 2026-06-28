@@ -3285,12 +3285,6 @@ fn apply_transparent_with_scope(
                 "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
             ));
         }
-        if !state.path_variables.is_empty() {
-            return Err(unsupported(
-                format!("{path}.star"),
-                "WITH * cannot carry path variables because Coral does not materialize path values yet; explicitly carry graph variables to drop path values",
-            ));
-        }
         return compile_transparent_with_where(with, plan, path, context);
     }
     if with.items.is_empty() {
@@ -16132,18 +16126,50 @@ relationships:
     }
 
     #[test]
-    fn rejects_with_star_over_path_variables() {
+    fn compiles_with_star_over_path_variables() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH * \
+             RETURN person.name AS owner, length(path) AS hops, size(path) AS path_size",
+        )
+        .expect("WITH * should carry non-materialized path metadata");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "person".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("owner".to_string()),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "hops".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "path_size".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_with_star_path_variable_shadowing() {
         let error = compile_cypher(
             "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
              WITH * \
-             RETURN person.name AS owner",
+             MATCH (path:Person) \
+             RETURN path.name AS person",
         )
-        .expect_err("WITH * must not implicitly carry unsupported path values");
+        .expect_err("WITH * should keep path variable names in scope");
 
         assert!(
             error
                 .to_string()
-                .contains("WITH * cannot carry path variables"),
+                .contains("graph variable 'path' conflicts with an in-scope path variable"),
             "{error}"
         );
     }
