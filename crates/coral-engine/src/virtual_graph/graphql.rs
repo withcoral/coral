@@ -1070,6 +1070,7 @@ fn compile_relationship_field(
         direction,
         endpoint_argument,
     };
+    validate_relationship_field_arguments(field, &endpoint, &path)?;
     let target_label = compile_relationship_target_label(
         &endpoint,
         field,
@@ -1146,6 +1147,52 @@ fn compile_relationship_field(
         compile_context,
         fragment_stack,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GraphqlRelationshipArgumentSlot {
+    Endpoint,
+    Where,
+    RelationshipWhere,
+}
+
+fn validate_relationship_field_arguments(
+    field: &Field<'_, String>,
+    endpoint: &RelationshipEndpointContext<'_>,
+    path: &str,
+) -> Result<(), CoreError> {
+    let mut seen = BTreeMap::new();
+    for (index, (name, _)) in field.arguments.iter().enumerate() {
+        let slot = match name.as_str() {
+            "to" | "from" | "label" => {
+                if name != endpoint.endpoint_argument {
+                    return Err(unsupported(
+                        format!("{path}.arguments[{index}]"),
+                        format!(
+                            "GraphQL relationship field '{}' requires '{}' instead of '{}'",
+                            field.name, endpoint.endpoint_argument, name
+                        ),
+                    ));
+                }
+                GraphqlRelationshipArgumentSlot::Endpoint
+            }
+            "where" => GraphqlRelationshipArgumentSlot::Where,
+            "relationshipWhere" => GraphqlRelationshipArgumentSlot::RelationshipWhere,
+            _ => continue,
+        };
+        if let Some(first_name) = seen.get(&slot) {
+            let message = if first_name == name {
+                format!("GraphQL relationship argument '{name}' is specified more than once")
+            } else {
+                format!(
+                    "GraphQL relationship argument '{name}' conflicts with earlier '{first_name}' argument"
+                )
+            };
+            return Err(unsupported(format!("{path}.arguments[{index}]"), message));
+        }
+        seen.insert(slot, name.clone());
+    }
+    Ok(())
 }
 
 fn compile_relationship_field_arguments(
@@ -6948,6 +6995,92 @@ nodes:
         assert!(
             error.to_string().contains("require at least one object"),
             "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_nested_graphql_relationship_arguments() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let cases = [
+            (
+                r"
+                {
+                  Person {
+                    out_OWNS(
+                      to: Service
+                      to: Person
+                    ) {
+                      name
+                    }
+                  }
+                }
+                ",
+                "GraphQL relationship argument 'to' is specified more than once",
+            ),
+            (
+                r#"
+                {
+                  Person {
+                    out_OWNS(
+                      where: { tier: { eq: "prod" } }
+                      where: { name: { eq: "billing-api" } }
+                    ) {
+                      name
+                    }
+                  }
+                }
+                "#,
+                "GraphQL relationship argument 'where' is specified more than once",
+            ),
+            (
+                r#"
+                {
+                  Person {
+                    out_OWNS(
+                      relationshipWhere: { source: { eq: "pagerduty" } }
+                      relationshipWhere: { source: { eq: "catalog" } }
+                    ) {
+                      name
+                    }
+                  }
+                }
+                "#,
+                "GraphQL relationship argument 'relationshipWhere' is specified more than once",
+            ),
+        ];
+
+        for (query, expected) in cases {
+            let error = compile_graphql_for_graph(&graph, query)
+                .expect_err("duplicate GraphQL relationship arguments should fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_nested_graphql_relationship_endpoint_argument_before_inference() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(from: Person) {
+                  name
+                }
+              }
+            }
+            ",
+        )
+        .expect_err("wrong GraphQL relationship endpoint argument should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("GraphQL relationship field 'out_OWNS' requires 'to' instead of 'from'"),
+            "unexpected error: {error}"
         );
     }
 

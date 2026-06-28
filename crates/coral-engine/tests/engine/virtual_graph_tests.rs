@@ -4442,6 +4442,41 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
 }
 
 #[tokio::test]
+async fn graphql_duplicate_nested_relationship_arguments_are_rejected() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Person {
+            out_OWNS(
+              where: { tier: { eq: "prod" } }
+              where: { name: { eq: "billing-api" } }
+            ) {
+              service: name
+            }
+          }
+        }
+        "#,
+    )
+    .await
+    .expect_err("duplicate nested GraphQL relationship arguments should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("GraphQL relationship argument 'where' is specified more than once"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_relationship_existence_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
