@@ -109,14 +109,6 @@ fn assert_tool_advertises_intent(tool: &rmcp::model::Tool) {
     );
 }
 
-fn assert_tool_omits_intent(tool: &rmcp::model::Tool) {
-    assert!(
-        !tool_input_properties(tool).contains_key("intent"),
-        "tool '{}' should not advertise intent by default",
-        tool.name
-    );
-}
-
 async fn structured_tool_content(
     client: &RunningService<RoleClient, ()>,
     request: CallToolRequestParams,
@@ -342,7 +334,7 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     for tool in &tools {
-        assert_tool_omits_intent(tool);
+        assert_tool_advertises_intent(tool);
     }
     let catalog_requests = server.list_catalog_requests();
     let count_request = catalog_requests
@@ -408,7 +400,7 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
         ]
     );
     for tool in &tools {
-        assert_tool_omits_intent(tool);
+        assert_tool_advertises_intent(tool);
     }
 
     client.cancel().await?;

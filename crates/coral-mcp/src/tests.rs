@@ -287,14 +287,6 @@ fn assert_tool_advertises_intent(tool: &Tool) {
     );
 }
 
-fn assert_tool_omits_intent(tool: &Tool) {
-    assert!(
-        !tool_input_properties(tool).contains_key("intent"),
-        "tool '{}' should not advertise intent by default",
-        tool.name
-    );
-}
-
 /// Read the per-workspace episode records (one JSON object per JSONL line) for the default workspace.
 fn read_episode_records(temp: &TempDir) -> Vec<Value> {
     let episodes_path = temp
@@ -577,7 +569,7 @@ async fn mcp_episode_tool_is_disabled_by_default() {
         "open_episode should not be listed by default"
     );
     for tool in &tools {
-        assert_tool_omits_intent(tool);
+        assert_tool_advertises_intent(tool);
         assert_tool_omits_episode_id(tool);
     }
 
@@ -595,7 +587,7 @@ async fn mcp_episode_tool_is_disabled_by_default() {
             .contains("tool 'open_episode' not found")
     );
 
-    // A stray `intent` on a data call is ignored when episodes are off — no segmentation, no store.
+    // A data-tool `intent` is accepted even when episodes are off — no segmentation, no store.
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
@@ -606,6 +598,21 @@ async fn mcp_episode_tool_is_disabled_by_default() {
         .await
         .expect("sql should run with episodes disabled");
     assert_eq!(sql.is_error, Some(false));
+
+    let invalid_intent = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1",
+                "intent": " "
+            }))),
+        )
+        .await
+        .expect_err("blank tool intent should fail before query dispatch");
+    assert!(
+        invalid_intent
+            .to_string()
+            .contains("argument 'intent' must not be blank")
+    );
     assert!(
         !temp
             .path()
