@@ -1048,6 +1048,7 @@ fn compile_static_alternative_outer_aggregate_expression_source(
 fn is_static_alternative_aggregate_scalar_source(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_static_alternative_aggregate_scalar_source(inner),
+        expression if is_boolean_scalar_expression(expression) => true,
         expression if is_literal_expression(expression) => true,
         Expression::BinaryOp {
             op:
@@ -12924,17 +12925,29 @@ fn compile_aggregate_target(
                     expression, path, plan, context,
                 )?));
             };
-            let expression = compile_scalar_expression_with_path_state(
+            let expression = compile_aggregate_scalar_target_expression(
                 expression,
                 path.clone(),
                 plan,
-                None,
                 context,
             )?;
             validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
             Ok(AggregateTarget::Expression(expression))
         }
     }
+}
+
+fn compile_aggregate_scalar_target_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if is_boolean_scalar_expression(expression) {
+        return compile_boolean_scalar_expression(expression, path, plan, context);
+    }
+    compile_scalar_expression_with_path_state(expression, path, plan, None, context)
 }
 
 fn compile_aggregate_function(function: &FunctionInvocation) -> Option<AggregateFunction> {
@@ -19114,6 +19127,43 @@ relationships:
                     nulls: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_predicate_aggregate_targets() {
+        let query = compile_cypher_query(
+            "MATCH (entity:Person|Team)-[:OWNS]->(service:Service) \
+             RETURN entity.name AS name, collect(service.risk > 0.8) AS high_risk_flags",
+        )
+        .expect("predicate aggregate target should compile as an outer union aggregate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert!(matches!(
+            union.first.projections.get(1),
+            Some(Projection::Expression {
+                expression: ScalarExpression::Predicate(_),
+                alias,
+            }) if alias == "__coral_agg_1"
+        ));
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "name".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: false,
+                        alias: "high_risk_flags".to_string(),
+                    },
+                ],
+                group_by: vec!["name".to_string()],
+            })
         );
     }
 
@@ -29350,6 +29400,40 @@ relationships:
                 alias,
                 ..
             } if alias == "adjusted_risk"
+        ));
+    }
+
+    #[test]
+    fn compiles_predicate_aggregate_targets() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN collect(service.risk > 0.8) AS high_risk_flags, \
+                    count(service.tier IS NULL) AS tier_null_checks",
+        )
+        .expect("predicate aggregate target query should compile");
+
+        assert_eq!(plan.projections.len(), 2);
+        assert!(matches!(
+            plan.projections
+                .first()
+                .expect("collect projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Collect,
+                target: AggregateTarget::Expression(ScalarExpression::Predicate(_)),
+                alias,
+                ..
+            } if alias == "high_risk_flags"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(1)
+                .expect("count projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Count,
+                target: AggregateTarget::Expression(ScalarExpression::Predicate(_)),
+                alias,
+                ..
+            } if alias == "tier_null_checks"
         ));
     }
 

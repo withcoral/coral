@@ -34,6 +34,13 @@ fn sort_i64_array_field(row: &mut Value, field: &str) {
     values.sort_by_key(Value::as_i64);
 }
 
+fn sort_bool_array_field(row: &mut Value, field: &str) {
+    let Some(values) = row.get_mut(field).and_then(Value::as_array_mut) else {
+        panic!("row should contain array field '{field}': {row}");
+    };
+    values.sort_by_key(Value::as_bool);
+}
+
 #[tokio::test]
 async fn virtual_graph_translation_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
@@ -819,6 +826,49 @@ async fn cypher_static_node_label_alternatives_aggregate_expressions_after_union
             json!({"owner": "analytics", "tiers": ["dev"], "tier_count": 1, "adjusted_risk": 1.25}),
             json!({"owner": "infra", "tiers": ["prod"], "tier_count": 1, "adjusted_risk": 1.5}),
             json!({"owner": "platform", "tiers": ["prod", "unknown"], "tier_count": 2, "adjusted_risk": 3.85}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_predicate_aggregates_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, collect(service.risk > 0.8) AS high_risk_flags \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static label alternatives with outer predicate aggregates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n1\".\"risk_score\" > 0.8 AS \"__coral_agg_1\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_bool_array_field(row, "high_risk_flags");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "high_risk_flags": [true]}),
+            json!({"owner": "Grace Hopper", "high_risk_flags": [false]}),
+            json!({"owner": "Katherine Johnson", "high_risk_flags": [false]}),
+            json!({"owner": "analytics", "high_risk_flags": [false]}),
+            json!({"owner": "infra", "high_risk_flags": [false]}),
+            json!({"owner": "platform", "high_risk_flags": [true, true]}),
         ]
     );
 }
@@ -8647,6 +8697,41 @@ async fn cypher_aggregate_expression_targets_execute_against_synthetic_sources()
 }
 
 #[tokio::test]
+async fn cypher_predicate_aggregate_targets_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN collect(DISTINCT service.risk > 0.8) AS high_risk_flags, \
+                count(service.tier IS NULL) AS tier_null_checks",
+    )
+    .await
+    .expect("predicate aggregate target Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(DISTINCT \"n0\".\"risk_score\" > 0.8)"),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .get_mut(0)
+        .expect("predicate aggregate target query should return one row");
+    sort_bool_array_field(row, "high_risk_flags");
+    assert_eq!(row["high_risk_flags"], json!([false, true]));
+    assert_eq!(row["tier_null_checks"], json!(4));
+}
+
+#[tokio::test]
 async fn cypher_collect_graph_variable_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -9485,6 +9570,29 @@ async fn cypher_catalog_typed_aggregate_expression_errors_reject_before_sql_exec
     )
     .await
     .expect_err("catalog-typed aggregate expression mismatch should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("numeric"), "{error:?}");
+}
+
+#[tokio::test]
+async fn cypher_catalog_typed_predicate_aggregate_errors_reject_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) RETURN sum(service.risk > 0.8) AS bad_sum",
+    )
+    .await
+    .expect_err("numeric aggregate over predicate should fail before SQL execution");
 
     assert!(
         error.to_string().contains("INVALID_AGGREGATE_TARGET"),
