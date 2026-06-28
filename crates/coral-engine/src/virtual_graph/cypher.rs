@@ -647,13 +647,14 @@ fn compile_single_query_as_graph_query(
         outer_projection_plan.as_ref(),
         &path,
     )?;
-    if contains_static_unwind && hidden_order_plan.is_some() {
-        return Err(unsupported(
-            format!("{path}.return.order"),
-            "static UNWIND expansion does not support ORDER BY expressions that are not projected yet; project the expression and order by its alias",
-        ));
-    }
-    for variant in &mut variants {
+    let hidden_order_plans = compile_static_branch_hidden_order_plans(
+        &variants,
+        hidden_order_plan.as_ref(),
+        outer_projection_plan.as_ref(),
+        contains_static_unwind,
+        &path,
+    )?;
+    for (variant, hidden_order_plan) in variants.iter_mut().zip(hidden_order_plans.iter()) {
         apply_static_alternative_outer_projection_rewrite(
             &mut variant.query,
             outer_projection_plan.as_ref(),
@@ -703,6 +704,68 @@ fn compile_single_query_as_graph_query(
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+}
+
+fn compile_static_branch_hidden_order_plans(
+    variants: &[ExpandedSingleQuery],
+    hidden_order_plan: Option<&StaticAlternativeHiddenOrderPlan>,
+    outer_projection_plan: Option<&StaticAlternativeOuterProjectionPlan>,
+    contains_static_unwind: bool,
+    path: &str,
+) -> Result<Vec<Option<StaticAlternativeHiddenOrderPlan>>, CoreError> {
+    if hidden_order_plan.is_none() {
+        return Ok(vec![None; variants.len()]);
+    }
+
+    if !contains_static_unwind {
+        return Ok(vec![hidden_order_plan.cloned(); variants.len()]);
+    }
+
+    let hidden_order_plans = variants
+        .iter()
+        .enumerate()
+        .map(|(index, variant)| {
+            let branch_path = format!("{path}.static_branches[{index}]");
+            analyze_static_alternative_hidden_order(
+                &variant.query,
+                outer_projection_plan,
+                branch_path.as_str(),
+            )
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    validate_static_branch_hidden_order_alignment(hidden_order_plan, &hidden_order_plans)?;
+    Ok(hidden_order_plans)
+}
+
+fn validate_static_branch_hidden_order_alignment(
+    expected: Option<&StaticAlternativeHiddenOrderPlan>,
+    actual: &[Option<StaticAlternativeHiddenOrderPlan>],
+) -> Result<(), CoreError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+
+    for plan in actual {
+        let Some(plan) = plan else {
+            return Err(CoreError::internal(
+                "static branch hidden ORDER BY plan disappeared after expansion",
+            ));
+        };
+        if plan.items.len() != expected.items.len()
+            || plan
+                .items
+                .iter()
+                .zip(expected.items.iter())
+                .any(|(left, right)| {
+                    left.order_index != right.order_index || left.alias != right.alias
+                })
+        {
+            return Err(CoreError::internal(
+                "static branch hidden ORDER BY plans were not aligned after expansion",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn expand_single_query_static_branches(
@@ -19055,12 +19118,46 @@ relationships:
     }
 
     #[test]
-    fn rejects_static_unwind_hidden_order_expressions() {
-        assert_unsupported(
+    fn compiles_static_unwind_hidden_order_expressions() {
+        let query = compile_cypher_query(
             "UNWIND ['prod', 'dev'] AS tier \
              MATCH (service:Service) \
+             WHERE service.tier = tier \
              RETURN service.name AS service \
-             ORDER BY toUpper(tier)",
+             ORDER BY CASE WHEN tier = 'prod' THEN 0 ELSE 1 END, service",
+        )
+        .expect("static UNWIND hidden ORDER BY expression should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static UNWIND to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec!["service".to_string(), "__coral_order_0".to_string()]
+        );
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![GraphUnionOuterProjectionItem::Column {
+                    name: "service".to_string(),
+                }],
+                group_by: Vec::new(),
+            })
+        );
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("__coral_order_0".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("service".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
         );
     }
 

@@ -287,8 +287,10 @@ The supported foundation subset is intentionally narrow:
   before normal graph planning. Duplicate list elements are intentionally
   preserved, aggregate projections are hoisted through the same outer union
   aggregation path used by static pattern alternatives, and empty lists compile
-  to a forced-empty graph plan. Dynamic list-valued columns and `WITH`-scoped
-  unwinds remain future row-source IR work rather than SQL-rendering shortcuts;
+  to a forced-empty graph plan. Row-preserving hidden `ORDER BY` expressions are
+  evaluated inside each expanded branch and stripped by the outer projection.
+  Dynamic list-valued columns and `WITH`-scoped unwinds remain future row-source
+  IR work rather than SQL-rendering shortcuts;
 - exact fixed relationship ranges greater than one hop lowered as repeated
   fixed-hop joins when the graph declaration yields one unambiguous intermediate
   label sequence, including cross-label paths such as

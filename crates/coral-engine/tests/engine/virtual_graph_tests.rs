@@ -1176,6 +1176,41 @@ async fn cypher_static_unwind_list_parameters_execute_against_synthetic_sources(
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_applies_hidden_ordering_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND ['dev', 'prod'] AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN service.name AS service \
+         ORDER BY CASE WHEN tier = 'prod' THEN 0 ELSE 1 END, service",
+    )
+    .await
+    .expect("static UNWIND hidden ordering query should execute");
+
+    assert!(
+        execution.translated_sql().contains("__coral_order_0"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_flatten_inside_union_all() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
