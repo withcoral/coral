@@ -601,7 +601,12 @@ fn resolve_root_label(
         .collect::<Vec<_>>();
     match matching_labels.as_slice() {
         [label] => Ok((*label).to_string()),
-        [] => Ok(root_name.to_string()),
+        [] => Err(unsupported(
+            path,
+            format!(
+                "unknown GraphQL root node field '{root_name}'; expected a graph node label or unambiguous generated root alias"
+            ),
+        )),
         labels => Err(unsupported(
             path,
             format!(
@@ -5787,6 +5792,51 @@ nodes:
                 .to_string()
                 .contains("GraphQL root field 'users' is ambiguous"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_declaration_aware_root_fields() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r"
+            query {
+              Incident {
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("unknown graph-backed root field should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown GraphQL root node field 'Incident'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn declaration_free_graphql_keeps_unknown_root_labels() {
+        let plan = compile_graphql(
+            r"
+            query {
+              Incident {
+                title
+              }
+            }
+            ",
+        )
+        .expect("declaration-free GraphQL should keep root labels open");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "incident".to_string(),
+                label: "Incident".to_string(),
+            }]
         );
     }
 
