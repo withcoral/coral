@@ -17678,7 +17678,16 @@ fn compile_non_negative_integer(
     context: &CypherCompileContext,
 ) -> Result<u64, CoreError> {
     let path = path.into();
-    match compile_literal(expression, path.clone(), context)? {
+    let literal = match compile_optional_static_literal_scalar_operand(
+        expression,
+        path.clone(),
+        PredicateCompileMode::CaseWhen { plan: None },
+        context,
+    )? {
+        Some(literal) => literal,
+        None => compile_literal(expression, path.clone(), context)?,
+    };
+    match literal {
         Literal::Integer(value) => u64::try_from(value).map_err(|conversion_error| {
             unsupported(
                 path.clone(),
@@ -27129,6 +27138,26 @@ relationships:
         .expect("query should compile");
 
         assert_eq!(plan.skip, Some(1));
+        assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
+    fn compiles_static_skip_and_limit_expressions() {
+        let parameters = BTreeMap::from([(
+            "limit".to_string(),
+            CypherParameterValue::Literal(Literal::Integer(2)),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY service \
+             SKIP (1 + 1) \
+             LIMIT coalesce($limit, 3)",
+            &parameters,
+        )
+        .expect("static row modifier expressions should compile");
+
+        assert_eq!(plan.skip, Some(2));
         assert_eq!(plan.limit, Some(2));
     }
 

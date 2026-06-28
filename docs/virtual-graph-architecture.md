@@ -292,7 +292,8 @@ The supported foundation subset is intentionally narrow:
   as a graph value. Path metadata scalars can participate in supported scalar
   arithmetic, scalar functions, and `CASE` expressions such as
   `coalesce(length(path), 0)`;
-- integer `SKIP` and `LIMIT`.
+- non-negative integer `SKIP` and `LIMIT` literals, scalar parameters, and
+  static scalar expressions such as `(1 + 1)` and `coalesce($limit, 10)`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path

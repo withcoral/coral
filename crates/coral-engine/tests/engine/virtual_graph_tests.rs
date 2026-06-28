@@ -7735,15 +7735,20 @@ async fn cypher_skip_limit_executes_against_synthetic_sources() {
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "limit".to_string(),
+        GraphCypherParameterValue::Literal(GraphLiteral::Integer(2)),
+    )]);
 
-    let execution = CoralQuery::execute_cypher(
+    let execution = CoralQuery::execute_cypher_with_parameters(
         &[source],
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
          RETURN service.name AS service \
          ORDER BY service \
-         SKIP 1 LIMIT 2",
+         SKIP (1 + 0) LIMIT coalesce($limit, 10)",
+        &parameters,
     )
     .await
     .expect("Cypher query with SKIP should execute");
