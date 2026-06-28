@@ -4566,23 +4566,27 @@ fn compile_reading_clauses_into(
         ));
     }
 
-    let mut saw_optional_match = false;
+    let mut optional_match_variables = BTreeSet::new();
     for (index, clause) in reading_clauses.iter().enumerate() {
         match clause {
             ReadingClause::Match(match_clause) => {
-                if saw_optional_match && !match_clause.optional {
-                    return Err(unsupported(
+                if !match_clause.optional {
+                    reject_match_dependencies_on_optional_variables(
+                        match_clause,
+                        &optional_match_variables,
                         format!("{path}[{index}]"),
-                        "MATCH after OPTIONAL MATCH requires staged query planning and is not supported yet",
-                    ));
+                    )?;
                 }
-                if match_clause.optional {
-                    saw_optional_match = true;
-                }
+                let introduced_optional_variables = if match_clause.optional {
+                    match_clause_introduced_variables(match_clause, plan)
+                } else {
+                    BTreeSet::new()
+                };
                 let predicate_start = plan.predicates.len();
                 let relationship_start = plan.relationships.len();
                 compile_match_into(match_clause, plan, state, context)?;
                 if match_clause.optional {
+                    optional_match_variables.extend(introduced_optional_variables);
                     let predicate = match_clause
                         .where_clause
                         .as_ref()
@@ -5303,6 +5307,248 @@ fn bind_path_variable(
             presence_variable,
         },
     );
+}
+
+fn match_clause_introduced_variables(match_clause: &Match, plan: &GraphPlan) -> BTreeSet<String> {
+    match_clause_pattern_variables(match_clause)
+        .into_iter()
+        .filter(|variable| !plan_uses_variable(plan, variable))
+        .collect()
+}
+
+fn reject_match_dependencies_on_optional_variables(
+    match_clause: &Match,
+    optional_variables: &BTreeSet<String>,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    if optional_variables.is_empty() {
+        return Ok(());
+    }
+    let path = path.into();
+    let mut referenced_variables = match_clause_pattern_variables(match_clause);
+    if let Some(where_clause) = &match_clause.where_clause {
+        expression_variables(where_clause, &mut referenced_variables);
+    }
+    if let Some(variable) = referenced_variables
+        .iter()
+        .find(|variable| optional_variables.contains(*variable))
+    {
+        return Err(unsupported(
+            path,
+            format!(
+                "MATCH after OPTIONAL MATCH can only reference variables bound before the optional scope; variable '{variable}' is introduced by OPTIONAL MATCH"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn match_clause_pattern_variables(match_clause: &Match) -> BTreeSet<String> {
+    let mut variables = BTreeSet::new();
+    for part in &match_clause.pattern.parts {
+        pattern_part_variables(part, &mut variables);
+    }
+    variables
+}
+
+fn pattern_part_variables(pattern_part: &PatternPart, variables: &mut BTreeSet<String>) {
+    if let Some(variable) = pattern_part.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+    pattern_element_variables(&pattern_part.anonymous.element, variables);
+}
+
+fn pattern_element_variables(element: &PatternElement, variables: &mut BTreeSet<String>) {
+    match element {
+        PatternElement::Path { start, chains } => {
+            node_pattern_variables(start, variables);
+            for chain in chains {
+                relationship_pattern_variables(&chain.relationship, variables);
+                node_pattern_variables(&chain.node, variables);
+            }
+        }
+        PatternElement::Parenthesized(inner) => pattern_element_variables(inner, variables),
+        PatternElement::Quantified { element, .. } => pattern_element_variables(element, variables),
+    }
+}
+
+fn relationships_pattern_variables(
+    pattern: &decypher::ast::pattern::RelationshipsPattern,
+    variables: &mut BTreeSet<String>,
+) {
+    node_pattern_variables(&pattern.start, variables);
+    for chain in &pattern.chains {
+        relationship_pattern_variables(&chain.relationship, variables);
+        node_pattern_variables(&chain.node, variables);
+    }
+}
+
+fn node_pattern_variables(pattern: &CypherNodePattern, variables: &mut BTreeSet<String>) {
+    if let Some(variable) = pattern.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+    for label in &pattern.labels {
+        label_expression_variables(label, variables);
+    }
+    properties_variables(pattern.properties.as_ref(), variables);
+}
+
+fn relationship_pattern_variables(
+    pattern: &CypherRelationshipPattern,
+    variables: &mut BTreeSet<String>,
+) {
+    let Some(detail) = pattern.detail.as_ref() else {
+        return;
+    };
+    if let Some(variable) = detail.variable.as_ref() {
+        variables.insert(variable_name(variable));
+    }
+    if let Some(types) = detail.types.as_ref() {
+        label_expression_variables(types, variables);
+    }
+    properties_variables(detail.properties.as_ref(), variables);
+}
+
+fn properties_variables(properties: Option<&Properties>, variables: &mut BTreeSet<String>) {
+    let Some(Properties::Map(map)) = properties else {
+        return;
+    };
+    for (_, expression) in &map.entries {
+        expression_variables(expression, variables);
+    }
+}
+
+fn label_expression_variables(label: &LabelExpression, variables: &mut BTreeSet<String>) {
+    match label {
+        LabelExpression::Static(_) => {}
+        LabelExpression::Dynamic { expression, .. } => expression_variables(expression, variables),
+        LabelExpression::Or { lhs, rhs, .. } | LabelExpression::And { lhs, rhs, .. } => {
+            label_expression_variables(lhs, variables);
+            label_expression_variables(rhs, variables);
+        }
+        LabelExpression::Not { inner, .. } | LabelExpression::Group { inner, .. } => {
+            label_expression_variables(inner, variables);
+        }
+    }
+}
+
+fn expression_variables(expression: &Expression, variables: &mut BTreeSet<String>) {
+    match expression {
+        Expression::Literal(literal) => literal_variables(literal, variables),
+        Expression::Variable(variable) => {
+            variables.insert(variable_name(variable));
+        }
+        Expression::Parameter(_)
+        | Expression::CountStar { .. }
+        | Expression::Exists(_)
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_) => {}
+        Expression::PropertyLookup { base, .. } | Expression::NodeLabels { base, .. } => {
+            expression_variables(base, variables);
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            expression_variables(lhs, variables);
+            expression_variables(rhs, variables);
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            expression_variables(lhs, variables);
+            for (_, rhs) in operators {
+                expression_variables(rhs, variables);
+            }
+        }
+        Expression::UnaryOp { operand, .. } | Expression::IsNull { operand, .. } => {
+            expression_variables(operand, variables);
+        }
+        Expression::ListIndex { list, index, .. } => {
+            expression_variables(list, variables);
+            expression_variables(index, variables);
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            expression_variables(list, variables);
+            if let Some(start) = start.as_deref() {
+                expression_variables(start, variables);
+            }
+            if let Some(end) = end.as_deref() {
+                expression_variables(end, variables);
+            }
+        }
+        Expression::FunctionCall(function) => {
+            for argument in &function.arguments {
+                expression_variables(argument, variables);
+            }
+        }
+        Expression::Case(case) => {
+            if let Some(scrutinee) = case.scrutinee.as_deref() {
+                expression_variables(scrutinee, variables);
+            }
+            for alternative in &case.alternatives {
+                expression_variables(&alternative.when, variables);
+                expression_variables(&alternative.then, variables);
+            }
+            if let Some(default) = case.default.as_deref() {
+                expression_variables(default, variables);
+            }
+        }
+        Expression::ListComprehension(comprehension) => {
+            if let Some(filter) = comprehension.filter.as_deref() {
+                expression_variables(filter, variables);
+            }
+            if let Some(map) = comprehension.map.as_ref() {
+                expression_variables(map, variables);
+            }
+        }
+        Expression::PatternComprehension(comprehension) => {
+            if let Some(variable) = comprehension.variable.as_ref() {
+                variables.insert(variable_name(variable));
+            }
+            relationships_pattern_variables(&comprehension.pattern, variables);
+            if let Some(where_clause) = comprehension.where_clause.as_ref() {
+                expression_variables(where_clause, variables);
+            }
+            expression_variables(&comprehension.map, variables);
+        }
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => {
+            variables.insert(variable_name(&filter.variable));
+            expression_variables(&filter.collection, variables);
+            if let Some(predicate) = filter.predicate.as_deref() {
+                expression_variables(predicate, variables);
+            }
+        }
+        Expression::Parenthesized(inner) => expression_variables(inner, variables),
+        Expression::Pattern(pattern) => relationships_pattern_variables(pattern, variables),
+        Expression::MapProjection(map) => {
+            variables.insert(variable_name(&map.base));
+            for item in &map.items {
+                if let decypher::ast::expr::MapProjectionItem::Literal { value, .. } = item {
+                    expression_variables(value, variables);
+                }
+            }
+        }
+    }
+}
+
+fn literal_variables(literal: &CypherLiteral, variables: &mut BTreeSet<String>) {
+    match literal {
+        CypherLiteral::List(list) => {
+            for element in &list.elements {
+                expression_variables(element, variables);
+            }
+        }
+        CypherLiteral::Map(map) => {
+            for (_, expression) in &map.entries {
+                expression_variables(expression, variables);
+            }
+        }
+        CypherLiteral::Number(_)
+        | CypherLiteral::String(_)
+        | CypherLiteral::Boolean(_)
+        | CypherLiteral::Null => {}
+    }
 }
 
 fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, CoreError> {
@@ -23289,6 +23535,45 @@ relationships:
     }
 
     #[test]
+    fn compiles_match_after_optional_when_it_uses_only_mandatory_bindings() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+             MATCH (owner:Person)-[:OWNS]->(service) \
+             RETURN service.name AS service, dependency.name AS dependency, owner.name AS owner",
+        )
+        .expect("MATCH after OPTIONAL MATCH should compile when it avoids optional bindings");
+
+        assert_eq!(plan.optional_relationships, vec![0]);
+        assert_eq!(
+            plan.optional_matches,
+            vec![OptionalMatchScope {
+                relationship_indices: vec![0],
+                predicate: None,
+            }]
+        );
+        assert_eq!(
+            plan.relationships,
+            vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "service".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "dependency".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "OWNS".to_string(),
+                    left: "owner".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "service".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_optional_match_local_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -23391,6 +23676,9 @@ relationships:
         assert_unsupported("OPTIONAL MATCH (service:Service) RETURN service.name");
         assert_unsupported(
             "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (target)-[:DEPENDS_ON]->(next:Service) RETURN next.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) OPTIONAL MATCH (service)-[:DEPENDS_ON]->(target:Service) MATCH (owner:Person)-[:OWNS]->(service) WHERE target.tier = 'dev' RETURN owner.name",
         );
     }
 

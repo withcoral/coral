@@ -4913,6 +4913,54 @@ async fn cypher_optional_match_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_match_after_optional_match_executes_when_independent() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let after_optional = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         MATCH (owner:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, dependency.name AS dependency, owner.name AS owner \
+         ORDER BY service, dependency, owner",
+    )
+    .await
+    .expect("independent MATCH after OPTIONAL MATCH should execute");
+
+    let reordered = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         MATCH (owner:Person)-[:OWNS]->(service) \
+         OPTIONAL MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+         RETURN service.name AS service, dependency.name AS dependency, owner.name AS owner \
+         ORDER BY service, dependency, owner",
+    )
+    .await
+    .expect("reordered equivalent query should execute");
+
+    assert_eq!(
+        execution_to_rows(after_optional.execution()),
+        execution_to_rows(reordered.execution())
+    );
+    assert_eq!(
+        execution_to_rows(after_optional.execution()),
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments", "owner": "Ada Lovelace"}),
+            json!({"service": "billing-api", "dependency": "experiments", "owner": "Ada Lovelace"}),
+            json!({"service": "deployments", "dependency": "experiments", "owner": "Grace Hopper"}),
+            json!({"service": "experiments", "owner": "Katherine Johnson"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_match_where_preserves_rows_with_null_optional_bindings() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

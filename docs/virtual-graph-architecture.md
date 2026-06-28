@@ -108,7 +108,9 @@ The supported foundation subset is intentionally narrow:
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
   including single-hop directed optional-local predicates and inline property
   maps placed in the join scope; optional plans still require mandatory
-  bindings to stay anchored to the first component;
+  bindings to stay anchored to the first component, and later mandatory
+  `MATCH` clauses are allowed only when dependency analysis proves their pattern
+  and local `WHERE` avoid variables introduced by the optional scope;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)` and `size(path)` over optional relationships via the
   presence-gated scalar expression IR and compiler-generated internal
