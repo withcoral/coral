@@ -5710,12 +5710,12 @@ fn infer_path_node_label_hints(
     while changed {
         changed = false;
         for (index, chain) in chains.iter().enumerate() {
-            let Some((direction, relationship_type)) =
+            let Some((direction, relationship_type, length)) =
                 relationship_label_inference_descriptor(&chain.relationship)
             else {
                 continue;
             };
-            let pairs = relationship_label_pairs(graph, &relationship_type, direction);
+            let pairs = relationship_label_pairs(graph, &relationship_type, direction, length);
             if pairs.is_empty() {
                 continue;
             }
@@ -5854,10 +5854,8 @@ fn infer_path_node_label<'a>(
 
 fn relationship_label_inference_descriptor(
     pattern: &CypherRelationshipPattern,
-) -> Option<(Direction, String)> {
-    if relationship_fixed_length(pattern, "relationship").ok()? != 1 {
-        return None;
-    }
+) -> Option<(Direction, String, usize)> {
+    let length = relationship_fixed_length(pattern, "relationship").ok()?;
     let detail = pattern.detail.as_ref()?;
     let relationship_type = detail.types.as_ref()?;
     let relationship_type = single_static_label(
@@ -5872,18 +5870,66 @@ fn relationship_label_inference_descriptor(
             Direction::Undirected
         }
     };
-    Some((direction, relationship_type))
+    Some((direction, relationship_type, length))
 }
 
 fn relationship_label_pairs(
     graph: &Declaration,
     relationship_type: &str,
     direction: Direction,
+    length: usize,
 ) -> BTreeSet<(String, String)> {
+    if length == 0 {
+        return graph
+            .nodes
+            .iter()
+            .map(|node| (node.label.clone(), node.label.clone()))
+            .collect();
+    }
+    if length > 1 {
+        return fixed_length_relationship_label_pairs(graph, relationship_type, direction, length);
+    }
     graph
         .relationships_for_type(relationship_type)
         .flat_map(|relationship| relationship_label_pairs_for_direction(relationship, direction))
         .collect()
+}
+
+fn fixed_length_relationship_label_pairs(
+    graph: &Declaration,
+    relationship_type: &str,
+    direction: Direction,
+    length: usize,
+) -> BTreeSet<(String, String)> {
+    let adjacency = fixed_length_label_adjacency(graph, relationship_type, direction);
+    let graph_labels = graph
+        .nodes
+        .iter()
+        .map(|node| node.label.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut pairs = BTreeSet::new();
+    for start in &graph.nodes {
+        let mut frontier = BTreeSet::from([start.label.clone()]);
+        for _ in 0..length {
+            let mut next = BTreeSet::new();
+            for label in &frontier {
+                if let Some(targets) = adjacency.get(label) {
+                    next.extend(targets.iter().cloned());
+                }
+            }
+            frontier = next;
+            if frontier.is_empty() {
+                break;
+            }
+        }
+        pairs.extend(
+            frontier
+                .into_iter()
+                .filter(|end| graph_labels.contains(end.as_str()))
+                .map(|end| (start.label.clone(), end)),
+        );
+    }
+    pairs
 }
 
 fn relationship_label_pairs_for_direction(
@@ -30131,6 +30177,61 @@ relationships:
                 plan.nodes
             );
         }
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_unlabeled_fixed_length_endpoint_labels() {
+        let graph = route_test_graph();
+        for cypher in [
+            "MATCH (person:Person)-[:ROUTES*2]->(incident) RETURN incident.title",
+            "MATCH (incident)<-[:ROUTES*2]-(person:Person) RETURN incident.title",
+            "MATCH (person:Person)-[:ROUTES]->{2}(incident) RETURN incident.title",
+        ] {
+            let plan = compile_cypher_for_graph(&graph, cypher)
+                .expect("graph declaration should infer fixed-length endpoint labels");
+            assert!(
+                plan.nodes
+                    .iter()
+                    .any(|node| { node.variable == "incident" && node.label == "Incident" }),
+                "incident endpoint label was not inferred for {cypher}: {:?}",
+                plan.nodes
+            );
+        }
+    }
+
+    #[test]
+    fn graph_aware_cypher_infers_unlabeled_zero_hop_endpoint_labels() {
+        let graph = route_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:ROUTES*0]->(same) RETURN same.name",
+        )
+        .expect("graph declaration should infer zero-hop endpoint labels");
+
+        assert!(
+            plan.nodes
+                .iter()
+                .any(|node| { node.variable == "same" && node.label == "Person" }),
+            "zero-hop endpoint label was not inferred: {:?}",
+            plan.nodes
+        );
+    }
+
+    #[test]
+    fn graph_aware_cypher_preserves_fixed_length_intermediate_ambiguity() {
+        let graph = route_test_graph();
+        let error = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[:ESCALATES_TO*2]->(incident) RETURN incident.title",
+        )
+        .expect_err("ambiguous fixed-length intermediate labels should still fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("found at least 2 possible 2-hop"),
+            "{error}"
+        );
     }
 
     #[test]

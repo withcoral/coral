@@ -1578,6 +1578,40 @@ async fn cypher_cross_label_fixed_relationship_ranges_infer_intermediate_labels(
 }
 
 #[tokio::test]
+async fn cypher_fixed_relationship_ranges_infer_unlabeled_endpoints() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:ROUTES*2]->(incident) \
+         RETURN person.name AS person, incident.title AS incident \
+         ORDER BY person, incident",
+    )
+    .await
+    .expect("fixed-hop path should infer the unlabeled endpoint from declaration metadata");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_incident_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"person": "Ada Lovelace", "incident": "billing latency"}),
+            json!({"person": "Grace Hopper", "incident": "deploy failed"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_exact_gql_relationship_quantifiers_execute_as_repeated_hops() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
