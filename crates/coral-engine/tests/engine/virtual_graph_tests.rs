@@ -9648,7 +9648,9 @@ async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
         &graph,
         "MATCH (service:Service) \
          OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
-         RETURN service.name AS service, service.name IN keys(person) AS service_name_is_owner_key \
+         RETURN service.name AS service, \
+                service.name IN keys(person) AS service_name_is_owner_key, \
+                service.name IN (keys(person) + ['extra']) AS service_name_is_concat_owner_key \
          ORDER BY service",
     )
     .await
@@ -9664,9 +9666,9 @@ async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"service": "billing-api", "service_name_is_owner_key": false}),
-            json!({"service": "deployments", "service_name_is_owner_key": false}),
-            json!({"service": "experiments", "service_name_is_owner_key": false}),
+            json!({"service": "billing-api", "service_name_is_owner_key": false, "service_name_is_concat_owner_key": false}),
+            json!({"service": "deployments", "service_name_is_owner_key": false, "service_name_is_concat_owner_key": false}),
+            json!({"service": "experiments", "service_name_is_owner_key": false, "service_name_is_concat_owner_key": false}),
             json!({"service": "legacy-sync"}),
         ]
     );

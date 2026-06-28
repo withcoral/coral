@@ -20019,6 +20019,57 @@ relationships:
     }
 
     #[test]
+    fn compiles_optional_static_list_concat_in_rhs_as_presence_gated_predicates() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN service.name IN (keys(person) + ['extra']) AS service_name_is_owner_key",
+        )
+        .expect("optional static list concatenation IN RHS should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::Predicate(predicate),
+                alias,
+            }] if alias == "service_name_is_owner_key"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::PresenceGated {
+                            presence_variable,
+                            expression,
+                        },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true),
+                        )),
+                    }) if presence_variable == "person"
+                        && matches!(
+                            expression.as_ref(),
+                            ScalarExpression::Predicate(inner)
+                                if matches!(
+                                    inner.as_ref(),
+                                    PredicateExpression::Comparison(PropertyPredicate {
+                                        property: PropertyRef { variable, property },
+                                        operator: ComparisonOperator::In,
+                                        rhs: PredicateRhs::List(literals),
+                                    }) if variable == "service"
+                                        && property == "name"
+                                        && literals == &vec![
+                                            Literal::String("name".to_string()),
+                                            Literal::String("team".to_string()),
+                                            Literal::String("extra".to_string()),
+                                        ]
+                                )
+                        )
+                )
+        ));
+    }
+
+    #[test]
     fn compiles_metadata_list_index_scalar_expressions() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
