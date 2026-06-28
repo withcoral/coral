@@ -7214,6 +7214,10 @@ fn evaluate_static_map_expression(
             ..
         } => evaluate_static_filter_predicate_expression(expression, evaluation, path)
             .map(static_boolean_outcome_literal),
+        Expression::FunctionCall(function) if is_empty_function(function) => {
+            evaluate_static_filter_is_empty(function, evaluation, path)
+                .map(static_boolean_outcome_literal)
+        }
         Expression::BinaryOp { op, lhs, rhs, .. } => {
             evaluate_static_map_arithmetic(*op, lhs, rhs, evaluation, path)
         }
@@ -8356,6 +8360,9 @@ fn static_map_function_element_type(
     }
     if is_character_length_function(function) {
         return Ok(Some(LiteralListElementType::Integer));
+    }
+    if is_empty_function(function) {
+        return Ok(Some(LiteralListElementType::Boolean));
     }
     if let Some(element_type) =
         static_map_cast_function_element_type(function, variable, source_element_type, context)?
@@ -14947,6 +14954,9 @@ fn evaluate_static_filter_predicate_expression(
         Expression::In { lhs, rhs, .. } => {
             evaluate_static_filter_in_predicate(lhs, rhs, evaluation, path)
         }
+        Expression::FunctionCall(function) if is_empty_function(function) => {
+            evaluate_static_filter_is_empty(function, evaluation, path)
+        }
         Expression::IsNull {
             operand, negated, ..
         } => {
@@ -15060,6 +15070,54 @@ fn evaluate_static_filter_in_predicate(
         ));
     };
     evaluate_static_literal_in_list(&literal, &values.literals, path)
+}
+
+fn evaluate_static_filter_is_empty(
+    function: &FunctionInvocation,
+    evaluation: StaticFilterEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    let path = path.into();
+    if let [argument] = function.arguments.as_slice() {
+        if let Some(value) = compile_optional_static_list_value(
+            argument,
+            format!("{path}.arguments[0]"),
+            evaluation.mode.static_metadata_plan(),
+            evaluation.context,
+        )? {
+            return Ok(StaticBooleanOutcome::from_bool(value.literals.is_empty()));
+        }
+        return evaluate_static_is_empty_literal(
+            &compile_static_filter_literal_operand(
+                argument,
+                evaluation,
+                format!("{path}.arguments[0]"),
+            )?,
+            format!("{path}.arguments[0]"),
+        );
+    }
+
+    let literal = evaluate_static_map_single_function_argument(
+        function,
+        path.clone(),
+        evaluation,
+        "isEmpty",
+    )?;
+    evaluate_static_is_empty_literal(&literal, format!("{path}.arguments[0]"))
+}
+
+fn evaluate_static_is_empty_literal(
+    literal: &Literal,
+    path: impl Into<String>,
+) -> Result<StaticBooleanOutcome, CoreError> {
+    match literal {
+        Literal::String(value) => Ok(StaticBooleanOutcome::from_bool(value.is_empty())),
+        Literal::Null => Ok(StaticBooleanOutcome::Unknown),
+        _ => Err(unsupported(
+            path,
+            "isEmpty() in static collection predicates requires string or static list arguments",
+        )),
+    }
 }
 
 fn compile_static_filter_literal_operand(
@@ -22156,7 +22214,8 @@ relationships:
              RETURN [k IN keys(service) WHERE toUpper(k) STARTS WITH 'T'] AS upper_t_keys, \
                     [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
                     [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values, \
-                    [x IN [1.2, 2.8] WHERE floor(x) = 2.0] AS floored_values",
+                    [x IN [1.2, 2.8] WHERE floor(x) = 2.0] AS floored_values, \
+                    [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings",
         )
         .expect("static list comprehension expression filters should compile");
 
@@ -22190,6 +22249,13 @@ relationships:
                         element_type: LiteralListElementType::Float,
                     },
                     alias: "floored_values".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String(String::new())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "empty_strings".to_string(),
                 },
             ]
         );
@@ -22868,7 +22934,8 @@ relationships:
              RETURN [x IN [1, 2, 3] | x + 1] AS incremented, \
                     [x IN [1.5, 2.5] | x * 2] AS doubled, \
                     [x IN $weights | x / 2] AS halved_weights, \
-                    [k IN keys(service) | k STARTS WITH 't'] AS t_flags",
+                    [k IN keys(service) | k STARTS WITH 't'] AS t_flags, \
+                    [x IN ['', 'a', null] | isEmpty(x)] AS empty_flags",
             &parameters,
         )
         .expect("numeric and boolean static list comprehension maps should compile");
@@ -22914,6 +22981,17 @@ relationships:
                         element_type: LiteralListElementType::Boolean,
                     },
                     alias: "t_flags".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Boolean(true),
+                            Literal::Boolean(false),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "empty_flags".to_string(),
                 },
             ]
         );

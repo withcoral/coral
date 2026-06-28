@@ -10271,7 +10271,8 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
                 [k IN ['name', null, 'tier'] WHERE k IS NOT NULL] AS non_null_literals, \
                 [k IN keys(service) WHERE toUpper(k) STARTS WITH 'T'] AS upper_t_keys, \
                 [x IN ['1', '2', 'bad'] WHERE toIntegerOrNull(x) >= 2] AS numeric_strings, \
-                [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values \
+                [x IN [1, 2, 3] WHERE x + 1 >= 3] AS arithmetic_values, \
+                [x IN ['', 'a', null] WHERE isEmpty(x)] AS empty_strings \
          ORDER BY owner, service",
         &parameters,
     )
@@ -10288,9 +10289,9 @@ async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_so
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "exposed_keys": ["name", "tier"], "selected_existing_keys": ["tier", "name"], "non_null_literals": ["name", "tier"], "upper_t_keys": ["team", "tier"], "numeric_strings": ["2"], "arithmetic_values": [2, 3], "empty_strings": [""]}),
         ]
     );
 }
@@ -10456,7 +10457,8 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
                 [x IN [1.2, 2.8, null] | floor(x)] AS floors, \
                 [x IN [1.24, 1.25, 1.26] | round(x, 1)] AS rounded_tenths, \
                 [x IN [1.4, 1.5, 1.6] | round(x)] AS rounded_wholes, \
-                [k IN keys(service) | k STARTS WITH 't'] AS t_flags \
+                [k IN keys(service) | k STARTS WITH 't'] AS t_flags, \
+                [x IN ['', 'a', null] | isEmpty(x)] AS empty_flags \
          ORDER BY owner, service",
         &parameters,
     )
@@ -10480,9 +10482,9 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
         ]
     );
 }
