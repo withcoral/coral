@@ -11240,6 +11240,51 @@ async fn cypher_static_list_coalesce_size_and_is_empty_execute_against_synthetic
 }
 
 #[tokio::test]
+async fn cypher_static_list_case_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         RETURN service.name AS service, \
+                CASE WHEN person IS NULL THEN [] ELSE keys(person) END AS owner_keys, \
+                CASE WHEN person IS NOT NULL THEN labels(person) ELSE ['missing'] END AS owner_labels, \
+                CASE WHEN person IS NULL THEN [] ELSE coalesce(keys(person), []) END AS coalesced_keys \
+         ORDER BY service",
+    )
+    .await
+    .expect("static list CASE should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("array_resize(make_array(CAST(NULL AS VARCHAR)), 0)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "owner_keys": ["name", "team"], "owner_labels": ["Person"], "coalesced_keys": ["name", "team"]}),
+            json!({"service": "deployments", "owner_keys": ["name", "team"], "owner_labels": ["Person"], "coalesced_keys": ["name", "team"]}),
+            json!({"service": "experiments", "owner_keys": ["name", "team"], "owner_labels": ["Person"], "coalesced_keys": ["name", "team"]}),
+            json!({"service": "legacy-sync", "owner_keys": [], "owner_labels": ["missing"], "coalesced_keys": []}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_static_list_in_rhs_preserves_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

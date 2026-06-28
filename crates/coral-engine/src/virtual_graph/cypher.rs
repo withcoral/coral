@@ -10595,6 +10595,82 @@ fn compile_optional_static_list_coalesce_scalar_expression(
     Ok(Some(ScalarExpression::Coalesce { expressions }))
 }
 
+#[derive(Debug)]
+enum StaticListCaseResult {
+    Null,
+    List(StaticListValue),
+    Coalesce(StaticListCoalesceArguments),
+}
+
+fn compile_optional_static_list_case_result(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListCaseResult>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_case_result(inner, path, plan, context)
+        }
+        expression if is_static_null_expression(expression, context)? => {
+            Ok(Some(StaticListCaseResult::Null))
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => Ok(
+            compile_optional_static_list_coalesce_arguments(function, path, plan, context)?
+                .map(StaticListCaseResult::Coalesce),
+        ),
+        expression => Ok(
+            compile_optional_static_list_value(expression, path, plan, context)?
+                .map(StaticListCaseResult::List),
+        ),
+    }
+}
+
+fn merge_static_list_case_result_element_type(
+    lhs: Option<LiteralListElementType>,
+    result: &StaticListCaseResult,
+    path: &str,
+) -> Result<Option<LiteralListElementType>, CoreError> {
+    let rhs = match result {
+        StaticListCaseResult::Null => None,
+        StaticListCaseResult::List(value) => value.element_type,
+        StaticListCaseResult::Coalesce(coalesce) => coalesce.element_type,
+    };
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs != rhs => Err(unsupported(
+            path,
+            "list-valued CASE result branches require compatible non-null list element types",
+        )),
+        (Some(element_type), _) | (_, Some(element_type)) => Ok(Some(element_type)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn static_list_case_result_scalar_expression(
+    result: StaticListCaseResult,
+    element_type: LiteralListElementType,
+) -> ScalarExpression {
+    match result {
+        StaticListCaseResult::Null => ScalarExpression::Literal(Literal::Null),
+        StaticListCaseResult::List(value) => {
+            static_list_value_scalar_expression_with_element_type(value, element_type)
+        }
+        StaticListCaseResult::Coalesce(coalesce) => ScalarExpression::Coalesce {
+            expressions: coalesce
+                .arguments
+                .into_iter()
+                .map(|argument| match argument {
+                    StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
+                    StaticListCoalesceArgument::List(value) => {
+                        static_list_value_scalar_expression_with_element_type(value, element_type)
+                    }
+                })
+                .collect(),
+        },
+    }
+}
+
 fn compile_optional_static_list_coalesce_length_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -13767,6 +13843,12 @@ fn compile_case_scalar_expression_in_mode(
         ));
     }
 
+    if let Some(expression) =
+        compile_optional_static_list_case_scalar_expression(case, path.clone(), mode, context)?
+    {
+        return Ok(expression);
+    }
+
     let alternatives = case
         .alternatives
         .iter()
@@ -13818,6 +13900,175 @@ fn compile_case_scalar_expression_in_mode(
         alternatives,
         else_expression,
     })
+}
+
+fn compile_optional_static_list_case_scalar_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(parts) = compile_optional_static_list_case_parts(case, path, mode, context)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(ScalarExpression::Case {
+        alternatives: parts
+            .alternatives
+            .into_iter()
+            .map(|(when, result)| ScalarCaseAlternative {
+                when,
+                then: static_list_case_result_scalar_expression(result, parts.element_type),
+            })
+            .collect(),
+        else_expression: parts.default.map(|result| {
+            Box::new(static_list_case_result_scalar_expression(
+                result,
+                parts.element_type,
+            ))
+        }),
+    }))
+}
+
+struct StaticListCaseParts {
+    alternatives: Vec<(PredicateExpression, StaticListCaseResult)>,
+    default: Option<StaticListCaseResult>,
+    element_type: LiteralListElementType,
+}
+
+fn compile_static_list_case_alternative(
+    case: &CaseExpression,
+    index: usize,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<(PredicateExpression, Option<StaticListCaseResult>), CoreError> {
+    let alternative = case
+        .alternatives
+        .get(index)
+        .ok_or_else(|| CoreError::internal("CASE alternative index out of bounds"))?;
+    let when = if let Some(scrutinee) = &case.scrutinee {
+        compile_binary_comparison(
+            scrutinee,
+            CypherComparisonOperator::Eq,
+            &alternative.when,
+            format!("{path}.alternatives[{index}].when"),
+            mode,
+            context,
+        )?
+    } else {
+        compile_predicate_expression_in_mode(
+            &alternative.when,
+            format!("{path}.alternatives[{index}].when"),
+            mode,
+            context,
+        )?
+    };
+    let result = compile_optional_static_list_case_result(
+        &alternative.then,
+        format!("{path}.alternatives[{index}].then"),
+        mode.static_metadata_plan(),
+        context,
+    )?;
+    Ok((when, result))
+}
+
+fn compile_optional_static_list_case_default(
+    case: &CaseExpression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListCaseResult>, CoreError> {
+    case.default
+        .as_ref()
+        .map(|expression| {
+            compile_optional_static_list_case_result(
+                expression,
+                format!("{path}.default"),
+                mode.static_metadata_plan(),
+                context,
+            )
+        })
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn compile_optional_static_list_case_parts(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListCaseParts>, CoreError> {
+    let path = path.into();
+    let mut saw_list_result = false;
+    let mut saw_non_list_result = false;
+    let mut element_type = None;
+    let mut alternatives = Vec::with_capacity(case.alternatives.len());
+
+    for index in 0..case.alternatives.len() {
+        let (when, result) =
+            compile_static_list_case_alternative(case, index, &path, mode, context)?;
+        if let Some(result) = result.as_ref() {
+            saw_list_result |= !matches!(result, StaticListCaseResult::Null);
+            element_type = merge_static_list_case_result_element_type(
+                element_type,
+                result,
+                &format!("{path}.alternatives[{index}].then"),
+            )?;
+        } else {
+            saw_non_list_result = true;
+        }
+        alternatives.push((when, result));
+    }
+
+    let default = compile_optional_static_list_case_default(case, &path, mode, context)?;
+    if let Some(default) = default.as_ref() {
+        saw_list_result |= !matches!(default, StaticListCaseResult::Null);
+        element_type = merge_static_list_case_result_element_type(
+            element_type,
+            default,
+            &format!("{path}.default"),
+        )?;
+    } else if case.default.is_some() {
+        saw_non_list_result = true;
+    }
+
+    if !saw_list_result {
+        return Ok(None);
+    }
+    if saw_non_list_result {
+        return Err(unsupported(
+            format!("{path}.alternatives"),
+            "list-valued CASE result branches require every non-null branch to be a static list",
+        ));
+    }
+    let Some(element_type) = element_type else {
+        return Err(unsupported(
+            format!("{path}.alternatives"),
+            "list-valued CASE result branches require at least one non-null list element type",
+        ));
+    };
+
+    let alternatives = alternatives
+        .into_iter()
+        .enumerate()
+        .map(|(index, (when, result))| {
+            let Some(result) = result else {
+                return Err(unsupported(
+                    format!("{path}.alternatives[{index}].then"),
+                    "list-valued CASE result branches require every non-null branch to be a static list",
+                ));
+            };
+            Ok((when, result))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+
+    Ok(Some(StaticListCaseParts {
+        alternatives,
+        default,
+        element_type,
+    }))
 }
 
 fn compile_keys_projection(
@@ -29965,6 +30216,123 @@ relationships:
                 nulls: None,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_static_list_case_projection_and_ordering() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN CASE WHEN person IS NULL THEN [] ELSE keys(person) END AS owner_keys, \
+                    CASE WHEN person IS NOT NULL THEN labels(person) ELSE ['missing'] END AS owner_labels, \
+                    CASE WHEN person IS NULL THEN [] ELSE coalesce(keys(person), []) END AS coalesced_keys \
+             ORDER BY CASE WHEN person IS NULL THEN [] ELSE keys(person) END",
+        )
+        .expect("static list CASE should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Case {
+                        alternatives,
+                        else_expression,
+                    },
+                    alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case { .. },
+                    alias: label_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case { .. },
+                    alias: coalesced_alias,
+                },
+            ] if alias == "owner_keys"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::TypedLiteralList {
+                            literals,
+                            element_type: LiteralListElementType::String,
+                        },
+                        ..
+                    }] if literals.is_empty()
+                )
+                && matches!(
+                    else_expression.as_deref(),
+                    Some(ScalarExpression::PresenceGated {
+                        presence_variable,
+                        expression,
+                    }) if presence_variable == "person"
+                        && matches!(
+                            expression.as_ref(),
+                            ScalarExpression::TypedLiteralList {
+                                literals,
+                                element_type: LiteralListElementType::String,
+                            } if literals == &vec![
+                                Literal::String("name".to_string()),
+                                Literal::String("team".to_string()),
+                            ]
+                        )
+                )
+                && label_alias == "owner_labels"
+                && coalesced_alias == "coalesced_keys"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_static_list_case_results() {
+        let scalar_mix = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             RETURN CASE WHEN service.tier = 'prod' THEN keys(service) ELSE 'missing' END AS keys_or_missing",
+        )
+        .expect_err("scalar/list CASE result mixes should be rejected");
+        assert!(
+            scalar_mix
+                .to_string()
+                .contains("every non-null branch to be a static list"),
+            "{scalar_mix}"
+        );
+
+        let mixed_types = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             RETURN CASE WHEN service.tier = 'prod' THEN [1] ELSE ['missing'] END AS mixed",
+        )
+        .expect_err("mixed list element types should be rejected");
+        assert!(
+            mixed_types
+                .to_string()
+                .contains("compatible non-null list element types"),
+            "{mixed_types}"
+        );
+
+        let untyped_empty = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             RETURN CASE WHEN service.tier = 'prod' THEN [] ELSE null END AS untyped",
+        )
+        .expect_err("all-empty/all-null list CASE should be rejected");
+        assert!(
+            untyped_empty
+                .to_string()
+                .contains("at least one non-null list element type"),
+            "{untyped_empty}"
+        );
     }
 
     #[test]

@@ -221,6 +221,16 @@ The supported foundation subset is intentionally narrow:
   render an array value, all-empty branches such as `size(coalesce([], []))` can
   compile even though projecting `coalesce([], [])` remains rejected as an
   untyped dynamic-list boundary;
+- list-valued `CASE` result branches over static lists and `NULL` values. The
+  `CASE` compiler first probes branch result expressions for static-list shapes;
+  if any non-null branch is a list, every non-null `THEN` / `ELSE` branch must
+  be a static-list expression with one compatible inferred element type. Branch
+  outputs are lowered through the existing scalar `CASE` IR as typed literal
+  lists, presence-gated metadata lists, or list-valued static `coalesce(...)`.
+  This keeps conditional optional-metadata normalization in the same SQL
+  renderer and validator path as scalar `CASE` while still rejecting scalar/list
+  mixes, mixed element families, all-empty/all-null results, and dynamic list
+  columns;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the
