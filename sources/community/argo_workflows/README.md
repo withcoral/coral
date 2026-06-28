@@ -5,7 +5,7 @@
 **Tables:** 4
 **Base URL:** `{{input.ARGOWORKFLOWS_BASE_URL}}/api/v1`
 
-Query Argo Workflows executions, cron workflows, workflow templates, and cluster workflow templates directly through Coral SQL using the [Argo Workflows REST API](https://argoproj.github.io/argo-workflows/swagger/).
+Query Argo Workflows executions, cron workflows, workflow templates, and cluster workflow templates directly through Coral SQL using the [Argo Workflows REST API](https://argo-workflows.readthedocs.io/en/latest/rest-api/).
 
 Use this source for:
 - workflow execution auditing
@@ -23,7 +23,7 @@ Coral exposes read-only `GET` tables. Workflow submission, retries, termination,
 Community sources are not bundled with the Coral binary.
 
 ```bash
-coral source add --file sources/community/argo-workflows/manifest.yaml
+coral source add --file sources/community/argo_workflows/manifest.yaml
 ```
 
 You may also copy `manifest.yaml` locally and reference it directly.
@@ -41,12 +41,7 @@ You may also copy `manifest.yaml` locally and reference it directly.
 
 # Authentication
 
-Argo Workflows commonly uses:
-- Bearer tokens
-- Kubernetes ServiceAccount tokens
-- SSO-issued JWT credentials
-
-Example:
+Argo Workflows commonly uses bearer tokens, Kubernetes ServiceAccount tokens, or SSO-issued JWT credentials. Coral sends the value as `Authorization: Bearer <token>`.
 
 ```bash
 export ARGOWORKFLOWS_BASE_URL=https://argo.example.com
@@ -57,37 +52,35 @@ export ARGOWORKFLOWS_AUTH_TOKEN=<token>
 
 # Tables Overview
 
-| Table | API Endpoint | Required Filter |
-| --- | --- | --- |
-| `workflows` | `GET /api/v1/workflows/{namespace}` | `namespace` |
-| `cron_workflows` | `GET /api/v1/cron-workflows/{namespace}` | `namespace` |
-| `workflow_templates` | `GET /api/v1/workflow-templates/{namespace}` | `namespace` |
-| `cluster_workflow_templates` | `GET /api/v1/cluster-workflow-templates` | — |
+| Table | API Endpoint | Required Filter | Pagination |
+| --- | --- | --- | --- |
+| `workflows` | `GET /api/v1/workflows/{namespace}` | `namespace` | Continue-token (`listOptions.limit` / `listOptions.continue`) |
+| `cron_workflows` | `GET /api/v1/cron-workflows/{namespace}` | `namespace` | None |
+| `workflow_templates` | `GET /api/v1/workflow-templates/{namespace}` | `namespace` | None |
+| `cluster_workflow_templates` | `GET /api/v1/cluster-workflow-templates` | — | None |
 
 ---
 
 # Important Notes
 
-Namespace-scoped tables require:
+Namespace-scoped tables require a namespace predicate:
 
 ```sql
 WHERE namespace = 'example-namespace'
 ```
 
-This aligns with Argo Workflows namespace-scoped API requirements.
+This maps to the namespace path parameter of the Argo Workflows API.
 
 ---
 
 # Filters and API Mapping
 
-Coral maps declared SQL filters directly to Argo Workflows API parameters.
-
 | SQL Filter | API Mapping | Tables |
 | --- | --- | --- |
 | `namespace` | URL path parameter `{namespace}` | `workflows`, `cron_workflows`, `workflow_templates` |
-| `label_selector` | `listOptions.labelSelector` | `workflows` |
+| `label_selector` | `listOptions.labelSelector` query parameter | `workflows` |
 
-Only declared filters are pushed directly to the Argo Workflows API.
+The `workflows` table paginates using the Kubernetes list continue-token pattern: Coral sends `listOptions.limit` and follows `metadata.continue` from each response automatically.
 
 ---
 
@@ -100,7 +93,7 @@ Workflow execution instances.
 | Column | Type | Description |
 | --- | --- | --- |
 | `namespace` | Utf8 | Namespace filter scope |
-| `label_selector` | Utf8 | Kubernetes label selector filter |
+| `label_selector` | Utf8 | Kubernetes label selector pushdown filter (virtual) |
 | `name` | Utf8 | Workflow name |
 | `phase` | Utf8 | Workflow execution phase |
 | `progress` | Utf8 | Workflow progress value |
@@ -109,9 +102,7 @@ Workflow execution instances.
 | `started_at` | Timestamp | Workflow start timestamp |
 | `finished_at` | Timestamp | Workflow completion timestamp |
 
-**Required filter:** `namespace`
-
-**Supported push-down filter:** `label_selector`
+**Required filter:** `namespace` · **Pushdown filter:** `label_selector`
 
 ---
 
@@ -123,12 +114,15 @@ Scheduled CronWorkflow resources.
 | --- | --- | --- |
 | `namespace` | Utf8 | Namespace filter scope |
 | `name` | Utf8 | CronWorkflow name |
-| `schedule` | Utf8 | Cron schedule expression |
+| `schedule` | Utf8 | Cron schedule(s) — current `spec.schedules` joined with `, `, falling back to the deprecated `spec.schedule` on older servers |
+| `schedules` | Utf8 | All schedules from `spec.schedules`, joined with `, ` |
 | `suspend` | Boolean | Whether the schedule is suspended |
 | `timezone` | Utf8 | Configured timezone |
 | `created_at` | Timestamp | CronWorkflow creation timestamp |
 
 **Required filter:** `namespace`
+
+> Argo v3.6+ defines `CronWorkflowSpec.schedules` (an array) as the schedule field; the older single `spec.schedule` is deprecated. The `schedule` column above works against both shapes, and `schedules` exposes the full current array.
 
 ---
 
@@ -162,54 +156,36 @@ Cluster-scoped reusable workflow templates.
 ## Running or failed workflows
 
 ```sql
-SELECT
-  name,
-  phase,
-  progress,
-  message
+SELECT name, phase, progress, message
 FROM argoworkflows.workflows
 WHERE namespace = 'data-pipelines'
   AND phase IN ('Running', 'Failed')
 LIMIT 20;
 ```
 
----
-
 ## Server-side filtering with label selectors
 
 ```sql
-SELECT
-  name,
-  phase,
-  progress
+SELECT name, phase, progress
 FROM argoworkflows.workflows
 WHERE namespace = 'data-processing'
   AND label_selector = 'release=v2,tier=backend'
 LIMIT 50;
 ```
 
----
-
 ## Suspended cron workflows
 
 ```sql
-SELECT
-  name,
-  schedule,
-  timezone
+SELECT name, schedules, timezone
 FROM argoworkflows.cron_workflows
 WHERE namespace = 'infra-alerts'
   AND suspend = true;
 ```
 
----
-
 ## Recent cluster workflow templates
 
 ```sql
-SELECT
-  name,
-  created_at
+SELECT name, created_at
 FROM argoworkflows.cluster_workflow_templates
 ORDER BY created_at DESC;
 ```
@@ -218,30 +194,30 @@ ORDER BY created_at DESC;
 
 # Validation
 
-Run formatting and schema mapping evaluations locally before generating your pull request:
+Run formatting and schema validation locally before opening a pull request:
 
 ```bash
-# YAML and style verification
 make lint-sources
-
-# Validate schema structure types against Coral DSL engine rules
-coral source lint sources/community/argo-workflows/manifest.yaml
+coral source lint sources/community/argo_workflows/manifest.yaml
 ```
 
-Execute a live target connection test locally:
+Execute a live connection test:
 
 ```bash
 export ARGOWORKFLOWS_BASE_URL=https://argo.example.com
 export ARGOWORKFLOWS_AUTH_TOKEN=<token>
 
-coral source add --file sources/community/argo-workflows/manifest.yaml
-
+coral source add --file sources/community/argo_workflows/manifest.yaml
 coral source test argoworkflows
+coral sql "SELECT name, schedules FROM argoworkflows.cron_workflows WHERE namespace = 'default' LIMIT 5"
 ```
 
 ---
 
-# Representative Live Output Evidence
+# Live Output
+
+> Replace the block below with the actual output from your own `coral source test argoworkflows`
+> run against this manifest. Do not ship placeholder output.
 
 ```text
 $ coral source test argoworkflows
@@ -257,42 +233,8 @@ $ coral source test argoworkflows
     Query tests
     1 declared · 1 passed · 0 failed
 
-  ✓ SELECT name, namespace
-    FROM argoworkflows.workflows
-    WHERE namespace = 'example-namespace'
-    LIMIT 1
-
-    +---------------------------+-------------------+
-    | name                      | namespace         |
-    +---------------------------+-------------------+
-    | metaguardian-cron-z9x2k   | example-namespace |
-    +---------------------------+-------------------+
-
+  ✓ SELECT name, namespace FROM argoworkflows.workflows WHERE namespace = 'default' LIMIT 1
     1 row
-```
-
----
-
-# Representative Query Output
-
-```text
-$ coral sql "SELECT name, phase FROM argoworkflows.workflows WHERE namespace = 'core-apps' LIMIT 5"
-
-+---------------------------+-----------+
-| name                      | phase     |
-+---------------------------+-----------+
-| nightly-build-7hd92       | Running   |
-| analytics-pipeline-j2ks1  | Succeeded |
-+---------------------------+-----------+
-
-$ coral sql "SELECT name, schedule FROM argoworkflows.cron_workflows WHERE namespace = 'infra-alerts' LIMIT 5"
-
-+----------------------+----------------+
-| name                 | schedule       |
-+----------------------+----------------+
-| nightly-cleanup      | 0 2 * * *      |
-| metrics-backup       | */15 * * * *   |
-+----------------------+----------------+
 ```
 
 ---
@@ -300,18 +242,15 @@ $ coral sql "SELECT name, schedule FROM argoworkflows.cron_workflows WHERE names
 # Limitations
 
 - Read-only source
-- No workflow submission support
-- No retry or terminate operations
+- No workflow submission, retry, or terminate operations
 - Namespace filter required for namespace-scoped tables
-- RBAC permissions affect visible rows
-- Large workflow collections should use SQL `LIMIT`
+- RBAC permissions affect which rows are visible
+- Large workflow collections should use SQL `LIMIT`; `workflows` paginates via the continue token
 - Only REST API-visible workflow metadata is modeled
 
 ---
 
 # References
 
-- Argo Workflows REST API
-- Argo Workflows Documentation
-- Coral Community Sources
-- Coral Custom Source Guide
+- [Argo Workflows REST API](https://argo-workflows.readthedocs.io/en/latest/rest-api/)
+- [Argo Workflows OpenAPI spec](https://raw.githubusercontent.com/argoproj/argo-workflows/main/api/openapi-spec/swagger.json)
