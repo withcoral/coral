@@ -95,10 +95,11 @@ frontend.
 
 Some Cypher constructs are blocked before Coral compilation because the current
 parser dependency does not accept or fully preserve their standard syntax. Known
-frontend blockers include list comprehensions such as
-`[key IN keys(n) WHERE key STARTS WITH 't' | key]` and the built-in
-`range(start, end[, step])` function. These should be addressed in the parser
-frontend rather than by query-string rewriting in Coral.
+frontend blockers include filtered or mapped list comprehensions such as
+`[k IN keys(n) WHERE k STARTS WITH 't']` and `[k IN keys(n) | toUpper(k)]`,
+plus the built-in `range(start, end[, step])` function. These should be
+addressed in the parser frontend rather than by query-string rewriting in
+Coral.
 
 The supported foundation subset is intentionally narrow:
 
@@ -177,6 +178,9 @@ The supported foundation subset is intentionally narrow:
   gating used by scalar metadata expressions. Concatenation rejects mixed
   non-null element types, unknowable projected element types, dynamic operands,
   and lists from different optional bindings;
+- parser-accepted identity list comprehensions such as `[k IN keys(node)]`,
+  `[l IN labels(node)]`, `[x IN ['a', 'b']]`, and `[x IN $list]`, folded as
+  typed static-list copies in projections and `ORDER BY`;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal

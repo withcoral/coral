@@ -5,8 +5,8 @@ use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, With};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
-    ExistsInner, Expression, FilterExpression, FunctionInvocation, Literal as CypherLiteral,
-    NumberLiteral, Parameter as CypherParameter, UnaryOperator,
+    ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension,
+    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -193,6 +193,13 @@ struct CollectionFilterCall {
     has_predicate: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ListComprehensionSource {
+    variable: String,
+    collection_source: String,
+    has_map: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticBooleanOutcome {
     True,
@@ -240,6 +247,7 @@ struct CypherCompileState {
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), String>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
+    list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
@@ -254,6 +262,7 @@ impl CypherCompileContext {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
+            list_comprehension_sources: collect_list_comprehension_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
             parameters,
             graph,
@@ -272,6 +281,14 @@ impl CypherCompileContext {
     ) -> Option<&CollectionFilterCall> {
         self.collection_filter_calls
             .get(&(function.span.start, function.span.end))
+    }
+
+    fn list_comprehension_source(
+        &self,
+        comprehension: &ListComprehension,
+    ) -> Option<&ListComprehensionSource> {
+        self.list_comprehension_sources
+            .get(&(comprehension.span.start, comprehension.span.end))
     }
 
     fn compact_exists_pattern_query(&self, exists: &ExistsExpression) -> Option<&str> {
@@ -6324,6 +6341,16 @@ fn compile_order_expression(
             {
                 return compile_scalar_order_expression(expression, projections, path);
             }
+            if matches!(expression, Expression::ListComprehension(_))
+                && let Some(expression) = compile_optional_static_list_scalar_expression(
+                    expression,
+                    path.clone(),
+                    Some(plan),
+                    context,
+                )?
+            {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
             compile_order_expression_after_metadata_list_index(
                 expression,
                 projections,
@@ -6929,6 +6956,9 @@ fn compile_optional_static_list_value(
             plan,
             context,
         ),
+        Expression::ListComprehension(comprehension) => {
+            compile_optional_static_list_comprehension_value(comprehension, path, plan, context)
+        }
         Expression::BinaryOp {
             op: CypherBinaryOperator::Add,
             lhs,
@@ -6974,6 +7004,109 @@ fn compile_optional_static_list_value(
                 _ => Ok(None),
             }
         }
+    }
+}
+
+fn compile_optional_static_list_comprehension_value(
+    comprehension: &ListComprehension,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let source = context
+        .list_comprehension_source(comprehension)
+        .ok_or_else(|| {
+            unsupported(
+                path.clone(),
+                "list comprehensions require a recoverable `variable IN collection` source",
+            )
+        })?;
+    let variable = variable_name(&comprehension.variable);
+    if source.variable != variable {
+        return Err(unsupported(
+            path,
+            "list comprehension variable recovery did not match the parsed AST",
+        ));
+    }
+    if source.has_map {
+        validate_static_list_comprehension_identity_map(
+            comprehension.map.as_ref(),
+            &variable,
+            format!("{path}.map"),
+        )?;
+    }
+    let Some(collection) = compile_static_list_value_source(
+        &source.collection_source,
+        format!("{path}.collection"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.collection"),
+            "static list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+        ));
+    };
+
+    let literals = collection
+        .literals
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let evaluation = StaticFilterEvaluation {
+                variable: &variable,
+                item,
+                mode: PredicateCompileMode::CaseWhen { plan },
+                context,
+            };
+            let outcome = match comprehension.filter.as_deref() {
+                Some(filter) => evaluate_static_filter_predicate_expression(
+                    filter,
+                    evaluation,
+                    format!("{path}.filter[{index}]"),
+                ),
+                None => Ok(StaticBooleanOutcome::True),
+            };
+            match outcome {
+                Ok(StaticBooleanOutcome::True) => Some(Ok(item.clone())),
+                Ok(StaticBooleanOutcome::False | StaticBooleanOutcome::Unknown) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let element_type = collection
+        .element_type
+        .or_else(|| infer_literal_list_element_type(&literals));
+    Ok(Some(StaticListValue {
+        presence_variable: collection.presence_variable,
+        literals,
+        element_type,
+    }))
+}
+
+fn validate_static_list_comprehension_identity_map(
+    map: Option<&Expression>,
+    variable: &str,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let Some(map) = map else {
+        return Ok(());
+    };
+    if expression_is_variable_ref(map, variable) {
+        return Ok(());
+    }
+    Err(unsupported(
+        path,
+        "static list comprehensions currently support identity map expressions only",
+    ))
+}
+
+fn expression_is_variable_ref(expression: &Expression, variable: &str) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => expression_is_variable_ref(inner, variable),
+        Expression::Variable(variable_ref) => variable_name(variable_ref) == variable,
+        _ => false,
     }
 }
 
@@ -7438,6 +7571,17 @@ fn compile_projection(
                 return Ok(projection);
             }
             compile_arithmetic_projection(item, path, plan, state, context)
+        }
+        Expression::ListComprehension(_) => {
+            if let Some(projection) =
+                compile_optional_static_list_projection(item, path.clone(), plan, context)?
+            {
+                return Ok(projection);
+            }
+            Err(unsupported(
+                format!("{path}.expression"),
+                "list comprehensions require a literal list, list parameter, tail(...), or static labels()/keys() metadata list",
+            ))
         }
         Expression::Case(case) => compile_case_projection(case, item, path, plan, state, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
@@ -10343,6 +10487,57 @@ fn collect_collection_filter_calls(cypher: &str) -> BTreeMap<(usize, usize), Col
         .collect()
 }
 
+fn collect_list_comprehension_sources(
+    cypher: &str,
+) -> BTreeMap<(usize, usize), ListComprehensionSource> {
+    // decypher's high-level AST currently drops the source collection from
+    // list comprehensions. Recover the `variable IN collection` header from
+    // the lossless CST by span, then keep lowering tied to the typed AST for
+    // the optional filter and identity map expression.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::LIST_COMPREHENSION)
+        .filter_map(|node| list_comprehension_source_from_cst(cypher, &node))
+        .collect()
+}
+
+fn list_comprehension_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), ListComprehensionSource)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let value = parse_list_comprehension_source(source)?;
+    Some(((start, end), value))
+}
+
+fn parse_list_comprehension_source(source: &str) -> Option<ListComprehensionSource> {
+    let inner = source.strip_prefix('[')?.strip_suffix(']')?.trim();
+    let in_index = find_top_level_keyword(inner, "IN")?;
+    let variable = parse_collection_filter_variable(inner.get(..in_index)?.trim())?;
+    let after_in = inner.get(in_index + "IN".len()..)?.trim();
+    let where_index = find_top_level_keyword(after_in, "WHERE");
+    let map_index = find_top_level_character(after_in, '|');
+    let end_index = [where_index, map_index]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(after_in.len());
+    let collection_source = after_in.get(..end_index)?.trim();
+    if collection_source.is_empty() {
+        return None;
+    }
+    Some(ListComprehensionSource {
+        variable,
+        collection_source: collection_source.to_string(),
+        has_map: map_index.is_some(),
+    })
+}
+
 fn collect_compact_exists_pattern_queries(cypher: &str) -> BTreeMap<(usize, usize), String> {
     // decypher's high-level AST treats `WHERE` inside `EXISTS { pattern WHERE ... }`
     // as a clause child, which makes the builder classify the expression as a
@@ -10526,6 +10721,60 @@ fn find_top_level_keyword(source: &str, keyword: &str) -> Option<usize> {
                 .is_some_and(|candidate| candidate.eq_ignore_ascii_case(keyword))
             && keyword_has_boundaries(source, index, keyword_len)
         {
+            return Some(index);
+        }
+
+        index += character_len;
+    }
+    None
+}
+
+fn find_top_level_character(source: &str, target: char) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+    let mut index = 0usize;
+
+    while index < source.len() {
+        let rest = source.get(index..)?;
+        let character = rest.chars().next()?;
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('\'') {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if source.get(next_index..)?.starts_with('`') {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => in_string = true,
+            '`' => in_escaped_identifier = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+
+        if depth == 0 && character == target {
             return Some(index);
         }
 
@@ -19553,6 +19802,105 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehensions() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "selected_keys".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("tier".to_string()),
+                Literal::String("missing".to_string()),
+                Literal::String("name".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [k IN keys(service)] AS service_keys_copy, \
+                    [l IN labels(service)] AS service_labels, \
+                    [k IN ['name', 'tier', null]] AS literal_keys_copy, \
+                    [k IN $selected_keys] AS selected_keys_copy \
+             ORDER BY [k IN keys(service)]",
+            &parameters,
+        )
+        .expect("static list comprehensions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("tier".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_keys_copy".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("Service".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_labels".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("tier".to_string()),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "literal_keys_copy".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("tier".to_string()),
+                            Literal::String("missing".to_string()),
+                            Literal::String("name".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "selected_keys_copy".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::String("name".to_string()),
+                        Literal::String("tier".to_string())
+                    ],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_static_list_comprehension_sources() {
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [c IN service.name] AS characters",
+        )
+        .expect_err("dynamic list comprehension sources should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("static list comprehensions require"),
+            "{error}"
         );
     }
 

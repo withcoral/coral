@@ -10166,6 +10166,54 @@ async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_comprehensions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("tier".to_string()),
+            GraphLiteral::String("missing".to_string()),
+            GraphLiteral::String("name".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                [k IN keys(service)] AS service_keys_copy, \
+                [k IN $selected_keys] AS selected_keys_copy, \
+                [l IN labels(service)] AS labels_copy \
+         ORDER BY owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static list comprehensions should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "make_array('active', 'id', 'name', 'risk', 'team', 'tier') AS \"service_keys_copy\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_keys_copy": ["active", "id", "name", "risk", "team", "tier"], "selected_keys_copy": ["tier", "missing", "name"], "labels_copy": ["Service"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_keys_copy": ["active", "id", "name", "risk", "team", "tier"], "selected_keys_copy": ["tier", "missing", "name"], "labels_copy": ["Service"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_keys_copy": ["active", "id", "name", "risk", "team", "tier"], "selected_keys_copy": ["tier", "missing", "name"], "labels_copy": ["Service"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
