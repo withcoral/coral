@@ -10671,6 +10671,114 @@ fn static_list_case_result_scalar_expression(
     }
 }
 
+fn static_list_case_result_length_scalar_expression(
+    result: StaticListCaseResult,
+) -> Result<ScalarExpression, CoreError> {
+    match result {
+        StaticListCaseResult::Null => Ok(ScalarExpression::Literal(Literal::Null)),
+        StaticListCaseResult::List(value) => static_list_length_scalar_expression(value),
+        StaticListCaseResult::Coalesce(coalesce) => {
+            static_list_coalesce_length_scalar_expression(coalesce)
+        }
+    }
+}
+
+fn static_list_case_result_is_empty_scalar_expression(
+    result: StaticListCaseResult,
+) -> ScalarExpression {
+    match result {
+        StaticListCaseResult::Null => ScalarExpression::Literal(Literal::Null),
+        StaticListCaseResult::List(value) => static_list_is_empty_scalar_expression(value),
+        StaticListCaseResult::Coalesce(coalesce) => {
+            static_list_coalesce_is_empty_scalar_expression(coalesce)
+        }
+    }
+}
+
+fn static_list_coalesce_length_scalar_expression(
+    coalesce: StaticListCoalesceArguments,
+) -> Result<ScalarExpression, CoreError> {
+    let expressions = coalesce
+        .arguments
+        .into_iter()
+        .map(|argument| match argument {
+            StaticListCoalesceArgument::Null => Ok(ScalarExpression::Literal(Literal::Null)),
+            StaticListCoalesceArgument::List(value) => static_list_length_scalar_expression(value),
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    Ok(ScalarExpression::Coalesce { expressions })
+}
+
+fn static_list_coalesce_is_empty_scalar_expression(
+    coalesce: StaticListCoalesceArguments,
+) -> ScalarExpression {
+    ScalarExpression::Coalesce {
+        expressions: coalesce
+            .arguments
+            .into_iter()
+            .map(|argument| match argument {
+                StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
+                StaticListCoalesceArgument::List(value) => {
+                    static_list_is_empty_scalar_expression(value)
+                }
+            })
+            .collect(),
+    }
+}
+
+fn compile_optional_static_list_case_length_scalar_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let Some(parts) = compile_optional_static_list_case_parts(case, path, mode, context)? else {
+        return Ok(None);
+    };
+    Ok(Some(ScalarExpression::Case {
+        alternatives: parts
+            .alternatives
+            .into_iter()
+            .map(|(when, result)| {
+                Ok(ScalarCaseAlternative {
+                    when,
+                    then: static_list_case_result_length_scalar_expression(result)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?,
+        else_expression: parts
+            .default
+            .map(static_list_case_result_length_scalar_expression)
+            .transpose()?
+            .map(Box::new),
+    }))
+}
+
+fn compile_optional_static_list_case_is_empty_scalar_expression(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let Some(parts) = compile_optional_static_list_case_parts(case, path, mode, context)? else {
+        return Ok(None);
+    };
+    Ok(Some(ScalarExpression::Case {
+        alternatives: parts
+            .alternatives
+            .into_iter()
+            .map(|(when, result)| ScalarCaseAlternative {
+                when,
+                then: static_list_case_result_is_empty_scalar_expression(result),
+            })
+            .collect(),
+        else_expression: parts
+            .default
+            .map(static_list_case_result_is_empty_scalar_expression)
+            .map(Box::new),
+    }))
+}
+
 fn compile_optional_static_list_coalesce_length_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -10683,16 +10791,7 @@ fn compile_optional_static_list_coalesce_length_scalar_expression(
     else {
         return Ok(None);
     };
-
-    let expressions = coalesce
-        .arguments
-        .into_iter()
-        .map(|argument| match argument {
-            StaticListCoalesceArgument::Null => Ok(ScalarExpression::Literal(Literal::Null)),
-            StaticListCoalesceArgument::List(value) => static_list_length_scalar_expression(value),
-        })
-        .collect::<Result<Vec<_>, CoreError>>()?;
-    Ok(Some(ScalarExpression::Coalesce { expressions }))
+    static_list_coalesce_length_scalar_expression(coalesce).map(Some)
 }
 
 fn compile_optional_static_list_tail_value(
@@ -12110,6 +12209,16 @@ fn compile_character_length_scalar_expression(
             ),
         ));
     };
+    if let Expression::Case(case) = argument
+        && let Some(length) = compile_optional_static_list_case_length_scalar_expression(
+            case,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?
+    {
+        return Ok(length);
+    }
     if let Some(plan) = plan
         && let Some(length) = compile_optional_metadata_list_length_scalar_expression(
             argument,
@@ -13909,9 +14018,11 @@ fn compile_optional_static_list_case_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
-    let Some(parts) = compile_optional_static_list_case_parts(case, path, mode, context)? else {
+    let Some(parts) = compile_optional_static_list_case_parts(case, path.clone(), mode, context)?
+    else {
         return Ok(None);
     };
+    let element_type = require_static_list_case_element_type(&parts, path)?;
 
     Ok(Some(ScalarExpression::Case {
         alternatives: parts
@@ -13919,13 +14030,13 @@ fn compile_optional_static_list_case_scalar_expression(
             .into_iter()
             .map(|(when, result)| ScalarCaseAlternative {
                 when,
-                then: static_list_case_result_scalar_expression(result, parts.element_type),
+                then: static_list_case_result_scalar_expression(result, element_type),
             })
             .collect(),
         else_expression: parts.default.map(|result| {
             Box::new(static_list_case_result_scalar_expression(
                 result,
-                parts.element_type,
+                element_type,
             ))
         }),
     }))
@@ -13934,7 +14045,19 @@ fn compile_optional_static_list_case_scalar_expression(
 struct StaticListCaseParts {
     alternatives: Vec<(PredicateExpression, StaticListCaseResult)>,
     default: Option<StaticListCaseResult>,
-    element_type: LiteralListElementType,
+    element_type: Option<LiteralListElementType>,
+}
+
+fn require_static_list_case_element_type(
+    parts: &StaticListCaseParts,
+    path: impl Into<String>,
+) -> Result<LiteralListElementType, CoreError> {
+    parts.element_type.ok_or_else(|| {
+        unsupported(
+            format!("{}.alternatives", path.into()),
+            "list-valued CASE result branches require at least one non-null list element type",
+        )
+    })
 }
 
 fn compile_static_list_case_alternative(
@@ -14043,13 +14166,6 @@ fn compile_optional_static_list_case_parts(
             "list-valued CASE result branches require every non-null branch to be a static list",
         ));
     }
-    let Some(element_type) = element_type else {
-        return Err(unsupported(
-            format!("{path}.alternatives"),
-            "list-valued CASE result branches require at least one non-null list element type",
-        ));
-    };
-
     let alternatives = alternatives
         .into_iter()
         .enumerate()
@@ -16406,7 +16522,7 @@ fn compile_predicate_expression_in_mode(
         }
         Expression::FunctionCall(function) if is_empty_function(function) => {
             Ok(PredicateExpression::ScalarComparison(
-                compile_is_empty_predicate(function, path, mode.static_metadata_plan(), context)?,
+                compile_is_empty_predicate(function, path, mode, context)?,
             ))
         }
         Expression::FunctionCall(function)
@@ -16971,16 +17087,31 @@ fn take_scoped_plan_delta_predicates(
 fn compile_is_empty_predicate(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarPredicate, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
             "isEmpty() supports exactly one scalar string argument",
         ));
     };
+    if let Expression::Case(case) = argument
+        && let Some(expression) = compile_optional_static_list_case_is_empty_scalar_expression(
+            case,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?
+    {
+        return Ok(ScalarPredicate {
+            lhs: expression,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
+        });
+    }
     if let Some(expression) = compile_optional_static_list_coalesce_is_empty_scalar_expression(
         argument,
         format!("{path}.arguments[0]"),
@@ -17063,17 +17194,9 @@ fn compile_optional_static_list_coalesce_is_empty_scalar_expression(
             else {
                 return Ok(None);
             };
-            let expressions = coalesce
-                .arguments
-                .into_iter()
-                .map(|argument| match argument {
-                    StaticListCoalesceArgument::Null => ScalarExpression::Literal(Literal::Null),
-                    StaticListCoalesceArgument::List(value) => {
-                        static_list_is_empty_scalar_expression(value)
-                    }
-                })
-                .collect::<Vec<_>>();
-            Ok(Some(ScalarExpression::Coalesce { expressions }))
+            Ok(Some(static_list_coalesce_is_empty_scalar_expression(
+                coalesce,
+            )))
         }
         _ => Ok(None),
     }
@@ -30282,6 +30405,98 @@ relationships:
                 )
                 && label_alias == "owner_labels"
                 && coalesced_alias == "coalesced_keys"
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Case { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_case_size_and_is_empty() {
+        let query = compile_cypher_query_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN size(CASE WHEN person IS NULL THEN [] ELSE keys(person) END) AS owner_key_count, \
+                    isEmpty(CASE WHEN person IS NULL THEN [] ELSE keys(person) END) AS owner_keys_empty, \
+                    size(CASE WHEN service.tier = 'prod' THEN [] ELSE null END) AS empty_count, \
+                    isEmpty(CASE WHEN service.tier = 'prod' THEN [] ELSE null END) AS empty_is_empty \
+             ORDER BY size(CASE WHEN person IS NULL THEN [] ELSE keys(person) END)",
+        )
+        .expect("static list CASE size/isEmpty should compile with graph metadata");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("expected single graph plan");
+        };
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Case { alternatives, .. },
+                    alias: count_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(predicate),
+                    alias: empty_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case {
+                        alternatives: untyped_count_alternatives,
+                        else_expression,
+                    },
+                    alias: untyped_count_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Predicate(untyped_empty_predicate),
+                    alias: untyped_empty_alias,
+                },
+            ] if count_alias == "owner_key_count"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::Integer(0)),
+                        ..
+                    }]
+                )
+                && empty_alias == "owner_keys_empty"
+                && matches!(
+                    predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Case { .. },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    })
+                )
+                && untyped_count_alias == "empty_count"
+                && matches!(
+                    untyped_count_alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        then: ScalarExpression::Literal(Literal::Integer(0)),
+                        ..
+                    }]
+                )
+                && matches!(
+                    else_expression.as_deref(),
+                    Some(ScalarExpression::Literal(Literal::Null))
+                )
+                && untyped_empty_alias == "empty_is_empty"
+                && matches!(
+                    untyped_empty_predicate.as_ref(),
+                    PredicateExpression::ScalarComparison(ScalarPredicate {
+                        lhs: ScalarExpression::Case { .. },
+                        operator: ComparisonOperator::Equal,
+                        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                            Literal::Boolean(true)
+                        )),
+                    })
+                )
         ));
         assert!(matches!(
             plan.order_by.as_slice(),

@@ -230,7 +230,9 @@ The supported foundation subset is intentionally narrow:
   This keeps conditional optional-metadata normalization in the same SQL
   renderer and validator path as scalar `CASE` while still rejecting scalar/list
   mixes, mixed element families, all-empty/all-null results, and dynamic list
-  columns;
+  columns. `size(CASE ... END)` and `isEmpty(CASE ... END)` are scalar reducers
+  over the same branch parts, so they compile all-empty branch sets by lowering
+  to integer or boolean `CASE` expressions rather than rendering an untyped list;
 - static list cast functions `toStringList(...)`, `toIntegerList(...)`,
   `toFloatList(...)`, and `toBooleanList(...)` over folded static lists. Casts
   use Cypher's nullable per-element conversion semantics and then re-enter the
