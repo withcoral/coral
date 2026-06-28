@@ -23574,6 +23574,27 @@ relationships:
     }
 
     #[test]
+    fn compiles_optional_fixed_length_relationship_ranges() {
+        for cypher in [
+            "MATCH (source:Service) OPTIONAL MATCH (source)-[:DEPENDS_ON*2]->(target:Service) RETURN target.name",
+            "MATCH (source:Service) OPTIONAL MATCH (source)-[:DEPENDS_ON*2..2]->(target:Service) RETURN target.name",
+            "MATCH (source:Service) OPTIONAL MATCH (source)-[:DEPENDS_ON]->{2}(target:Service) RETURN target.name",
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("exact positive OPTIONAL MATCH relationship range should compile");
+
+            assert_eq!(plan.optional_relationships, vec![0, 1]);
+            assert_eq!(
+                plan.optional_matches,
+                vec![OptionalMatchScope {
+                    relationship_indices: vec![0, 1],
+                    predicate: None,
+                }]
+            );
+        }
+    }
+
+    #[test]
     fn compiles_optional_match_local_predicates() {
         let plan = compile_cypher(
             "MATCH (service:Service) \

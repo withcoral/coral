@@ -5120,6 +5120,54 @@ async fn cypher_multihop_optional_match_preserves_whole_pattern_null_semantics()
 }
 
 #[tokio::test]
+async fn cypher_optional_fixed_relationship_ranges_execute_as_repeated_hops() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    for pattern in [
+        "(source)-[:DEPENDS_ON*2]->(target:Service)",
+        "(source)-[:DEPENDS_ON*2..2]->(target:Service)",
+        "(source)-[:DEPENDS_ON]->{2}(target:Service)",
+    ] {
+        let execution = CoralQuery::execute_cypher(
+            std::slice::from_ref(&source),
+            test_runtime(),
+            &graph,
+            &format!(
+                "MATCH (source:Service) \
+                 OPTIONAL MATCH {pattern} \
+                 RETURN source.name AS source, target.name AS target \
+                 ORDER BY source"
+            ),
+        )
+        .await
+        .expect("exact positive OPTIONAL MATCH relationship range should execute");
+
+        assert!(
+            execution
+                .translated_sql()
+                .matches("LEFT JOIN \"ops\".\"service_dependencies\"")
+                .count()
+                >= 2
+                || execution.translated_sql().contains(" LEFT JOIN ("),
+            "{}",
+            execution.translated_sql()
+        );
+        assert_eq!(
+            execution_to_rows(execution.execution()),
+            vec![
+                json!({"source": "billing-api", "target": "experiments"}),
+                json!({"source": "deployments"}),
+                json!({"source": "experiments"}),
+                json!({"source": "legacy-sync"}),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
 async fn cypher_multihop_optional_match_where_applies_to_whole_scope() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
