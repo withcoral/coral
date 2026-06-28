@@ -9371,6 +9371,64 @@ async fn cypher_optional_metadata_list_slices_preserve_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_static_list_endpoint_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "selected_keys".to_string(),
+        GraphCypherParameterValue::List(vec![
+            GraphLiteral::String("name".to_string()),
+            GraphLiteral::String("tier".to_string()),
+        ]),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE head(labels(service)) = 'Service' \
+           AND last(keys(service)) = 'tier' \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                head(keys(service)) AS first_service_key, \
+                last(keys(owns)) AS last_ownership_key, \
+                head(keys(service)[6..]) AS missing_key, \
+                head($selected_keys) AS selected_first_key, \
+                last($selected_keys) AS selected_last_key \
+         ORDER BY last(keys(service)), owner, service",
+        &parameters,
+    )
+    .await
+    .expect("static list endpoint functions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'active' AS \"first_service_key\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'tier' AS \"selected_last_key\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "first_service_key": "active", "last_ownership_key": "source", "selected_first_key": "name", "selected_last_key": "tier"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_metadata_list_sizes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

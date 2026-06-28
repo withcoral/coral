@@ -135,6 +135,9 @@ The supported foundation subset is intentionally narrow:
 - start-inclusive/end-exclusive slice expressions over static `labels(...)`
   and declaration-aware `keys(...)` metadata lists, folded at compile time
   and preserving optional nulls for nullable bindings;
+- `head(...)` and `last(...)` over literal lists, list parameters, and static
+  metadata lists, folded at compile time with `NULL` for empty matched lists
+  and optional null preservation for nullable graph bindings;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - `id(...)`, `type(relationship)`, and static

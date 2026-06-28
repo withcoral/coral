@@ -155,6 +155,12 @@ struct MetadataListValue {
     literals: Vec<Literal>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticListValue {
+    presence_variable: Option<String>,
+    literals: Vec<Literal>,
+}
+
 #[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
@@ -6142,6 +6148,50 @@ fn metadata_list_value_scalar_expression(
     ))
 }
 
+fn metadata_list_presence_variable(
+    value: &GraphValueRef,
+    plan: &GraphPlan,
+) -> Result<Option<String>, CoreError> {
+    match value.presence_variable.clone() {
+        Some(variable) => Ok(Some(variable)),
+        None => optional_graph_variable_presence_variable(plan, &value.variable),
+    }
+}
+
+fn compile_optional_static_list_value(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_value(inner, path, plan, context)
+        }
+        expression => {
+            if let Some(plan) = plan
+                && let Some(value) =
+                    compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
+            {
+                return Ok(Some(StaticListValue {
+                    presence_variable: metadata_list_presence_variable(&value.value, plan)?,
+                    literals: value.literals,
+                }));
+            }
+            match expression {
+                Expression::Literal(CypherLiteral::List(_))
+                | Expression::ListSlice { .. }
+                | Expression::Parameter(_) => Ok(Some(StaticListValue {
+                    presence_variable: None,
+                    literals: compile_literal_list(expression, path, context)?,
+                })),
+                _ => Ok(None),
+            }
+        }
+    }
+}
+
 fn compile_type_order_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -7639,6 +7689,22 @@ fn compile_core_scalar_function_expression(
         compile_rtrim_scalar_expression(function, path, plan, context)?
     } else if is_replace_function(function) {
         compile_replace_scalar_expression(function, path, plan, context)?
+    } else if is_head_function(function) {
+        compile_static_list_endpoint_scalar_expression(
+            function,
+            path,
+            plan,
+            context,
+            ListEndpoint::Head,
+        )?
+    } else if is_last_function(function) {
+        compile_static_list_endpoint_scalar_expression(
+            function,
+            path,
+            plan,
+            context,
+            ListEndpoint::Last,
+        )?
     } else if is_character_length_function(function) {
         compile_character_length_scalar_expression(function, path, plan, context)?
     } else if is_substring_function(function) {
@@ -7653,6 +7719,56 @@ fn compile_core_scalar_function_expression(
         return Ok(None);
     };
     Ok(Some(expression))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListEndpoint {
+    Head,
+    Last,
+}
+
+fn compile_static_list_endpoint_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    endpoint: ListEndpoint,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let function_name = match endpoint {
+        ListEndpoint::Head => "head",
+        ListEndpoint::Last => "last",
+    };
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!("{function_name}() requires exactly one list argument"),
+        ));
+    };
+    let Some(value) = compile_optional_static_list_value(
+        argument,
+        format!("{path}.arguments[0]"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!(
+                "{function_name}() requires a literal list, list parameter, or static labels()/keys() metadata list"
+            ),
+        ));
+    };
+    let literal = match endpoint {
+        ListEndpoint::Head => value.literals.first(),
+        ListEndpoint::Last => value.literals.last(),
+    }
+    .cloned()
+    .unwrap_or(Literal::Null);
+    Ok(presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::Literal(literal),
+    ))
 }
 
 fn compile_numeric_scalar_function_expression(
@@ -7812,7 +7928,7 @@ fn compile_scalar_expression_in_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -8296,7 +8412,7 @@ fn compile_scalar_predicate_rhs(
                 Some(expression) => Ok(ScalarPredicateRhs::Expression(expression)),
                 None => Err(unsupported(
                     path,
-                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+                    "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
                 )),
             }
         }
@@ -8305,7 +8421,7 @@ fn compile_scalar_predicate_rhs(
         )),
         _ => Err(unsupported(
             path,
-            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar predicates support variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -9067,6 +9183,20 @@ fn is_replace_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("replace")
+    )
+}
+
+fn is_head_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("head")
+    )
+}
+
+fn is_last_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("last")
     )
 }
 
@@ -15872,6 +16002,101 @@ relationships:
                         }),
                     },
                     alias: "owner_first_key".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_endpoint_functions() {
+        let graph = star_test_graph();
+        let parameters = BTreeMap::from([(
+            "tiers".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("prod".to_string()),
+                Literal::String("dev".to_string()),
+            ]),
+        )]);
+        let plan = compile_cypher_for_graph_with_parameters(
+            &graph,
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE head(labels(service)) = 'Service' \
+               AND last(keys(owns)) = 'source' \
+               AND head($tiers) = 'prod' \
+             RETURN head(keys(service)) AS first_service_key, \
+                    last(keys(service)) AS last_service_key, \
+                    head(labels(service)[1..]) AS missing_label, \
+                    last(['prod', 'critical']) AS last_literal \
+             ORDER BY last(keys(service))",
+            &parameters,
+        )
+        .expect("static list endpoint functions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("name".to_string())),
+                    alias: "first_service_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("tier".to_string())),
+                    alias: "last_service_key".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Null),
+                    alias: "missing_label".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("critical".to_string(),)),
+                    alias: "last_literal".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::String(
+                    "tier".to_string()
+                ))),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_static_list_endpoint_functions_as_presence_gated_scalars() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN head(labels(person)) AS owner_label, \
+                    last(keys(person)) AS owner_last_key",
+        )
+        .expect("optional list endpoint functions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::String(
+                            "Person".to_string(),
+                        ))),
+                    },
+                    alias: "owner_label".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "person".to_string(),
+                        expression: Box::new(ScalarExpression::Literal(Literal::String(
+                            "team".to_string(),
+                        ))),
+                    },
+                    alias: "owner_last_key".to_string(),
                 },
             ]
         );
