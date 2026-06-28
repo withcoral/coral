@@ -10308,7 +10308,11 @@ async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sour
                 service.name AS service, \
                 [k IN keys(service) WHERE k IN ['name', 'tier'] | upper(k)] AS upper_keys, \
                 [k IN [' service-name ', null] | trim(k)] AS trimmed_keys, \
-                [k IN ['service-id'] | replace(k, '-', '_')] AS replaced_keys \
+                [k IN ['service-id'] | replace(k, '-', '_')] AS replaced_keys, \
+                [k IN keys(service) WHERE k IN ['name', 'tier'] | left(k, 2)] AS key_prefixes, \
+                [k IN ['service-name', null] | substring(k, 8, 4)] AS key_suffixes, \
+                [k IN ['ops'] | right(k, 2)] AS right_suffixes, \
+                [k IN ['abc'] | reverse(k)] AS reversed_literals \
          ORDER BY owner, service",
     )
     .await
@@ -10324,9 +10328,9 @@ async fn cypher_mapped_static_list_comprehensions_execute_against_synthetic_sour
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"], "key_prefixes": ["na", "ti"], "key_suffixes": ["name", null], "right_suffixes": ["ps"], "reversed_literals": ["cba"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"], "key_prefixes": ["na", "ti"], "key_suffixes": ["name", null], "right_suffixes": ["ps"], "reversed_literals": ["cba"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "upper_keys": ["NAME", "TIER"], "trimmed_keys": ["service-name", null], "replaced_keys": ["service_id"], "key_prefixes": ["na", "ti"], "key_suffixes": ["name", null], "right_suffixes": ["ps"], "reversed_literals": ["cba"]}),
         ]
     );
 }

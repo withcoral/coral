@@ -7207,7 +7207,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), and replace()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, toString(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -7436,6 +7436,24 @@ fn evaluate_static_map_function(
     if is_replace_function(function) {
         return evaluate_static_map_replace(function, path, evaluation);
     }
+    if is_substring_function(function) {
+        return evaluate_static_map_substring(function, path, evaluation);
+    }
+    if is_left_function(function) {
+        return evaluate_static_map_left(function, path, evaluation);
+    }
+    if is_right_function(function) {
+        return evaluate_static_map_right(function, path, evaluation);
+    }
+    if is_reverse_function(function) {
+        return evaluate_static_map_unary_string_function(
+            function,
+            path,
+            evaluation,
+            "reverse",
+            |value| value.chars().rev().collect(),
+        );
+    }
     Err(unsupported(
         path,
         format!(
@@ -7589,6 +7607,201 @@ fn evaluate_static_map_replace(
     Ok(Literal::String(expression.replace(&search, &replacement)))
 }
 
+fn evaluate_static_map_substring(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let (expression, start, length) = if let Some(variable) =
+        evaluation.context.variable_function_argument(function)
+    {
+        if variable != evaluation.variable {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "substring() argument '{variable}' is not the item variable '{}'",
+                    evaluation.variable
+                ),
+            ));
+        }
+        match function.arguments.as_slice() {
+            [start] => (
+                evaluation.item.clone(),
+                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
+                None,
+            ),
+            [start, length] => (
+                evaluation.item.clone(),
+                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
+                Some(evaluate_static_map_expression(
+                    length,
+                    evaluation,
+                    format!("{path}.arguments[2]"),
+                )?),
+            ),
+            _ => {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    "substring() in static list comprehension maps requires exactly two or three arguments",
+                ));
+            }
+        }
+    } else {
+        match function.arguments.as_slice() {
+            [expression, start] => (
+                evaluate_static_map_expression(
+                    expression,
+                    evaluation,
+                    format!("{path}.arguments[0]"),
+                )?,
+                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
+                None,
+            ),
+            [expression, start, length] => (
+                evaluate_static_map_expression(
+                    expression,
+                    evaluation,
+                    format!("{path}.arguments[0]"),
+                )?,
+                evaluate_static_map_expression(start, evaluation, format!("{path}.arguments[1]"))?,
+                Some(evaluate_static_map_expression(
+                    length,
+                    evaluation,
+                    format!("{path}.arguments[2]"),
+                )?),
+            ),
+            _ => {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    "substring() in static list comprehension maps requires exactly two or three arguments",
+                ));
+            }
+        }
+    };
+    let Some(expression) = static_map_string_argument(expression, "substring", path.clone())?
+    else {
+        return Ok(Literal::Null);
+    };
+    let Some(start) = static_map_non_negative_integer_argument(&start, "substring", path.clone())?
+    else {
+        return Ok(Literal::Null);
+    };
+    let length = match length {
+        Some(length) => {
+            match static_map_non_negative_integer_argument(&length, "substring", path)? {
+                Some(length) => Some(length),
+                None => return Ok(Literal::Null),
+            }
+        }
+        None => None,
+    };
+    Ok(Literal::String(static_substring(
+        &expression,
+        start,
+        length,
+    )))
+}
+
+fn evaluate_static_map_left(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let (expression, count) =
+        evaluate_static_map_two_argument_string_function(function, path, evaluation, "left")?;
+    let Some(expression) = expression else {
+        return Ok(Literal::Null);
+    };
+    let Some(count) = count else {
+        return Ok(Literal::Null);
+    };
+    Ok(Literal::String(expression.chars().take(count).collect()))
+}
+
+fn evaluate_static_map_right(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let (expression, count) =
+        evaluate_static_map_two_argument_string_function(function, path, evaluation, "right")?;
+    let Some(expression) = expression else {
+        return Ok(Literal::Null);
+    };
+    let Some(count) = count else {
+        return Ok(Literal::Null);
+    };
+    let character_count = expression.chars().count();
+    Ok(Literal::String(
+        expression
+            .chars()
+            .skip(character_count.saturating_sub(count))
+            .collect(),
+    ))
+}
+
+fn evaluate_static_map_two_argument_string_function(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+) -> Result<(Option<String>, Option<usize>), CoreError> {
+    let path = path.into();
+    let (expression, count) = match function.arguments.as_slice() {
+        [expression, count] => (
+            evaluate_static_map_expression(expression, evaluation, format!("{path}.arguments[0]"))?,
+            evaluate_static_map_expression(count, evaluation, format!("{path}.arguments[1]"))?,
+        ),
+        [count] => {
+            let variable = evaluation
+                .context
+                .variable_function_argument(function)
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("{path}.arguments"),
+                        format!(
+                            "{function_name}() in static list comprehension maps requires exactly two arguments"
+                        ),
+                    )
+                })?;
+            if variable != evaluation.variable {
+                return Err(unsupported(
+                    format!("{path}.arguments"),
+                    format!(
+                        "{function_name}() argument '{variable}' is not the item variable '{}'",
+                        evaluation.variable
+                    ),
+                ));
+            }
+            (
+                evaluation.item.clone(),
+                evaluate_static_map_expression(count, evaluation, format!("{path}.arguments[1]"))?,
+            )
+        }
+        _ => {
+            return Err(unsupported(
+                format!("{path}.arguments"),
+                format!(
+                    "{function_name}() in static list comprehension maps requires exactly two arguments"
+                ),
+            ));
+        }
+    };
+    Ok((
+        static_map_string_argument(expression, function_name, path.clone())?,
+        static_map_non_negative_integer_argument(&count, function_name, path)?,
+    ))
+}
+
+fn static_substring(value: &str, start: usize, length: Option<usize>) -> String {
+    let characters = value.chars().skip(start);
+    match length {
+        Some(length) => characters.take(length).collect(),
+        None => characters.collect(),
+    }
+}
+
 fn static_map_string_argument(
     literal: Literal,
     function_name: &str,
@@ -7601,6 +7814,37 @@ fn static_map_string_argument(
             path,
             format!(
                 "{function_name}() in static list comprehension maps requires string arguments"
+            ),
+        )),
+    }
+}
+
+fn static_map_non_negative_integer_argument(
+    literal: &Literal,
+    function_name: &str,
+    path: impl Into<String>,
+) -> Result<Option<usize>, CoreError> {
+    let path = path.into();
+    match literal {
+        Literal::Integer(value) if *value >= 0 => {
+            usize::try_from(*value).map(Some).map_err(|error| {
+                unsupported(
+                    path,
+                    format!("{function_name}() integer argument is out of range: {error}"),
+                )
+            })
+        }
+        Literal::Integer(_) => Err(unsupported(
+            path,
+            format!(
+                "{function_name}() in static list comprehension maps requires non-negative integer arguments"
+            ),
+        )),
+        Literal::Null => Ok(None),
+        _ => Err(unsupported(
+            path,
+            format!(
+                "{function_name}() in static list comprehension maps requires integer arguments"
             ),
         )),
     }
@@ -7680,7 +7924,11 @@ fn static_list_comprehension_map_element_type(
                 || is_trim_function(function)
                 || is_ltrim_function(function)
                 || is_rtrim_function(function)
-                || is_replace_function(function) =>
+                || is_replace_function(function)
+                || is_substring_function(function)
+                || is_left_function(function)
+                || is_right_function(function)
+                || is_reverse_function(function) =>
         {
             Ok(Some(LiteralListElementType::String))
         }
@@ -20977,6 +21225,10 @@ relationships:
              RETURN [k IN keys(service) | toUpper(k)] AS upper_keys, \
                     [k IN [' name ', null, 'tier'] | trim(k)] AS trimmed_keys, \
                     [k IN ['service-id'] | replace(k, '-', '_')] AS replaced_keys, \
+                    [k IN keys(service) | left(k, 2)] AS key_prefixes, \
+                    [k IN ['service-name', null] | substring(k, 8, 4)] AS key_suffixes, \
+                    [k IN ['ops'] | right(k, 2)] AS right_suffixes, \
+                    [k IN ['abc'] | reverse(k)] AS reversed_literals, \
                     [k IN [1, 2] | toString(k)] AS number_strings \
              ORDER BY [k IN keys(service) WHERE k <> 'tier' | upper(k)]",
         )
@@ -21016,6 +21268,37 @@ relationships:
                 Projection::Expression {
                     expression: ScalarExpression::TypedLiteralList {
                         literals: vec![
+                            Literal::String("na".to_string()),
+                            Literal::String("ti".to_string())
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "key_prefixes".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("name".to_string()), Literal::Null],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "key_suffixes".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("ps".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "right_suffixes".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("cba".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "reversed_literals".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
                             Literal::String("1".to_string()),
                             Literal::String("2".to_string())
                         ],
@@ -21035,6 +21318,35 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn rejects_static_list_comprehension_string_maps_with_invalid_arguments() {
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [k IN keys(service) | left(k, 'x')] AS key_prefixes",
+        )
+        .expect_err("left() count should be integer");
+
+        assert!(
+            error
+                .to_string()
+                .contains("left() in static list comprehension maps requires integer arguments"),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [k IN keys(service) | substring(k, -1, 2)] AS key_prefixes",
+        )
+        .expect_err("substring() start should be non-negative");
+
+        assert!(
+            error.to_string().contains(
+                "substring() in static list comprehension maps requires non-negative integer arguments"
+            ),
+            "{error}"
         );
     }
 
