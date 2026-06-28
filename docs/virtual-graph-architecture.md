@@ -258,7 +258,8 @@ The supported foundation subset is intentionally narrow:
 - non-materialized path variable bindings in `MATCH p = (...)`, including
   `WITH *` pass-through when the path is later used only for supported metadata
   such as `length(path)` or `size(path)`, including in `WITH * WHERE`, and not
-  as a graph value;
+  as a graph value. Path metadata scalars can participate in supported scalar
+  arithmetic such as `length(path) + 1`;
 - integer `SKIP` and `LIMIT`.
 
 Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.

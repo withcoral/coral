@@ -1304,6 +1304,36 @@ async fn cypher_size_path_alias_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_path_metadata_arithmetic_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+         WHERE size(path) + 1 = 3 \
+         RETURN source.name AS source, target.name AS target, length(path) + 1 AS depth \
+         ORDER BY size(path) + 1, source, target",
+    )
+    .await
+    .expect("path metadata arithmetic should execute");
+
+    assert!(
+        execution.translated_sql().contains("(2 + 1) AS \"depth\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"source": "billing-api", "target": "experiments", "depth": 3})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_anonymous_optional_path_length_preserves_unmatched_nulls() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

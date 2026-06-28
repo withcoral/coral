@@ -6097,23 +6097,16 @@ fn compile_order_expression_after_metadata_list_index(
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             ..
-        } => compile_arithmetic_order_expression(expression, path, projections, plan, context),
+        } => compile_path_aware_arithmetic_order_expression(
+            expression,
+            path,
+            projections,
+            plan,
+            state,
+            context,
+        ),
         Expression::BinaryOp { .. } => {
-            if let Some(expression) = compile_optional_static_list_scalar_expression(
-                expression,
-                path.clone(),
-                Some(plan),
-                context,
-            )? {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            if let Some(expression) =
-                compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
-            {
-                compile_scalar_order_expression(expression, projections, path)
-            } else {
-                compile_arithmetic_order_expression(expression, path, projections, plan, context)
-            }
+            compile_binary_order_expression(expression, path, projections, plan, state, context)
         }
         expression if is_boolean_scalar_expression(expression) => compile_scalar_order_expression(
             compile_boolean_scalar_expression(expression, path.clone(), plan, context)?,
@@ -7174,19 +7167,19 @@ fn compile_projection(
             compile_boolean_scalar_projection(expression, item, path, plan, context)
         }
         Expression::Parenthesized(inner) if is_arithmetic_expression(inner) => {
-            compile_arithmetic_projection(item, path, plan, context)
+            compile_arithmetic_projection(item, path, plan, state, context)
         }
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             ..
-        } => compile_arithmetic_projection(item, path, plan, context),
+        } => compile_arithmetic_projection(item, path, plan, state, context),
         Expression::BinaryOp { .. } => {
             if let Some(projection) =
                 compile_optional_static_list_projection(item, path.clone(), plan, context)?
             {
                 return Ok(projection);
             }
-            compile_arithmetic_projection(item, path, plan, context)
+            compile_arithmetic_projection(item, path, plan, state, context)
         }
         Expression::Case(case) => compile_case_projection(case, item, path, plan, context),
         Expression::FunctionCall(function) if is_id_function(function) => {
@@ -7603,13 +7596,15 @@ fn compile_arithmetic_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let expression = compile_scalar_expression_with_plan(
+    let expression = compile_scalar_expression_with_path_state(
         &item.expression,
         format!("{path}.expression"),
         plan,
+        Some(state),
         context,
     )?;
     validate_scalar_projection_correlated_subqueries(&expression, format!("{path}.expression"))?;
@@ -8891,13 +8886,19 @@ fn compile_numeric_scalar_function_expression(
     Ok(Some(expression))
 }
 
-fn compile_scalar_expression_with_plan(
+fn compile_scalar_expression_with_path_state(
     expression: &Expression,
     path: impl Into<String>,
     plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
-    compile_scalar_expression_in_mode(expression, path, Some(plan), context)
+    compile_scalar_expression_in_predicate_mode(
+        expression,
+        path,
+        PredicateCompileMode::Graph { plan, path_state },
+        context,
+    )
 }
 
 fn compile_list_index_scalar_expression_in_mode(
@@ -8936,10 +8937,25 @@ fn compile_scalar_expression_in_mode(
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    compile_scalar_expression_in_predicate_mode(
+        expression,
+        path,
+        PredicateCompileMode::CaseWhen { plan },
+        context,
+    )
+}
+
+fn compile_scalar_expression_in_predicate_mode(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_scalar_expression_in_mode(inner, path, plan, context)
+            compile_scalar_expression_in_predicate_mode(inner, path, mode, context)
         }
         Expression::PropertyLookup { .. } => {
             if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
@@ -8971,16 +8987,16 @@ fn compile_scalar_expression_in_mode(
             }
             Ok(ScalarExpression::Arithmetic {
                 operator: compile_arithmetic_operator(*op, format!("{path}.operator"))?,
-                left: Box::new(compile_scalar_expression_in_mode(
+                left: Box::new(compile_scalar_expression_in_predicate_mode(
                     lhs,
                     format!("{path}.lhs"),
-                    plan,
+                    mode,
                     context,
                 )?),
-                right: Box::new(compile_scalar_expression_in_mode(
+                right: Box::new(compile_scalar_expression_in_predicate_mode(
                     rhs,
                     format!("{path}.rhs"),
-                    plan,
+                    mode,
                     context,
                 )?),
             })
@@ -8990,23 +9006,26 @@ fn compile_scalar_expression_in_mode(
             operand,
             ..
         } => Ok(ScalarExpression::Negate {
-            expression: Box::new(compile_scalar_expression_in_mode(
+            expression: Box::new(compile_scalar_expression_in_predicate_mode(
                 operand,
                 format!("{path}.operand"),
-                plan,
+                mode,
                 context,
             )?),
         }),
-        Expression::Case(case) => compile_case_scalar_expression_in_mode(
-            case,
-            path,
-            PredicateCompileMode::CaseWhen { plan },
-            context,
-        ),
+        Expression::Case(case) => compile_case_scalar_expression_in_mode(case, path, mode, context),
         Expression::CountSubquery(count) => {
             compile_count_subquery_scalar_expression(count, path, plan, context)
         }
         Expression::FunctionCall(function) => {
+            if let Some(expression) = compile_optional_path_length_scalar_expression(
+                expression,
+                path.clone(),
+                mode,
+                context,
+            )? {
+                return Ok(expression);
+            }
             compile_scalar_function_expression_in_mode(function, path.clone(), plan, context)?
                 .ok_or_else(|| {
                     unsupported(
@@ -9310,14 +9329,64 @@ fn compile_arithmetic_order_expression(
     path: impl Into<String>,
     projections: &[Projection],
     plan: &GraphPlan,
+    path_state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     compile_scalar_order_expression(
-        compile_scalar_expression_with_plan(expression, path.clone(), plan, context)?,
+        compile_scalar_expression_with_path_state(
+            expression,
+            path.clone(),
+            plan,
+            path_state,
+            context,
+        )?,
         projections,
         path,
     )
+}
+
+fn compile_binary_order_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    if let Some(expression) = compile_optional_static_list_scalar_expression(
+        expression,
+        path.clone(),
+        Some(plan),
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    if let Some(expression) =
+        compile_optional_boolean_scalar_expression(expression, path.clone(), plan, context)?
+    {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    compile_path_aware_arithmetic_order_expression(
+        expression,
+        path,
+        projections,
+        plan,
+        state,
+        context,
+    )
+}
+
+fn compile_path_aware_arithmetic_order_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<OrderExpression, CoreError> {
+    compile_arithmetic_order_expression(expression, path, projections, plan, Some(state), context)
 }
 
 fn compile_case_order_expression(
@@ -9390,13 +9459,14 @@ fn is_boolean_scalar_expression(expression: &Expression) -> bool {
 fn compile_optional_predicate_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_optional_predicate_scalar_expression(inner, path, plan, context)
+            compile_optional_predicate_scalar_expression(inner, path, mode, context)
         }
         Expression::ListIndex { .. } => match plan {
             Some(plan) => {
@@ -9421,16 +9491,16 @@ fn compile_optional_predicate_scalar_expression(
             compile_optional_endpoint_property_scalar_expression(expression, path, plan, context)?
                 .map(|(expression, _)| expression),
         ),
-        Expression::BinaryOp { .. } => Ok(Some(compile_scalar_expression_in_mode(
-            expression, path, plan, context,
+        Expression::BinaryOp { .. } => Ok(Some(compile_scalar_expression_in_predicate_mode(
+            expression, path, mode, context,
         )?)),
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,
             ..
-        } if !is_literal_expression(operand) => Ok(Some(compile_scalar_expression_in_mode(
-            expression, path, plan, context,
-        )?)),
+        } if !is_literal_expression(operand) => Ok(Some(
+            compile_scalar_expression_in_predicate_mode(expression, path, mode, context)?,
+        )),
         Expression::Case(case) => Ok(Some(compile_case_scalar_expression_in_mode(
             case,
             path,
@@ -9504,7 +9574,7 @@ fn compile_scalar_predicate_rhs(
         }
         | Expression::PropertyLookup { .. }
         | Expression::ListIndex { .. } => Ok(ScalarPredicateRhs::Expression(
-            compile_scalar_expression_in_mode(expression, path, plan, context)?,
+            compile_scalar_expression_in_predicate_mode(expression, path, mode, context)?,
         )),
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
             compile_case_scalar_expression_in_mode(
@@ -12898,12 +12968,9 @@ fn compile_optional_scalar_binary_comparison(
             },
         )));
     }
-    if let Some(lhs) = compile_optional_predicate_scalar_expression(
-        lhs,
-        format!("{path}.lhs"),
-        mode.static_metadata_plan(),
-        context,
-    )? {
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
         return Ok(Some(PredicateExpression::ScalarComparison(
             ScalarPredicate {
                 lhs,
@@ -12923,12 +12990,8 @@ fn compile_optional_scalar_binary_comparison(
             },
         )));
     }
-    let Some(rhs) = compile_optional_predicate_scalar_expression(
-        rhs,
-        format!("{path}.rhs"),
-        mode.static_metadata_plan(),
-        context,
-    )?
+    let Some(rhs) =
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), mode, context)?
     else {
         return Ok(None);
     };
@@ -12958,24 +13021,14 @@ fn compile_left_property_comparison(
             rhs: ScalarPredicateRhs::Expression(rhs),
         }));
     }
-    if let Some(predicate) = compile_dynamic_string_property_predicate(
-        &property,
-        operator,
-        rhs,
-        path,
-        mode.static_metadata_plan(),
-        context,
-    )? {
+    if let Some(predicate) =
+        compile_dynamic_string_property_predicate(&property, operator, rhs, path, mode, context)?
+    {
         return Ok(predicate);
     }
-    if let Some(predicate) = compile_dynamic_scalar_property_predicate(
-        &property,
-        operator,
-        rhs,
-        path,
-        mode.static_metadata_plan(),
-        context,
-    )? {
+    if let Some(predicate) =
+        compile_dynamic_scalar_property_predicate(&property, operator, rhs, path, mode, context)?
+    {
         return Ok(predicate);
     }
     Ok(PredicateExpression::Comparison(PropertyPredicate {
@@ -12990,7 +13043,7 @@ fn compile_dynamic_string_property_predicate(
     operator: ComparisonOperator,
     rhs: &Expression,
     path: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     if !is_string_comparison_operator(operator) || is_literal_expression(rhs) {
@@ -12998,7 +13051,7 @@ fn compile_dynamic_string_property_predicate(
     }
 
     let Some(rhs) =
-        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), plan, context)?
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), mode, context)?
     else {
         return Ok(None);
     };
@@ -13017,7 +13070,7 @@ fn compile_dynamic_scalar_property_predicate(
     operator: ComparisonOperator,
     rhs: &Expression,
     path: &str,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     if is_string_comparison_operator(operator) || is_literal_expression(rhs) {
@@ -13025,7 +13078,7 @@ fn compile_dynamic_scalar_property_predicate(
     }
 
     let Some(rhs) =
-        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), plan, context)?
+        compile_optional_predicate_scalar_expression(rhs, format!("{path}.rhs"), mode, context)?
     else {
         return Ok(None);
     };
@@ -13104,12 +13157,9 @@ fn compile_in_predicate(
             ));
         }
     }
-    if let Some(lhs) = compile_optional_predicate_scalar_expression(
-        lhs,
-        format!("{path}.lhs"),
-        mode.static_metadata_plan(),
-        context,
-    )? {
+    if let Some(lhs) =
+        compile_optional_predicate_scalar_expression(lhs, format!("{path}.lhs"), mode, context)?
+    {
         return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
             lhs,
             operator: ComparisonOperator::In,
@@ -13480,7 +13530,7 @@ fn compile_null_predicate(
     if let Some(lhs) = compile_optional_predicate_scalar_expression(
         operand,
         format!("{path}.operand"),
-        mode.static_metadata_plan(),
+        mode,
         context,
     )? {
         return Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
@@ -15851,6 +15901,46 @@ relationships:
             plan.order_by,
             vec![OrderKey {
                 expression: OrderExpression::Literal(Literal::Integer(2)),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_path_metadata_arithmetic() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             WHERE size(path) + 1 = 3 \
+             RETURN source.name AS source, length(path) + 1 AS depth \
+             ORDER BY size(path) + 1 DESC",
+        )
+        .expect("path metadata should compose inside arithmetic expressions");
+
+        let depth = ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Add,
+            left: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        };
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: depth.clone(),
+                alias: "depth".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: depth.clone(),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(3))),
+            }))
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(depth),
                 direction: OrderDirection::Descending,
                 nulls: None,
             }]
