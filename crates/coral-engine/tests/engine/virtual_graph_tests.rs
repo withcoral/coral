@@ -6939,6 +6939,68 @@ async fn cypher_optional_zero_hop_relationship_range_executes_as_identity() {
 }
 
 #[tokio::test]
+async fn cypher_optional_zero_hop_with_bound_endpoints_preserves_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (target:Service) \
+         OPTIONAL MATCH (source)-[:DEPENDS_ON*0]->(target) \
+         RETURN count(*) AS pairs",
+    )
+    .await
+    .expect("bound-endpoint optional zero-hop relationship range should execute");
+
+    assert!(
+        !execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution
+            .translated_sql()
+            .contains("\"source\" = \"target\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"pairs": 16})]
+    );
+
+    let cross_label = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (person:Person) \
+         OPTIONAL MATCH (source)-[:DEPENDS_ON*0]->(person) \
+         RETURN count(*) AS pairs",
+    )
+    .await
+    .expect("bound cross-label optional zero-hop relationship range should execute");
+
+    assert!(
+        !cross_label.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        cross_label.translated_sql()
+    );
+    assert!(
+        !cross_label.translated_sql().contains("FALSE"),
+        "{}",
+        cross_label.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(cross_label.execution()),
+        vec![json!({"pairs": 12})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multihop_optional_match_where_applies_to_whole_scope() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -6226,13 +6226,21 @@ fn compile_path_chain_into(
         force_relationship_variable,
         context,
     )?;
+    let next_node_introduced = next_node.pattern.is_some();
     plan.predicates.extend(next_node.predicates);
     if let Some(pattern) = next_node.pattern {
         mark_graph_variable_in_scope(state, &pattern.variable);
         plan.nodes.push(pattern);
     }
     if relationship.length == 0 {
-        append_zero_length_relationship(&relationship, &next_label, options, plan, chain_state)?;
+        append_zero_length_relationship(
+            &relationship,
+            &next_label,
+            next_node_introduced,
+            options,
+            plan,
+            chain_state,
+        )?;
     } else if relationship.length == 1 {
         append_single_relationship(
             relationship,
@@ -6273,6 +6281,7 @@ fn compile_path_chain_into(
 fn append_zero_length_relationship(
     relationship: &CompiledRelationship,
     next_label: &str,
+    next_node_introduced: bool,
     options: PathChainCompileOptions,
     plan: &mut GraphPlan,
     chain_state: &PathChainCompileState,
@@ -6285,6 +6294,9 @@ fn append_zero_length_relationship(
             ),
             "OPTIONAL MATCH with zero-hop relationship ranges is not supported yet because optional path length requires a relationship presence binding",
         ));
+    }
+    if options.optional && !next_node_introduced {
+        return Ok(());
     }
     if options.optional && chain_state.previous_label != next_label {
         return Err(unsupported(
@@ -36627,6 +36639,35 @@ relationships:
                     variable: "target".to_string(),
                 },
             }))
+        );
+    }
+
+    #[test]
+    fn compiles_optional_zero_hop_relationship_ranges_with_bound_endpoints_as_row_preserving() {
+        let same_label = compile_cypher(
+            "MATCH (source:Service), (target:Service) \
+             OPTIONAL MATCH (source)-[:DEPENDS_ON*0]->(target) \
+             RETURN source.name AS source, target.name AS target",
+        )
+        .expect("optional zero-hop with bound same-label endpoints should compile");
+
+        assert!(
+            same_label.predicate.is_none(),
+            "already-bound optional zero-hop endpoints must not filter rows: {:?}",
+            same_label.predicate
+        );
+
+        let cross_label = compile_cypher(
+            "MATCH (source:Service), (person:Person) \
+             OPTIONAL MATCH (source)-[:DEPENDS_ON*0]->(person) \
+             RETURN source.name AS source, person.name AS person",
+        )
+        .expect("optional zero-hop with bound cross-label endpoints should compile");
+
+        assert!(
+            cross_label.predicate.is_none(),
+            "already-bound optional zero-hop cross-label endpoints must not filter rows: {:?}",
+            cross_label.predicate
         );
     }
 
