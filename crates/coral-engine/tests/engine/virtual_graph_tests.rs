@@ -3857,7 +3857,7 @@ async fn cypher_exists_match_subqueries_apply_inner_where_predicates() {
 }
 
 #[tokio::test]
-async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
+async fn cypher_exists_subqueries_execute_as_precomputed_boolean_projections() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
@@ -3878,7 +3878,7 @@ async fn cypher_exists_subqueries_execute_as_boolean_scalar_projections() {
     assert!(
         execution
             .translated_sql()
-            .contains("(SELECT COUNT(*) AS \"__coral_exists_count_0\" FROM"),
+            .contains("COUNT(*) > 0 AS \"__coral_value\""),
         "{}",
         execution.translated_sql()
     );
@@ -5156,7 +5156,7 @@ async fn cypher_exists_match_subqueries_support_nested_node_count_predicates() {
 }
 
 #[tokio::test]
-async fn cypher_count_subqueries_execute_as_correlated_scalar_counts() {
+async fn cypher_count_subqueries_execute_as_precomputed_correlated_counts() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
@@ -5177,7 +5177,14 @@ async fn cypher_count_subqueries_execute_as_correlated_scalar_counts() {
     assert!(
         execution
             .translated_sql()
-            .contains("SELECT COUNT(*) FROM \"ops\".\"service_dependencies\""),
+            .contains("COUNT(*) AS \"__coral_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(\"__coral_scalar_subquery_0\".\"__coral_value\", 0) AS \"dependency_count\""
+        ),
         "{}",
         execution.translated_sql()
     );
@@ -5220,7 +5227,7 @@ async fn cypher_noop_return_inside_scoped_subqueries_executes() {
     assert!(
         execution
             .translated_sql()
-            .contains("SELECT COUNT(*) FROM \"ops\".\"service_dependencies\""),
+            .contains("COUNT(*) AS \"__coral_value\""),
         "{}",
         execution.translated_sql()
     );
@@ -13801,6 +13808,83 @@ async fn cypher_same_label_undirected_endpoint_properties_work_in_count_subqueri
             json!({"service": "billing-api"}),
             json!({"service": "deployments"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_same_label_undirected_count_projections_use_precomputed_endpoint_groups() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]-(target:Service) \
+                  WHERE target.tier = 'dev' \
+                } AS dev_outbound_dependencies \
+         ORDER BY dev_outbound_dependencies DESC, service",
+    )
+    .await
+    .expect("same-label undirected endpoint properties inside COUNT projection should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("LEFT JOIN (SELECT CASE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(*) AS \"__coral_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "dev_outbound_dependencies": 1}),
+            json!({"service": "deployments", "dev_outbound_dependencies": 1}),
+            json!({"service": "experiments", "dev_outbound_dependencies": 0}),
+            json!({"service": "legacy-sync", "dev_outbound_dependencies": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_correlated_count_projection_rejects_non_precomputable_endpoint_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]-(target:Service) \
+                  WHERE startNode(dependency).name = service.name \
+                    AND endNode(dependency).tier = 'dev' \
+                } AS dev_outbound_dependencies",
+    )
+    .await
+    .expect_err("non-precomputable correlated COUNT projection should fail before execution");
+
+    assert!(
+        error.to_string().contains(
+            "correlated relationship COUNT subqueries in projections must be precomputable"
+        ),
+        "{error}"
     );
 }
 

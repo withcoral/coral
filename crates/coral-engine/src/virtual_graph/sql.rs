@@ -257,7 +257,7 @@ impl<'a> Lowerer<'a> {
 
     fn join_precomputed_scalar_subqueries(&mut self) -> Result<(), CoreError> {
         let candidates = self.scalar_subquery_candidates();
-        if candidates.len() <= 1 && !candidates.iter().any(|candidate| candidate.required) {
+        if candidates.is_empty() {
             return Ok(());
         }
 
@@ -1143,22 +1143,10 @@ impl<'a> Lowerer<'a> {
                 &left_node.label,
                 &right_node.label,
             )?;
-            let [orientation] = orientations.as_slice() else {
-                return Ok(None);
-            };
-            let (outer_relationship_key, inner_relationship_key, inner_variable) = if left_is_outer
-            {
-                (
-                    orientation.left_relationship_key.as_str(),
-                    orientation.right_relationship_key.as_str(),
-                    binding.pattern.right.as_str(),
-                )
+            let inner_variable = if left_is_outer {
+                binding.pattern.right.as_str()
             } else {
-                (
-                    orientation.right_relationship_key.as_str(),
-                    orientation.left_relationship_key.as_str(),
-                    binding.pattern.left.as_str(),
-                )
+                binding.pattern.left.as_str()
             };
             if !local_nodes.contains_key(inner_variable) {
                 return Ok(None);
@@ -1169,21 +1157,79 @@ impl<'a> Lowerer<'a> {
             let inner_alias = local_aliases.get(inner_variable).ok_or_else(|| {
                 CoreError::internal("validated precomputed scalar local node alias was missing")
             })?;
-            let current_outer_key_ref = format!(
-                "{}.{}",
-                quote_ident(&binding.alias),
-                quote_ident(outer_relationship_key)
-            );
+            let Some((current_outer_key_ref, condition)) =
+                Self::precomputed_outer_key_and_inner_condition(
+                    &binding.alias,
+                    &orientations,
+                    left_is_outer,
+                    inner_alias,
+                    &inner_node.key,
+                )?
+            else {
+                return Ok(None);
+            };
             outer_key_ref = Some(current_outer_key_ref);
-            conditions.push(format!(
-                "{}.{} = {}.{}",
-                quote_ident(&binding.alias),
-                quote_ident(inner_relationship_key),
-                quote_ident(inner_alias),
-                quote_ident(&inner_node.key)
-            ));
+            conditions.push(condition);
         }
         Ok(outer_key_ref.map(|outer_key_ref| (outer_key_ref, conditions)))
+    }
+
+    fn precomputed_outer_key_and_inner_condition(
+        relationship_alias: &str,
+        orientations: &[RelationshipOrientation],
+        left_is_outer: bool,
+        inner_alias: &str,
+        inner_key: &str,
+    ) -> Result<Option<(String, String)>, CoreError> {
+        if orientations.is_empty() {
+            return Ok(None);
+        }
+
+        let mut branches = Vec::with_capacity(orientations.len());
+        let mut conditions = Vec::with_capacity(orientations.len());
+        for orientation in orientations {
+            let (outer_relationship_key, inner_relationship_key) = if left_is_outer {
+                (
+                    orientation.left_relationship_key.as_str(),
+                    orientation.right_relationship_key.as_str(),
+                )
+            } else {
+                (
+                    orientation.right_relationship_key.as_str(),
+                    orientation.left_relationship_key.as_str(),
+                )
+            };
+            let outer_ref = format!(
+                "{}.{}",
+                quote_ident(relationship_alias),
+                quote_ident(outer_relationship_key)
+            );
+            let inner_condition = format!(
+                "{}.{} = {}.{}",
+                quote_ident(relationship_alias),
+                quote_ident(inner_relationship_key),
+                quote_ident(inner_alias),
+                quote_ident(inner_key)
+            );
+            branches.push((inner_condition.clone(), outer_ref));
+            conditions.push(inner_condition);
+        }
+
+        let outer_key_ref = if let [(condition, outer_ref)] = branches.as_slice() {
+            let _ = condition;
+            outer_ref.clone()
+        } else {
+            let when_clauses = branches
+                .iter()
+                .map(|(condition, outer_ref)| format!("WHEN {condition} THEN {outer_ref}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("CASE {when_clauses} ELSE NULL END")
+        };
+        Ok(Some((
+            outer_key_ref,
+            Self::render_condition_disjunction(&conditions)?,
+        )))
     }
 
     fn scoped_predicates_are_precomputable<'b>(
@@ -2666,7 +2712,7 @@ impl<'a> Lowerer<'a> {
             )),
             Projection::Expression { expression, alias } => Ok(format!(
                 "{} AS {}",
-                self.render_scalar_expression(expression)?,
+                self.render_projection_scalar_expression(expression)?,
                 quote_ident(alias)
             )),
             Projection::CountAll { alias } => Ok(format!("COUNT(*) AS {}", quote_ident(alias))),
@@ -3388,6 +3434,213 @@ impl<'a> Lowerer<'a> {
                 predicate,
             } => self.render_count_node_subquery(nodes, predicates, predicate.as_deref()),
         }
+    }
+
+    fn render_projection_scalar_expression(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+        self.render_scalar_expression(expression)
+    }
+
+    fn reject_unprecomputed_projection_scalar_subqueries(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<(), CoreError> {
+        if let Some(expression) = scalar_expression_unary_operand(expression) {
+            return self.reject_unprecomputed_projection_scalar_subqueries(expression);
+        }
+
+        match expression {
+            ScalarExpression::CountSubquery { pattern } => {
+                if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
+                    && predicate.references_outer_variables()
+                    && self
+                        .render_precomputed_count_subquery_ref(pattern)
+                        .is_none()
+                {
+                    return Err(CoreError::InvalidInput(
+                        "correlated relationship COUNT subqueries in projections must be precomputable through a single outer node anchor; move complex outer-dependent predicates to WHERE EXISTS or simplify the COUNT pattern"
+                            .to_string(),
+                    ));
+                }
+            }
+            ScalarExpression::Predicate(predicate) => {
+                self.reject_unprecomputed_projection_predicate_subqueries(predicate)?;
+            }
+            ScalarExpression::PresenceGated { .. }
+            | ScalarExpression::Coalesce { .. }
+            | ScalarExpression::NullIf { .. }
+            | ScalarExpression::Round { .. }
+            | ScalarExpression::Left { .. }
+            | ScalarExpression::Right { .. }
+            | ScalarExpression::Replace { .. }
+            | ScalarExpression::Substring { .. }
+            | ScalarExpression::Arithmetic { .. }
+            | ScalarExpression::Case { .. }
+            | ScalarExpression::Atan2 { .. } => {
+                self.reject_unprecomputed_projection_structural_subqueries(expression)?;
+            }
+            ScalarExpression::Property(_)
+            | ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
+            | ScalarExpression::Literal(_)
+            | ScalarExpression::LiteralList { .. }
+            | ScalarExpression::TypedLiteralList { .. }
+            | ScalarExpression::Key { .. }
+            | ScalarExpression::ElementId { .. }
+            | ScalarExpression::GraphIdentity { .. }
+            | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::NodeLabels { .. }
+            | ScalarExpression::PropertyKeys { .. }
+            | ScalarExpression::RelationshipType { .. } => {}
+            ScalarExpression::ToString { .. }
+            | ScalarExpression::ToInteger { .. }
+            | ScalarExpression::ToFloat { .. }
+            | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToStringOrNull { .. }
+            | ScalarExpression::ToIntegerOrNull { .. }
+            | ScalarExpression::ToFloatOrNull { .. }
+            | ScalarExpression::ToBooleanOrNull { .. }
+            | ScalarExpression::ToLower { .. }
+            | ScalarExpression::ToUpper { .. }
+            | ScalarExpression::Trim { .. }
+            | ScalarExpression::LTrim { .. }
+            | ScalarExpression::RTrim { .. }
+            | ScalarExpression::CharacterLength { .. }
+            | ScalarExpression::Reverse { .. }
+            | ScalarExpression::Abs { .. }
+            | ScalarExpression::Ceil { .. }
+            | ScalarExpression::Floor { .. }
+            | ScalarExpression::Sqrt { .. }
+            | ScalarExpression::Sign { .. }
+            | ScalarExpression::Exp { .. }
+            | ScalarExpression::Log { .. }
+            | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Sin { .. }
+            | ScalarExpression::Cos { .. }
+            | ScalarExpression::Tan { .. }
+            | ScalarExpression::Cot { .. }
+            | ScalarExpression::Asin { .. }
+            | ScalarExpression::Acos { .. }
+            | ScalarExpression::Atan { .. }
+            | ScalarExpression::Degrees { .. }
+            | ScalarExpression::Radians { .. }
+            | ScalarExpression::Negate { .. } => {
+                unreachable!("unary scalar expressions handled before projection subquery checks")
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_unprecomputed_projection_structural_subqueries(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<(), CoreError> {
+        match expression {
+            ScalarExpression::PresenceGated { expression, .. } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+            }
+            ScalarExpression::Coalesce { expressions } => {
+                for expression in expressions {
+                    self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                }
+            }
+            ScalarExpression::NullIf { expression, value } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(value)?;
+            }
+            ScalarExpression::Round { expression, places } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                if let Some(places) = places {
+                    self.reject_unprecomputed_projection_scalar_subqueries(places)?;
+                }
+            }
+            ScalarExpression::Left { expression, count }
+            | ScalarExpression::Right { expression, count } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(count)?;
+            }
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(search)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(replacement)?;
+            }
+            ScalarExpression::Substring {
+                expression,
+                start,
+                length,
+            } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(start)?;
+                if let Some(length) = length {
+                    self.reject_unprecomputed_projection_scalar_subqueries(length)?;
+                }
+            }
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(left)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(right)?;
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => {
+                for alternative in alternatives {
+                    self.reject_unprecomputed_projection_predicate_subqueries(&alternative.when)?;
+                    self.reject_unprecomputed_projection_scalar_subqueries(&alternative.then)?;
+                }
+                if let Some(else_expression) = else_expression {
+                    self.reject_unprecomputed_projection_scalar_subqueries(else_expression)?;
+                }
+            }
+            ScalarExpression::Atan2 { y, x } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(y)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(x)?;
+            }
+            _ => {
+                unreachable!("projection subquery dispatcher called structural helper incorrectly")
+            }
+        }
+        Ok(())
+    }
+
+    fn reject_unprecomputed_projection_predicate_subqueries(
+        &self,
+        predicate: &PredicateExpression,
+    ) -> Result<(), CoreError> {
+        match predicate {
+            PredicateExpression::ScalarComparison(predicate) => {
+                self.reject_unprecomputed_projection_scalar_subqueries(&predicate.lhs)?;
+                if let ScalarPredicateRhs::Expression(expression) = &predicate.rhs {
+                    self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                }
+            }
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right } => {
+                self.reject_unprecomputed_projection_predicate_subqueries(left)?;
+                self.reject_unprecomputed_projection_predicate_subqueries(right)?;
+            }
+            PredicateExpression::Not { expression } => {
+                self.reject_unprecomputed_projection_predicate_subqueries(expression)?;
+            }
+            PredicateExpression::Boolean(_)
+            | PredicateExpression::Comparison(_)
+            | PredicateExpression::KeyComparison(_)
+            | PredicateExpression::ElementIdComparison(_)
+            | PredicateExpression::Presence(_)
+            | PredicateExpression::PropertyKeyMembership(_)
+            | PredicateExpression::ExistsPattern(_) => {}
+        }
+        Ok(())
     }
 
     fn render_count_exists_select(
