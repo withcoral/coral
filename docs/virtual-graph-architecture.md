@@ -419,7 +419,8 @@ The supported foundation subset is intentionally narrow:
   `collect(n.risk > 0.8)`, `count(coalesce(n.tier, 'unknown'))`,
   `count(n.tier IS NULL)`, and `sum(n.risk + 1)` lower through the same
   scalar-expression renderer; correlated scalar subqueries are still rejected
-  inside aggregate targets. Static pattern-alternative rewrites project
+  inside aggregate targets. Static and compile-time dynamic pattern-alternative
+  rewrites resolve dynamic label/type atoms before branch expansion, project
   aggregate expression targets as hidden per-branch aliases, then apply the
   aggregate over those aliases after `UNION ALL`; graph-variable collections
   from static alternatives use label/type-qualified graph identity values so

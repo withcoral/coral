@@ -103,6 +103,15 @@ enum LabelTypeAlternative {
     RelationshipType(LabelExpression),
 }
 
+type ReadingClauseLabelTypeAlternativeSite = (
+    usize,
+    usize,
+    PatternAlternativeTarget,
+    Vec<LabelTypeAlternative>,
+);
+
+type MatchLabelTypeAlternativeSite = (usize, PatternAlternativeTarget, Vec<LabelTypeAlternative>);
+
 #[derive(Debug, Clone)]
 enum BoundedRelationshipRangeSite {
     SinglePart {
@@ -2451,7 +2460,9 @@ fn expand_single_query_pattern_alternatives(
         let mut progressed = false;
         let mut next = Vec::with_capacity(expanded.len());
         for expanded_query in expanded {
-            if let Some(site) = first_static_label_type_alternative_site(&expanded_query.query) {
+            if let Some(site) =
+                first_static_label_type_alternative_site(&expanded_query.query, context)?
+            {
                 progressed = true;
                 let alternatives = match &site {
                     StaticLabelTypeAlternativeSite::SinglePart { alternatives, .. }
@@ -2522,21 +2533,27 @@ fn expand_single_query_pattern_alternatives(
 
 fn first_static_label_type_alternative_site(
     single_query: &SingleQuery,
-) -> Option<StaticLabelTypeAlternativeSite> {
+    context: &CypherCompileContext,
+) -> Result<Option<StaticLabelTypeAlternativeSite>, CoreError> {
     match &single_query.kind {
         SingleQueryKind::SinglePart(single_part) => {
-            first_single_part_static_label_type_alternative_site(single_part)
+            first_single_part_static_label_type_alternative_site(single_part, context)
         }
         SingleQueryKind::MultiPart(multi_part) => {
-            first_multi_part_static_label_type_alternative_site(multi_part)
+            first_multi_part_static_label_type_alternative_site(multi_part, context)
         }
     }
 }
 
 fn first_single_part_static_label_type_alternative_site(
     single_part: &SinglePartQuery,
-) -> Option<StaticLabelTypeAlternativeSite> {
-    first_reading_clause_static_label_type_alternative_site(&single_part.reading_clauses).map(
+    context: &CypherCompileContext,
+) -> Result<Option<StaticLabelTypeAlternativeSite>, CoreError> {
+    Ok(first_reading_clause_static_label_type_alternative_site(
+        &single_part.reading_clauses,
+        context,
+    )?
+    .map(
         |(reading_clause_index, pattern_part_index, target, alternatives)| {
             StaticLabelTypeAlternativeSite::SinglePart {
                 reading_clause_index,
@@ -2545,83 +2562,88 @@ fn first_single_part_static_label_type_alternative_site(
                 alternatives,
             }
         },
-    )
+    ))
 }
 
 fn first_multi_part_static_label_type_alternative_site(
     multi_part: &MultiPartQuery,
-) -> Option<StaticLabelTypeAlternativeSite> {
+    context: &CypherCompileContext,
+) -> Result<Option<StaticLabelTypeAlternativeSite>, CoreError> {
     for (part_index, part) in multi_part.parts.iter().enumerate() {
         if let Some((reading_clause_index, pattern_part_index, target, alternatives)) =
-            first_reading_clause_static_label_type_alternative_site(&part.reading_clauses)
+            first_reading_clause_static_label_type_alternative_site(&part.reading_clauses, context)?
         {
-            return Some(StaticLabelTypeAlternativeSite::MultiPart {
+            return Ok(Some(StaticLabelTypeAlternativeSite::MultiPart {
                 query_part: MultiPartAlternativePart::Part(part_index),
                 reading_clause_index,
                 pattern_part_index,
                 target,
                 alternatives,
-            });
+            }));
         }
     }
-    first_reading_clause_static_label_type_alternative_site(&multi_part.final_part.reading_clauses)
-        .map(
-            |(reading_clause_index, pattern_part_index, target, alternatives)| {
-                StaticLabelTypeAlternativeSite::MultiPart {
-                    query_part: MultiPartAlternativePart::FinalPart,
-                    reading_clause_index,
-                    pattern_part_index,
-                    target,
-                    alternatives,
-                }
-            },
-        )
+    Ok(first_reading_clause_static_label_type_alternative_site(
+        &multi_part.final_part.reading_clauses,
+        context,
+    )?
+    .map(
+        |(reading_clause_index, pattern_part_index, target, alternatives)| {
+            StaticLabelTypeAlternativeSite::MultiPart {
+                query_part: MultiPartAlternativePart::FinalPart,
+                reading_clause_index,
+                pattern_part_index,
+                target,
+                alternatives,
+            }
+        },
+    ))
 }
 
 fn first_reading_clause_static_label_type_alternative_site(
     reading_clauses: &[ReadingClause],
-) -> Option<(
-    usize,
-    usize,
-    PatternAlternativeTarget,
-    Vec<LabelTypeAlternative>,
-)> {
+    context: &CypherCompileContext,
+) -> Result<Option<ReadingClauseLabelTypeAlternativeSite>, CoreError> {
     for (reading_clause_index, clause) in reading_clauses.iter().enumerate() {
         let ReadingClause::Match(match_clause) = clause else {
             continue;
         };
         if let Some((pattern_part_index, target, alternatives)) =
-            first_match_static_label_type_alternative_site(match_clause)
+            first_match_static_label_type_alternative_site(match_clause, context)?
         {
-            return Some((
+            return Ok(Some((
                 reading_clause_index,
                 pattern_part_index,
                 target,
                 alternatives,
-            ));
+            )));
         }
     }
-    None
+    Ok(None)
 }
 
 fn first_match_static_label_type_alternative_site(
     match_clause: &Match,
-) -> Option<(usize, PatternAlternativeTarget, Vec<LabelTypeAlternative>)> {
+    context: &CypherCompileContext,
+) -> Result<Option<MatchLabelTypeAlternativeSite>, CoreError> {
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
         let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
             continue;
         };
-        let raw_alternatives = label_expression_list_alternatives(&start.labels);
+        let raw_alternatives = label_expression_list_alternatives(
+            &start.labels,
+            "query.pattern.start.labels",
+            context,
+        )?;
         if raw_alternatives.len() > 1 {
             let alternatives = deduplicate_node_label_alternatives(raw_alternatives);
-            return Some((
+            return Ok(Some((
                 part_index,
                 PatternAlternativeTarget::StartNode,
                 alternatives
                     .into_iter()
                     .map(LabelTypeAlternative::NodeLabels)
                     .collect(),
-            ));
+            )));
         }
         for (chain_index, chain) in chains.iter().enumerate() {
             if let Some(types) = chain
@@ -2630,34 +2652,42 @@ fn first_match_static_label_type_alternative_site(
                 .as_ref()
                 .and_then(|detail| detail.types.as_ref())
             {
-                let raw_alternatives = label_expression_alternatives(types);
+                let raw_alternatives = label_expression_alternatives(
+                    types,
+                    format!("query.pattern.relationships[{chain_index}].types"),
+                    context,
+                )?;
                 if raw_alternatives.len() > 1 {
                     let alternatives = deduplicate_relationship_type_alternatives(raw_alternatives);
-                    return Some((
+                    return Ok(Some((
                         part_index,
                         PatternAlternativeTarget::Relationship(chain_index),
                         alternatives
                             .into_iter()
                             .map(LabelTypeAlternative::RelationshipType)
                             .collect(),
-                    ));
+                    )));
                 }
             }
-            let raw_alternatives = label_expression_list_alternatives(&chain.node.labels);
+            let raw_alternatives = label_expression_list_alternatives(
+                &chain.node.labels,
+                format!("query.pattern.nodes[{}].labels", chain_index + 1),
+                context,
+            )?;
             if raw_alternatives.len() > 1 {
                 let alternatives = deduplicate_node_label_alternatives(raw_alternatives);
-                return Some((
+                return Ok(Some((
                     part_index,
                     PatternAlternativeTarget::ChainNode(chain_index),
                     alternatives
                         .into_iter()
                         .map(LabelTypeAlternative::NodeLabels)
                         .collect(),
-                ));
+                )));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 fn deduplicate_node_label_alternatives(
@@ -2693,10 +2723,16 @@ fn deduplicate_relationship_type_alternatives(
         .collect()
 }
 
-fn label_expression_list_alternatives(labels: &[LabelExpression]) -> Vec<Vec<LabelExpression>> {
+fn label_expression_list_alternatives(
+    labels: &[LabelExpression],
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Vec<LabelExpression>>, CoreError> {
+    let path = path.into();
     let mut variants = vec![Vec::new()];
-    for label in labels {
-        let label_alternatives = label_expression_alternatives(label);
+    for (index, label) in labels.iter().enumerate() {
+        let label_alternatives =
+            label_expression_alternatives(label, format!("{path}[{index}]"), context)?;
         let mut next = Vec::with_capacity(variants.len() * label_alternatives.len());
         for variant in &variants {
             for label_alternative in &label_alternatives {
@@ -2707,21 +2743,26 @@ fn label_expression_list_alternatives(labels: &[LabelExpression]) -> Vec<Vec<Lab
         }
         variants = next;
     }
-    variants
+    Ok(variants)
 }
 
-fn label_expression_alternatives(expression: &LabelExpression) -> Vec<LabelExpression> {
-    if label_expression_contains_dynamic(expression) {
-        return vec![expression.clone()];
-    }
+fn label_expression_alternatives(
+    expression: &LabelExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<LabelExpression>, CoreError> {
+    let path = path.into();
     match expression {
-        LabelExpression::Or { lhs, rhs, .. } => label_expression_alternatives(lhs)
-            .into_iter()
-            .chain(label_expression_alternatives(rhs))
-            .collect(),
+        LabelExpression::Or { lhs, rhs, .. } => {
+            let lhs = label_expression_alternatives(lhs, format!("{path}.lhs"), context)?;
+            let rhs = label_expression_alternatives(rhs, format!("{path}.rhs"), context)?;
+            Ok(lhs.into_iter().chain(rhs).collect())
+        }
         LabelExpression::And { lhs, rhs, span } => {
-            let lhs_alternatives = label_expression_alternatives(lhs);
-            let rhs_alternatives = label_expression_alternatives(rhs);
+            let lhs_alternatives =
+                label_expression_alternatives(lhs, format!("{path}.lhs"), context)?;
+            let rhs_alternatives =
+                label_expression_alternatives(rhs, format!("{path}.rhs"), context)?;
             let mut alternatives =
                 Vec::with_capacity(lhs_alternatives.len() * rhs_alternatives.len());
             for lhs_alternative in &lhs_alternatives {
@@ -2733,27 +2774,73 @@ fn label_expression_alternatives(expression: &LabelExpression) -> Vec<LabelExpre
                     });
                 }
             }
-            alternatives
+            Ok(alternatives)
         }
-        LabelExpression::Group { inner, .. } => label_expression_alternatives(inner),
-        LabelExpression::Static(_)
-        | LabelExpression::Dynamic { .. }
-        | LabelExpression::Not { .. } => {
-            vec![expression.clone()]
+        LabelExpression::Group { inner, .. } => label_expression_alternatives(inner, path, context),
+        LabelExpression::Static(_) => Ok(vec![expression.clone()]),
+        LabelExpression::Dynamic { expression, span } => {
+            let name = compile_dynamic_label_expression(expression, path, context)?;
+            Ok(vec![LabelExpression::Static(SymbolicName {
+                name,
+                span: *span,
+            })])
         }
+        LabelExpression::Not { .. } => Ok(vec![resolve_compile_time_label_expression(
+            expression, path, context,
+        )?]),
     }
 }
 
-fn label_expression_contains_dynamic(expression: &LabelExpression) -> bool {
+fn resolve_compile_time_label_expression(
+    expression: &LabelExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<LabelExpression, CoreError> {
+    let path = path.into();
     match expression {
-        LabelExpression::Dynamic { .. } => true,
-        LabelExpression::Static(_) => false,
-        LabelExpression::Or { lhs, rhs, .. } | LabelExpression::And { lhs, rhs, .. } => {
-            label_expression_contains_dynamic(lhs) || label_expression_contains_dynamic(rhs)
+        LabelExpression::Static(_) => Ok(expression.clone()),
+        LabelExpression::Dynamic { expression, span } => {
+            let name = compile_dynamic_label_expression(expression, path, context)?;
+            Ok(LabelExpression::Static(SymbolicName { name, span: *span }))
         }
-        LabelExpression::Not { inner, .. } | LabelExpression::Group { inner, .. } => {
-            label_expression_contains_dynamic(inner)
-        }
+        LabelExpression::Or { lhs, rhs, span } => Ok(LabelExpression::Or {
+            lhs: Box::new(resolve_compile_time_label_expression(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
+            rhs: Box::new(resolve_compile_time_label_expression(
+                rhs,
+                format!("{path}.rhs"),
+                context,
+            )?),
+            span: *span,
+        }),
+        LabelExpression::And { lhs, rhs, span } => Ok(LabelExpression::And {
+            lhs: Box::new(resolve_compile_time_label_expression(
+                lhs,
+                format!("{path}.lhs"),
+                context,
+            )?),
+            rhs: Box::new(resolve_compile_time_label_expression(
+                rhs,
+                format!("{path}.rhs"),
+                context,
+            )?),
+            span: *span,
+        }),
+        LabelExpression::Not { inner, span } => Ok(LabelExpression::Not {
+            inner: Box::new(resolve_compile_time_label_expression(
+                inner,
+                format!("{path}.inner"),
+                context,
+            )?),
+            span: *span,
+        }),
+        LabelExpression::Group { inner, span } => Ok(LabelExpression::Group {
+            inner: Box::new(resolve_compile_time_label_expression(inner, path, context)?),
+            span: *span,
+        }),
     }
 }
 
@@ -32579,22 +32666,89 @@ relationships:
     }
 
     #[test]
-    fn rejects_dynamic_label_pattern_alternatives() {
+    fn compiles_parameterized_dynamic_node_label_pattern_alternatives() {
         let parameters = BTreeMap::from([(
             "label".to_string(),
             CypherParameterValue::Literal(Literal::String("Service".to_string())),
         )]);
-        let error = compile_cypher_with_parameters(
+        let query = compile_cypher_query_with_parameters(
             "MATCH (service:Team|$($label)) \
              RETURN service.name AS service",
             &parameters,
         )
-        .expect_err("dynamic label alternatives should be rejected");
+        .expect("parameterized dynamic label alternatives should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic label alternatives should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
+        );
+        assert!(union.branches.iter().all(|branch| branch.all));
+    }
+
+    #[test]
+    fn compiles_parameterized_dynamic_relationship_type_alternatives() {
+        let parameters = BTreeMap::from([(
+            "type".to_string(),
+            CypherParameterValue::Literal(Literal::String("OWNS".to_string())),
+        )]);
+        let query = compile_cypher_query_with_parameters(
+            "MATCH (source:Service)-[:DEPENDS_ON|$($type)]->(target:Service) \
+             RETURN target.name AS target",
+            &parameters,
+        )
+        .expect("parameterized dynamic relationship type alternatives should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic relationship alternatives should expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("DEPENDS_ON")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.relationships.first())
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("OWNS")
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_label_alternative_list_parameters() {
+        let parameters = BTreeMap::from([(
+            "labels".to_string(),
+            CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
+        )]);
+        let error = compile_cypher_query_with_parameters(
+            "MATCH (service:Team|$($labels)) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect_err("dynamic label alternative list parameter should be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("label/type alternatives require union planning"),
+                .contains("dynamic label expressions require a string literal"),
             "{error:?}"
         );
     }

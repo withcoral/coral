@@ -6344,6 +6344,48 @@ async fn cypher_parameterized_dynamic_label_patterns_execute_against_synthetic_s
 }
 
 #[tokio::test]
+async fn cypher_parameterized_dynamic_label_alternatives_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "label".to_string(),
+        GraphCypherParameterValue::Literal(GraphLiteral::String("Service".to_string())),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (item:Team|$($label)) \
+         RETURN item.name AS item \
+         ORDER BY item",
+        &parameters,
+    )
+    .await
+    .expect("parameterized dynamic label alternatives should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"item": "analytics"}),
+            json!({"item": "billing-api"}),
+            json!({"item": "deployments"}),
+            json!({"item": "experiments"}),
+            json!({"item": "infra"}),
+            json!({"item": "legacy-sync"}),
+            json!({"item": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multihop_paths_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
