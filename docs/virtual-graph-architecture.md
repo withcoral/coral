@@ -131,8 +131,10 @@ The supported foundation subset is intentionally narrow:
   introduced or the same already-bound variable. Zero-hop optional ranges over
   distinct endpoints that were already bound are row-preserving and do not add
   equality filters when path metadata is unused; named path metadata for those
-  endpoints lowers as a searched `CASE` gated by endpoint identity. Multi-length
-  optional branch expansion remains deferred;
+  endpoints lowers as a searched `CASE` gated by endpoint identity, and
+  optional-local `WHERE` predicates over the named zero-hop path are conjoined
+  into that same metadata gate. Multi-length optional branch expansion remains
+  deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)` and `size(path)` over optional relationships via the
   presence-gated scalar expression IR and compiler-generated internal

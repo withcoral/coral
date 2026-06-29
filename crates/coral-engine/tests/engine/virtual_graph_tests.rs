@@ -2243,6 +2243,39 @@ async fn cypher_optional_zero_hop_bound_path_length_uses_endpoint_equality() {
 }
 
 #[tokio::test]
+async fn cypher_optional_zero_hop_local_predicate_gates_path_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (target:Service) \
+         OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target) \
+         WHERE source.tier = 'prod' \
+         WITH * WHERE length(path) IS NOT NULL \
+         RETURN count(*) AS prod_self_pairs",
+    )
+    .await
+    .expect("zero-hop optional local predicate should gate path metadata");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN")
+            && execution.translated_sql().contains("AND")
+            && execution.translated_sql().contains("THEN 0 ELSE NULL END"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"prod_self_pairs": 2})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_bounded_gql_relationship_quantifiers_expand_to_union_all() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

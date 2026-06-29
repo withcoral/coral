@@ -286,6 +286,7 @@ struct PathBinding {
     length: usize,
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
+    zero_hop_endpoint_introduced: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -5536,8 +5537,19 @@ fn compile_reading_clauses_into(
             ReadingClause::Match(match_clause) => {
                 let predicate_start = plan.predicates.len();
                 let relationship_start = plan.relationships.len();
+                let path_variables_start = state
+                    .path_variables
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
                 compile_match_into(match_clause, plan, state, context)?;
                 if match_clause.optional {
+                    let introduced_path_variables = state
+                        .path_variables
+                        .keys()
+                        .filter(|variable| !path_variables_start.contains(*variable))
+                        .cloned()
+                        .collect::<Vec<_>>();
                     let predicate = match_clause
                         .where_clause
                         .as_ref()
@@ -5556,6 +5568,8 @@ fn compile_reading_clauses_into(
                         relationship_start,
                         predicate_start,
                         predicate,
+                        state,
+                        &introduced_path_variables,
                         format!("{path}[{index}]"),
                     )?;
                 } else if let Some(where_clause) = &match_clause.where_clause {
@@ -5586,13 +5600,21 @@ fn attach_optional_match_scope(
     relationship_start: usize,
     predicate_start: usize,
     predicate: Option<PredicateExpression>,
+    state: &mut CypherCompileState,
+    introduced_path_variables: &[String],
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     let relationship_indices = (relationship_start..plan.relationships.len()).collect::<Vec<_>>();
     let inline_predicates = plan.predicates.drain(predicate_start..).collect::<Vec<_>>();
     let predicate = combine_optional_predicates(inline_predicates, predicate);
-    if relationship_indices.is_empty() && predicate.is_some() {
+    if relationship_indices.is_empty()
+        && let Some(predicate) = &predicate
+    {
+        if attach_zero_hop_path_predicate_gate(state, introduced_path_variables, predicate, &path)?
+        {
+            return Ok(());
+        }
         return Err(unsupported(
             path,
             "OPTIONAL MATCH predicates currently require a relationship pattern",
@@ -5607,6 +5629,58 @@ fn attach_optional_match_scope(
         predicate,
     });
     Ok(())
+}
+
+fn attach_zero_hop_path_predicate_gate(
+    state: &mut CypherCompileState,
+    introduced_path_variables: &[String],
+    predicate: &PredicateExpression,
+    path: &str,
+) -> Result<bool, CoreError> {
+    let mut attached = false;
+    for variable in introduced_path_variables {
+        let Some(binding) = state.path_variables.get_mut(variable) else {
+            continue;
+        };
+        if !binding.optional || binding.length != 0 {
+            continue;
+        }
+        if binding.zero_hop_endpoint_introduced {
+            return Err(unsupported(
+                path.to_string(),
+                "OPTIONAL MATCH local predicates over zero-hop paths with newly introduced endpoints require nullable zero-hop endpoint binding and are not supported yet",
+            ));
+        }
+        binding.presence_gate = Some(conjoin_path_presence_gate(
+            binding.presence_gate.take(),
+            predicate.clone(),
+        ));
+        attached = true;
+    }
+    Ok(attached)
+}
+
+fn conjoin_path_presence_gate(
+    existing: Option<PathPresenceGate>,
+    predicate: PredicateExpression,
+) -> PathPresenceGate {
+    match existing {
+        Some(existing) => PathPresenceGate::Predicate(PredicateExpression::And {
+            left: Box::new(path_presence_gate_predicate(existing)),
+            right: Box::new(predicate),
+        }),
+        None => PathPresenceGate::Predicate(predicate),
+    }
+}
+
+fn path_presence_gate_predicate(gate: PathPresenceGate) -> PredicateExpression {
+    match gate {
+        PathPresenceGate::Variable(variable) => PredicateExpression::Presence(PresencePredicate {
+            variable,
+            operator: ComparisonOperator::NotEqual,
+        }),
+        PathPresenceGate::Predicate(predicate) => predicate,
+    }
 }
 
 fn combine_optional_predicates(
@@ -5741,6 +5815,7 @@ fn compile_pattern_part_into(
         previous_label: start_node.label,
         path_presence_gate: None,
         hidden_path_presence_variables: Vec::new(),
+        zero_hop_endpoint_introduced: false,
     };
 
     for (chain_index, chain) in chains.iter().enumerate() {
@@ -5765,11 +5840,14 @@ fn compile_pattern_part_into(
         state
             .hidden_graph_variables
             .extend(chain_state.hidden_path_presence_variables);
+        let presence_gate = optional.then_some(chain_state.path_presence_gate).flatten();
+        let zero_hop_endpoint_introduced = chain_state.zero_hop_endpoint_introduced;
         bind_path_variable(
             state,
             pending,
             optional,
-            optional.then_some(chain_state.path_presence_gate).flatten(),
+            presence_gate,
+            zero_hop_endpoint_introduced,
         );
     }
 
@@ -5781,6 +5859,7 @@ struct PathChainCompileState {
     previous_label: String,
     path_presence_gate: Option<PathPresenceGate>,
     hidden_path_presence_variables: Vec<String>,
+    zero_hop_endpoint_introduced: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -6276,6 +6355,9 @@ fn append_zero_length_relationship(
     plan: &mut GraphPlan,
     chain_state: &mut PathChainCompileState,
 ) -> Result<(), CoreError> {
+    if options.optional && options.force_optional_path_presence && next_node_introduced {
+        chain_state.zero_hop_endpoint_introduced = true;
+    }
     if options.optional && options.force_optional_path_presence && !next_node_introduced {
         if relationship.pattern.left == relationship.pattern.right {
             return Ok(());
@@ -6692,6 +6774,7 @@ fn bind_path_variable(
     pending: PendingPathBinding,
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
+    zero_hop_endpoint_introduced: bool,
 ) {
     state.path_variables.insert(
         pending.name,
@@ -6699,6 +6782,7 @@ fn bind_path_variable(
             length: pending.length,
             optional,
             presence_gate,
+            zero_hop_endpoint_introduced,
         },
     );
 }
@@ -26569,6 +26653,65 @@ relationships:
                 },
                 alias: "path_length".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_zero_hop_local_predicates_into_path_presence_gate() {
+        let plan = compile_cypher(
+            "MATCH (source:Service), (target:Service) \
+             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target) \
+             WHERE source.tier = 'prod' \
+             RETURN length(path) AS path_length",
+        )
+        .expect("bound endpoint zero-hop local predicate should gate path metadata");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Case {
+                    alternatives: vec![ScalarCaseAlternative {
+                        when: PredicateExpression::And {
+                            left: Box::new(PredicateExpression::KeyComparison(KeyPredicate {
+                                variable: "source".to_string(),
+                                operator: ComparisonOperator::Equal,
+                                rhs: PredicateRhs::Key {
+                                    variable: "target".to_string(),
+                                },
+                            })),
+                            right: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+                                property: PropertyRef {
+                                    variable: "source".to_string(),
+                                    property: "tier".to_string(),
+                                },
+                                operator: ComparisonOperator::Equal,
+                                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+                            })),
+                        },
+                        then: ScalarExpression::Literal(Literal::Integer(0)),
+                    }],
+                    else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Null))),
+                },
+                alias: "path_length".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_optional_zero_hop_local_predicates_with_introduced_endpoint() {
+        let error = compile_cypher(
+            "MATCH (source:Service) \
+             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(self:Service) \
+             WHERE self.tier = 'prod' \
+             RETURN length(path) AS path_length",
+        )
+        .expect_err("introduced zero-hop endpoint would require nullable node binding");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nullable zero-hop endpoint binding"),
+            "{error}"
         );
     }
 
