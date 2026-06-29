@@ -404,13 +404,13 @@ fn compile_root_selection_set<'query>(
         &mut Vec::new(),
         &mut root_fields,
     )?;
-    let [(root_path, root)] = root_fields.as_slice() else {
+    let [root] = root_fields.as_slice() else {
         return Err(unsupported(
             path,
             "GraphQL virtual graph queries must select exactly one included root node field",
         ));
     };
-    compile_root_field(root, graph, root_path, context)
+    compile_root_field(&root.field, graph, &root.path, context)
 }
 
 fn collect_root_fields<'query>(
@@ -418,7 +418,7 @@ fn collect_root_fields<'query>(
     path: &str,
     context: &GraphqlCompileContext<'_, 'query>,
     fragment_stack: &mut Vec<String>,
-    root_fields: &mut Vec<(String, Field<'query, String>)>,
+    root_fields: &mut Vec<GraphqlRootFieldSelection<'query>>,
 ) -> Result<(), CoreError> {
     for (index, selection) in selection_set.items.iter().enumerate() {
         let item_path = format!("{path}.items[{index}]");
@@ -429,7 +429,7 @@ fn collect_root_fields<'query>(
                     format!("{item_path}.directives"),
                     context,
                 )? {
-                    root_fields.push((item_path, field.clone()));
+                    push_or_merge_root_field(root_fields, item_path, field)?;
                 }
             }
             Selection::FragmentSpread(spread) => {
@@ -492,6 +492,41 @@ fn collect_root_fields<'query>(
             }
         }
     }
+    Ok(())
+}
+
+fn push_or_merge_root_field<'query>(
+    root_fields: &mut Vec<GraphqlRootFieldSelection<'query>>,
+    path: String,
+    field: &Field<'query, String>,
+) -> Result<(), CoreError> {
+    let response_name = graphql_response_name(field);
+    let signature = graphql_root_selection_signature(field);
+    if let Some(existing) = root_fields
+        .iter_mut()
+        .find(|selection| graphql_response_name(&selection.field) == response_name)
+    {
+        if existing.signature != signature {
+            return Err(unsupported(
+                format!("{path}.alias"),
+                format!(
+                    "GraphQL root response field '{response_name}' selects conflicting root fields"
+                ),
+            ));
+        }
+        existing
+            .field
+            .selection_set
+            .items
+            .extend(field.selection_set.items.clone());
+        return Ok(());
+    }
+
+    root_fields.push(GraphqlRootFieldSelection {
+        path,
+        field: field.clone(),
+        signature,
+    });
     Ok(())
 }
 
@@ -692,6 +727,18 @@ struct GraphqlSelectionCompileContext<'a, 'variables, 'query> {
     graph: Option<&'a Declaration>,
     compile_context: &'a GraphqlCompileContext<'variables, 'query>,
     fragment_stack: &'a mut Vec<String>,
+}
+
+struct GraphqlRootFieldSelection<'query> {
+    path: String,
+    field: Field<'query, String>,
+    signature: GraphqlRootSelectionSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphqlRootSelectionSignature {
+    field_name: String,
+    arguments: Vec<(String, GraphqlValueSignature)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1957,19 +2004,32 @@ fn graphql_response_name(field: &Field<'_, String>) -> String {
     field.alias.clone().unwrap_or_else(|| field.name.clone())
 }
 
+fn graphql_root_selection_signature(field: &Field<'_, String>) -> GraphqlRootSelectionSignature {
+    GraphqlRootSelectionSignature {
+        field_name: field.name.clone(),
+        arguments: graphql_field_argument_signature(field),
+    }
+}
+
 fn graphql_relationship_selection_signature(
     field: &Field<'_, String>,
 ) -> GraphqlRelationshipSelectionSignature {
+    GraphqlRelationshipSelectionSignature {
+        field_name: field.name.clone(),
+        arguments: graphql_field_argument_signature(field),
+    }
+}
+
+fn graphql_field_argument_signature(
+    field: &Field<'_, String>,
+) -> Vec<(String, GraphqlValueSignature)> {
     let mut arguments = field
         .arguments
         .iter()
         .map(|(name, value)| (name.clone(), graphql_value_signature(value)))
         .collect::<Vec<_>>();
     arguments.sort_by(|(left, _), (right, _)| left.cmp(right));
-    GraphqlRelationshipSelectionSignature {
-        field_name: field.name.clone(),
-        arguments,
-    }
+    arguments
 }
 
 fn graphql_value_signature(value: &Value<'_, String>) -> GraphqlValueSignature {
@@ -6249,6 +6309,78 @@ mod tests {
             ]
         );
         assert_eq!(plan.limit, Some(2));
+    }
+
+    #[test]
+    fn merges_duplicate_graphql_root_fields_across_fragments() {
+        let plan = compile_graphql(
+            r#"
+            query {
+              Service(where: { tier: { eq: "prod" } }) {
+                service: name
+              }
+              ...ServiceRootDetails
+            }
+
+            fragment ServiceRootDetails on Query {
+              Service(where: { tier: { eq: "prod" } }) {
+                tier
+              }
+            }
+            "#,
+        )
+        .expect("duplicate GraphQL root fields should merge");
+
+        assert_eq!(
+            plan.nodes,
+            vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_duplicate_graphql_root_fields() {
+        let error = compile_graphql(
+            r#"
+            query {
+              Service(where: { tier: { eq: "prod" } }) {
+                name
+              }
+              Service(where: { tier: { eq: "dev" } }) {
+                name
+              }
+            }
+            "#,
+        )
+        .expect_err("conflicting duplicate GraphQL root fields should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("root response field 'Service' selects conflicting root fields"),
+            "{error}"
+        );
     }
 
     #[test]

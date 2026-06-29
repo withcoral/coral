@@ -6405,6 +6405,59 @@ async fn graphql_root_fragments_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_duplicate_root_fields_merge_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(
+            where: { tier: { eq: "prod" } }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            service: name
+          }
+          ...ServiceRootDetails
+        }
+
+        fragment ServiceRootDetails on Query {
+          Service(
+            where: { tier: { eq: "prod" } }
+            orderBy: [{ field: name, direction: ASC }]
+          ) {
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("duplicate GraphQL root fields should merge");
+
+    assert_eq!(
+        execution
+            .translated_sql()
+            .matches("FROM \"ops\".\"services\"")
+            .count(),
+        1,
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "tier": "prod"}),
+            json!({"service": "deployments", "tier": "prod"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_nested_relationship_query_executes_against_synthetic_file_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
