@@ -13,6 +13,7 @@ use super::ir::{
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    UndirectedRelationshipEndpoint,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
 use crate::CoreError;
@@ -330,6 +331,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             ScalarExpression::Property(_)
+            | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
@@ -930,6 +932,9 @@ impl<'a> Lowerer<'a> {
                 relationship_bindings,
                 local_nodes,
             ),
+            ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+                Self::scoped_variable_is_inner(relationship, relationship_bindings, local_nodes)
+            }
             ScalarExpression::Predicate(predicate) => Self::scoped_predicate_expression_is_inner(
                 predicate,
                 relationship_bindings,
@@ -4327,6 +4332,9 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => {
                 self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
             }
+            ScalarExpression::UndirectedEndpointProperty { .. } => Err(CoreError::internal(
+                "validated scoped undirected endpoint property reached SQL renderer",
+            )),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
             ScalarExpression::TypedLiteralList {
@@ -5442,6 +5450,54 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_undirected_endpoint_property_ref(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        property: &str,
+    ) -> Result<String, CoreError> {
+        let (relationship_index, relationship_pattern) = self
+            .validated
+            .plan()
+            .relationships
+            .iter()
+            .enumerate()
+            .find(|(_, relationship)| {
+                relationship.variable.as_deref() == Some(relationship_variable)
+            })
+            .ok_or_else(|| {
+                CoreError::internal(
+                    "validated undirected endpoint property referenced unknown relationship",
+                )
+            })?;
+        let relationship = self.validated.relationship_mapping(relationship_index)?;
+        let relationship_alias = self
+            .validated
+            .relationship_alias(relationship_index, relationship_pattern);
+        let endpoint_column = match endpoint {
+            UndirectedRelationshipEndpoint::Start => &relationship.from.key,
+            UndirectedRelationshipEndpoint::End => &relationship.to.key,
+        };
+        let selector = format!(
+            "{}.{}",
+            quote_ident(&relationship_alias),
+            quote_ident(endpoint_column)
+        );
+        let presence = self.render_relationship_presence_ref(relationship_variable)?;
+        let left_key = self.render_binding_key_ref(&relationship_pattern.left)?;
+        let left_property = self.render_property_ref(&PropertyRef {
+            variable: relationship_pattern.left.clone(),
+            property: property.to_string(),
+        })?;
+        let right_property = self.render_property_ref(&PropertyRef {
+            variable: relationship_pattern.right.clone(),
+            property: property.to_string(),
+        })?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_key} = {selector} THEN {left_property} ELSE {right_property} END END"
+        ))
+    }
+
     fn render_scalar_expression(&self, expression: &ScalarExpression) -> Result<String, CoreError> {
         if let Some(rendered) = self.render_simple_scalar_expression(expression)? {
             return Ok(rendered);
@@ -5450,8 +5506,20 @@ impl<'a> Lowerer<'a> {
             return Ok(rendered);
         }
 
+        self.render_structural_scalar_expression(expression)
+    }
+
+    fn render_structural_scalar_expression(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<String, CoreError> {
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
+            ScalarExpression::UndirectedEndpointProperty {
+                relationship,
+                endpoint,
+                property,
+            } => self.render_undirected_endpoint_property_ref(relationship, *endpoint, property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
             ScalarExpression::TypedLiteralList {

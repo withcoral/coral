@@ -158,11 +158,30 @@ pub struct RelationshipPattern {
     pub right: String,
 }
 
+/// Declared endpoint side for a relationship, independent of query direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndirectedRelationshipEndpoint {
+    /// Relationship `from` endpoint.
+    Start,
+    /// Relationship `to` endpoint.
+    End,
+}
+
 /// Scalar value expression in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExpression {
     /// A mapped graph property.
     Property(PropertyRef),
+    /// A mapped node property chosen from either side of a same-label
+    /// undirected relationship using the relationship's declared orientation.
+    UndirectedEndpointProperty {
+        /// Relationship variable whose declared orientation controls endpoint selection.
+        relationship: String,
+        /// Declared endpoint side to select.
+        endpoint: UndirectedRelationshipEndpoint,
+        /// Graph property name to read from the selected node endpoint.
+        property: String,
+    },
     /// A scalar literal.
     Literal(Literal),
     /// A statically folded literal list value.

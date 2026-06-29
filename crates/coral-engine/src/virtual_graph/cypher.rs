@@ -38,7 +38,7 @@ use super::ir::{
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs,
+    ScalarPredicate, ScalarPredicateRhs, UndirectedRelationshipEndpoint,
 };
 use crate::CoreError;
 
@@ -1615,6 +1615,7 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
 ) -> bool {
     match expression {
         ScalarExpression::Property(_)
+        | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -5590,6 +5591,9 @@ fn rename_non_unary_scalar_expression_variables(
 ) {
     match expression {
         ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
+        ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+            rename_string(relationship, renames);
+        }
         ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. } => {}
@@ -6057,6 +6061,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Property(property) => {
             reject_ignored_path_variable_property_ref(property, state, path)
         }
+        ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+            reject_ignored_path_variable(relationship, state, path)
+        }
         ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. } => Ok(()),
@@ -6174,6 +6181,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
 ) -> Result<(), CoreError> {
     match expression {
         ScalarExpression::Property(_)
+        | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -9089,6 +9097,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
             else_expression.as_deref(),
         ),
         ScalarExpression::Property(_)
+        | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -18282,6 +18291,17 @@ fn compile_aggregate_target(
         }
         Expression::PropertyLookup { .. } => {
             if let Some(plan) = plan
+                && let Some((expression, _)) =
+                    compile_optional_same_label_undirected_endpoint_property_scalar_expression(
+                        expression,
+                        path.clone(),
+                        plan,
+                        context,
+                    )?
+            {
+                return Ok(AggregateTarget::Expression(expression));
+            }
+            if let Some(plan) = plan
                 && let Some((property, presence_variable, _)) =
                     compile_optional_endpoint_property_ref(expression, path.clone(), plan, context)?
             {
@@ -25029,6 +25049,16 @@ fn compile_optional_endpoint_property_scalar_expression(
     let Some(plan) = plan else {
         return Ok(None);
     };
+    if let Some((expression, output_name)) =
+        compile_optional_same_label_undirected_endpoint_property_scalar_expression(
+            expression,
+            path.clone(),
+            plan,
+            context,
+        )?
+    {
+        return Ok(Some((expression, output_name)));
+    }
     let Some((property, presence_variable, output_name)) =
         compile_optional_endpoint_property_ref(expression, path, plan, context)?
     else {
@@ -25041,6 +25071,98 @@ fn compile_optional_endpoint_property_scalar_expression(
         ),
         output_name,
     )))
+}
+
+fn compile_optional_same_label_undirected_endpoint_property_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<(ScalarExpression, String)>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_same_label_undirected_endpoint_property_scalar_expression(
+                inner, path, plan, context,
+            )
+        }
+        Expression::PropertyLookup { base, property, .. } => {
+            let Some((relationship, endpoint)) =
+                compile_optional_same_label_undirected_relationship_endpoint(
+                    base,
+                    format!("{path}.base"),
+                    plan,
+                    context,
+                )?
+            else {
+                return Ok(None);
+            };
+            let property = property.name.name.clone();
+            let output_name = format!("{relationship}_{property}");
+            Ok(Some((
+                ScalarExpression::UndirectedEndpointProperty {
+                    relationship,
+                    endpoint,
+                    property,
+                },
+                output_name,
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_same_label_undirected_relationship_endpoint(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<(String, UndirectedRelationshipEndpoint)>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_same_label_undirected_relationship_endpoint(inner, path, plan, context)
+        }
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            let endpoint = match relationship_endpoint_function(function) {
+                Some(RelationshipEndpoint::Start) => UndirectedRelationshipEndpoint::Start,
+                Some(RelationshipEndpoint::End) => UndirectedRelationshipEndpoint::End,
+                None => return Ok(None),
+            };
+            let relationship_variable = compile_single_variable_function_argument(
+                function,
+                format!("{path}.arguments"),
+                match endpoint {
+                    UndirectedRelationshipEndpoint::Start => {
+                        "startNode() supports exactly one relationship variable argument"
+                    }
+                    UndirectedRelationshipEndpoint::End => {
+                        "endNode() supports exactly one relationship variable argument"
+                    }
+                },
+                context,
+            )?;
+            let Some(relationship) = plan.relationships.iter().find(|relationship| {
+                relationship.variable.as_deref() == Some(relationship_variable.as_str())
+            }) else {
+                return Ok(None);
+            };
+            if relationship.direction != Direction::Undirected {
+                return Ok(None);
+            }
+            let left_label =
+                node_label_for_variable(plan, &relationship.left, format!("{path}.left"))?;
+            let right_label =
+                node_label_for_variable(plan, &relationship.right, format!("{path}.right"))?;
+            if left_label != right_label {
+                return Ok(None);
+            }
+            Ok(Some((relationship_variable, endpoint)))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn compile_optional_endpoint_property_ref(
@@ -29912,18 +30034,84 @@ relationships:
     }
 
     #[test]
-    fn rejects_relationship_endpoint_properties_on_undirected_relationships() {
-        let error = compile_cypher(
+    fn compiles_same_label_undirected_relationship_endpoint_properties() {
+        let plan = compile_cypher(
             "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
-             RETURN startNode(dependency).name AS source",
+             RETURN startNode(dependency).name AS source, endNode(dependency).name AS target \
+             ORDER BY startNode(dependency).name, endNode(dependency).name",
         )
-        .expect_err("undirected relationship endpoint properties should be rejected");
+        .expect("same-label undirected endpoint properties should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("startNode() over undirected relationships is not supported yet"),
-            "{error}"
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointProperty {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::Start,
+                        property: "name".to_string(),
+                    },
+                    alias: "source".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointProperty {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::End,
+                        property: "name".to_string(),
+                    },
+                    alias: "target".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Scalar(
+                        ScalarExpression::UndirectedEndpointProperty {
+                            relationship: "dependency".to_string(),
+                            endpoint: UndirectedRelationshipEndpoint::Start,
+                            property: "name".to_string(),
+                        },
+                    ),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(
+                        ScalarExpression::UndirectedEndpointProperty {
+                            relationship: "dependency".to_string(),
+                            endpoint: UndirectedRelationshipEndpoint::End,
+                            property: "name".to_string(),
+                        },
+                    ),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_same_label_undirected_relationship_endpoint_property_aggregates() {
+        let plan = compile_cypher(
+            "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+             RETURN count(DISTINCT endNode(dependency).name) AS targets",
+        )
+        .expect("same-label undirected endpoint property aggregate should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::Expression(ScalarExpression::UndirectedEndpointProperty {
+                    relationship: "dependency".to_string(),
+                    endpoint: UndirectedRelationshipEndpoint::End,
+                    property: "name".to_string(),
+                },),
+                distinct: true,
+                alias: "targets".to_string(),
+            }]
         );
     }
 

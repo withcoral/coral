@@ -12560,6 +12560,131 @@ async fn cypher_undirected_cross_label_endpoint_properties_use_mapping_orientati
 }
 
 #[tokio::test]
+async fn cypher_same_label_undirected_endpoint_properties_use_mapping_orientation() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+         RETURN left.name AS matched_left, \
+                right.name AS matched_right, \
+                startNode(dependency).name AS source, \
+                endNode(dependency).name AS target \
+         ORDER BY source, target, matched_left",
+    )
+    .await
+    .expect("same-label undirected endpoint property query should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"from_service_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"to_service_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "matched_left": "billing-api",
+                "matched_right": "deployments",
+                "source": "billing-api",
+                "target": "deployments"
+            }),
+            json!({
+                "matched_left": "deployments",
+                "matched_right": "billing-api",
+                "source": "billing-api",
+                "target": "deployments"
+            }),
+            json!({
+                "matched_left": "billing-api",
+                "matched_right": "experiments",
+                "source": "billing-api",
+                "target": "experiments"
+            }),
+            json!({
+                "matched_left": "experiments",
+                "matched_right": "billing-api",
+                "source": "billing-api",
+                "target": "experiments"
+            }),
+            json!({
+                "matched_left": "deployments",
+                "matched_right": "experiments",
+                "source": "deployments",
+                "target": "experiments"
+            }),
+            json!({
+                "matched_left": "experiments",
+                "matched_right": "deployments",
+                "source": "deployments",
+                "target": "experiments"
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_same_label_undirected_endpoint_properties_work_in_predicates_and_aggregates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+         WHERE startNode(dependency).name = 'billing-api' \
+         RETURN count(*) AS matched_rows, \
+                count(DISTINCT endNode(dependency).name) AS distinct_targets, \
+                sum(endNode(dependency).risk) AS duplicated_target_risk",
+    )
+    .await
+    .expect("same-label undirected endpoint property predicate and aggregate query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(DISTINCT CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("SUM(CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "matched_rows": 4,
+            "distinct_targets": 2,
+            "duplicated_target_risk": 1.5,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_endpoint_identity_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

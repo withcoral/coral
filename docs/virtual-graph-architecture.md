@@ -184,13 +184,17 @@ The supported foundation subset is intentionally narrow:
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
-  original edge orientation. Declaration-aware compilation may infer the type
-  for an untyped exact single-hop relationship when the endpoint labels and
-  direction select exactly one relationship type. Relationship type atoms may
-  also be compile-time dynamic, such as `:$($type)` with a scalar string
-  parameter, including during bounded relationship-range pruning; untyped
-  ranges, row-dependent dynamic types, and ambiguous endpoint pairs remain
-  rejected;
+  original edge orientation. Same-label undirected endpoint property reads
+  lower through a dedicated scalar IR node that SQL rendering resolves with a
+  searched `CASE` over the declared relationship `from`/`to` key columns; full
+  same-label endpoint identity and metadata values remain unsupported until
+  Coral has a first-class graph value representation for data-dependent
+  endpoints. Declaration-aware compilation may infer the type for an untyped
+  exact single-hop relationship when the endpoint labels and direction select
+  exactly one relationship type. Relationship type atoms may also be
+  compile-time dynamic, such as `:$($type)` with a scalar string parameter,
+  including during bounded relationship-range pruning; untyped ranges,
+  row-dependent dynamic types, and ambiguous endpoint pairs remain rejected;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;

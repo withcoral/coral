@@ -39,6 +39,6 @@ pub use ir::{
     OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern,
+    RelationshipPattern, UndirectedRelationshipEndpoint,
 };
 pub use sql::SqlTranslation;
