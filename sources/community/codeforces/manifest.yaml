@@ -55,7 +55,7 @@ description: >
   ```
 
   ```sql
- SELECT problem_name, problem_rating, language FROM codeforces.submissions WHERE handle = 'tourist' AND verdict = 'OK' ORDER BY problem_rating DESC;
+  SELECT problem_name, problem_rating, language FROM codeforces.submissions WHERE handle = 'tourist' AND verdict = 'OK' ORDER BY problem_rating DESC;
   ```
 backend: http
 
