@@ -7218,6 +7218,39 @@ async fn cypher_inline_property_maps_accept_scalar_alias_values() {
 }
 
 #[tokio::test]
+async fn cypher_inline_property_maps_accept_property_expression_values() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (team:Team)-[ownership:OWNS]->(service:Service {name: 'billing-api'}) \
+         MATCH (service)-[:DEPENDS_ON {source: ownership.source}]->(target:Service) \
+         RETURN service.name AS service, ownership.source AS source, target.name AS target \
+         ORDER BY target",
+    )
+    .await
+    .expect("inline property maps should accept direct property expression values");
+
+    assert!(
+        execution.translated_sql().contains("\"r1\".\"source\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "source": "catalog", "target": "deployments"}),
+            json!({"service": "billing-api", "source": "catalog", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_parameterized_dynamic_label_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -227,6 +227,12 @@ struct ListComprehensionSource {
     has_map: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlinePropertyValueSource {
+    source: String,
+    end: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StaticBooleanOutcome {
     True,
@@ -342,6 +348,7 @@ struct CypherCompileContext {
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
+    inline_property_value_sources: BTreeMap<usize, InlinePropertyValueSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
     order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     parameters: BTreeMap<String, CypherParameterValue>,
@@ -360,6 +367,7 @@ impl CypherCompileContext {
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
+            inline_property_value_sources: collect_inline_property_value_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
             order_null_placements,
             parameters,
@@ -400,6 +408,16 @@ impl CypherCompileContext {
         self.unwind_expression_sources
             .get(&(unwind.span.start, unwind.span.end))
             .map(String::as_str)
+    }
+
+    fn truncated_inline_property_value_source(
+        &self,
+        expression: &Expression,
+    ) -> Option<&InlinePropertyValueSource> {
+        let span = expression_span(expression)?;
+        self.inline_property_value_sources
+            .get(&span.start)
+            .filter(|source| source.end > span.end)
     }
 
     fn compact_exists_pattern_query(&self, exists: &ExistsExpression) -> Option<&str> {
@@ -8634,6 +8652,7 @@ fn compile_node(
             compile_inline_properties(
                 properties,
                 &variable,
+                plan,
                 state,
                 format!("{path}.properties"),
                 context,
@@ -8677,6 +8696,7 @@ fn compile_node(
 fn compile_inline_properties(
     properties: &Properties,
     variable: &str,
+    plan: &GraphPlan,
     state: &CypherCompileState,
     path: impl Into<String>,
     context: &CypherCompileContext,
@@ -8700,6 +8720,7 @@ fn compile_inline_properties(
             rhs: compile_inline_property_predicate_rhs(
                 expression,
                 format!("{path}.entries[{index}].value"),
+                plan,
                 state,
                 context,
             )?,
@@ -8711,6 +8732,29 @@ fn compile_inline_properties(
 fn compile_inline_property_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<PredicateRhs, CoreError> {
+    let path = path.into();
+    if let Some(source) = context.truncated_inline_property_value_source(expression) {
+        let (expression, fragment_context) =
+            parse_cypher_expression_fragment(&source.source, path.clone(), context)?;
+        return compile_inline_property_predicate_rhs_expression(
+            &expression,
+            path,
+            plan,
+            state,
+            &fragment_context,
+        );
+    }
+    compile_inline_property_predicate_rhs_expression(expression, path, plan, state, context)
+}
+
+fn compile_inline_property_predicate_rhs_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: &GraphPlan,
     state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<PredicateRhs, CoreError> {
@@ -8719,6 +8763,19 @@ fn compile_inline_property_predicate_rhs(
         compile_optional_scalar_alias_expression(expression, path.clone(), Some(state))?
     {
         return scalar_alias_expression_to_predicate_rhs(expression, path);
+    }
+    if let Some(property) =
+        compile_optional_property_ref(expression, path.clone(), Some(plan), context)?
+    {
+        return Ok(PredicateRhs::Property(property));
+    }
+    if let Some(variable) = compile_optional_id_ref(expression, path.clone(), plan, context)? {
+        return Ok(PredicateRhs::Key { variable });
+    }
+    if let Some(variable) =
+        compile_optional_element_id_ref(expression, path.clone(), plan, context)?
+    {
+        return Ok(PredicateRhs::ElementId { variable });
     }
     Ok(PredicateRhs::Literal(compile_literal(
         expression, path, context,
@@ -8824,6 +8881,7 @@ fn compile_relationship(
             (Some(properties), Some(variable)) => compile_inline_properties(
                 properties,
                 variable,
+                plan,
                 state,
                 format!("{path}.properties"),
                 context,
@@ -17806,6 +17864,48 @@ fn collect_unwind_expression_sources(cypher: &str) -> BTreeMap<(usize, usize), S
         .filter(|node| node.kind() == SyntaxKind::UNWIND_CLAUSE)
         .filter_map(|node| unwind_expression_source_from_cst(cypher, &node))
         .collect()
+}
+
+fn collect_inline_property_value_sources(
+    cypher: &str,
+) -> BTreeMap<usize, InlinePropertyValueSource> {
+    // decypher's high-level AST can under-represent map-entry values inside
+    // pattern property maps, for example `source.team` may surface as only the
+    // variable `source`. Recover the full value text from the lossless CST and
+    // reparse it only when the typed AST span was truncated.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::MAP_ENTRY)
+        .filter_map(|node| inline_property_value_source_from_cst(cypher, &node))
+        .collect()
+}
+
+fn inline_property_value_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<(usize, InlinePropertyValueSource)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let colon = find_top_level_character(source, ':')?;
+    let value_start = skip_ascii_whitespace(source, colon + 1);
+    let value_end = trim_ascii_whitespace_end(source, source.len());
+    if value_start >= value_end {
+        return None;
+    }
+    let value = source.get(value_start..value_end)?;
+    let absolute_value_start = start + value_start;
+    let absolute_value_end = start + value_end;
+    Some((
+        absolute_value_start,
+        InlinePropertyValueSource {
+            source: value.to_string(),
+            end: absolute_value_end,
+        },
+    ))
 }
 
 fn unwind_expression_source_from_cst(
@@ -39729,6 +39829,90 @@ relationships:
         };
         assert!(property.variable.starts_with("__coral_hidden_ownership"));
         assert_eq!(property.property, "source");
+    }
+
+    #[test]
+    fn compiles_inline_node_property_maps_with_property_expression_values() {
+        let cypher = "MATCH (source:Service) \
+             MATCH (matched:Service {team: source.team}) \
+             RETURN matched.name";
+        let plan = compile_cypher(cypher)
+            .expect("inline node property map should accept property expression values");
+
+        let predicate = plan
+            .predicates
+            .first()
+            .expect("inline property predicate should exist");
+        assert_eq!(predicate.property.variable, "matched");
+        assert_eq!(predicate.property.property, "team");
+        assert_eq!(
+            predicate.rhs,
+            PredicateRhs::Property(PropertyRef {
+                variable: "source".to_string(),
+                property: "team".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_inline_relationship_property_maps_with_property_expression_values() {
+        let plan = compile_cypher(
+            "MATCH (team:Team)-[ownership:OWNS]->(service:Service) \
+             MATCH (service)-[dependency:DEPENDS_ON {source: ownership.source}]->(target:Service) \
+             RETURN target.name",
+        )
+        .expect("inline relationship property map should accept property expression values");
+
+        let predicate = plan
+            .predicates
+            .iter()
+            .find(|predicate| predicate.property.variable == "dependency")
+            .expect("dependency inline property predicate should exist");
+        assert_eq!(predicate.property.property, "source");
+        assert_eq!(
+            predicate.rhs,
+            PredicateRhs::Property(PropertyRef {
+                variable: "ownership".to_string(),
+                property: "source".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_inline_property_maps_with_identity_expression_values() {
+        let plan = compile_cypher(
+            "MATCH (source:Service) \
+             MATCH (same_key:Service {name: id(source)}) \
+             MATCH (same_element:Service {name: elementId(source)}) \
+             RETURN same_key.name, same_element.name",
+        )
+        .expect("inline property maps should accept id and elementId expression values");
+
+        assert_eq!(
+            plan.predicates,
+            vec![
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "same_key".to_string(),
+                        property: "name".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Key {
+                        variable: "source".to_string(),
+                    },
+                },
+                PropertyPredicate {
+                    property: PropertyRef {
+                        variable: "same_element".to_string(),
+                        property: "name".to_string(),
+                    },
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::ElementId {
+                        variable: "source".to_string(),
+                    },
+                },
+            ]
+        );
     }
 
     #[test]
