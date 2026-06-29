@@ -58,6 +58,83 @@
       }
     },
     {
+      "id": "where-disjunction",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.age < 30 OR p.city = 'Paris' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "where-negation",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE NOT p.active RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "where-string-predicates",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.name STARTS WITH 'A' OR p.name CONTAINS 'ar' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "where-regex-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.name =~ 'A.*' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "relationship-property-filter",
+      "feature": "RelationshipProperties",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.since >= 2021 RETURN a.name AS source, b.name AS target, r.since AS since ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Carol", "since": 2022 },
+          { "source": "Bob", "target": "Carol", "since": 2021 }
+        ]
+      }
+    },
+    {
+      "id": "reverse-relationship-direction",
+      "feature": "Match",
+      "query": "MATCH (target:Person)<-[:KNOWS]-(source:Person) RETURN source.name AS source, target.name AS target ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob" },
+          { "source": "Alice", "target": "Carol" },
+          { "source": "Bob", "target": "Carol" }
+        ]
+      }
+    },
+    {
       "id": "optional-match-preserves-unmatched-row",
       "feature": "OptionalMatch",
       "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
@@ -69,6 +146,33 @@
           { "person": "Alice", "friend": "Carol" },
           { "person": "Bob", "friend": "Carol" },
           { "person": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-null-filter",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) WITH p, friend WHERE friend IS NULL RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-coalesce",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, coalesce(friend.name, 'none') AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend": "Bob" },
+          { "person": "Alice", "friend": "Carol" },
+          { "person": "Bob", "friend": "Carol" },
+          { "person": "Carol", "friend": "none" }
         ]
       }
     },
@@ -86,6 +190,148 @@
       }
     },
     {
+      "id": "aggregate-numeric-functions",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN count(p) AS people, sum(p.age) AS age_sum, min(p.age) AS youngest, max(p.age) AS oldest",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3, "age_sum": 104, "youngest": 29, "oldest": 41 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-count-distinct",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN count(DISTINCT p.city) AS city_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city_count": 2 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-with-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WITH p.name AS person, count(friend) AS friend_count WHERE friend_count > 1 RETURN person, friend_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend_count": 2 }
+        ]
+      }
+    },
+    {
+      "id": "count-subquery-projection",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) RETURN p.name AS person, COUNT { MATCH (p)-[:KNOWS]->(:Person) } AS friend_count ORDER BY friend_count DESC, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend_count": 2 },
+          { "person": "Bob", "friend_count": 1 },
+          { "person": "Carol", "friend_count": 0 }
+        ]
+      }
+    },
+    {
+      "id": "count-subquery-predicate",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) WHERE COUNT { MATCH (p)-[:KNOWS]->(:Person) } > 1 RETURN p.name AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-predicate",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" },
+          { "person": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "searched-case-expression",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, CASE WHEN p.active THEN 'active' ELSE 'inactive' END AS status ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "status": "active" },
+          { "name": "Bob", "status": "inactive" },
+          { "name": "Carol", "status": "active" }
+        ]
+      }
+    },
+    {
+      "id": "identity-and-type-functions",
+      "feature": "GraphMetadata",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN id(r) AS relationship_id, type(r) AS relationship_type, a.name AS source, b.name AS target ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "relationship_id": 100, "relationship_type": "KNOWS", "source": "Alice", "target": "Bob" },
+          { "relationship_id": 101, "relationship_type": "KNOWS", "source": "Bob", "target": "Carol" },
+          { "relationship_id": 102, "relationship_type": "KNOWS", "source": "Alice", "target": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "node-id-function",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN id(p) AS person_id, p.name AS name ORDER BY person_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person_id": 1, "name": "Alice" },
+          { "person_id": 2, "name": "Bob" },
+          { "person_id": 3, "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "order-skip-limit",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC SKIP 1 LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "unwind-list",
+      "feature": "Unwind",
+      "query": "UNWIND ['London', 'Paris'] AS city MATCH (p:Person) WHERE p.city = city RETURN city AS city, count(p) AS people ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "people": 2 },
+          { "city": "Paris", "people": 1 }
+        ]
+      }
+    },
+    {
       "id": "distinct-projection",
       "feature": "ReturnDistinct",
       "query": "MATCH (p:Person) RETURN DISTINCT p.city AS city ORDER BY city",
@@ -95,6 +341,18 @@
         "rows": [
           { "city": "London" },
           { "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "top-level-union-distinct-removes-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Alice" }
         ]
       }
     },

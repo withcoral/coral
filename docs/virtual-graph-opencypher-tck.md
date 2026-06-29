@@ -48,19 +48,31 @@ crates/coral-engine/tests/engine/opencypher_tck_tests.rs
 
 ## Scope
 
-The baseline currently covers representative read-only scenarios for:
+The baseline currently contains 32 representative read-only scenarios:
 
-- labeled node scans and property projections;
-- directed relationship matches;
-- `WHERE` comparisons, boolean conjunction, and list membership;
-- `OPTIONAL MATCH` null-preserving rows;
-- grouped `count(...)`;
-- `RETURN DISTINCT`;
-- path metadata through `length(path)`;
-- exact fixed-length relationship ranges;
-- transparent `WITH` scope filtering;
-- `UNION ALL` duplicate preservation;
-- explicit rejection of materialized path returns.
+- `Match`: 3 scenarios for labeled node scans plus forward and reverse
+  relationship matches.
+- `Where`: 6 scenarios for comparisons, boolean conjunction/disjunction,
+  negation, list membership, string predicates, and regex predicates.
+- `RelationshipProperties`: 1 scenario for relationship property filtering.
+- `OptionalMatch`: 3 scenarios for null-preserving rows, null filtering, and
+  `coalesce(...)`.
+- `Aggregation`: 3 scenarios for grouped counts, numeric aggregates, and
+  `count(DISTINCT ...)`.
+- `With`: 2 scenarios for transparent scope filtering and aggregate filtering
+  through terminal `WITH`.
+- `CountSubquery`: 2 scenarios for `COUNT { ... }` projections and predicates.
+- `ExistsSubquery`: 1 scenario for `EXISTS { ... }` predicates.
+- `ScalarExpressions`: 1 scenario for searched `CASE`.
+- `GraphMetadata`: 2 scenarios for `id(...)` and `type(...)`.
+- `RowModifiers`: 1 scenario for `ORDER BY`, `SKIP`, and `LIMIT`.
+- `Unwind`: 1 scenario for `UNWIND` list expansion.
+- `ReturnDistinct`: 1 scenario for `RETURN DISTINCT`.
+- `Union`: 2 scenarios for `UNION` duplicate removal and `UNION ALL`
+  duplicate preservation.
+- `PathMetadata`: 1 scenario for `length(path)`.
+- `VariableLengthPaths`: 1 scenario for exact fixed-length relationship ranges.
+- `PathValues`: 1 expected rejection for materialized path returns.
 
 Unsupported scenarios are not silently skipped. If a scenario is part of the
 baseline, it must either produce the expected rows or the expected structured
