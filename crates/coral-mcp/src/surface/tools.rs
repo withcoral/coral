@@ -6,7 +6,14 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
+
+use super::{
+    Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
+};
+
+const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
+const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -72,6 +79,11 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
+pub(crate) struct OpenEpisodeArguments {
+    pub(crate) intent: String,
+    pub(crate) parent_episode_id: Option<String>,
+}
+
 pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "sql",
@@ -110,7 +122,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema/source name to list."
+                    "description": "Optional exact SQL schema name to list."
                 },
                 "kind": {
                     "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
@@ -165,7 +177,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
                 },
                 "schema": {
                     "type": "string",
-                    "description": "Optional exact SQL schema/source name to search."
+                    "description": "Optional exact SQL schema name to search."
                 },
                 "kind": {
                     "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
@@ -220,7 +232,7 @@ pub(crate) fn describe_table_tool() -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact SQL schema/source name."
+                    "description": "Exact SQL schema name."
                 },
                 "table": {
                     "type": "string",
@@ -248,7 +260,7 @@ pub(crate) fn list_columns_tool() -> Tool {
             "properties": {
                 "schema": {
                     "type": "string",
-                    "description": "Exact SQL schema/source name."
+                    "description": "Exact SQL schema name."
                 },
                 "table": {
                     "type": "string",
@@ -325,6 +337,36 @@ pub(crate) fn feedback_tool() -> Tool {
     )
 }
 
+pub(crate) fn open_episode_tool() -> Tool {
+    Tool::new(
+        "open_episode",
+        "Open a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["intent"],
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "Natural-language description of the task this episode should group.",
+                    "minLength": 1,
+                    "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
+                },
+                "parent_episode_id": nullable_episode_id_schema(Some(
+                    "Optional parent episode id when this task is a child of an existing episode."
+                ))
+            }
+        })),
+    )
+    .with_raw_output_schema(open_episode_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Open Episode")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn required_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
@@ -338,6 +380,15 @@ pub(crate) fn required_string_argument(
             ErrorData::invalid_params(format!("missing string argument '{key}'"), None)
         })?;
     Ok(value.to_string())
+}
+
+pub(crate) fn open_episode_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<OpenEpisodeArguments, ErrorData> {
+    Ok(OpenEpisodeArguments {
+        intent: required_string_argument(arguments, "intent")?,
+        parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
+    })
 }
 
 pub(crate) fn list_catalog_arguments(
@@ -400,6 +451,40 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
+pub(crate) fn optional_episode_id_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value.as_str().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
+    })?;
+    if value.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must not be empty"),
+            None,
+        ));
+    }
+    if value.len() > CORAL_EPISODE_ID_MAX_LEN {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be at most {CORAL_EPISODE_ID_MAX_LEN} bytes"),
+            None,
+        ));
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be graphic ASCII with no spaces or control bytes"),
+            None,
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
     let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -432,12 +517,62 @@ fn search_catalog_description(context: &ToolDescriptionContext) -> String {
     )
 }
 
-fn connected_source_names_text(source_names: &[String]) -> Option<String> {
-    if source_names.is_empty() {
-        return None;
-    }
+pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
+    add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
+    tool
+}
 
-    Some(source_names.join(", "))
+fn add_episode_id_property(schema: &mut Map<String, Value>) {
+    schema
+        .entry("properties")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("tool input properties are an object")
+        .insert(
+            "episode_id".to_string(),
+            nullable_episode_id_schema(Some(EPISODE_ID_ARGUMENT_DESCRIPTION)),
+        );
+}
+
+fn nullable_episode_id_schema(description: Option<&str>) -> Value {
+    let mut schema = json!({
+        "anyOf": [
+            episode_id_string_schema(),
+            {
+                "type": "null"
+            }
+        ]
+    });
+    if let Some(description) = description {
+        schema
+            .as_object_mut()
+            .expect("nullable episode id schema is an object")
+            .insert("description".to_string(), json!(description));
+    }
+    schema
+}
+
+fn episode_id_string_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": CORAL_EPISODE_ID_MAX_LEN,
+        "pattern": EPISODE_ID_JSON_SCHEMA_PATTERN
+    })
+}
+
+fn open_episode_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["episode_id", "parent_episode_id", "message", "instructions"],
+        "additionalProperties": false,
+        "properties": {
+            "episode_id": episode_id_string_schema(),
+            "parent_episode_id": nullable_episode_id_schema(None),
+            "message": { "type": "string" },
+            "instructions": { "type": "string" }
+        }
+    }))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
@@ -847,8 +982,9 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        ToolDescriptionContext, build_tool_result, connected_source_names_text,
-        list_catalog_arguments, search_catalog_arguments, search_catalog_tool, sql_tool,
+        EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
+        connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
+        search_catalog_tool, sql_tool, with_episode_id_argument,
     };
 
     #[test]
@@ -921,6 +1057,31 @@ mod tests {
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
+    }
+
+    #[test]
+    fn with_episode_id_argument_decorates_tool_schema() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tool = sql_tool(&context);
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("input properties");
+        assert!(!properties.contains_key("episode_id"));
+
+        let tool = with_episode_id_argument(tool);
+        let episode_id_schema = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("episode_id"))
+            .expect("episode_id schema");
+
+        assert_eq!(
+            episode_id_schema.get("description").and_then(Value::as_str),
+            Some(EPISODE_ID_ARGUMENT_DESCRIPTION)
+        );
     }
 
     #[test]

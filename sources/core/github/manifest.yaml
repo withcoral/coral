@@ -138504,6 +138504,7 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
         lookup_key: true

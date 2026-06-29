@@ -20,9 +20,9 @@ use crate::sources::catalog::{
     describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
-    MaterializationBuild, build_v4_materialization_tmp, canonicalize_file_descriptor,
-    cleanup_materialization_backup, cleanup_materialization_tmp, new_materialization_suffix,
-    replace_v4_materialization, restore_materialization_backup,
+    MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
+    canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
+    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -156,6 +156,18 @@ struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
     credential_material: Option<CredentialMaterialSnapshot>,
+}
+
+fn materialization_inputs_from_bindings(
+    bindings: &ValidatedBindings,
+    stored_material: &BTreeMap<String, String>,
+) -> MaterializationInputs {
+    let mut secrets = stored_material.clone();
+    secrets.extend(bindings.secrets.clone());
+    MaterializationInputs {
+        variables: bindings.variables.clone(),
+        secrets,
+    }
 }
 
 impl SourceManager {
@@ -363,6 +375,11 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
         let stored_material = self.source_stored_material_for_validation(
             workspace_name,
             candidate,
@@ -370,6 +387,8 @@ impl SourceManager {
             &BTreeSet::new(),
         )?;
         let bindings = validate_bindings(candidate, bindings, &stored_material)?;
+        let materialization_inputs =
+            materialization_inputs_from_bindings(&bindings, &stored_material);
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -389,6 +408,7 @@ impl SourceManager {
                         workspace_name,
                         candidate,
                         materialization_manifest_yaml,
+                        &materialization_inputs,
                         origin,
                         "tmp",
                     )?
@@ -416,6 +436,11 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
         let oauth_input_keys = oauth_credential_retrievals
             .iter()
             .map(|credential| credential.input_key.clone())
@@ -427,6 +452,7 @@ impl SourceManager {
             &oauth_input_keys,
         )?;
         let has_stored_material = !stored_material.is_empty();
+        let stored_material_for_materialization = stored_material.clone();
         let bindings = self
             .bindings_with_oauth_material(
                 candidate,
@@ -436,6 +462,8 @@ impl SourceManager {
                 events,
             )
             .await?;
+        let materialization_inputs =
+            materialization_inputs_from_bindings(&bindings, &stored_material_for_materialization);
         let credential_storage = self.source_persist_storage(
             workspace_name,
             &candidate.name,
@@ -455,6 +483,7 @@ impl SourceManager {
                         workspace_name,
                         candidate,
                         materialization_manifest_yaml,
+                        &materialization_inputs,
                         origin,
                         "tmp",
                     )?
@@ -712,6 +741,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         candidate: &CandidateSource,
         manifest_yaml: &str,
+        inputs: &MaterializationInputs,
         origin: SourceOrigin,
         suffix_prefix: &str,
     ) -> Result<Option<MaterializationBuild>, AppError> {
@@ -739,9 +769,39 @@ impl SourceManager {
             &candidate.name,
             manifest_yaml,
             v4,
+            inputs,
             &new_materialization_suffix(suffix_prefix),
         )
         .map(Some)
+    }
+
+    fn validate_runtime_schema_names_available(
+        &self,
+        workspace_name: &WorkspaceName,
+        candidate_name: &SourceName,
+        manifest_yaml: &str,
+    ) -> Result<(), AppError> {
+        let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let candidate_schema_names = runtime_schema_names(&candidate_manifest);
+        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+            if installed.name == *candidate_name {
+                continue;
+            }
+            let installed_manifest =
+                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+            let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
+            if let Some(schema_name) = candidate_schema_names
+                .intersection(&installed_schema_names)
+                .next()
+            {
+                return Err(AppError::InvalidInput(format!(
+                    "source '{candidate_name}' runtime schema name '{schema_name}' conflicts with installed source '{}'",
+                    installed.name
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn source_exists(
@@ -784,26 +844,34 @@ impl SourceManager {
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        if !source_needs_stored_material_for_validation(candidate, bindings, filled_secret_keys)? {
-            return Ok(BTreeMap::new());
-        }
-
-        let credential_storage = match self
+        let (credential_storage, persisted_secret_keys) = match self
             .config_store
             .get_source(workspace_name, &candidate.name)
         {
-            Ok(source) => source.credential_storage_for_material(),
+            Ok(source) => (
+                source.credential_storage_for_material(),
+                Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
+            ),
             Err(AppError::SourceNotFound(_))
                 if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
             {
-                Some(CredentialStorageKind::File)
+                (Some(CredentialStorageKind::File), None)
             }
-            Err(AppError::SourceNotFound(_)) => None,
+            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
             Err(error) => return Err(error),
         };
+
+        if !source_needs_stored_material_for_validation(
+            candidate,
+            bindings,
+            filled_secret_keys,
+            persisted_secret_keys.as_ref(),
+        )? {
+            return Ok(BTreeMap::new());
+        }
 
         match credential_storage {
             Some(credential_storage) => {
@@ -1189,13 +1257,14 @@ fn source_needs_stored_material_for_validation(
     candidate: &CandidateSource,
     bindings: &SourceBindings,
     filled_secret_keys: &BTreeSet<String>,
+    persisted_secret_keys: Option<&BTreeSet<String>>,
 ) -> Result<bool, AppError> {
     let supplied_secrets = collect_unique_secrets(&bindings.secrets)?;
     Ok(candidate.inputs.iter().any(|input| {
         input.kind == ManifestInputKind::Secret
-            && input.required
             && !supplied_secrets.contains_key(&input.key)
             && !filled_secret_keys.contains(&input.key)
+            && persisted_secret_keys.is_none_or(|keys| keys.contains(&input.key))
     }))
 }
 
@@ -1345,6 +1414,17 @@ fn normalize_binding_key(label: &str, value: &str) -> Result<String, AppError> {
     Ok(trimmed.to_string())
 }
 
+fn runtime_schema_names(manifest: &ValidatedSourceManifest) -> BTreeSet<String> {
+    if let Some(v4) = manifest.as_v4() {
+        return v4
+            .surfaces
+            .iter()
+            .map(|surface| surface.relation_namespace.clone())
+            .collect();
+    }
+    BTreeSet::from([manifest.schema_name().to_string()])
+}
+
 fn durable_import_manifest_yaml(
     manifest_yaml: &str,
     manifest: &ValidatedSourceManifest,
@@ -1414,7 +1494,7 @@ fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
@@ -1430,15 +1510,19 @@ mod tests {
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
         ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, normalize_binding_key,
+        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, ValidatedBindings,
+        materialization_inputs_from_bindings, normalize_binding_key,
+        source_needs_stored_material_for_validation,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
     use crate::sources::SourceName;
+    use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
+    use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     fn default_workspace() -> WorkspaceName {
         WorkspaceName::default()
@@ -1607,6 +1691,30 @@ surfaces:
         )
     }
 
+    fn manifest_v4_with_surface_namespace(
+        openapi_file: &std::path::Path,
+        source_name: &str,
+        namespace_suffix: &str,
+    ) -> String {
+        format!(
+            r#"
+name: {source_name}
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: {namespace_suffix}
+    type: openapi
+    file: {}
+    inputs:
+      API_BASE:
+        kind: variable
+        default: http://127.0.0.1:1
+    base_url: "{{{{input.API_BASE}}}}"
+"#,
+            openapi_file.display()
+        )
+    }
+
     fn manifest_v4_with_input_and_derived_base_url(openapi_file: &std::path::Path) -> String {
         format!(
             r"
@@ -1743,6 +1851,112 @@ tables:
         }
     }
 
+    fn candidate_with_secret(key: &str, required: bool) -> CandidateSource {
+        CandidateSource {
+            name: SourceName::parse("secured_messages").expect("source"),
+            description: String::new(),
+            version: None,
+            inputs: vec![ManifestInputSpec {
+                key: key.to_string(),
+                kind: ManifestInputKind::Secret,
+                required,
+                default_value: String::new(),
+                hint: None,
+                credential: None,
+            }],
+            installed: true,
+            origin: SourceOrigin::Imported,
+            credential_storage: Some(CredentialStorageKind::File),
+        }
+    }
+
+    #[test]
+    fn materialization_inputs_include_persisted_optional_secrets() {
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+        let persisted_secret_keys = BTreeSet::from(["OPTIONAL_TOKEN".to_string()]);
+        let needs_stored = source_needs_stored_material_for_validation(
+            &candidate,
+            &SourceBindings::default(),
+            &BTreeSet::new(),
+            Some(&persisted_secret_keys),
+        )
+        .expect("stored material check");
+        assert!(
+            needs_stored,
+            "optional persisted secrets can affect v4 materialization and should be loaded"
+        );
+
+        let bindings = ValidatedBindings {
+            variables: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            replaced_oauth_inputs: BTreeSet::new(),
+        };
+        let stored_material =
+            BTreeMap::from([("OPTIONAL_TOKEN".to_string(), "persisted-secret".to_string())]);
+
+        let inputs = materialization_inputs_from_bindings(&bindings, &stored_material);
+        assert_eq!(
+            inputs.secrets.get("OPTIONAL_TOKEN").map(String::as_str),
+            Some("persisted-secret")
+        );
+    }
+
+    #[test]
+    fn unsupplied_optional_secret_without_persisted_material_skips_keychain_read() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(config_store.clone(), credential_manager, layout);
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+
+        config_store
+            .upsert_source(
+                &default_workspace(),
+                InstalledSource {
+                    name: candidate.name.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["OTHER_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source metadata");
+
+        let stored_material = manager
+            .source_stored_material_for_validation(
+                &default_workspace(),
+                &candidate,
+                &SourceBindings::default(),
+                &BTreeSet::new(),
+            )
+            .expect("optional secret should not force keychain read");
+
+        assert!(stored_material.is_empty());
+    }
+
+    #[test]
+    fn unsupplied_optional_secret_with_persisted_material_needs_stored_material() {
+        let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
+        let persisted_secret_keys = BTreeSet::from(["OPTIONAL_TOKEN".to_string()]);
+        let needs_stored = source_needs_stored_material_for_validation(
+            &candidate,
+            &SourceBindings::default(),
+            &BTreeSet::new(),
+            Some(&persisted_secret_keys),
+        )
+        .expect("stored material check");
+
+        assert!(needs_stored);
+    }
+
     #[test]
     fn discover_sources_omits_core_v4_preview_sources() {
         let temp = TempDir::new().expect("temp dir");
@@ -1805,6 +2019,64 @@ tables:
             .get_source_info(&default_workspace(), &source_name)
             .expect("installed v4 source should be usable");
         assert_eq!(info.name.as_str(), "github_v4_test");
+    }
+
+    #[test]
+    fn import_v4_source_rejects_runtime_schema_collision_before_persistence() {
+        let temp = TempDir::new().expect("temp dir");
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
+        std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
+        let manager = SourceManager::new(
+            ConfigStore::new(layout.clone()),
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            layout.clone(),
+        );
+
+        manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_without_secrets()
+                        .replace("public_messages", "github_v4_rest"),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("install existing source");
+
+        let error = manager
+            .import_source(
+                &default_workspace(),
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_v4_with_surface_namespace(
+                        &openapi_file,
+                        "github_v4",
+                        "rest",
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect_err("surface namespace should collide with installed source schema");
+
+        let message = error.to_string();
+        assert!(message.contains("runtime schema name 'github_v4_rest'"));
+        assert!(message.contains("conflicts with installed source 'github_v4_rest'"));
+        let rejected_source = SourceName::parse("github_v4").expect("source");
+        assert!(
+            manager
+                .get_source(&default_workspace(), &rejected_source)
+                .is_err(),
+            "rejected source should not be persisted"
+        );
+        assert!(
+            !layout
+                .v4_materialized_dir(&default_workspace(), &rejected_source)
+                .exists(),
+            "rejected source should not materialize artifacts"
+        );
     }
 
     #[test]

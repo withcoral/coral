@@ -11,8 +11,9 @@ pub use catalog::{
 };
 pub use error::{CoreError, StatusCode, StructuredQueryError};
 pub use query::{
-    DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, QueryExecution,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
+    DependentJoinConfig, DependentJoinSourceConfig, EffectiveDependentJoinConfig, MemorySize,
+    QueryExecution, QueryExecutionProvenance, QueryMemoryConfig, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure,
     QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
     SourceValidationReport,
 };

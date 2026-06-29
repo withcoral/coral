@@ -60,7 +60,7 @@ impl ValidatedSourceManifest {
     }
 
     #[must_use]
-    /// Returns the source-spec `name`, which is also the stable SQL schema name.
+    /// Returns the source-spec `name`.
     pub fn schema_name(&self) -> &str {
         match &self.inner {
             ValidatedManifestKind::Http(manifest) => &manifest.common.name,
@@ -287,6 +287,35 @@ tables:
         .expect("manifest should parse");
 
         assert_eq!(manifest.test_queries(), &["SELECT 1", "SELECT 2"]);
+    }
+
+    #[test]
+    fn reserved_source_name_is_rejected() {
+        let error = parse_source_manifest_yaml(
+            r"
+name: public
+version: 1.0.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Demo messages
+    format: jsonl
+    source:
+      location: file:///tmp/demo/
+    columns:
+      - name: kind
+        type: Utf8
+",
+        )
+        .expect_err("reserved source name should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source name 'public' is reserved"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

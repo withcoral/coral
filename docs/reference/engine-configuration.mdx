@@ -5,6 +5,21 @@ description: "Configure query-engine runtime policy in Coral's local config.toml
 
 Coral reads engine settings from `config.toml` in the local state directory. See [Local state](/getting-started/installation#local-state) for the default location and the `CORAL_CONFIG_DIR` override.
 
+## Memory
+
+Use `[engine.memory]` to cap query-engine memory retained by DataFusion and Coral-owned operators such as dependent joins.
+
+```toml
+[engine.memory]
+limit = "2Gi"
+```
+
+| Key     | Type              | Default | Description                                           |
+| ------- | ----------------- | ------- | ----------------------------------------------------- |
+| `limit` | string or integer | unset   | Optional engine-wide query memory limit.              |
+
+String limits must use binary units: `Ki`, `Mi`, `Gi`, or `Ti`. Integer limits are interpreted as bytes. The limit must be greater than zero.
+
 ## Dependent joins
 
 Dependent joins let Coral rewrite eligible SQL joins into dependent predicate pushdown, so join-key values from one side can be sent as filters to an HTTP-backed source. The default settings live under `[engine.dependent_join]`.

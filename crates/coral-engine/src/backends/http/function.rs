@@ -1,9 +1,11 @@
-//! `DataFusion` table functions for manifest-driven HTTP-backed sources.
+//! Source table functions for manifest-driven HTTP-backed sources.
 //!
-//! `TableFunctionImpl::call` runs while `DataFusion` is planning a query. At
-//! that point we validate the positional call arguments and bind them into HTTP
-//! request values. The returned table provider is scanned later during
-//! execution, using the same `http_json_exec` path as manifest-backed tables.
+//! Binding runs when Coral resolves a parked source-function call — at
+//! relation planning for fully-literal calls, or in the analyzer once query
+//! parameters are bound. It validates the positional call arguments and
+//! captures them as HTTP request values. The returned table provider is
+//! scanned later during execution, using the same `http_json_exec` path as
+//! manifest-backed tables.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -12,12 +14,12 @@ use std::sync::Arc;
 
 use coral_spec::SourceTableFunctionSpec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_plan::ExecutionPlan;
 
+use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
@@ -77,8 +79,12 @@ impl HttpSourceTableFunction {
     }
 }
 
-impl TableFunctionImpl for HttpSourceTableFunction {
-    fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
+impl SourceFunctionProviderFactory for HttpSourceTableFunction {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.state.schema)
+    }
+
+    fn provider_for_args(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let arg_values = bind_function_args(&self.state.source_schema, &self.spec, args)?;
         Ok(Arc::new(HttpSourceFunctionCallTableProvider {
             state: Arc::clone(&self.state),

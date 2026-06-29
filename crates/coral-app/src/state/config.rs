@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig};
+use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
@@ -54,6 +54,10 @@ impl AppConfig {
             .clone()
             .try_into_runtime_config(selected_source_names)
     }
+
+    pub(crate) fn memory_config(&self) -> Result<QueryMemoryConfig, AppError> {
+        self.engine.memory.clone().try_into_runtime_config()
+    }
 }
 
 fn default_config_version() -> u32 {
@@ -74,6 +78,14 @@ struct PersistedAppConfig {
 struct PersistedEngineConfig {
     #[serde(default)]
     dependent_join: PersistedDependentJoinConfig,
+    #[serde(default)]
+    memory: PersistedMemoryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedMemoryConfig {
+    #[serde(default)]
+    limit: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -211,6 +223,18 @@ impl SourceCatalog {
         self.0
             .get(workspace_name)
             .map(|sources| sources.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn workspace_source_names(&self, workspace_name: &WorkspaceName) -> Vec<String> {
+        self.0
+            .get(workspace_name)
+            .map(|sources| {
+                sources
+                    .keys()
+                    .map(|source_name| source_name.as_str().to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -422,6 +446,14 @@ impl ConfigStore {
             .map(|catalog| catalog.workspace_sources(workspace_name))
     }
 
+    pub(crate) fn list_workspace_source_names(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<String>, AppError> {
+        self.load_catalog()
+            .map(|catalog| catalog.workspace_source_names(workspace_name))
+    }
+
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -461,6 +493,7 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
         .unwrap_or_default();
 
     doc["version"] = value(i64::from(config.version));
+    render_engine_config(&mut doc, &config.engine);
 
     // Remove and fully rebuild the workspaces section so removed sources don't linger.
     doc.remove("workspaces");
@@ -499,6 +532,61 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
     }
 
     doc.to_string()
+}
+
+fn render_engine_config(doc: &mut DocumentMut, engine: &PersistedEngineConfig) {
+    let Some(limit) = &engine.memory.limit else {
+        remove_engine_memory_limit(doc);
+        return;
+    };
+
+    let engine_item = doc
+        .as_table_mut()
+        .entry("engine")
+        .or_insert_with(toml_edit::table);
+    if !engine_item.is_table() {
+        *engine_item = toml_edit::table();
+    }
+    ensure_implicit_table(engine_item);
+
+    let engine_table = engine_item
+        .as_table_mut()
+        .expect("engine config entry should be a table after initialization");
+    let memory_item = engine_table
+        .entry("memory")
+        .or_insert_with(toml_edit::table);
+    if !memory_item.is_table() {
+        *memory_item = toml_edit::table();
+    }
+    memory_item
+        .as_table_mut()
+        .expect("engine memory config entry should be a table after initialization")["limit"] =
+        render_memory_limit_value(limit);
+}
+
+fn render_memory_limit_value(limit: &toml::Value) -> Item {
+    match limit {
+        toml::Value::String(raw) => value(raw.clone()),
+        toml::Value::Integer(raw) => value(*raw),
+        toml::Value::Float(raw) => value(*raw),
+        toml::Value::Boolean(raw) => value(*raw),
+        toml::Value::Datetime(raw) => value(raw.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => value(limit.to_string()),
+    }
+}
+
+fn remove_engine_memory_limit(doc: &mut DocumentMut) {
+    let Some(engine) = doc
+        .as_table_mut()
+        .get_mut("engine")
+        .and_then(Item::as_table_mut)
+    else {
+        return;
+    };
+    let Some(memory) = engine.get_mut("memory").and_then(Item::as_table_mut) else {
+        return;
+    };
+    memory.remove("limit");
 }
 
 fn ensure_implicit_table(item: &mut Item) {
@@ -549,6 +637,38 @@ impl From<&AppConfig> for PersistedAppConfig {
             engine: value.engine.clone(),
             workspaces,
         }
+    }
+}
+
+impl PersistedMemoryConfig {
+    fn try_into_runtime_config(self) -> Result<QueryMemoryConfig, AppError> {
+        let limit = self
+            .limit
+            .as_ref()
+            .map(parse_memory_limit_value)
+            .transpose()?;
+        Ok(QueryMemoryConfig::with_limit(limit))
+    }
+}
+
+fn parse_memory_limit_value(value: &toml::Value) -> Result<MemorySize, AppError> {
+    match value {
+        toml::Value::String(raw) => raw
+            .parse::<MemorySize>()
+            .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}"))),
+        toml::Value::Integer(bytes) if *bytes > 0 => {
+            let bytes = usize::try_from(*bytes).map_err(|_error| {
+                AppError::InvalidInput("engine.memory.limit: memory limit is too large".to_string())
+            })?;
+            MemorySize::from_bytes(bytes)
+                .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))
+        }
+        toml::Value::Integer(_) => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be greater than 0".to_string(),
+        )),
+        _ => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be a string with binary unit Ki, Mi, Gi, or Ti, or a positive integer byte count".to_string(),
+        )),
     }
 }
 
@@ -687,9 +807,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, PersistedAppConfig, PersistedEngineConfig, RawFeatureContainerState,
-        RawFeatureValue, SourceCatalog, load_raw_feature_overrides, render_config,
-        set_raw_feature_override,
+        AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
+        RawFeatureContainerState, RawFeatureValue, SourceCatalog, load_raw_feature_overrides,
+        render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -826,6 +946,24 @@ origin = "bundled"
     }
 
     #[test]
+    fn lists_workspace_source_names_in_lexical_order() {
+        let workspace_name = default_workspace();
+        let mut catalog = SourceCatalog::default();
+        catalog.upsert_source(&workspace_name, installed_source("slack"));
+        catalog.upsert_source(&workspace_name, installed_source("github"));
+        catalog.upsert_source(&workspace_name, installed_source("linear"));
+
+        assert_eq!(
+            catalog.workspace_source_names(&workspace_name),
+            vec![
+                "github".to_string(),
+                "linear".to_string(),
+                "slack".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn loads_dependent_join_engine_config() {
         let raw = r"
 version = 1
@@ -895,6 +1033,167 @@ enabled = false
                 enabled: Some(false),
                 ..DependentJoinSourceConfig::default()
             })
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config_from_integer_bytes() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = 2147483648
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn renders_engine_memory_config() {
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+    }
+
+    #[test]
+    fn rendering_engine_memory_preserves_unrelated_engine_sections() {
+        let existing_raw = r"
+version = 1
+
+[engine.other]
+flag = true
+";
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rendering_without_engine_memory_limit_removes_stale_limit() {
+        let existing_raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+
+[engine.other]
+flag = true
+"#;
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(!raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rejects_invalid_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2GiB"
+"#;
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("invalid memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must use binary unit")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_engine_memory_value_without_toml_decode_failure() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = true
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("unsupported memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must be a string")
         );
     }
 

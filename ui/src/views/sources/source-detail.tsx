@@ -276,40 +276,45 @@ function SourceDetailDialogContent({
         />
       )}
 
-      {confirmingRemove ? (
-        <RemoveConfirmation
-          deleting={deleting}
-          name={name}
-          onCancel={() => setConfirmingRemove(false)}
-          onDelete={onDelete}
-        />
-      ) : (
-        <Dialog.Actions>
+      <Dialog.Actions>
+        <ButtonContainer
+          variant="bare"
+          size="32"
+          onClick={() => setConfirmingRemove(true)}
+          disabled={saving || deleting}
+        >
+          <ButtonText>Remove</ButtonText>
+        </ButtonContainer>
+        {editable && hasChanges ? (
           <ButtonContainer
-            variant="bare"
+            variant="primary"
             size="32"
-            onClick={() => setConfirmingRemove(true)}
-            disabled={saving || deleting}
+            onClick={() => void save()}
+            disabled={saving}
           >
-            <ButtonText>Remove</ButtonText>
+            {saving ? <ButtonIcon name="Loader" /> : null}
+            <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
           </ButtonContainer>
-          {editable && hasChanges ? (
-            <ButtonContainer
-              variant="primary"
-              size="32"
-              onClick={() => void save()}
-              disabled={saving}
-            >
-              {saving ? <ButtonIcon name="Loader" /> : null}
-              <ButtonText>{saving ? 'Saving…' : 'Save changes'}</ButtonText>
-            </ButtonContainer>
-          ) : (
-            <ButtonContainer variant="primary" size="32" onClick={onClose}>
-              <ButtonText>Close</ButtonText>
-            </ButtonContainer>
-          )}
-        </Dialog.Actions>
-      )}
+        ) : (
+          <ButtonContainer variant="primary" size="32" onClick={onClose}>
+            <ButtonText>Close</ButtonText>
+          </ButtonContainer>
+        )}
+      </Dialog.Actions>
+
+      <Dialog.Root open={confirmingRemove} onOpenChange={(open) => setConfirmingRemove(open)}>
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup size="m">
+            <RemoveConfirmation
+              deleting={deleting}
+              name={name}
+              onCancel={() => setConfirmingRemove(false)}
+              onDelete={onDelete}
+            />
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </>
   )
 }
@@ -326,15 +331,15 @@ function RemoveConfirmation({
   onDelete: () => void
 }) {
   return (
-    <section className={styles.removeConfirm} aria-live="polite">
+    <>
       <div className={styles.removeConfirmText}>
-        <Typography.BodySmallStrong variant="primary">Remove {name}?</Typography.BodySmallStrong>
-        <Typography.BodySmall variant="secondary">
+        <Dialog.Title>Remove {name}?</Dialog.Title>
+        <Dialog.Description>
           This deletes the source configuration and stored credentials from this workspace. You can
           reinstall later, but you'll need to re-supply any secrets.
-        </Typography.BodySmall>
+        </Dialog.Description>
       </div>
-      <div className={styles.removeConfirmActions}>
+      <Dialog.Actions className={styles.removeConfirmActions}>
         <ButtonContainer variant="secondary" size="32" onClick={onCancel} disabled={deleting}>
           <ButtonText>Cancel</ButtonText>
         </ButtonContainer>
@@ -347,8 +352,8 @@ function RemoveConfirmation({
           {deleting ? <ButtonIcon name="Loader" /> : null}
           <ButtonText>{deleting ? 'Removing…' : 'Remove'}</ButtonText>
         </ButtonContainer>
-      </div>
-    </section>
+      </Dialog.Actions>
+    </>
   )
 }
 

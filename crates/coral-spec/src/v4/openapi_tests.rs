@@ -449,12 +449,16 @@ paths:
 
     let range = operations.get("range_list").expect("range operation");
     assert_eq!(range.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(range_rest) = &range.execution;
+    let IrExecutionAttachment::Rest(range_rest) = &range.execution else {
+        panic!("range operation should be REST");
+    };
     assert_eq!(range_rest.response.status_code, 200);
 
     let numeric = operations.get("numeric_list").expect("numeric operation");
     assert_eq!(numeric.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution;
+    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution else {
+        panic!("numeric operation should be REST");
+    };
     assert_eq!(numeric_rest.response.status_code, 201);
 }
 
@@ -655,6 +659,61 @@ paths:
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
     }
+}
+
+#[test]
+fn importer_warns_for_openapi_all_of_property_conflicts() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: conflicting_all_of
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Combined'}
+components:
+  schemas:
+    Combined:
+      allOf:
+        - type: object
+          properties:
+            id: {type: string}
+        - type: object
+          properties:
+            id: {type: integer}
+"
+        .as_bytes(),
+    )
+    .expect("conflicting allOf imports with diagnostics");
+
+    let operation = ir.operations.first().expect("operation");
+    let codes = operation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert_eq!(operation.output.type_ref, "json");
 }
 
 #[test]

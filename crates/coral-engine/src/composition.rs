@@ -10,7 +10,7 @@ use datafusion::datasource::TableProvider;
 use reqwest::header::{HeaderName, HeaderValue};
 
 use crate::CoreError;
-use crate::contracts::QuerySource;
+use crate::contracts::{QueryExecutionProvenance, QuerySource};
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
 /// One source's table providers keyed by manifest table name.
@@ -165,7 +165,7 @@ impl SourceInputResolutionContext {
     }
 
     #[must_use]
-    /// Returns the canonical source name. This is also the SQL schema name.
+    /// Returns the canonical installed source name.
     pub fn source_name(&self) -> &str {
         &self.source_name
     }
@@ -272,8 +272,8 @@ pub trait SourceInputResolver: Send + Sync + std::fmt::Debug {
 /// background workers when they should not delay the query response.
 ///
 /// Observers receive read-only references to the final SQL text, Arrow schema,
-/// and result batches; implementations must not rely on mutating the returned
-/// query result.
+/// result batches, and successful-execution provenance; implementations must
+/// not rely on mutating the returned query result.
 pub trait QueryResultObserver: Send + Sync {
     /// Stable observer name used in diagnostics.
     fn name(&self) -> &'static str;
@@ -290,6 +290,7 @@ pub trait QueryResultObserver: Send + Sync {
         sql: &str,
         schema: &Schema,
         batches: &[RecordBatch],
+        provenance: &QueryExecutionProvenance,
     ) -> Result<(), QueryResultObserverError>;
 }
 

@@ -8,6 +8,9 @@ use crate::v4::ir::{
     IrScalarType, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
 };
 use crate::v4::naming::normalize_identifier;
+use crate::v4::surfaces::json_schema::{
+    json_schema_default_to_string, json_schema_scalar_type_or_string, json_schema_type_display,
+};
 use crate::{ManifestError, PageSizeSpec, PaginationMode, PaginationSpec, Result};
 
 use super::import::OpenApiImporter;
@@ -70,14 +73,14 @@ impl OpenApiImporter<'_> {
             inputs: parameters,
             output,
             entity,
-            execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+            execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                 method,
                 path_template: path.to_string(),
                 parameters: rest_parameters,
                 request_body,
                 response,
                 pagination,
-            }),
+            })),
             diagnostics,
         })
     }
@@ -157,7 +160,7 @@ impl OpenApiImporter<'_> {
                     location,
                     required: parameter_is_required(parameter_obj, location),
                     data_type: scalar,
-                    default_value: schema.get("default").map(openapi_default_to_string),
+                    default_value: schema.get("default").map(json_schema_default_to_string),
                     description: parameter_obj
                         .get("description")
                         .and_then(Value::as_str)
@@ -176,30 +179,17 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<IrScalarType> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
-        let schema_type = resolved
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("string");
-        let scalar = match schema_type {
-            "string" => {
-                if resolved.get("format").and_then(Value::as_str) == Some("date-time") {
-                    IrScalarType::Timestamp
-                } else {
-                    IrScalarType::String
-                }
-            }
-            "integer" => IrScalarType::Integer,
-            "number" => IrScalarType::Number,
-            "boolean" => IrScalarType::Boolean,
-            other => {
-                diagnostics.push(Diagnostic::warning(
-                    "PROJECTION_INPUT_UNSUPPORTED",
-                    format!("parameter '{name}' has unsupported schema type '{other}'"),
-                    self.surface.id.clone(),
-                    Some(operation_id.to_string()),
-                ));
-                return None;
-            }
+        let Some(scalar) = json_schema_scalar_type_or_string(&resolved) else {
+            diagnostics.push(Diagnostic::warning(
+                "PROJECTION_INPUT_UNSUPPORTED",
+                format!(
+                    "parameter '{name}' has unsupported schema type '{}'",
+                    json_schema_type_display(&resolved)
+                ),
+                self.surface.id.clone(),
+                Some(operation_id.to_string()),
+            ));
+            return None;
         };
         Some(scalar)
     }
@@ -273,15 +263,6 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
         .get("required")
         .and_then(Value::as_bool)
         .unwrap_or(false)
-}
-
-fn openapi_default_to_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null | Value::Array(_) | Value::Object(_) => value.to_string(),
-    }
 }
 
 fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {

@@ -121,13 +121,13 @@ impl ValidatedSourceManifest {
             }
         }
 
-        if let Some(mcp) = self.as_mcp()
-            && let McpServerSpec::StreamableHttp { url, .. } = &mcp.server
-        {
-            collect_host(
+        if let Some(mcp) = self.as_mcp() {
+            collect_mcp_server_host(
                 &mut hosts,
                 &mut unresolved_hosts,
-                &render_string_template_with_input_values(url, inputs, source_inputs),
+                &mcp.server,
+                inputs,
+                source_inputs,
             );
         }
 
@@ -137,21 +137,29 @@ impl ValidatedSourceManifest {
                     collect_host(&mut hosts, &mut unresolved_hosts, url);
                 }
 
-                if surface.openapi_runtime.base_url.raw().trim().is_empty() {
-                    collect_v4_derived_openapi_host(
+                if let Some(runtime) = surface.openapi_runtime() {
+                    if runtime.base_url.raw().trim().is_empty() {
+                        collect_v4_derived_openapi_host(
+                            &mut hosts,
+                            &mut unresolved_hosts,
+                            &surface.descriptor,
+                        );
+                    } else {
+                        collect_host(
+                            &mut hosts,
+                            &mut unresolved_hosts,
+                            &render_with_input_values(&runtime.base_url, inputs, source_inputs),
+                        );
+                    }
+                }
+
+                if let Some(runtime) = surface.mcp_runtime() {
+                    collect_mcp_server_host(
                         &mut hosts,
                         &mut unresolved_hosts,
-                        &surface.descriptor,
-                    );
-                } else {
-                    collect_host(
-                        &mut hosts,
-                        &mut unresolved_hosts,
-                        &render_with_input_values(
-                            &surface.openapi_runtime.base_url,
-                            inputs,
-                            source_inputs,
-                        ),
+                        &runtime.server,
+                        inputs,
+                        source_inputs,
                     );
                 }
             }
@@ -178,6 +186,22 @@ fn collect_v4_derived_openapi_host(
         return;
     }
     unresolved_hosts.insert(UNRESOLVED_OPENAPI_SERVER_HOST.to_string());
+}
+
+fn collect_mcp_server_host(
+    hosts: &mut BTreeSet<String>,
+    unresolved_hosts: &mut BTreeSet<String>,
+    server: &McpServerSpec,
+    inputs: &[ManifestInputSpec],
+    source_inputs: &BTreeMap<String, String>,
+) {
+    if let McpServerSpec::StreamableHttp { url, .. } = server {
+        collect_host(
+            hosts,
+            unresolved_hosts,
+            &render_string_template_with_input_values(url, inputs, source_inputs),
+        );
+    }
 }
 
 /// Renders a template, substituting input tokens with their manifest default
@@ -637,6 +661,48 @@ surfaces:
             review.unresolved_hosts,
             vec![UNRESOLVED_OPENAPI_SERVER_HOST.to_string()]
         );
+    }
+
+    #[test]
+    fn includes_v4_streamable_http_mcp_surface_host() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: streamable_http
+      url: https://mcp.example.com:8443/mcp
+",
+        )
+        .expect("manifest should parse");
+
+        let review = manifest.outbound_host_review();
+        assert_eq!(review.hosts, vec!["mcp.example.com:8443".to_string()]);
+        assert!(review.unresolved_hosts.is_empty());
+    }
+
+    #[test]
+    fn omits_v4_stdio_mcp_surface_host_without_openapi_marker() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+        )
+        .expect("manifest should parse");
+
+        let review = manifest.outbound_host_review();
+        assert!(review.hosts.is_empty());
+        assert!(review.unresolved_hosts.is_empty());
     }
 
     fn write_openapi_fixture(contents: &str) -> PathBuf {

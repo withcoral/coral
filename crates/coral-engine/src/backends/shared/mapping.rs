@@ -1154,4 +1154,33 @@ mod tests {
         assert!(col.is_null(5));
         assert!(col.is_null(6));
     }
+
+    #[test]
+    fn json_type_serializes_current_row_strings_as_json_strings() {
+        let table = table_with_expr("result_json", "Json", &ExprSpec::Path { path: Vec::new() });
+        let schema = schema_from_columns(table.columns(), "test", table.name()).unwrap();
+        let items = vec![json!("plain text"), json!({"login": "simonwhitaker"})];
+        let batch = convert_items(
+            table.columns(),
+            schema,
+            &HashMap::new(),
+            &HashMap::new(),
+            &items,
+        )
+        .unwrap();
+
+        let col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(0)).unwrap(),
+            json!("plain text")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(col.value(1)).unwrap(),
+            json!({"login": "simonwhitaker"})
+        );
+    }
 }

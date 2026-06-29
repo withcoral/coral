@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use coral_spec::backends::http::HttpTableSpec;
 use datafusion::common::{Result, Statistics, plan_err};
@@ -27,6 +26,9 @@ use crate::runtime::dependent_join::fetcher::{BindingFetcher, BindingFetcherConf
 use crate::runtime::dependent_join::logical::BindingKey;
 use crate::runtime::dependent_join::output::{BuildJoinedBatchesConfig, build_joined_batches};
 use crate::runtime::dependent_join::state::{DependentJoinRuntimeState, ResolverCaps};
+use crate::runtime::memory::{
+    CoralExecutionPlan, CoralMemoryBehavior, RetainedMemory, RetainedRecordBatches,
+};
 
 pub(crate) struct DependentJoinExec {
     resolver: Arc<dyn ExecutionPlan>,
@@ -196,6 +198,18 @@ impl DisplayAs for DependentJoinExec {
     }
 }
 
+impl CoralExecutionPlan for DependentJoinExec {
+    fn memory_behavior(&self) -> CoralMemoryBehavior {
+        CoralMemoryBehavior::RetainsMemory {
+            consumer_name: format!(
+                "DependentJoinExec({}.{})",
+                self.dependent_source_schema,
+                self.table.name()
+            ),
+        }
+    }
+}
+
 fn format_binding_keys(binding_keys: &[BindingKey]) -> String {
     let rendered = binding_keys
         .iter()
@@ -306,7 +320,12 @@ impl ExecutionPlan for DependentJoinExec {
         let page_hint = self.page_hint;
         let output_schema = Arc::clone(&self.output_schema);
         let stream_schema = Arc::clone(&self.output_schema);
+        let retained_stream_schema = Arc::clone(&self.output_schema);
         let metrics = DependentJoinMetrics::new(&self.metrics, partition);
+        let memory = self
+            .memory_behavior()
+            .retained_memory(context.as_ref())
+            .expect("DependentJoinExec must retain memory");
 
         let output = stream::once(async move {
             execute_dependent_join(
@@ -328,11 +347,14 @@ impl ExecutionPlan for DependentJoinExec {
                 page_hint,
                 metrics,
                 output_schema,
+                memory,
             )
             .await
         })
-        .flat_map(|result| match result {
-            Ok(batches) => stream::iter(batches.into_iter().map(Ok)).boxed(),
+        .flat_map(move |result| match result {
+            Ok(batches) => batches
+                .into_stream(Arc::clone(&retained_stream_schema))
+                .boxed(),
             Err(error) => stream::iter(vec![Err(error)]).boxed(),
         });
 
@@ -370,9 +392,10 @@ async fn execute_dependent_join(
     page_hint: Option<usize>,
     metrics: DependentJoinMetrics,
     output_schema: SchemaRef,
-) -> Result<Vec<RecordBatch>> {
+    memory: RetainedMemory,
+) -> Result<RetainedRecordBatches> {
     let projector = BindingProjector::new(binding_keys);
-    let mut state = DependentJoinRuntimeState::default();
+    let mut state = DependentJoinRuntimeState::new(memory);
     let mut tuples = Vec::new();
 
     for resolver_partition in 0..resolver_partition_count {
@@ -395,15 +418,19 @@ async fn execute_dependent_join(
     let state = run_binding_phase(state, tuples, &fetcher).await?;
     metrics.record(&state);
 
-    build_joined_batches(BuildJoinedBatchesConfig {
-        state: &state,
-        dependent_source_schema: &dependent_source_schema,
-        dependent_table: &table,
-        binding_filters: &binding_filters,
-        literal_filters: &literal_filters,
-        dependent_projection: &dependent_projection,
-        resolver_projection_len,
-        dependent_first,
-        output_schema: &output_schema,
-    })
+    let output_memory = state.memory().new_empty();
+    build_joined_batches(
+        &BuildJoinedBatchesConfig {
+            state: &state,
+            dependent_source_schema: &dependent_source_schema,
+            dependent_table: &table,
+            binding_filters: &binding_filters,
+            literal_filters: &literal_filters,
+            dependent_projection: &dependent_projection,
+            resolver_projection_len,
+            dependent_first,
+            output_schema: &output_schema,
+        },
+        output_memory,
+    )
 }

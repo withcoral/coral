@@ -1,6 +1,6 @@
 //! Composite runtime source registration for app-assembled component packages.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,8 +9,9 @@ use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendRegistration, BackendRegistrationContext, CompiledBackendSource, RegisteredSource,
-    SourceTableFunctions,
+    BackendRegistration, BackendRegistrationContext, BackendSchemaRegistration,
+    CompiledBackendSource, RegisteredInput, RegisteredSource, RegisteredTable,
+    RegisteredTableFunction,
 };
 
 struct CompositeCompiledSource {
@@ -50,49 +51,83 @@ impl CompiledBackendSource for CompositeCompiledSource {
         ctx: &SessionContext,
         registration_context: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration> {
-        let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
-        let mut table_functions = SourceTableFunctions::new();
-        let mut registered_tables = Vec::new();
-        let mut registered_functions = Vec::new();
-        let mut inputs = Vec::new();
-        let mut input_keys = BTreeSet::new();
+        let mut schemas: BTreeMap<String, CompositeSchemaRegistration> = BTreeMap::new();
 
         for component in &self.components {
             let registration = component.register(ctx, registration_context).await?;
-            for (name, table) in registration.tables {
-                if tables.insert(name.clone(), table).is_some() {
-                    return Err(DataFusionError::Execution(format!(
-                        "source '{}' registered duplicate table '{name}'",
-                        self.source_name
-                    )));
+            for schema in registration.schemas {
+                let schema_name = schema.source.schema_name.clone();
+                let target = schemas
+                    .entry(schema_name.clone())
+                    .or_insert_with(|| CompositeSchemaRegistration::new(schema_name.clone()));
+                for (name, table) in schema.tables {
+                    if target.tables.insert(name.clone(), table).is_some() {
+                        return Err(DataFusionError::Execution(format!(
+                            "source '{}' schema '{schema_name}' registered duplicate table '{name}'",
+                            self.source_name
+                        )));
+                    }
                 }
-            }
-            for (name, function) in registration.table_functions {
-                if table_functions.insert(name.clone(), function).is_some() {
-                    return Err(DataFusionError::Execution(format!(
-                        "source '{}' registered duplicate table function '{name}'",
-                        self.source_name
-                    )));
+                for function in schema.source.table_functions {
+                    let function_name = function.function_name.clone();
+                    if !target.function_keys.insert(function_name.clone()) {
+                        return Err(DataFusionError::Execution(format!(
+                            "source '{}' schema '{schema_name}' registered duplicate table function '{function_name}'",
+                            self.source_name
+                        )));
+                    }
+                    target.registered_functions.push(function);
                 }
-            }
-            registered_tables.extend(registration.source.tables);
-            registered_functions.extend(registration.source.table_functions);
-            for input in registration.source.inputs {
-                if input_keys.insert(input.key.clone()) {
-                    inputs.push(input);
+                target.registered_tables.extend(schema.source.tables);
+                for input in schema.source.inputs {
+                    if target.input_keys.insert(input.key.clone()) {
+                        target.inputs.push(input);
+                    }
                 }
             }
         }
 
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.source_name.clone(),
-                tables: registered_tables,
-                table_functions: registered_functions,
-                inputs,
-            },
+            schemas: schemas
+                .into_values()
+                .map(CompositeSchemaRegistration::into_registration)
+                .collect(),
         })
+    }
+}
+
+struct CompositeSchemaRegistration {
+    schema_name: String,
+    tables: HashMap<String, Arc<dyn TableProvider>>,
+    function_keys: BTreeSet<String>,
+    registered_tables: Vec<RegisteredTable>,
+    registered_functions: Vec<RegisteredTableFunction>,
+    inputs: Vec<RegisteredInput>,
+    input_keys: BTreeSet<String>,
+}
+
+impl CompositeSchemaRegistration {
+    fn new(schema_name: String) -> Self {
+        Self {
+            schema_name,
+            tables: HashMap::new(),
+            function_keys: BTreeSet::new(),
+            registered_tables: Vec::new(),
+            registered_functions: Vec::new(),
+            inputs: Vec::new(),
+            input_keys: BTreeSet::new(),
+        }
+    }
+
+    fn into_registration(self) -> BackendSchemaRegistration {
+        BackendSchemaRegistration {
+            tables: self.tables,
+            source: RegisteredSource {
+                schema_name: self.schema_name,
+                tables: self.registered_tables,
+                table_functions: self.registered_functions,
+                inputs: self.inputs,
+            },
+        }
     }
 }

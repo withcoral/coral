@@ -27,7 +27,7 @@ use crate::{
     },
     validate::{validate_host_template_inputs, validate_template},
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
-    validate_http_table, validate_test_queries,
+    validate_http_table, validate_source_name, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -289,6 +289,7 @@ impl HttpSourceManifest {
                 "source '{name}' must define at least one table or function"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
         validate_declared_relation_namespace(
             &name,

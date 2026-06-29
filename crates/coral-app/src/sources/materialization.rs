@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use coral_spec::v4::{
-    Diagnostic, Fingerprint, FingerprintSurface, MaterializedSurface, OPENAPI_IMPORTER_VERSION,
-    PROJECTION_GENERATOR_VERSION, ProjectionCatalog, SemanticIr, V4_ARTIFACT_SCHEMA_VERSION,
-    V4MaterializedSource, V4SourceManifest, generate_projection_catalog, import_openapi_surface,
-    normalize_source_document, openapi_document_metadata, validate_materialized_source,
-    validate_openapi_base_url_template,
+    Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
+    MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
+    ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
+    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
+    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
+    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
+    validate_materialized_source, validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -36,12 +38,19 @@ pub(crate) struct MaterializationBuild {
     pub(crate) temp_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MaterializationInputs {
+    pub(crate) variables: BTreeMap<String, String>,
+    pub(crate) secrets: BTreeMap<String, String>,
+}
+
 pub(crate) fn build_v4_materialization_tmp(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
     source_name: &SourceName,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    inputs: &MaterializationInputs,
     temp_suffix: &str,
 ) -> Result<MaterializationBuild, AppError> {
     let temp_dir = layout.v4_materialized_tmp_dir(workspace_name, source_name, temp_suffix);
@@ -50,7 +59,7 @@ pub(crate) fn build_v4_materialization_tmp(
     }
     fs::ensure_private_dir(&temp_dir)?;
 
-    match write_materialization(&temp_dir, manifest_yaml, manifest) {
+    match write_materialization(&temp_dir, manifest_yaml, manifest, inputs) {
         Ok(()) => Ok(MaterializationBuild { temp_dir }),
         Err(error) => {
             if temp_dir.exists() {
@@ -166,7 +175,18 @@ pub(crate) fn load_v4_materialization(
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
-    for surface in &manifest.surfaces {
+    for fingerprint_surface in &fingerprint.surfaces {
+        let surface = manifest
+            .surface(&fingerprint_surface.surface_id)
+            .ok_or_else(|| {
+                incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "fingerprint references undeclared surface '{}'",
+                        fingerprint_surface.surface_id
+                    ),
+                )
+            })?;
         let surface_dir = layout.v4_surface_dir(workspace_name, source_name, &surface.id);
         let raw_source_document_path = surface_dir.join("source-document.raw");
         let normalized_source_document_path = surface_dir.join("source-document.yaml");
@@ -176,16 +196,10 @@ pub(crate) fn load_v4_materialization(
         require_file(source_name, &semantic_ir_path)?;
         let semantic_ir: SemanticIr =
             read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
-        let source_document_sha256 = fingerprint
-            .surfaces
-            .iter()
-            .find(|entry| entry.surface_id == surface.id)
-            .map(|entry| entry.descriptor_sha256.clone())
-            .unwrap_or_default();
         surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
-            source_document_sha256,
+            source_document_sha256: fingerprint_surface.descriptor_sha256.clone(),
             normalized_source_document_path,
             raw_source_document_path,
         });
@@ -217,7 +231,7 @@ fn validate_fingerprint_header(
             "fingerprint source name does not match installed manifest",
         ));
     }
-    if fingerprint.importer_version != OPENAPI_IMPORTER_VERSION
+    if fingerprint.importer_version != SURFACE_IMPORTER_VERSION
         || fingerprint.projection_generator_version != PROJECTION_GENERATOR_VERSION
     {
         return Err(incompatible_materialization_error(
@@ -233,7 +247,7 @@ fn validate_fingerprint_surfaces(
     manifest: &V4SourceManifest,
     fingerprint: &Fingerprint,
 ) -> Result<BTreeMap<String, FingerprintSurface>, AppError> {
-    let expected_ids = manifest
+    let declared_ids = manifest
         .surfaces
         .iter()
         .map(|surface| surface.id.as_str())
@@ -247,32 +261,29 @@ fn validate_fingerprint_surfaces(
                 format!("fingerprint repeats surface '{}'", surface.surface_id),
             ));
         }
+        if !declared_ids.contains(surface.surface_id.as_str()) {
+            return Err(incompatible_materialization_error(
+                source_name,
+                format!(
+                    "fingerprint surface set mismatch; missing [], extra [{}]",
+                    surface.surface_id
+                ),
+            ));
+        }
         by_id.insert(surface.surface_id.clone(), surface.clone());
     }
-    let actual_ids = seen_ids;
-    if actual_ids != expected_ids {
-        let missing = expected_ids
-            .difference(&actual_ids)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let extra = actual_ids
-            .difference(&expected_ids)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(incompatible_materialization_error(
-            source_name,
-            format!("fingerprint surface set mismatch; missing [{missing}], extra [{extra}]"),
-        ));
-    }
-    for surface in &manifest.surfaces {
-        let fingerprint_surface = by_id.get(&surface.id).ok_or_else(|| {
-            incompatible_materialization_error(
-                source_name,
-                format!("fingerprint is missing surface '{}'", surface.id),
-            )
-        })?;
+    for fingerprint_surface in &fingerprint.surfaces {
+        let surface = manifest
+            .surface(&fingerprint_surface.surface_id)
+            .ok_or_else(|| {
+                incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "fingerprint references undeclared surface '{}'",
+                        fingerprint_surface.surface_id
+                    ),
+                )
+            })?;
         if fingerprint_surface.surface_type != surface.surface_type {
             return Err(incompatible_materialization_error(
                 source_name,
@@ -371,21 +382,26 @@ fn validate_loaded_materialization(
         )
     })?;
     let mut operations_by_surface: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for surface in &manifest.surfaces {
-        let Some(materialized_surface) = materialized
-            .surfaces
-            .iter()
-            .find(|candidate| candidate.surface_id == surface.id)
+    for materialized_surface in &materialized.surfaces {
+        let surface = manifest
+            .surface(&materialized_surface.surface_id)
+            .ok_or_else(|| {
+                incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "materialized surface '{}' is not declared",
+                        materialized_surface.surface_id
+                    ),
+                )
+            })?;
+        let Some(fingerprint_surface) = fingerprint_surfaces.get(&materialized_surface.surface_id)
         else {
             return Err(incompatible_materialization_error(
                 source_name,
-                format!("materialized surface '{}' is missing", surface.id),
-            ));
-        };
-        let Some(fingerprint_surface) = fingerprint_surfaces.get(&surface.id) else {
-            return Err(incompatible_materialization_error(
-                source_name,
-                format!("fingerprint is missing surface '{}'", surface.id),
+                format!(
+                    "fingerprint is missing surface '{}'",
+                    materialized_surface.surface_id
+                ),
             ));
         };
         let raw_bytes = read_raw_source_document_artifact(
@@ -410,7 +426,7 @@ fn validate_loaded_materialization(
             &materialized_surface.semantic_ir,
         )?;
         operations_by_surface.insert(
-            surface.id.as_str(),
+            materialized_surface.surface_id.as_str(),
             materialized_surface
                 .semantic_ir
                 .operations
@@ -419,6 +435,20 @@ fn validate_loaded_materialization(
                 .collect(),
         );
     }
+    validate_projection_references(source_name, manifest, materialized, &operations_by_surface)
+}
+
+fn validate_projection_references(
+    source_name: &SourceName,
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+    operations_by_surface: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<(), AppError> {
+    let relation_namespace_by_surface = manifest
+        .surfaces
+        .iter()
+        .map(|surface| (surface.id.as_str(), surface.relation_namespace.as_str()))
+        .collect::<BTreeMap<_, _>>();
     for projection in &materialized.projections.projections {
         let Some(operations) = operations_by_surface.get(projection.surface_id.as_str()) else {
             return Err(incompatible_materialization_error(
@@ -429,6 +459,29 @@ fn validate_loaded_materialization(
                 ),
             ));
         };
+        let expected_relation_namespace = relation_namespace_by_surface
+            .get(projection.surface_id.as_str())
+            .ok_or_else(|| {
+                incompatible_materialization_error(
+                    source_name,
+                    format!(
+                        "projection '{}' references missing surface '{}'",
+                        projection.name, projection.surface_id
+                    ),
+                )
+            })?;
+        if projection.namespace != *expected_relation_namespace {
+            return Err(incompatible_materialization_error(
+                source_name,
+                format!(
+                    "projection '{}' namespace '{}' does not match surface '{}' relation namespace '{}'",
+                    projection.name,
+                    projection.namespace,
+                    projection.surface_id,
+                    expected_relation_namespace
+                ),
+            ));
+        }
         if !operations.contains(projection.operation_id.as_str()) {
             return Err(incompatible_materialization_error(
                 source_name,
@@ -466,7 +519,7 @@ fn validate_semantic_ir(
             format!("semantic IR identity mismatch for surface '{}'", surface.id),
         ));
     }
-    if semantic_ir.importer_version != OPENAPI_IMPORTER_VERSION {
+    if semantic_ir.importer_version != expected_importer_version(surface.surface_type) {
         return Err(incompatible_materialization_error(
             source_name,
             format!(
@@ -476,6 +529,13 @@ fn validate_semantic_ir(
         ));
     }
     Ok(())
+}
+
+fn expected_importer_version(surface_type: SurfaceType) -> &'static str {
+    match surface_type {
+        SurfaceType::OpenApi => OPENAPI_IMPORTER_VERSION,
+        SurfaceType::Mcp => MCP_IMPORTER_VERSION,
+    }
 }
 
 pub(crate) fn incompatible_materialization_error(
@@ -492,50 +552,80 @@ fn write_materialization(
     temp_dir: &Path,
     manifest_yaml: &str,
     manifest: &V4SourceManifest,
+    inputs: &MaterializationInputs,
 ) -> Result<(), AppError> {
     let manifest_sha256 = sha256_hex(manifest_yaml.as_bytes());
     let mut materialized_surfaces = Vec::new();
     let mut semantic_irs = Vec::new();
     let mut fingerprint_surfaces = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut first_surface_error = None;
     for surface in &manifest.surfaces {
-        let bytes = read_descriptor(surface)?;
-        validate_materialized_surface_base_url(manifest, surface, &bytes)?;
-        let observed = sha256_hex(&bytes);
-        let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
-            AppError::FailedPrecondition(format!(
-                "failed to import source '{}' surface '{}': {error}",
-                manifest.common.name, surface.id
-            ))
-        })?;
+        let materialized_surface = match materialize_surface(manifest, surface, inputs) {
+            Ok(materialized_surface) => materialized_surface,
+            Err(error) => {
+                let message = format!(
+                    "failed to materialize source '{}' surface '{}': {error}",
+                    manifest.common.name, surface.id
+                );
+                if first_surface_error.is_none() {
+                    first_surface_error = Some(message.clone());
+                }
+                diagnostics.push(Diagnostic {
+                    code: "SURFACE_MATERIALIZATION_FAILED".to_string(),
+                    severity: DiagnosticSeverity::Warning,
+                    message,
+                    surface_id: Some(surface.id.clone()),
+                    operation_id: None,
+                    projection_name: None,
+                });
+                continue;
+            }
+        };
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
         fs::ensure_private_dir(&surface_dir)?;
-        std::fs::write(surface_dir.join("source-document.raw"), &bytes)?;
+        std::fs::write(
+            surface_dir.join("source-document.raw"),
+            &materialized_surface.raw_document,
+        )?;
         std::fs::write(
             surface_dir.join("source-document.yaml"),
-            normalize_source_document(&bytes)
-                .map_err(|error| AppError::FailedPrecondition(error.to_string()))?,
+            &materialized_surface.normalized_document,
         )?;
-        write_yaml(&surface_dir.join("semantic-ir.yaml"), &semantic_ir)?;
+        write_yaml(
+            &surface_dir.join("semantic-ir.yaml"),
+            &materialized_surface.semantic_ir,
+        )?;
         materialized_surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
-            semantic_ir: semantic_ir.clone(),
-            source_document_sha256: observed.clone(),
+            semantic_ir: materialized_surface.semantic_ir.clone(),
+            source_document_sha256: materialized_surface.observed_sha256.clone(),
             normalized_source_document_path: surface_dir.join("source-document.yaml"),
             raw_source_document_path: surface_dir.join("source-document.raw"),
         });
-        semantic_irs.push(semantic_ir);
+        semantic_irs.push(materialized_surface.semantic_ir);
         fingerprint_surfaces.push(FingerprintSurface {
             surface_id: surface.id.clone(),
             surface_type: surface.surface_type,
             descriptor_kind: surface.descriptor.kind().to_string(),
             descriptor_location: surface.descriptor.location(),
-            descriptor_sha256: observed,
+            descriptor_sha256: materialized_surface.observed_sha256,
             input_declarations_sha256: stable_input_declarations_sha256(&surface.inputs)?,
         });
     }
+    if semantic_irs.is_empty() {
+        return Err(AppError::Unavailable(first_surface_error.unwrap_or_else(
+            || {
+                format!(
+                    "failed to materialize source '{}': no surfaces were materialized",
+                    manifest.common.name
+                )
+            },
+        )));
+    }
     let projections = generate_projection_catalog(manifest, &semantic_irs)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    let mut diagnostics = projections.diagnostics.clone();
+    diagnostics.extend(projections.diagnostics.clone());
     for ir in &semantic_irs {
         diagnostics.extend(ir.diagnostics.clone());
         diagnostics.extend(
@@ -549,7 +639,7 @@ fn write_materialization(
         source_name: manifest.common.name.clone(),
         manifest_sha256: manifest_sha256.clone(),
         surfaces: fingerprint_surfaces,
-        importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+        importer_version: SURFACE_IMPORTER_VERSION.to_string(),
         projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
     };
     let materialized = V4MaterializedSource {
@@ -566,12 +656,138 @@ fn write_materialization(
     Ok(())
 }
 
+struct MaterializedSurfaceBuild {
+    raw_document: Vec<u8>,
+    normalized_document: Vec<u8>,
+    observed_sha256: String,
+    semantic_ir: SemanticIr,
+}
+
+fn materialize_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    match surface.surface_type {
+        SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
+        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+    }
+}
+
+fn materialize_openapi_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    let bytes = read_descriptor(surface)?;
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
+    let observed_sha256 = sha256_hex(&bytes);
+    let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to import source '{}' surface '{}': {error}",
+            manifest.common.name, surface.id
+        ))
+    })?;
+    let normalized_document = normalize_source_document(&bytes)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    Ok(MaterializedSurfaceBuild {
+        raw_document: bytes,
+        normalized_document: normalized_document.into_bytes(),
+        observed_sha256,
+        semantic_ir,
+    })
+}
+
+fn materialize_mcp_surface(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<MaterializedSurfaceBuild, AppError> {
+    let catalog = discover_mcp_tool_catalog(manifest, surface, inputs)?;
+    let normalized_document = normalize_mcp_tool_catalog(&catalog)
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let observed_sha256 = sha256_hex(&normalized_document);
+    let semantic_ir = import_mcp_surface(manifest, surface, &catalog).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to import source '{}' surface '{}': {error}",
+            manifest.common.name, surface.id
+        ))
+    })?;
+    Ok(MaterializedSurfaceBuild {
+        raw_document: normalized_document.clone(),
+        normalized_document,
+        observed_sha256,
+        semantic_ir,
+    })
+}
+
+fn discover_mcp_tool_catalog(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    inputs: &MaterializationInputs,
+) -> Result<McpToolCatalog, AppError> {
+    let runtime = surface.mcp_runtime().ok_or_else(|| {
+        AppError::FailedPrecondition(format!(
+            "DSL v4 surface '{}' is not an MCP surface",
+            surface.id
+        ))
+    })?;
+    let source_name = manifest.common.name.clone();
+    let server = runtime.server.clone();
+    let declared_inputs = surface.inputs.clone();
+    let variables = inputs.variables.clone();
+    let secrets = inputs.secrets.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(AppError::from)?;
+        runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    DESCRIPTOR_FETCH_TIMEOUT,
+                    coral_engine::discover_mcp_tool_catalog(
+                        &source_name,
+                        server,
+                        &declared_inputs,
+                        variables,
+                        secrets,
+                    ),
+                )
+                .await
+            })
+            .map_err(|_elapsed| {
+                AppError::Unavailable(format!(
+                    "timed out discovering MCP tools for source '{source_name}'"
+                ))
+            })?
+            .map_err(app_error_from_core)
+    })
+    .join()
+    .map_err(|_panic| {
+        AppError::Unavailable(format!(
+            "failed to discover MCP tools for source '{}' surface '{}': discovery thread panicked",
+            manifest.common.name, surface.id
+        ))
+    })?
+}
+
+fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
+    match error {
+        coral_engine::CoreError::InvalidInput(detail) => AppError::InvalidInput(detail),
+        coral_engine::CoreError::Unavailable(detail) => AppError::Unavailable(detail),
+        other => AppError::FailedPrecondition(other.to_string()),
+    }
+}
+
 fn validate_materialized_surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     bytes: &[u8],
 ) -> Result<(), AppError> {
-    if !surface.openapi_runtime.base_url.raw().trim().is_empty() {
+    let Some(openapi_runtime) = surface.openapi_runtime() else {
+        return Ok(());
+    };
+    if !openapi_runtime.base_url.raw().trim().is_empty() {
         return Ok(());
     }
     let metadata = openapi_document_metadata(bytes).map_err(|error| {
@@ -603,6 +819,12 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
     match &surface.descriptor {
         coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
         coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
+        coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
+            Err(AppError::FailedPrecondition(format!(
+                "DSL v4 MCP surface '{}' does not have an OpenAPI descriptor",
+                surface.id
+            )))
+        }
     }
 }
 
@@ -884,7 +1106,10 @@ pub(crate) fn new_materialization_suffix(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use coral_spec::parse_source_manifest_yaml;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -914,6 +1139,102 @@ paths:
                   properties:
                     id: {type: integer}
 "
+    }
+
+    fn json_rpc_result_response(id: Value, result: Value) -> ResponseTemplate {
+        let mut body = serde_json::Map::new();
+        body.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        body.insert("id".to_string(), id);
+        body.insert("result".to_string(), result);
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(Value::Object(body))
+    }
+
+    fn json_rpc_request_id(body: &Value) -> Option<Value> {
+        body.get("id").cloned()
+    }
+
+    fn missing_json_rpc_request_id_response() -> ResponseTemplate {
+        ResponseTemplate::new(400).set_body_string("JSON-RPC request is missing id")
+    }
+
+    async fn mount_mcp_materialization_server(server: &MockServer) {
+        Mock::given(method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => json_rpc_request_id(&body).map_or_else(
+                        missing_json_rpc_request_id_response,
+                        |id| {
+                            json_rpc_result_response(
+                                id,
+                                json!({
+                                    "protocolVersion": "2025-03-26",
+                                    "capabilities": { "tools": {} },
+                                    "serverInfo": { "name": "test-mcp", "version": "1.0.0" }
+                                }),
+                            )
+                        },
+                    ),
+                    Some("notifications/initialized") => ResponseTemplate::new(202),
+                    Some("tools/list") => json_rpc_request_id(&body).map_or_else(
+                        missing_json_rpc_request_id_response,
+                        |id| {
+                            json_rpc_result_response(
+                                id,
+                                json!({
+                                    "tools": [{
+                                        "name": "list_items",
+                                        "description": "List items",
+                                        "inputSchema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "cursor": { "type": "string" }
+                                            }
+                                        },
+                                        "outputSchema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "items": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "id": { "type": "string" }
+                                                        }
+                                                    }
+                                                },
+                                                "meta": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "nextCursor": { "type": ["string", "null"] }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "annotations": { "readOnlyHint": true }
+                                    }]
+                                }),
+                            )
+                        },
+                    ),
+                    other => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {other:?}")),
+                }
+            })
+            .mount(server)
+            .await;
+    }
+
+    #[test]
+    fn json_rpc_request_id_rejects_missing_request_id() {
+        let result = json_rpc_request_id(&json!({
+            "jsonrpc": "2.0",
+            "method": "tools/list"
+        }));
+
+        assert!(result.is_none(), "request methods must include an id");
     }
 
     fn setup_materialization() -> (TempDir, TempDir, AppStateLayout, String, V4SourceManifest) {
@@ -948,12 +1269,173 @@ surfaces:
             &source_name(),
             &manifest_yaml,
             &manifest,
+            &MaterializationInputs::default(),
             "test",
         )
         .expect("build materialization");
         replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
             .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+    }
+
+    #[tokio::test]
+    async fn build_v4_materialization_tmp_materializes_mcp_surface() {
+        let server = MockServer::start().await;
+        mount_mcp_materialization_server(&server).await;
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r#"
+name: mcp_materialization_test
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    server:
+      transport: streamable_http
+      url: "{}"
+"#,
+            server.uri()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &SourceName::parse("mcp_materialization_test").expect("source"),
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build MCP materialization");
+
+        let semantic_ir: SemanticIr = read_yaml(
+            &build
+                .temp_dir
+                .join("surfaces")
+                .join("mcp")
+                .join("semantic-ir.yaml"),
+        )
+        .expect("read semantic IR");
+        let operation = semantic_ir.operations.first().expect("operation");
+        let coral_spec::v4::IrExecutionAttachment::Mcp(mcp) = &operation.execution else {
+            panic!("expected MCP execution");
+        };
+        let pagination = mcp.pagination.as_ref().expect("pagination");
+        assert_eq!(pagination.cursor_arg, "cursor");
+        assert_eq!(
+            pagination.response_cursor_path,
+            vec!["meta".to_string(), "nextCursor".to_string()]
+        );
+
+        let projections: ProjectionCatalog =
+            read_yaml(&build.temp_dir.join("projections.yaml")).expect("read projections");
+        let projection = projections.projections.first().expect("projection");
+        assert_eq!(projection.namespace, "mcp_materialization_test");
+        let column_names = projection
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(column_names, ["result", "result_json"]);
+    }
+
+    #[test]
+    fn build_v4_materialization_keeps_successful_surfaces_when_mcp_discovery_fails() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: mixed_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    namespace_suffix: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+  - id: mcp
+    namespace_suffix: mcp
+    type: mcp
+    server:
+      transport: stdio
+      command: definitely-missing-coral-mcp-server
+",
+            openapi_file.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name = SourceName::parse("mixed_materialization_test").expect("source");
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("partial materialization should succeed");
+
+        let fingerprint: Fingerprint =
+            read_yaml(&build.temp_dir.join("fingerprint.yaml")).expect("read fingerprint");
+        let surface_ids = fingerprint
+            .surfaces
+            .iter()
+            .map(|surface| surface.surface_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(surface_ids, ["rest"]);
+        assert!(build.temp_dir.join("surfaces").join("rest").exists());
+        assert!(!build.temp_dir.join("surfaces").join("mcp").exists());
+
+        let diagnostics: Vec<Diagnostic> =
+            read_yaml(&build.temp_dir.join("diagnostics.yaml")).expect("read diagnostics");
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "SURFACE_MATERIALIZATION_FAILED"
+                    && diagnostic.surface_id.as_deref() == Some("mcp")
+            }),
+            "expected MCP failure diagnostic: {diagnostics:#?}"
+        );
+
+        replace_v4_materialization(&layout, &workspace_name(), &source_name, &build.temp_dir)
+            .expect("install partial materialization");
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("load partial materialization");
+        assert_eq!(materialized.surfaces.len(), 1);
+        assert_eq!(
+            materialized.surfaces.first().expect("surface").surface_id,
+            "rest"
+        );
+        assert!(
+            materialized
+                .projections
+                .projections
+                .iter()
+                .all(|projection| projection.surface_id == "rest")
+        );
     }
 
     fn credential_method_hint_manifest(hint: &str) -> V4SourceManifest {

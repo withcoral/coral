@@ -97,20 +97,26 @@ test('installs a core source via paste, edits a binding, and removes it', async 
   await expect(detailDialog).toHaveCount(0)
   await review.pause()
 
-  await review.chapter('Remove the source', 'Confirm the remove flow inside the detail dialog')
+  await review.chapter('Remove the source', 'Confirm the remove flow in a stacked dialog')
   await page.getByRole('button', { name: /Linear/i }).click()
-  const reopenedDetailDialog = page.getByRole('dialog', { name: /Linear/i })
+  const reopenedDetailDialog = page
+    .getByRole('dialog', { includeHidden: true })
+    .filter({ hasText: 'LINEAR_API_TOKEN' })
   await expect(reopenedDetailDialog).toBeVisible()
   await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
 
+  const removeDialog = page.getByRole('dialog', { name: 'Remove linear?' })
+  await expect(page.getByRole('dialog', { includeHidden: true })).toHaveCount(2)
   await expect(page.getByRole('dialog')).toHaveCount(1)
-  await expect(reopenedDetailDialog.getByText('Remove linear?')).toBeVisible()
-  await reopenedDetailDialog.getByRole('button', { name: 'Cancel' }).click()
-  await expect(reopenedDetailDialog.getByText('Remove linear?')).toHaveCount(0)
+  await expect(reopenedDetailDialog).toHaveAttribute('data-nested-dialog-open', '')
+  await expect(removeDialog).toBeVisible()
+  await removeDialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(removeDialog).toHaveCount(0)
+  await expect(page.getByRole('dialog')).toHaveCount(1)
 
   await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
-  await expect(reopenedDetailDialog.getByText('Remove linear?')).toBeVisible()
-  await reopenedDetailDialog.getByRole('button', { name: 'Remove' }).click()
+  await expect(removeDialog).toBeVisible()
+  await removeDialog.getByRole('button', { name: 'Remove' }).click()
 
   await expect(page.getByText('Removed linear')).toBeVisible()
   await expect(page.getByRole('button', { name: /Linear/i })).toBeVisible()

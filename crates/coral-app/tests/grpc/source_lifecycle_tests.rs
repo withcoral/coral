@@ -1529,6 +1529,11 @@ origin = "imported"
 "#,
     )
     .expect("write initial config");
+    let demo_manifest = fixture_manifest_yaml(temp.path()).replace("local_messages", "demo");
+    let demo_manifest_path = source_dir(&config_dir, "demo").join("manifest.yaml");
+    fs::create_dir_all(demo_manifest_path.parent().expect("manifest parent"))
+        .expect("create demo source dir");
+    fs::write(demo_manifest_path, demo_manifest).expect("write demo manifest");
 
     let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
     let manifest_yaml = fixture_manifest_yaml(temp.path());

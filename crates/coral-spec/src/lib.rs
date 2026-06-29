@@ -94,7 +94,6 @@ pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
     McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
-pub(crate) use common::validate_test_queries;
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
     FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,
@@ -102,6 +101,9 @@ pub use common::{
     ResponseSpec, RowStrategy, SearchLimitsSpec, SourceBackend, SourceManifestCommon,
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
     TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
+};
+pub(crate) use common::{
+    validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
 };
 pub use endpoints::OutboundHostReview;
 pub use error::{ManifestError, Result};

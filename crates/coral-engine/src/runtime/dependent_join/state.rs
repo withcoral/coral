@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::runtime::dependent_join::bindings::{BindingProjector, Tuple};
 use crate::runtime::dependent_join::error::DependentJoinError;
+use crate::runtime::memory::RetainedMemory;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolverCaps {
@@ -23,8 +24,9 @@ pub(crate) struct ResolverRowId {
     pub(crate) row_idx: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct DependentJoinRuntimeState {
+    memory: RetainedMemory,
     resolver_batches: Vec<RecordBatch>,
     bindings_by_tuple: HashMap<Tuple, Vec<ResolverRowId>>,
     seen_tuples: HashSet<Tuple>,
@@ -35,6 +37,19 @@ pub(crate) struct DependentJoinRuntimeState {
 }
 
 impl DependentJoinRuntimeState {
+    pub(crate) fn new(memory: RetainedMemory) -> Self {
+        Self {
+            memory,
+            resolver_batches: Vec::new(),
+            bindings_by_tuple: HashMap::new(),
+            seen_tuples: HashSet::new(),
+            buffered_results: HashMap::new(),
+            resolver_rows: 0,
+            resolver_null_binding_rows: 0,
+            distinct_tuples: 0,
+        }
+    }
+
     pub(crate) fn ingest_resolver_batch(
         &mut self,
         batch: &RecordBatch,
@@ -48,6 +63,7 @@ impl DependentJoinRuntimeState {
         }
 
         let batch_idx = self.resolver_batches.len();
+        self.memory.try_reserve_record_batch(batch)?;
         self.resolver_batches.push(batch.clone());
         self.resolver_rows = observed;
         self.resolver_null_binding_rows = self
@@ -61,18 +77,39 @@ impl DependentJoinRuntimeState {
                 continue;
             };
 
-            self.bindings_by_tuple
-                .entry(tuple.clone())
-                .or_default()
-                .push(ResolverRowId { batch_idx, row_idx });
+            let is_new_binding_tuple = !self.bindings_by_tuple.contains_key(&tuple);
+            let is_new_fetch_tuple = !self.seen_tuples.contains(&tuple);
+            self.reserve_tuple_copies(
+                &tuple,
+                usize::from(is_new_binding_tuple)
+                    + usize::from(is_new_fetch_tuple)
+                    + usize::from(is_new_fetch_tuple),
+            )?;
 
-            if self.seen_tuples.insert(tuple.clone()) {
+            if let Some(resolver_rows) = self.bindings_by_tuple.get_mut(&tuple) {
+                resolver_rows.push(ResolverRowId { batch_idx, row_idx });
+            } else {
+                self.bindings_by_tuple
+                    .insert(tuple.clone(), vec![ResolverRowId { batch_idx, row_idx }]);
+            }
+
+            if is_new_fetch_tuple {
+                self.seen_tuples.insert(tuple.clone());
                 self.distinct_tuples += 1;
                 new_tuples.push(tuple);
             }
         }
 
         Ok(new_tuples)
+    }
+
+    fn reserve_tuple_copies(&self, tuple: &Tuple, copies: usize) -> Result<()> {
+        let bytes = tuple.retained_size().checked_mul(copies).ok_or_else(|| {
+            DataFusionError::ResourcesExhausted(
+                "dependent join binding tuple memory estimate overflow".into(),
+            )
+        })?;
+        self.memory.try_reserve_bytes(bytes)
     }
 
     fn project_batch_tuples(
@@ -113,8 +150,10 @@ impl DependentJoinRuntimeState {
         Ok(projected_tuples)
     }
 
-    pub(crate) fn buffer_fetch_result(&mut self, tuple: Tuple, rows: Vec<Value>) {
+    pub(crate) fn buffer_fetch_result(&mut self, tuple: Tuple, rows: Vec<Value>) -> Result<()> {
+        self.memory.try_reserve_json_rows(&rows)?;
         self.buffered_results.insert(tuple, rows);
+        Ok(())
     }
 
     pub(crate) fn resolver_rows(&self) -> usize {
@@ -151,6 +190,10 @@ impl DependentJoinRuntimeState {
 
     pub(crate) fn buffered_rows_for_tuple(&self, tuple: &Tuple) -> Option<&[Value]> {
         self.buffered_results.get(tuple).map(Vec::as_slice)
+    }
+
+    pub(crate) fn memory(&self) -> &RetainedMemory {
+        &self.memory
     }
 }
 
@@ -192,8 +235,11 @@ mod tests {
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::Column;
+    use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, UnboundedMemoryPool};
 
+    use crate::runtime::dependent_join::bindings::BindingValue;
     use crate::runtime::dependent_join::logical::BindingKey;
+    use crate::runtime::memory::RetainedMemory;
 
     use super::*;
 
@@ -232,12 +278,22 @@ mod tests {
             .expect("record batch")
     }
 
+    fn test_memory() -> RetainedMemory {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        RetainedMemory::new(reservation)
+    }
+
+    fn test_state() -> DependentJoinRuntimeState {
+        DependentJoinRuntimeState::new(test_memory())
+    }
+
     #[test]
     fn resolver_row_cap_rejects_batch_before_buffering_it() {
         let batch = id_batch(vec!["one", "two"]);
         let caps = caps(10, 1, 10);
         let projector = BindingProjector::new(Arc::from(Vec::<BindingKey>::new()));
-        let mut state = DependentJoinRuntimeState::default();
+        let mut state = test_state();
 
         let error = state
             .ingest_resolver_batch(&batch, &projector, &caps)
@@ -259,7 +315,7 @@ mod tests {
         let batch = nullable_id_batch(vec![None, None]);
         let caps = caps(10, 1, 10);
         let projector = id_projector();
-        let mut state = DependentJoinRuntimeState::default();
+        let mut state = test_state();
 
         let error = state
             .ingest_resolver_batch(&batch, &projector, &caps)
@@ -281,7 +337,7 @@ mod tests {
         let batch = id_batch(vec!["one", "two"]);
         let caps = caps(1, 1, 10);
         let projector = id_projector();
-        let mut state = DependentJoinRuntimeState::default();
+        let mut state = test_state();
 
         let error = state
             .ingest_resolver_batch(&batch, &projector, &caps)
@@ -300,11 +356,30 @@ mod tests {
     }
 
     #[test]
+    fn retained_binding_tuples_are_accounted() {
+        let batch = id_batch(vec!["one"]);
+        let caps = caps(10, 10, 10);
+        let projector = id_projector();
+        let mut state = test_state();
+        let tuple = Tuple::new(vec![BindingValue::String("one".to_string())]);
+        let expected_tuple_bytes = tuple.retained_size() * 3;
+
+        state
+            .ingest_resolver_batch(&batch, &projector, &caps)
+            .expect("batch should ingest");
+
+        assert!(
+            state.memory().reserved() >= batch.get_array_memory_size() + expected_tuple_bytes,
+            "retained bytes should include resolver batch and binding tuple copies"
+        );
+    }
+
+    #[test]
     fn per_binding_resolver_row_cap_takes_precedence_over_total_resolver_row_cap() {
         let batch = id_batch(vec!["one", "one"]);
         let caps = caps(10, 1, 1);
         let projector = id_projector();
-        let mut state = DependentJoinRuntimeState::default();
+        let mut state = test_state();
 
         let error = state
             .ingest_resolver_batch(&batch, &projector, &caps)

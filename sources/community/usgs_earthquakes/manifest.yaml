@@ -1,0 +1,516 @@
+name: usgs_earthquakes
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: Query earthquake events from the public USGS Earthquake Catalog API as SQL.
+base_url: https://earthquake.usgs.gov/fdsnws/event/1
+test_queries:
+  - SELECT id, magnitude, place, latitude, longitude, depth_km, event_time FROM usgs_earthquakes.events LIMIT 1
+  - SELECT id, magnitude, place FROM usgs_earthquakes.events WHERE min_magnitude = 5 ORDER BY event_time DESC LIMIT 1
+tables:
+  - name: events
+    description: |
+      Earthquake events from the USGS Earthquake Catalog GeoJSON query endpoint.
+      Filter by time, magnitude, bounding box, radius, event type, alert level, or
+      review status. Without filters, USGS returns recent events.
+    fetch_limit_default: 100
+    filters:
+      - name: start_time
+        type: Utf8
+        description: Inclusive event start time in ISO 8601 format, for example 2026-05-01 or 2026-05-01T00:00:00.
+      - name: end_time
+        type: Utf8
+        description: Inclusive event end time in ISO 8601 format.
+      - name: updated_after
+        type: Utf8
+        description: Return events updated after this ISO 8601 timestamp.
+      - name: min_magnitude
+        type: Float64
+        description: Minimum earthquake magnitude.
+      - name: max_magnitude
+        type: Float64
+        description: Maximum earthquake magnitude.
+      - name: center_latitude
+        type: Float64
+        description: Center latitude for radius searches. Use with center_longitude and max_radius_km.
+      - name: center_longitude
+        type: Float64
+        description: Center longitude for radius searches. Use with center_latitude and max_radius_km.
+      - name: max_radius_km
+        type: Float64
+        description: Maximum radius in kilometers from latitude and longitude.
+      - name: min_latitude
+        type: Float64
+        description: Southern bounding-box latitude.
+      - name: max_latitude
+        type: Float64
+        description: Northern bounding-box latitude.
+      - name: min_longitude
+        type: Float64
+        description: Western bounding-box longitude.
+      - name: max_longitude
+        type: Float64
+        description: Eastern bounding-box longitude.
+      - name: event_type
+        type: Utf8
+        description: USGS event type, for example earthquake, quarry blast, explosion, or ice quake.
+      - name: alert_level
+        type: Utf8
+        description: PAGER alert level such as green, yellow, orange, or red.
+      - name: status
+        type: Utf8
+        description: Review status, commonly automatic or reviewed.
+      - name: order_by
+        type: Utf8
+        description: USGS ordering option such as time, time-asc, magnitude, or magnitude-asc.
+    request:
+      method: GET
+      path: /query
+      query:
+        - name: format
+          from: literal
+          value: geojson
+        - name: starttime
+          from: filter
+          key: start_time
+        - name: endtime
+          from: filter
+          key: end_time
+        - name: updatedafter
+          from: filter
+          key: updated_after
+        - name: minmagnitude
+          from: filter
+          key: min_magnitude
+        - name: maxmagnitude
+          from: filter
+          key: max_magnitude
+        - name: latitude
+          from: filter
+          key: center_latitude
+        - name: longitude
+          from: filter
+          key: center_longitude
+        - name: maxradiuskm
+          from: filter
+          key: max_radius_km
+        - name: minlatitude
+          from: filter
+          key: min_latitude
+        - name: maxlatitude
+          from: filter
+          key: max_latitude
+        - name: minlongitude
+          from: filter
+          key: min_longitude
+        - name: maxlongitude
+          from: filter
+          key: max_longitude
+        - name: eventtype
+          from: filter
+          key: event_type
+        - name: alertlevel
+          from: filter
+          key: alert_level
+        - name: reviewstatus
+          from: filter
+          key: status
+        - name: orderby
+          from: filter
+          key: order_by
+    response:
+      rows_path:
+        - features
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: offset
+      offset_start: 1
+      page_size:
+        default: 100
+        max: 20000
+        query_param: limit
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        description: USGS event identifier.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: magnitude
+        type: Float64
+        nullable: true
+        description: Reported event magnitude.
+        expr:
+          kind: path
+          path:
+            - properties
+            - mag
+      - name: place
+        type: Utf8
+        nullable: true
+        description: Human-readable location summary.
+        expr:
+          kind: path
+          path:
+            - properties
+            - place
+      - name: event_time
+        type: Timestamp
+        nullable: true
+        description: Event origin time.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - properties
+              - time
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Last time USGS updated this event record.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - properties
+              - updated
+      - name: url
+        type: Utf8
+        nullable: true
+        description: Human-facing USGS event page.
+        expr:
+          kind: path
+          path:
+            - properties
+            - url
+      - name: detail_url
+        type: Utf8
+        nullable: true
+        description: USGS detail GeoJSON URL for the event.
+        expr:
+          kind: path
+          path:
+            - properties
+            - detail
+      - name: felt_reports
+        type: Int64
+        nullable: true
+        description: Number of Did You Feel It reports.
+        expr:
+          kind: path
+          path:
+            - properties
+            - felt
+      - name: cdi
+        type: Float64
+        nullable: true
+        description: Community Decimal Intensity, when available.
+        expr:
+          kind: path
+          path:
+            - properties
+            - cdi
+      - name: mmi
+        type: Float64
+        nullable: true
+        description: Modified Mercalli Intensity, when available.
+        expr:
+          kind: path
+          path:
+            - properties
+            - mmi
+      - name: alert
+        type: Utf8
+        nullable: true
+        description: PAGER alert level.
+        expr:
+          kind: path
+          path:
+            - properties
+            - alert
+      - name: status
+        type: Utf8
+        nullable: true
+        description: Review status.
+        expr:
+          kind: path
+          path:
+            - properties
+            - status
+      - name: tsunami
+        type: Int64
+        nullable: true
+        description: Tsunami flag from USGS, usually 0 or 1.
+        expr:
+          kind: path
+          path:
+            - properties
+            - tsunami
+      - name: significance
+        type: Int64
+        nullable: true
+        description: USGS event significance score.
+        expr:
+          kind: path
+          path:
+            - properties
+            - sig
+      - name: network
+        type: Utf8
+        nullable: true
+        description: Reporting seismic network code.
+        expr:
+          kind: path
+          path:
+            - properties
+            - net
+      - name: code
+        type: Utf8
+        nullable: true
+        description: Event code assigned by the reporting network.
+        expr:
+          kind: path
+          path:
+            - properties
+            - code
+      - name: ids
+        type: Utf8
+        nullable: true
+        description: Comma-delimited related event identifiers from USGS.
+        expr:
+          kind: path
+          path:
+            - properties
+            - ids
+      - name: sources
+        type: Utf8
+        nullable: true
+        description: Comma-delimited contributing network sources.
+        expr:
+          kind: path
+          path:
+            - properties
+            - sources
+      - name: product_types
+        type: Utf8
+        nullable: true
+        description: Comma-delimited USGS product types associated with the event.
+        expr:
+          kind: path
+          path:
+            - properties
+            - types
+      - name: station_count
+        type: Int64
+        nullable: true
+        description: Number of seismic stations used to calculate the event location.
+        expr:
+          kind: path
+          path:
+            - properties
+            - nst
+      - name: distance_to_nearest_station_deg
+        type: Float64
+        nullable: true
+        description: Horizontal distance from the epicenter to the nearest station, in degrees.
+        expr:
+          kind: path
+          path:
+            - properties
+            - dmin
+      - name: rms
+        type: Float64
+        nullable: true
+        description: Root-mean-square travel-time residual.
+        expr:
+          kind: path
+          path:
+            - properties
+            - rms
+      - name: gap
+        type: Float64
+        nullable: true
+        description: Largest azimuthal gap between azimuthally adjacent stations, in degrees.
+        expr:
+          kind: path
+          path:
+            - properties
+            - gap
+      - name: magnitude_type
+        type: Utf8
+        nullable: true
+        description: Magnitude algorithm or scale, for example mw, mb, ml, or md.
+        expr:
+          kind: path
+          path:
+            - properties
+            - magType
+      - name: event_type
+        type: Utf8
+        nullable: true
+        description: USGS event type.
+        expr:
+          kind: path
+          path:
+            - properties
+            - type
+      - name: title
+        type: Utf8
+        nullable: true
+        description: USGS event title.
+        expr:
+          kind: path
+          path:
+            - properties
+            - title
+      - name: geometry
+        type: Json
+        nullable: true
+        description: Full GeoJSON geometry object, including coordinates.
+        expr:
+          kind: path
+          path:
+            - geometry
+      - name: longitude
+        type: Float64
+        nullable: true
+        description: Event longitude from GeoJSON geometry.coordinates[0].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "0"
+      - name: latitude
+        type: Float64
+        nullable: true
+        description: Event latitude from GeoJSON geometry.coordinates[1].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "1"
+      - name: depth_km
+        type: Float64
+        nullable: true
+        description: Event depth in kilometers from GeoJSON geometry.coordinates[2].
+        expr:
+          kind: path
+          path:
+            - geometry
+            - coordinates
+            - "2"
+      - name: properties
+        type: Json
+        nullable: true
+        description: Full USGS properties object for advanced fields not flattened into columns.
+        expr:
+          kind: path
+          path:
+            - properties
+      - name: start_time
+        type: Utf8
+        nullable: true
+        description: Echoes the start_time filter used for this request.
+        expr:
+          kind: from_filter
+          key: start_time
+      - name: end_time
+        type: Utf8
+        nullable: true
+        description: Echoes the end_time filter used for this request.
+        expr:
+          kind: from_filter
+          key: end_time
+      - name: updated_after
+        type: Utf8
+        nullable: true
+        description: Echoes the updated_after filter used for this request.
+        expr:
+          kind: from_filter
+          key: updated_after
+      - name: min_magnitude
+        type: Float64
+        nullable: true
+        description: Echoes the min_magnitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: min_magnitude
+      - name: max_magnitude
+        type: Float64
+        nullable: true
+        description: Echoes the max_magnitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: max_magnitude
+      - name: center_latitude
+        type: Float64
+        nullable: true
+        description: Echoes the center_latitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: center_latitude
+      - name: center_longitude
+        type: Float64
+        nullable: true
+        description: Echoes the center_longitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: center_longitude
+      - name: max_radius_km
+        type: Float64
+        nullable: true
+        description: Echoes the max_radius_km filter used for this request.
+        expr:
+          kind: from_filter
+          key: max_radius_km
+      - name: min_latitude
+        type: Float64
+        nullable: true
+        description: Echoes the min_latitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: min_latitude
+      - name: max_latitude
+        type: Float64
+        nullable: true
+        description: Echoes the max_latitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: max_latitude
+      - name: min_longitude
+        type: Float64
+        nullable: true
+        description: Echoes the min_longitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: min_longitude
+      - name: max_longitude
+        type: Float64
+        nullable: true
+        description: Echoes the max_longitude filter used for this request.
+        expr:
+          kind: from_filter
+          key: max_longitude
+      - name: alert_level
+        type: Utf8
+        nullable: true
+        description: Echoes the alert_level filter used for this request.
+        expr:
+          kind: from_filter
+          key: alert_level
+      - name: order_by
+        type: Utf8
+        nullable: true
+        description: Echoes the order_by filter used for this request.
+        expr:
+          kind: from_filter
+          key: order_by

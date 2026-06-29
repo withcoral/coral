@@ -209,8 +209,8 @@ mod tests {
     use arrow::datatypes::Schema;
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-        RequestAuthenticatorError,
+        QueryExecutionProvenance, QueryResultObserver, QueryResultObserverError,
+        RequestAuthenticator, RequestAuthenticatorError,
     };
     use reqwest::header::{HeaderName, HeaderValue};
 
@@ -250,6 +250,7 @@ mod tests {
             _sql: &str,
             _schema: &Schema,
             _batches: &[RecordBatch],
+            _provenance: &QueryExecutionProvenance,
         ) -> Result<(), QueryResultObserverError> {
             Ok(())
         }
