@@ -357,8 +357,9 @@ The supported foundation subset is intentionally narrow:
   Static map function arguments are reparsed from lossless CST argument text
   when the typed AST omits item-variable arguments, so repeated item-variable
   forms such as `atan2(x, x)` remain foldable.
-  Conditional sources with slices remain a parser-front-end gap rather than a
-  dynamic-list runtime feature;
+  Sliced conditional sources over list-valued static `CASE` / `coalesce(...)`
+  branches are supported for scalar list-comprehension projections and order
+  keys by slicing each branch before applying the static comprehension reducer;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal

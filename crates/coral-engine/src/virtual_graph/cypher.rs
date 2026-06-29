@@ -11640,6 +11640,16 @@ fn compile_optional_static_list_comprehension_source_scalar_expression(
                 collection_context,
             )
         }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => compile_optional_static_list_slice_comprehension_scalar_expression(
+            list,
+            start.as_deref(),
+            end.as_deref(),
+            path,
+            evaluation,
+            collection_context,
+        ),
         _ => Ok(None),
     }
 }
@@ -11744,6 +11754,177 @@ fn compile_optional_static_list_coalesce_comprehension_scalar_expression(
     )))
 }
 
+fn compile_optional_static_list_slice_comprehension_scalar_expression(
+    list: &Expression,
+    start: Option<&Expression>,
+    end: Option<&Expression>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    collection_context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let bounds = StaticListSliceBounds { start, end };
+    match list {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_list_slice_comprehension_scalar_expression(
+                inner,
+                start,
+                end,
+                path,
+                evaluation,
+                collection_context,
+            )
+        }
+        Expression::Case(case) => {
+            compile_optional_static_list_case_slice_comprehension_scalar_expression(
+                case,
+                bounds,
+                path,
+                evaluation,
+                collection_context,
+            )
+        }
+        Expression::FunctionCall(function) if is_coalesce_function(function) => {
+            compile_optional_static_list_coalesce_slice_comprehension_scalar_expression(
+                function,
+                bounds,
+                path,
+                evaluation,
+                collection_context,
+            )
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_static_list_case_slice_comprehension_scalar_expression(
+    case: &CaseExpression,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    collection_context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(parts) = compile_optional_static_list_case_parts(
+        case,
+        format!("{path}.collection.list"),
+        evaluation.mode,
+        collection_context,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut element_type = None;
+    let alternatives = parts
+        .alternatives
+        .into_iter()
+        .enumerate()
+        .map(|(index, (when, result))| {
+            let result = static_list_case_result_slice_comprehension_result(
+                result,
+                bounds,
+                format!("{path}.collection.alternatives[{index}].then"),
+                evaluation,
+                collection_context,
+            )?;
+            element_type = merge_static_list_case_result_element_type(
+                element_type,
+                &result,
+                &format!("{path}.collection.alternatives[{index}].then"),
+            )?;
+            Ok((when, result))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let default = compile_optional_static_list_case_slice_comprehension_default(
+        parts.default,
+        bounds,
+        &path,
+        evaluation,
+        collection_context,
+        &mut element_type,
+    )?;
+    let parts = StaticListCaseParts {
+        alternatives,
+        default,
+        element_type,
+    };
+    let element_type = require_static_list_case_element_type(&parts, path)?;
+    Ok(Some(ScalarExpression::Case {
+        alternatives: parts
+            .alternatives
+            .into_iter()
+            .map(|(when, result)| ScalarCaseAlternative {
+                when,
+                then: static_list_case_result_scalar_expression(result, element_type),
+            })
+            .collect(),
+        else_expression: parts.default.map(|result| {
+            Box::new(static_list_case_result_scalar_expression(
+                result,
+                element_type,
+            ))
+        }),
+    }))
+}
+
+fn compile_optional_static_list_case_slice_comprehension_default(
+    default: Option<StaticListCaseResult>,
+    bounds: StaticListSliceBounds<'_>,
+    path: &str,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    collection_context: &CypherCompileContext,
+    element_type: &mut Option<LiteralListElementType>,
+) -> Result<Option<StaticListCaseResult>, CoreError> {
+    default
+        .map(|result| {
+            let result = static_list_case_result_slice_comprehension_result(
+                result,
+                bounds,
+                format!("{path}.collection.default"),
+                evaluation,
+                collection_context,
+            )?;
+            *element_type = merge_static_list_case_result_element_type(
+                *element_type,
+                &result,
+                &format!("{path}.collection.default"),
+            )?;
+            Ok::<StaticListCaseResult, CoreError>(result)
+        })
+        .transpose()
+}
+
+fn compile_optional_static_list_coalesce_slice_comprehension_scalar_expression(
+    function: &FunctionInvocation,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    collection_context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(coalesce) = compile_optional_static_list_coalesce_arguments(
+        function,
+        format!("{path}.collection.list"),
+        evaluation.mode.static_metadata_plan(),
+        collection_context,
+    )?
+    else {
+        return Ok(None);
+    };
+    let coalesce = static_list_coalesce_slice_comprehension_arguments(
+        coalesce,
+        bounds,
+        path.clone(),
+        evaluation,
+        collection_context,
+    )?;
+    let element_type = require_static_list_coalesce_element_type(&coalesce, path)?;
+    Ok(Some(static_list_case_result_scalar_expression(
+        StaticListCaseResult::Coalesce(coalesce),
+        element_type,
+    )))
+}
+
 fn static_list_case_result_comprehension_result(
     result: StaticListCaseResult,
     path: impl Into<String>,
@@ -11757,6 +11938,36 @@ fn static_list_case_result_comprehension_result(
         )),
         StaticListCaseResult::Coalesce(coalesce) => Ok(StaticListCaseResult::Coalesce(
             static_list_coalesce_comprehension_arguments(coalesce, path, evaluation)?,
+        )),
+    }
+}
+
+fn static_list_case_result_slice_comprehension_result(
+    result: StaticListCaseResult,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    context: &CypherCompileContext,
+) -> Result<StaticListCaseResult, CoreError> {
+    let path = path.into();
+    match result {
+        StaticListCaseResult::Null => Ok(StaticListCaseResult::Null),
+        StaticListCaseResult::List(value) => {
+            let value = slice_static_list_value(
+                value,
+                bounds.start,
+                bounds.end,
+                format!("{path}.slice"),
+                context,
+            )?;
+            Ok(StaticListCaseResult::List(
+                evaluate_static_list_comprehension_value(value, path, evaluation)?,
+            ))
+        }
+        StaticListCaseResult::Coalesce(coalesce) => Ok(StaticListCaseResult::Coalesce(
+            static_list_coalesce_slice_comprehension_arguments(
+                coalesce, bounds, path, evaluation, context,
+            )?,
         )),
     }
 }
@@ -11775,6 +11986,49 @@ fn static_list_coalesce_comprehension_arguments(
         .map(|(index, argument)| match argument {
             StaticListCoalesceArgument::Null => Ok(StaticListCoalesceArgument::Null),
             StaticListCoalesceArgument::List(value) => {
+                let value = evaluate_static_list_comprehension_value(
+                    value,
+                    format!("{path}.arguments[{index}]"),
+                    evaluation,
+                )?;
+                element_type = merge_static_list_coalesce_element_types(
+                    element_type,
+                    value.element_type,
+                    &format!("{path}.arguments[{index}]"),
+                )?;
+                Ok(StaticListCoalesceArgument::List(value))
+            }
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    Ok(StaticListCoalesceArguments {
+        arguments,
+        element_type,
+    })
+}
+
+fn static_list_coalesce_slice_comprehension_arguments(
+    coalesce: StaticListCoalesceArguments,
+    bounds: StaticListSliceBounds<'_>,
+    path: impl Into<String>,
+    evaluation: StaticListComprehensionEvaluation<'_>,
+    context: &CypherCompileContext,
+) -> Result<StaticListCoalesceArguments, CoreError> {
+    let path = path.into();
+    let mut element_type = None;
+    let arguments = coalesce
+        .arguments
+        .into_iter()
+        .enumerate()
+        .map(|(index, argument)| match argument {
+            StaticListCoalesceArgument::Null => Ok(StaticListCoalesceArgument::Null),
+            StaticListCoalesceArgument::List(value) => {
+                let value = slice_static_list_value(
+                    value,
+                    bounds.start,
+                    bounds.end,
+                    format!("{path}.arguments[{index}].slice"),
+                    context,
+                )?;
                 let value = evaluate_static_list_comprehension_value(
                     value,
                     format!("{path}.arguments[{index}]"),
@@ -36043,6 +36297,59 @@ relationships:
                                 if literals.as_slice() == [Literal::String("team".to_string())]
                                     && *element_type == LiteralListElementType::String
                         )
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Coalesce { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_comprehensions_over_sliced_case_and_coalesce_sources() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+             RETURN [k IN coalesce(keys(person), ['fallback', 'owner'])[0..1] | toUpper(k)] AS first_owner_key, \
+                    [k IN (CASE WHEN person IS NULL THEN ['fallback', 'owner'] ELSE keys(person) END)[1..2] | k] AS second_owner_key \
+             ORDER BY [k IN coalesce(keys(person), ['fallback'])[0..1] | k]",
+        )
+        .expect("static list comprehensions over sliced CASE/coalesce sources should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Coalesce { expressions },
+                    alias: coalesce_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Case { .. },
+                    alias: case_alias,
+                },
+            ] if coalesce_alias == "first_owner_key"
+                && case_alias == "second_owner_key"
+                && matches!(
+                    expressions.as_slice(),
+                    [
+                        ScalarExpression::PresenceGated { expression, .. },
+                        ScalarExpression::TypedLiteralList { literals, element_type },
+                    ] if matches!(
+                        expression.as_ref(),
+                        ScalarExpression::TypedLiteralList {
+                            literals: matched_literals,
+                            element_type: matched_type,
+                        } if matched_literals.as_slice() == [Literal::String("NAME".to_string())]
+                            && *matched_type == LiteralListElementType::String
+                    )
+                    && literals.as_slice() == [Literal::String("FALLBACK".to_string())]
+                    && *element_type == LiteralListElementType::String
                 )
         ));
         assert!(matches!(

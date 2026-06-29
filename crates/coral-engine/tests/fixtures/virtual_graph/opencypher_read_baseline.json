@@ -7,7 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 7,
+    "ListExpressions": 8,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -546,6 +546,19 @@
         "ordered": true,
         "rows": [
           { "sines": [0.0, 1.0], "cosines": [1.0, 0.0], "arctangent_pairs": [0.79], "degree_values": [180.0], "radian_values": [3.14], "haversines": [0.0] }
+        ]
+      }
+    },
+    {
+      "id": "static-list-comprehension-sliced-conditional-source",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Bob', 'Carol'] OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, [k IN coalesce(keys(friend), ['fallback', 'unused'])[0..1] | toUpper(k)] AS first_friend_key, [k IN (CASE WHEN friend IS NULL THEN ['fallback', 'unused'] ELSE keys(friend) END)[1..3] | k] AS middle_friend_keys ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Bob", "first_friend_key": ["ACTIVE"], "middle_friend_keys": ["age", "city"] },
+          { "person": "Carol", "first_friend_key": ["FALLBACK"], "middle_friend_keys": ["unused"] }
         ]
       }
     },
