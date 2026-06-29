@@ -14,29 +14,31 @@ use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 use assert_cmd::Command;
 use coral_api::v1::catalog_service_server::{CatalogService, CatalogServiceServer};
+use coral_api::v1::function_service_server::{FunctionService, FunctionServiceServer};
 use coral_api::v1::query_service_server::{QueryService, QueryServiceServer};
 use coral_api::v1::search_service_server::{SearchService, SearchServiceServer};
 use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
-    CatalogCounts, CatalogItem, CatalogMetadata, CatalogSearchResult, Column, ColumnHint,
-    ColumnSearchResult, CreateBundledSourceRequest, CreateBundledSourceResponse,
-    CreateBundledSourceWithOAuthRequest, CreateBundledSourceWithOAuthResponse,
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
-    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
-    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
-    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
-    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    AddFunctionRequest, AddFunctionResponse, CatalogCounts, CatalogItem, CatalogMetadata,
+    CatalogSearchResult, Column, ColumnHint, ColumnSearchResult, CreateBundledSourceRequest,
+    CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
+    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
+    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
+    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
+    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
+    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
+    ListColumnsRequest, ListColumnsResponse, ListFunctionsRequest, ListFunctionsResponse,
     ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest, ListWorkspacesResponse,
-    PaginationRequest, PaginationResponse, QueryPlan, SearchCatalogRequest, SearchCatalogResponse,
-    SearchFieldRole, SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest,
-    SearchResponse, SearchResult, SearchResultTruncation, SearchSurfaceKind,
-    SearchTableColumnPreview, SearchTableColumnPreviewColumn, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response, search_result,
-    source_input_spec::Input as ProtoSourceInput,
+    PaginationRequest, PaginationResponse, QueryPlan, RemoveFunctionRequest,
+    RemoveFunctionResponse, SearchCatalogRequest, SearchCatalogResponse, SearchFieldRole,
+    SearchProvider, SearchProviderCoverage, SearchProviderState, SearchRequest, SearchResponse,
+    SearchResult, SearchResultTruncation, SearchSurfaceKind, SearchTableColumnPreview,
+    SearchTableColumnPreviewColumn, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
+    import_source_response, search_result, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND, CORAL_TASK_ID_METADATA_KEY,
@@ -740,6 +742,9 @@ struct Captured {
     import_source: Mutex<Vec<ImportSourceRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
+    add_function: Mutex<Vec<AddFunctionRequest>>,
+    list_functions: Mutex<Vec<ListFunctionsRequest>>,
+    remove_function: Mutex<Vec<RemoveFunctionRequest>>,
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
     create_workspace: Mutex<Vec<CreateWorkspaceRequest>>,
     delete_workspace: Mutex<Vec<DeleteWorkspaceRequest>>,
@@ -1004,6 +1009,56 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
+#[derive(Clone)]
+struct MockFunctionService {
+    captured: Arc<Captured>,
+}
+
+#[tonic::async_trait]
+impl FunctionService for MockFunctionService {
+    async fn add_function(
+        &self,
+        request: Request<AddFunctionRequest>,
+    ) -> Result<Response<AddFunctionResponse>, Status> {
+        self.captured
+            .add_function
+            .lock()
+            .expect("add_function capture")
+            .push(request.into_inner());
+        Err(Status::unimplemented(
+            "mock function add is not implemented",
+        ))
+    }
+
+    async fn list_functions(
+        &self,
+        request: Request<ListFunctionsRequest>,
+    ) -> Result<Response<ListFunctionsResponse>, Status> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
+            .push(request.into_inner());
+        Ok(Response::new(ListFunctionsResponse {
+            functions: Vec::new(),
+        }))
+    }
+
+    async fn remove_function(
+        &self,
+        request: Request<RemoveFunctionRequest>,
+    ) -> Result<Response<RemoveFunctionResponse>, Status> {
+        self.captured
+            .remove_function
+            .lock()
+            .expect("remove_function capture")
+            .push(request.into_inner());
+        Err(Status::unimplemented(
+            "mock function remove is not implemented",
+        ))
+    }
+}
+
 type MockBundledSourceStream =
     Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
 type MockImportSourceStream =
@@ -1236,6 +1291,7 @@ impl MockServer {
         let search_captured = Arc::clone(&captured);
         let catalog_captured = Arc::clone(&captured);
         let source_captured = Arc::clone(&captured);
+        let function_captured = Arc::clone(&captured);
         let workspace_captured = Arc::clone(&captured);
         let query_config = Arc::clone(&config);
         let search_config = Arc::clone(&config);
@@ -1261,6 +1317,9 @@ impl MockServer {
                 .add_service(WorkspaceServiceServer::new(MockWorkspaceService {
                     config: workspace_config,
                     captured: workspace_captured,
+                }))
+                .add_service(FunctionServiceServer::new(MockFunctionService {
+                    captured: function_captured,
                 }))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     drop(shutdown_rx.await);
@@ -1377,6 +1436,14 @@ impl MockServer {
             .validate_source
             .lock()
             .expect("validate_source capture")
+            .clone()
+    }
+
+    pub(crate) fn list_functions_requests(&self) -> Vec<ListFunctionsRequest> {
+        self.captured
+            .list_functions
+            .lock()
+            .expect("list_functions capture")
             .clone()
     }
 

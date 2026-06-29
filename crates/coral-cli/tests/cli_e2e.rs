@@ -170,6 +170,25 @@ async fn source_list_accepts_workspace_flag_after_subcommand() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn functions_list_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["--workspace", "work", "functions", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "No runtime-ready functions.");
+    let requests = server.list_functions_requests();
+    assert_eq!(requests.len(), 1, "expected one list_functions call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn workspace_list_renders_configured_workspaces() {
     let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
         ListWorkspacesResponse {

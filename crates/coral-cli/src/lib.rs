@@ -18,6 +18,7 @@ mod query_error;
 mod source_ops;
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 #[cfg(feature = "embedded-ui")]
 use std::sync::Arc;
@@ -28,8 +29,9 @@ use clap::{
 };
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
-    CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest, ListWorkspacesRequest,
-    SearchRequest, Workspace,
+    AddFunctionRequest, CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest,
+    Function, ListFunctionsRequest, ListWorkspacesRequest, RemoveFunctionRequest, SearchRequest,
+    Workspace,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -79,6 +81,9 @@ enum Command {
     Source(SourceArgs),
     /// Manage workspaces
     Workspace(WorkspaceArgs),
+    /// Manage functions
+    #[command(name = "functions")]
+    Function(FunctionArgs),
     /// Interactive wizard to set up Coral and explore use cases
     Onboard,
     /// Start the MCP server over stdio
@@ -279,6 +284,30 @@ struct FeaturesArgs {
     command: FeaturesCommand,
 }
 
+#[derive(Debug, Args)]
+/// Manage functions
+struct FunctionArgs {
+    #[command(subcommand)]
+    command: FunctionCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum FunctionCommand {
+    /// List installed functions
+    List,
+    /// Add or replace a user function
+    Add {
+        /// Path to a function SQL artifact
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove a user function
+    Remove {
+        /// Name of the function to remove
+        name: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum FeaturesCommand {
     /// List experimental runtime features and their current status
@@ -424,6 +453,7 @@ impl Command {
             | Command::Search(_)
             | Command::Source(_)
             | Command::Workspace(_)
+            | Command::Function(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
             Command::Features(_) | Command::Completion(_) => RequiredRuntime::None,
@@ -442,6 +472,7 @@ impl Command {
             Command::Sql(_)
                 | Command::Search(_)
                 | Command::Source(_)
+                | Command::Function(_)
                 | Command::Onboard
                 | Command::McpStdio(_)
         )
@@ -623,6 +654,7 @@ async fn run_no_runtime_command(
         | Command::Search(_)
         | Command::Source(_)
         | Command::Workspace(_)
+        | Command::Function(_)
         | Command::Onboard
         | Command::McpStdio(_) => {
             unreachable!("app client commands are routed through app runtime startup")
@@ -662,6 +694,7 @@ async fn run_app_command(
         Command::Search(args) => run_search(&app, workspace, args).await?,
         Command::Source(args) => run_source(&app, workspace, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
+        Command::Function(args) => run_function(&app, workspace, args).await?,
         Command::Onboard => {
             onboard::run(&app, workspace).await?;
         }
@@ -907,6 +940,115 @@ async fn run_search(
     Ok(())
 }
 
+async fn run_function(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: FunctionArgs,
+) -> Result<(), CliError> {
+    match args.command {
+        FunctionCommand::List => {
+            let mut client = app.function_client();
+            let functions = client
+                .list_functions(Request::new(ListFunctionsRequest {
+                    workspace: Some(workspace.clone()),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner()
+                .functions;
+            if functions.is_empty() {
+                println!("No runtime-ready functions.");
+            } else {
+                let rows = functions.into_iter().map(|function| {
+                    [
+                        function.name.clone(),
+                        function_publish_summary(&function),
+                        function_columns_summary(&function),
+                    ]
+                });
+                print_text_table(["Function", "Publish", "Columns"], rows);
+            }
+        }
+        FunctionCommand::Add { file } => {
+            let sql = std::fs::read_to_string(&file).map_err(anyhow::Error::from)?;
+            let mut client = app.function_client();
+            let function = client
+                .add_function(Request::new(AddFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    sql,
+                }))
+                .await
+                .map_err(anyhow::Error::from)?
+                .into_inner();
+            println!("Added function {}", function.name);
+        }
+        FunctionCommand::Remove { name } => {
+            let name = function_name_arg(&name)?;
+            let mut client = app.function_client();
+            client
+                .remove_function(Request::new(RemoveFunctionRequest {
+                    workspace: Some(workspace.clone()),
+                    name: name.clone(),
+                }))
+                .await
+                .map_err(anyhow::Error::from)?;
+            println!("Removed function {name}");
+        }
+    }
+    Ok(())
+}
+
+fn function_publish_summary(function: &Function) -> String {
+    let Some(publish) = function.publish.as_ref() else {
+        return "-".to_string();
+    };
+    let mut targets = Vec::new();
+    if let Some(target) = publish.table_function.as_ref() {
+        targets.push(format!("sql: {}.{}", target.schema, target.name));
+    }
+    if targets.is_empty() {
+        "-".to_string()
+    } else {
+        targets.join(", ")
+    }
+}
+
+fn function_columns_summary(function: &Function) -> String {
+    if function.result_columns.is_empty() {
+        return "-".to_string();
+    }
+    let visible_columns = function
+        .result_columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .take(4)
+        .collect::<Vec<_>>();
+    let hidden_count = function
+        .result_columns
+        .len()
+        .saturating_sub(visible_columns.len());
+    let mut summary = visible_columns.join(", ");
+    if hidden_count > 0 {
+        write!(summary, ", +{hidden_count}").expect("writing to String should not fail");
+    }
+    summary
+}
+
+fn function_name_arg(name: &str) -> Result<String, anyhow::Error> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("missing function name"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(anyhow::anyhow!(
+            "function name must not contain '/' or '\\\\'"
+        ));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(anyhow::anyhow!("function name must not be '.' or '..'"));
+    }
+    Ok(trimmed.to_string())
+}
 fn print_batches(
     batches: &[arrow::record_batch::RecordBatch],
     format: OutputFormat,
@@ -1078,8 +1220,9 @@ async fn run_source_add(
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use coral_api::v1::{Function, FunctionResultColumn};
 
-    use super::{Cli, RequiredRuntime, command_enables_stderr_logs};
+    use super::{Cli, RequiredRuntime, command_enables_stderr_logs, function_columns_summary};
 
     #[test]
     fn server_command_is_not_available() {
@@ -1127,6 +1270,46 @@ mod tests {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+
+        let cli =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions list parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn function_columns_summary_shows_hidden_column_count() {
+        let mut function = Function {
+            result_columns: [
+                "number",
+                "title",
+                "html_url",
+                "state",
+                "author",
+                "updated_at",
+            ]
+            .into_iter()
+            .map(|name| FunctionResultColumn {
+                name: name.to_string(),
+                ..FunctionResultColumn::default()
+            })
+            .collect(),
+            ..Function::default()
+        };
+
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state, +2"
+        );
+
+        function.result_columns.truncate(4);
+        assert_eq!(
+            function_columns_summary(&function),
+            "number, title, html_url, state"
+        );
+
+        function.result_columns.clear();
+        assert_eq!(function_columns_summary(&function), "-");
     }
 
     #[test]
@@ -1174,6 +1357,8 @@ mod tests {
         let search =
             Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
+        let functions =
+            Cli::try_parse_from(["coral", "functions", "list"]).expect("functions parses");
         let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
         let workspace =
             Cli::try_parse_from(["coral", "workspace", "list"]).expect("workspace parses");
@@ -1182,6 +1367,7 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
+        assert!(functions.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
         assert!(mcp.command.uses_selected_workspace());
         assert!(!workspace.command.uses_selected_workspace());

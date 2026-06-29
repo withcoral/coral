@@ -244,6 +244,77 @@ coral workspace remove work
 
 The `default` workspace cannot be removed.
 
+## `coral functions`
+
+Manage workspace functions. A function is a SQL artifact with SQL comment frontmatter that defines a reusable, typed query and publishes it as a SQL table function.
+
+User-installed functions are added to the current workspace with `coral functions add`. Functions commonly publish under `functions.*`.
+
+### `coral functions add --file <PATH>`
+
+Validate, then install or replace, a user-installed function from a SQL artifact.
+
+```shellscript
+coral functions add --file ./open-prs.function.sql
+```
+
+#### Options
+
+| Option          | Type | Default  | Description                  |
+| --------------- | ---- | -------- | ---------------------------- |
+| `--file <PATH>` | path | required | Function SQL artifact to install |
+
+Coral validates the function before storing it in the current workspace. Validation checks the frontmatter shape, installed-source references, SQL publish target collisions, and whether the SQL plans against the current workspace sources. Result columns are inferred from the planned SQL. If runtime validation fails, the function is not installed.
+
+Example function:
+
+```sql
+/*
+name: open_prs
+schema: functions
+description: All open PRs in the specified repo
+arguments:
+  owner:
+    data_type: Utf8
+  repo:
+    data_type: Utf8
+*/
+
+select number, title, html_url as url
+from github.pulls(owner => $owner, repo => $repo, state => 'open')
+```
+
+The `schema` and `name` frontmatter fields expose the function through SQL as `schema.name(...)`. Each `$argument` used in the SQL body must be declared under `arguments`.
+
+### `coral functions list`
+
+List configured functions.
+
+```shellscript
+coral functions list
+```
+
+The output is inventory-only and does not re-run runtime validation, so it stays fast. Coral shows each function's table-function target and declared result columns from the installed function YAML.
+
+If a function publishes a SQL table function and declares required inputs, call it with named arguments:
+
+```sql
+select *
+from functions.open_prs(owner => 'withcoral', repo => 'coral')
+```
+
+Functions without required inputs can be called with empty parentheses.
+
+### `coral functions remove <NAME>`
+
+Remove the user-installed function named `<NAME>`.
+
+```shellscript
+coral functions remove open_prs
+```
+
+Only user-installed functions are managed by this command.
+
 ## `coral onboard`
 
 Run the guided source setup flow.
