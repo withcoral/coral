@@ -9655,15 +9655,194 @@ fn compile_scalar_order_expression(
 }
 
 fn hidden_subquery_order_expression_can_be_precomputed(expression: &ScalarExpression) -> bool {
-    matches!(
-        expression,
-        ScalarExpression::CountSubquery { pattern }
-            if matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
-    ) || matches!(
-        expression,
-        ScalarExpression::Predicate(predicate)
-            if matches!(predicate.as_ref(), PredicateExpression::ExistsPattern(_))
-    )
+    if let Some(operand) = unary_scalar_expression_operand(expression) {
+        return hidden_subquery_order_expression_can_be_precomputed(operand);
+    }
+
+    if let Some(precomputable) = hidden_subquery_order_leaf_can_be_precomputed(expression) {
+        return precomputable;
+    }
+
+    hidden_subquery_order_structural_expression_can_be_precomputed(expression)
+}
+
+fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) -> Option<bool> {
+    match expression {
+        ScalarExpression::Predicate(predicate) => Some(
+            hidden_subquery_order_predicate_can_be_precomputed(predicate),
+        ),
+        ScalarExpression::CountSubquery { pattern } => Some(matches!(
+            pattern.as_ref(),
+            CountSubqueryPattern::Relationships(_)
+        )),
+        ScalarExpression::Property(_)
+        | ScalarExpression::UndirectedEndpointProperty { .. }
+        | ScalarExpression::UndirectedEndpointKey { .. }
+        | ScalarExpression::UndirectedEndpointElementId { .. }
+        | ScalarExpression::UndirectedEndpointLabels { .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
+        | ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. } => Some(true),
+        ScalarExpression::PresenceGated { .. }
+        | ScalarExpression::Coalesce { .. }
+        | ScalarExpression::NullIf { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::Atan2 { .. }
+        | ScalarExpression::Case { .. } => None,
+        ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => {
+            unreachable!("unary scalar expressions handled above")
+        }
+    }
+}
+
+fn hidden_subquery_order_structural_expression_can_be_precomputed(
+    expression: &ScalarExpression,
+) -> bool {
+    match expression {
+        ScalarExpression::PresenceGated { expression, .. } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+        }
+        ScalarExpression::Coalesce { expressions } => expressions
+            .iter()
+            .all(hidden_subquery_order_expression_can_be_precomputed),
+        ScalarExpression::NullIf { expression, value } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(value)
+        }
+        ScalarExpression::Round { expression, places } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && optional_hidden_subquery_order_expression_can_be_precomputed(places.as_deref())
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(count)
+        }
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(search)
+                && hidden_subquery_order_expression_can_be_precomputed(replacement)
+        }
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(start)
+                && optional_hidden_subquery_order_expression_can_be_precomputed(length.as_deref())
+        }
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            hidden_subquery_order_expression_can_be_precomputed(left)
+                && hidden_subquery_order_expression_can_be_precomputed(right)
+        }
+        ScalarExpression::Atan2 { y, x } => {
+            hidden_subquery_order_expression_can_be_precomputed(y)
+                && hidden_subquery_order_expression_can_be_precomputed(x)
+        }
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => {
+            hidden_subquery_order_case_can_be_precomputed(alternatives, else_expression.as_deref())
+        }
+        _ => unreachable!("leaf and unary scalar expressions handled above"),
+    }
+}
+
+fn optional_hidden_subquery_order_expression_can_be_precomputed(
+    expression: Option<&ScalarExpression>,
+) -> bool {
+    expression.is_none_or(hidden_subquery_order_expression_can_be_precomputed)
+}
+
+fn hidden_subquery_order_case_can_be_precomputed(
+    alternatives: &[ScalarCaseAlternative],
+    else_expression: Option<&ScalarExpression>,
+) -> bool {
+    alternatives.iter().all(|alternative| {
+        hidden_subquery_order_predicate_can_be_precomputed(&alternative.when)
+            && hidden_subquery_order_expression_can_be_precomputed(&alternative.then)
+    }) && optional_hidden_subquery_order_expression_can_be_precomputed(else_expression)
+}
+
+fn hidden_subquery_order_predicate_can_be_precomputed(predicate: &PredicateExpression) -> bool {
+    match predicate {
+        PredicateExpression::ScalarComparison(predicate) => {
+            hidden_subquery_order_expression_can_be_precomputed(&predicate.lhs)
+                && match &predicate.rhs {
+                    ScalarPredicateRhs::Expression(expression) => {
+                        hidden_subquery_order_expression_can_be_precomputed(expression)
+                    }
+                    ScalarPredicateRhs::List(_) => true,
+                }
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            hidden_subquery_order_predicate_can_be_precomputed(left)
+                && hidden_subquery_order_predicate_can_be_precomputed(right)
+        }
+        PredicateExpression::Not { expression } => {
+            hidden_subquery_order_predicate_can_be_precomputed(expression)
+        }
+        PredicateExpression::ExistsPattern(_)
+        | PredicateExpression::Boolean(_)
+        | PredicateExpression::Comparison(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_) => true,
+    }
 }
 
 fn projected_scalar_expression_alias(
@@ -35110,13 +35289,42 @@ relationships:
     }
 
     #[test]
-    fn rejects_compound_hidden_order_by_correlated_subqueries() {
-        let error = compile_cypher(
+    fn compiles_compound_hidden_order_by_precomputable_correlated_subqueries() {
+        for cypher in [
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) } + 1 DESC",
             "MATCH (service:Service) \
              RETURN service.name AS service \
              ORDER BY EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } OR service.active DESC",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY CASE \
+               WHEN EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) } THEN 0 \
+               ELSE 1 \
+             END ASC",
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("compound hidden precomputable subquery ordering should compile");
+
+            assert!(matches!(
+                plan.order_by.as_slice(),
+                [OrderKey {
+                    expression: OrderExpression::Scalar(_),
+                    ..
+                }]
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_non_precomputable_hidden_order_by_correlated_subqueries() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) } + 1 DESC",
         )
-        .expect_err("compound hidden subquery ordering should still be rejected");
+        .expect_err("hidden non-precomputable subquery ordering should still be rejected");
         assert!(
             error.to_string().contains("must use a projected alias"),
             "{error}"
