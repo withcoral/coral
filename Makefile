@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report virtual-graph-graphql virtual-graph-graphql-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -19,12 +19,21 @@ virtual-graph-checks:
 	cargo clippy -p coral-engine --all-targets --locked -- -D warnings
 	cargo test -p coral-engine virtual_graph --locked
 	cargo test -p coral-engine opencypher_tck --locked
+	cargo test -p coral-engine graphql_read_baseline --locked
 
 virtual-graph-tck:
 	cargo test -p coral-engine opencypher_tck --locked
 
 virtual-graph-tck-report:
 	cargo run --locked -p xtask -- virtual-graph-tck-report --json
+
+virtual-graph-graphql:
+	cargo test -p coral-engine graphql_read_baseline --locked
+
+virtual-graph-graphql-report:
+	cargo run --locked -p xtask -- virtual-graph-baseline-report \
+	  --fixture crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json \
+	  --json
 
 perf-check:
 	cargo build --locked -p coral-cli --release

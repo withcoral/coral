@@ -66,6 +66,9 @@ jobs:
       - name: openCypher TCK read baseline
         run: cargo test -p coral-engine opencypher_tck --locked
 
+      - name: GraphQL read baseline
+        run: cargo test -p coral-engine graphql_read_baseline --locked
+
       - name: openCypher TCK coverage report
         shell: bash
         run: |
@@ -77,5 +80,21 @@ jobs:
             echo
             echo '```json'
             cat virtual-graph-tck-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: GraphQL coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- virtual-graph-baseline-report \
+            --fixture crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json \
+            --json \
+            | tee virtual-graph-graphql-report.json
+          {
+            echo "### GraphQL compatibility coverage"
+            echo
+            echo '```json'
+            cat virtual-graph-graphql-report.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

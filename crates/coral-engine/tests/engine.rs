@@ -15,6 +15,8 @@ mod dependent_join_execution_tests;
 mod dependent_join_registration_tests;
 #[path = "engine/file_format_tests.rs"]
 mod file_format_tests;
+#[path = "engine/graphql_baseline_tests.rs"]
+mod graphql_baseline_tests;
 #[path = "engine/harness.rs"]
 mod harness;
 #[path = "engine/http_tests.rs"]

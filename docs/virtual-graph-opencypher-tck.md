@@ -1,9 +1,14 @@
-# Virtual Graph openCypher TCK Gate
+# Virtual Graph Compatibility Gates
 
 Coral tracks Cypher compatibility with an openCypher TCK-style read baseline.
 The gate is synthetic and read-only: each scenario runs through the same
 production path as users, from Cypher parsing to virtual graph validation, SQL
 lowering, DataFusion execution, and result comparison.
+
+Coral also tracks GraphQL virtual graph compatibility with the same fixture
+shape and coverage-floor contract. The GraphQL gate is not an upstream language
+TCK; it is Coral's product contract for the GraphQL read adapter over virtual
+graphs.
 
 ## Why This Exists
 
@@ -13,13 +18,15 @@ labels and relationship types onto existing tables, so the conformance gate has
 to translate graph fixtures into source manifests, graph declarations, and
 expected tabular results.
 
-The first gate is a curated baseline rather than a complete upstream TCK import.
-It gives us a CI-backed contract for the read features we already claim and a
-clear place to add translated scenarios as support expands.
+The first Cypher gate is a curated baseline rather than a complete upstream TCK
+import. It gives us a CI-backed contract for the read features we already claim
+and a clear place to add translated scenarios as support expands. The GraphQL
+gate follows the same pattern for adapter behavior that does not have a direct
+openCypher equivalent.
 
-## Current Gate
+## Current Cypher Gate
 
-Run the gate locally with:
+Run the Cypher gate locally with:
 
 ```sh
 make virtual-graph-tck
@@ -59,7 +66,46 @@ The report command lives in:
 xtask/src/tck.rs
 ```
 
-## Scope
+## Current GraphQL Gate
+
+Run the GraphQL gate locally with:
+
+```sh
+make virtual-graph-graphql
+```
+
+The broader focused engine gate also runs it:
+
+```sh
+make virtual-graph-checks
+```
+
+Generate a machine-readable coverage summary with:
+
+```sh
+make virtual-graph-graphql-report
+```
+
+CI runs the GraphQL gate in the `Virtual Graph Core` workflow and writes the
+JSON report into the GitHub step summary next to the Cypher report.
+
+The GraphQL report target uses the generic `virtual-graph-baseline-report`
+xtask command. The existing `virtual-graph-tck-report` command is retained for
+the Cypher TCK-style gate.
+
+The baseline data lives at:
+
+```text
+crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json
+```
+
+The runner lives at:
+
+```text
+crates/coral-engine/tests/engine/graphql_baseline_tests.rs
+```
+
+## Cypher Scope
 
 The baseline currently contains 41 representative read-only scenarios:
 
@@ -100,11 +146,32 @@ that every scenario id is unique, every feature bucket is declared in the floor
 map, and each bucket stays at or above its declared floor, so coverage cannot
 silently shrink or move into an unreported category.
 
+## GraphQL Scope
+
+The GraphQL baseline currently contains 12 representative read-only scenarios:
+
+- `RootSelection`: 2 scenarios for exact-label and generated root aliases.
+- `ScalarFilters`: 2 scenarios for scalar operator objects, shorthand equality,
+  list membership, and null checks.
+- `BooleanFilters`: 1 scenario for `xor` and `not` composition.
+- `RowModifiers`: 1 scenario for root ordering, offset, and limit.
+- `Aggregation`: 1 scenario for grouped `_count`.
+- `IdentityFields`: 1 scenario for `_id` and `_elementId`.
+- `NestedRelationships`: 1 scenario for relationship traversal with endpoint
+  and relationship-property filters.
+- `RelationshipExistence`: 1 scenario for `EXISTS`-style relationship filters.
+- `GeneratedClientShape`: 1 scenario for fragments and `__typename`.
+- `ErrorHandling`: 1 expected rejection for unknown graph-declared properties.
+
+The same fixture-level contract applies: ids must be unique, every feature
+bucket must be declared, and each bucket must stay at or above its floor.
+
 ## Expansion Policy
 
-When adding Cypher support:
+When adding Cypher or GraphQL support:
 
-1. Add or translate an openCypher-style scenario into the baseline fixture.
+1. Add or translate a representative scenario into the relevant baseline
+   fixture.
 2. Keep the graph fixture synthetic and deterministic.
 3. Prefer end-to-end result assertions over parser-only assertions.
 4. Document intentionally unsupported read behavior in

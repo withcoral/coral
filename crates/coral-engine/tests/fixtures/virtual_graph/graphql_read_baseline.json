@@ -1,0 +1,166 @@
+{
+  "suite": "coral-graphql-read-baseline",
+  "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
+  "minimum_feature_counts": {
+    "Aggregation": 1,
+    "BooleanFilters": 1,
+    "ErrorHandling": 1,
+    "GeneratedClientShape": 1,
+    "IdentityFields": 1,
+    "NestedRelationships": 1,
+    "RelationshipExistence": 1,
+    "RootSelection": 2,
+    "RowModifiers": 1,
+    "ScalarFilters": 2
+  },
+  "scenarios": [
+    {
+      "id": "root-selection-filter-order-limit",
+      "feature": "RootSelection",
+      "query": "query { Person(where: { age: { gte: 30 }, active: { eq: true } }, orderBy: [{ field: name, direction: ASC }], limit: 2) { person: name city } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "city": "London" },
+          { "person": "Carol", "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "generated-root-alias-selection",
+      "feature": "RootSelection",
+      "query": "query { persons(where: { city: \"London\" }, orderBy: [{ field: name, direction: ASC }]) { person: name active } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "active": true },
+          { "person": "Bob", "active": false }
+        ]
+      }
+    },
+    {
+      "id": "scalar-string-filter-aliases",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { or: [{ name: { startsWith: \"A\" } }, { name: { contains: \"ar\" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-list-filter",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { city: { in: [\"London\", \"Paris\"] }, active: { isNotNull: true } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-filter-composition",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { xor: [{ active: { eq: true } }, { city: { eq: \"Paris\" } }], not: { name: { eq: \"Bob\" } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "row-modifiers-offset-limit",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: age, direction: DESC }], offset: 1, limit: 1) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age": 34 }
+        ]
+      }
+    },
+    {
+      "id": "grouped-count-aggregate",
+      "feature": "Aggregation",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }]) { city people: _count } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "people": 2 },
+          { "city": "Paris", "people": 1 }
+        ]
+      }
+    },
+    {
+      "id": "identity-fields",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { id: _id element: _elementId name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "id": 1, "element": "1", "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "nested-relationship-traversal",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { source: name out_KNOWS(to: Person, relationshipWhere: { since: { gte: 2021 } }, where: { active: { eq: true } }) { target: name _edge { since: since } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Carol", "since": 2022 }
+        ]
+      }
+    },
+    {
+      "id": "relationship-existence-filter",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { out_KNOWS: { where: { city: { eq: \"Paris\" } }, relationshipWhere: { since: { gte: 2021 } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "fragment-typename-selection",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], limit: 1) { __typename ...PersonFields } } fragment PersonFields on Person { person: name }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "__typename": "Person", "person": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "unknown-property-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { missingProperty } }",
+      "expected": {
+        "kind": "error",
+        "contains": "UNKNOWN_PROPERTY"
+      }
+    }
+  ]
+}

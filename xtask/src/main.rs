@@ -10,7 +10,9 @@
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
-//!   - `virtual-graph-tck-report` summarizes the openCypher baseline fixture.
+//!   - `virtual-graph-tck-report` summarizes the openCypher compatibility gate.
+//!   - `virtual-graph-baseline-report` summarizes virtual graph compatibility
+//!     fixtures.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
 
@@ -58,8 +60,10 @@ enum Command {
     PerfCheck(perf::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
-    /// Summarize the virtual graph openCypher baseline fixture.
+    /// Summarize a virtual graph compatibility baseline fixture.
     VirtualGraphTckReport(tck::Args),
+    /// Summarize a virtual graph compatibility baseline fixture.
+    VirtualGraphBaselineReport(tck::Args),
     /// Sign, package, and notarize one macOS release binary.
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
 }
@@ -110,7 +114,9 @@ fn run(command: &Command) -> Result<bool> {
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
-        Command::VirtualGraphTckReport(args) => tck::run(args),
+        Command::VirtualGraphTckReport(args) | Command::VirtualGraphBaselineReport(args) => {
+            tck::run(args)
+        }
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
     }
 }

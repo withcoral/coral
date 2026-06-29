@@ -138,3 +138,15 @@ unsupported behavior should be rejected clearly instead of guessed.
 
 All current and future compatibility checks must use synthetic fixtures only.
 Live-source tests are intentionally excluded from product validation.
+
+The `Virtual Graph Core` workflow currently enforces two compatibility baseline
+gates:
+
+- `coral-opencypher-read-baseline`: 41 openCypher-style read scenarios with
+  declared feature floors.
+- `coral-graphql-read-baseline`: 12 GraphQL read-adapter scenarios with declared
+  feature floors.
+
+Both gates run end-to-end through parsing, graph validation, SQL lowering,
+DataFusion execution, and row/error comparison. The same reporting command
+emits machine-readable coverage summaries for CI step summaries.

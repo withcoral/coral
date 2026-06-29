@@ -1,4 +1,4 @@
-//! Reporting helpers for the virtual graph openCypher baseline fixture.
+//! Reporting helpers for virtual graph compatibility baseline fixtures.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12,7 +12,7 @@ const DEFAULT_BASELINE_FIXTURE: &str =
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
-    /// Path to the openCypher-style baseline fixture.
+    /// Path to a virtual graph compatibility baseline fixture.
     #[arg(long, default_value = DEFAULT_BASELINE_FIXTURE)]
     fixture: PathBuf,
 
@@ -73,7 +73,7 @@ fn load_report(path: &Path) -> Result<Report> {
     let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let suite: Suite = serde_json::from_str(&raw).with_context(|| {
         format!(
-            "parsing virtual graph openCypher baseline fixture {}",
+            "parsing virtual graph compatibility baseline fixture {}",
             path.display()
         )
     })?;
@@ -83,7 +83,10 @@ fn load_report(path: &Path) -> Result<Report> {
     let mut expected_error_count = 0;
     for scenario in &suite.scenarios {
         if !ids.insert(scenario.id.as_str()) {
-            anyhow::bail!("duplicate openCypher baseline scenario id: {}", scenario.id);
+            anyhow::bail!(
+                "duplicate virtual graph baseline scenario id: {}",
+                scenario.id
+            );
         }
         *feature_counts.entry(scenario.feature.clone()).or_default() += 1;
         if scenario.expected.kind == "error" {
@@ -181,6 +184,24 @@ mod tests {
         assert_eq!(report.scenario_count, 41);
         assert_eq!(report.expected_error_count, 1);
         assert_eq!(report.feature_counts.get("Where"), Some(&9));
+        assert!(report.feature_floor_violations.is_empty());
+        assert!(report.undeclared_features.is_empty());
+        assert!(feature_floors_satisfied(&report));
+    }
+
+    #[test]
+    fn report_counts_graphql_baseline() {
+        let report =
+            load_report(&workspace_root().join(
+                "crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json",
+            ))
+            .expect("GraphQL baseline fixture should parse");
+
+        assert_eq!(report.suite, "coral-graphql-read-baseline");
+        assert_eq!(report.scenario_count, 12);
+        assert_eq!(report.expected_error_count, 1);
+        assert_eq!(report.feature_counts.get("RootSelection"), Some(&2));
+        assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&2));
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
