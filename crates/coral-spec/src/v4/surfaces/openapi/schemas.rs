@@ -1,11 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
 use crate::v4::naming::normalize_identifier;
-use crate::v4::surfaces::json_schema::json_schema_scalar_type;
+use crate::v4::surfaces::json_schema::{
+    JsonSchemaComparisonError, direct_json_object_shape, json_schema_required_fields,
+    json_schema_scalar_type, merge_json_schema_properties_exact,
+};
 
 use super::import::OpenApiImporter;
 
@@ -48,29 +51,35 @@ impl OpenApiImporter<'_> {
             },
         );
         let shape = if let Some(all_of) = resolved.get("allOf").and_then(Value::as_array) {
-            let mut merged = Map::new();
+            let mut merged = BTreeMap::new();
             for item in all_of {
                 let item = self.resolve_ref(item, operation_id, diagnostics)?;
-                if let Some(properties) = item.get("properties").and_then(Value::as_object) {
-                    for (name, property) in properties {
-                        if let Some(existing) = merged.get(name)
-                            && existing != property
-                        {
-                            diagnostics.push(Diagnostic::warning(
-                                "OPENAPI_ALLOF_CONFLICT",
-                                format!("allOf property '{name}' conflicts in operation '{operation_id}'"),
-                                self.surface.id.clone(),
-                                Some(operation_id.to_string()),
-                            ));
-                            return None;
-                        }
-                        merged.insert(name.clone(), property.clone());
+                let properties = direct_json_object_shape(&item).properties;
+                match merge_json_schema_properties_exact(&mut merged, properties) {
+                    Ok(()) => {}
+                    Err(JsonSchemaComparisonError::PropertyConflict(property)) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "OPENAPI_ALLOF_CONFLICT",
+                            format!("allOf property '{property}' conflicts in operation '{operation_id}'"),
+                            self.surface.id.clone(),
+                            Some(operation_id.to_string()),
+                        ));
+                        return None;
+                    }
+                    Err(JsonSchemaComparisonError::DepthExceeded) => {
+                        diagnostics.push(Diagnostic::warning(
+                            "OPENAPI_ALLOF_CONFLICT",
+                            format!("allOf schema exceeds maximum comparison depth in operation '{operation_id}'"),
+                            self.surface.id.clone(),
+                            Some(operation_id.to_string()),
+                        ));
+                        return None;
                     }
                 }
             }
             IrTypeShape::Object {
                 fields: self.import_object_fields(
-                    &merged,
+                    merged.iter(),
                     &BTreeSet::new(),
                     &type_id,
                     operation_id,
@@ -92,10 +101,13 @@ impl OpenApiImporter<'_> {
                 "object" => {
                     if let Some(properties) = resolved.get("properties").and_then(Value::as_object)
                     {
-                        let required = required_fields(&resolved);
+                        let required = resolved
+                            .as_object()
+                            .map(json_schema_required_fields)
+                            .unwrap_or_default();
                         IrTypeShape::Object {
                             fields: self.import_object_fields(
-                                properties,
+                                properties.iter(),
                                 &required,
                                 &type_id,
                                 operation_id,
@@ -142,16 +154,15 @@ impl OpenApiImporter<'_> {
         Some(type_id)
     }
 
-    fn import_object_fields(
+    fn import_object_fields<'a>(
         &mut self,
-        properties: &Map<String, Value>,
+        properties: impl Iterator<Item = (&'a String, &'a Value)>,
         required: &BTreeSet<String>,
         parent_id: &str,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Vec<IrField> {
         properties
-            .iter()
             .map(|(name, schema)| {
                 let type_ref = self
                     .import_schema(
@@ -189,17 +200,6 @@ impl OpenApiImporter<'_> {
             .unwrap_or_default()
             .to_string()
     }
-}
-
-fn required_fields(schema: &Value) -> BTreeSet<String> {
-    schema
-        .get("required")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(ToString::to_string)
-        .collect()
 }
 
 fn enum_value(value: &Value) -> String {

@@ -25,15 +25,15 @@
   },
   "fonts": {
     "heading": {
-      "family": "Gustan",
-      "weight": 700,
-      "source": "/fonts/gustan/Gustan-Bold.woff2",
+      "family": "Encode Sans Semi Expanded",
+      "weight": 500,
+      "source": "/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-500-latin.woff2",
       "format": "woff2"
     },
     "body": {
-      "family": "Gustan",
+      "family": "Encode Sans Semi Expanded",
       "weight": 400,
-      "source": "/fonts/gustan/Gustan-Book.woff2",
+      "source": "/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-400-latin.woff2",
       "format": "woff2"
     }
   },
