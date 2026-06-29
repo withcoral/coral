@@ -1,0 +1,192 @@
+dsl_version: 3
+name: opencollective
+version: "1.0.0"
+description: >-
+  Open Collective funding data — query total amounts raised, spent,
+  balance, contributor counts, and project metadata for any open
+  source collective using the public GraphQL API.
+backend: http
+base_url: https://api.opencollective.com/graphql/v2
+
+test_queries:
+  - >-
+    SELECT name, total_amount_received, balance, contributors_count
+    FROM opencollective.collectives
+    WHERE slug = 'webpack'
+    LIMIT 1
+
+tables:
+  - name: collectives
+    description: >
+      Look up funding stats and metadata for an Open Collective
+      project. Requires the collective slug as a filter. Returns a
+      single row with financials, social links, and contributor counts
+      if the collective exists.
+    guide: >
+      Start with `SELECT name, total_amount_received, balance,
+      contributors_count FROM opencollective.collectives WHERE slug =
+      'webpack'`. You must provide the `slug` filter to specify which
+      collective to fetch. No authentication is required.
+    filters:
+      - name: slug
+        required: true
+        description: >-
+          The URL slug of the collective (e.g. 'webpack', 'babel').
+          Find it in the collective's Open Collective URL:
+          https://opencollective.com/<slug>.
+    request:
+      method: POST
+      path: /
+      headers:
+        - name: Content-Type
+          from: template
+          template: application/json
+      body:
+        format: json
+        fields:
+          - path: ["query"]
+            from: template
+            template: |
+              query ($slug: String) {
+                collective(slug: $slug) {
+                  slug
+                  name
+                  description
+                  currency
+                  type
+                  website
+                  twitterHandle
+                  githubHandle
+                  socialLinks {
+                    type
+                    url
+                  }
+                  tags
+                  createdAt
+                  stats {
+                    totalAmountReceived {
+                      value
+                      currency
+                    }
+                    totalAmountSpent {
+                      value
+                      currency
+                    }
+                    balance {
+                      value
+                      currency
+                    }
+                    yearlyBudget {
+                      value
+                      currency
+                    }
+                    contributorsCount
+                  }
+                }
+              }
+          - path: ["variables", "slug"]
+            from: filter
+            key: slug
+    response:
+      rows_path: ["data", "collective"]
+    columns:
+      - name: slug
+        type: Utf8
+        nullable: false
+        description: URL slug of the collective.
+        expr:
+          kind: from_filter
+          key: slug
+      - name: name
+        type: Utf8
+        nullable: true
+        description: Display name of the collective.
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Short description of the collective.
+      - name: currency
+        type: Utf8
+        nullable: true
+        description: Default currency code (e.g. USD, EUR).
+      - name: type
+        type: Utf8
+        nullable: true
+        description: >-
+          Entity type on Open Collective
+          (e.g. COLLECTIVE, ORGANIZATION, FUND).
+      - name: total_amount_received
+        type: Float64
+        nullable: true
+        description: >-
+          Total amount received in the collective's default
+          currency, across the lifetime of the collective.
+        expr:
+          kind: path
+          path: ["stats", "totalAmountReceived", "value"]
+      - name: total_amount_spent
+        type: Float64
+        nullable: true
+        description: >-
+          Total amount spent from the collective's balance
+          (negative value).
+        expr:
+          kind: path
+          path: ["stats", "totalAmountSpent", "value"]
+      - name: balance
+        type: Float64
+        nullable: true
+        description: Current balance of the collective.
+        expr:
+          kind: path
+          path: ["stats", "balance", "value"]
+      - name: yearly_budget
+        type: Float64
+        nullable: true
+        description: Estimated annual budget based on recent activity.
+        expr:
+          kind: path
+          path: ["stats", "yearlyBudget", "value"]
+      - name: contributors_count
+        type: Int64
+        nullable: true
+        description: Total number of unique contributors.
+        expr:
+          kind: path
+          path: ["stats", "contributorsCount"]
+      - name: website
+        type: Utf8
+        nullable: true
+        description: Project website URL.
+      - name: twitter_handle
+        type: Utf8
+        nullable: true
+        description: Twitter/X handle of the collective.
+        expr:
+          kind: path
+          path: ["twitterHandle"]
+      - name: github_handle
+        type: Utf8
+        nullable: true
+        description: GitHub organization or user handle.
+        expr:
+          kind: path
+          path: ["githubHandle"]
+      - name: social_links
+        type: Json
+        nullable: true
+        description: Social links associated with the collective.
+        expr:
+          kind: path
+          path: ["socialLinks"]
+      - name: tags
+        type: Json
+        nullable: true
+        description: Tags associated with the collective.
+      - name: created_at
+        type: Utf8
+        nullable: true
+        description: ISO 8601 timestamp when the collective was created.
+        expr:
+          kind: path
+          path: ["createdAt"]
