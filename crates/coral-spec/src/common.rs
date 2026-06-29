@@ -466,6 +466,11 @@ pub enum ValueSourceSpec {
         #[serde(default)]
         default: Option<bool>,
     },
+    FilterStringArray {
+        key: String,
+        #[serde(default)]
+        default: Option<Vec<String>>,
+    },
     FilterSplit {
         key: String,
         separator: String,

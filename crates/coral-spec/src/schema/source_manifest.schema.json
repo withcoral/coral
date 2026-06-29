@@ -1099,6 +1099,17 @@
         },
         {
           "properties": {
+            "from": { "const": "filter_string_array" },
+            "key": { "type": "string", "minLength": 1 },
+            "default": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["key"]
+        },
+        {
+          "properties": {
             "from": { "const": "filter_split" },
             "key": { "type": "string", "minLength": 1 },
             "separator": { "type": "string", "minLength": 1 },

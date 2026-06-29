@@ -187,6 +187,42 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_renders_filter_string_array_as_json_array() {
+        let request = RequestSpec {
+            method: HttpMethod::POST,
+            path: ParsedTemplate::parse("/items").expect("template"),
+            query: vec![],
+            body: BodySpec::Json {
+                fields: vec![BodyFieldSpec {
+                    path: vec!["logStreamNames".to_string()],
+                    when_arg: None,
+                    value: ValueSourceSpec::FilterStringArray {
+                        key: "log_stream_names".to_string(),
+                        default: None,
+                    },
+                }],
+            },
+            headers: vec![],
+        };
+        let filters = HashMap::from([(
+            "log_stream_names".to_string(),
+            r#"["stream-a","stream-b"]"#.to_string(),
+        )]);
+        let args = HashMap::new();
+        let state = HashMap::new();
+        let resolved_inputs = BTreeMap::new();
+        let context = RenderContext::new(&filters, &args, &state, &resolved_inputs);
+
+        let body = build_request_body(&request, &context).expect("request body should render");
+
+        assert!(
+            matches!(body, Some(RequestBody::Json(value)) if value == json!({
+                "logStreamNames": ["stream-a", "stream-b"]
+            }))
+        );
+    }
+
+    #[test]
     fn set_path_value_builds_arrays_from_numeric_segments() {
         let mut root = json!({});
 
