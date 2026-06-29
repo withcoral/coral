@@ -451,6 +451,15 @@ The supported foundation subset is intentionally narrow:
   counted pattern syntax without depending on parser-private AST recovery. The
   normalized form then lowers through the same scoped count-subquery planner as
   explicit `COUNT { MATCH ... }`;
+- hidden `ORDER BY` scalar subqueries are lifted out of sort expressions before
+  SQL planning. Outer-independent node-only counts, relationship counts, and
+  existential patterns become single-row `CROSS JOIN` precomputes; correlated
+  single-anchor relationship-pattern counts and existential predicates become
+  grouped `LEFT JOIN` precomputes keyed by the outer node. The shared IR
+  correlation helper decides which variables are introduced by a scoped
+  subquery, keeping the parser and lowerer on the same contract. Correlated
+  node-only and multi-anchor hidden sort subqueries still require staged
+  row-source planning and are rejected before lowering;
 - explicit Cypher `ORDER BY ... NULLS FIRST/LAST` is normalized before typed AST
   construction because the current parser version accepts sort direction but
   does not model null placement. The Cypher frontend records null placement per

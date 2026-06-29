@@ -4012,6 +4012,96 @@ async fn cypher_hidden_count_subquery_order_expressions_use_precomputed_joins() 
 }
 
 #[tokio::test]
+async fn cypher_hidden_uncorrelated_node_count_subquery_order_expressions_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service \
+         ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = 'prod' } + 1 DESC, service",
+    )
+    .await
+    .expect("hidden uncorrelated node COUNT subquery ORDER BY expression should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CROSS JOIN (SELECT COUNT(*) AS \"__coral_value\" FROM \"ops\".\"services\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(
+            "ORDER BY (COALESCE(\"__coral_scalar_subquery_0\".\"__coral_value\", 0) + 1) DESC"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_hidden_uncorrelated_relationship_subquery_order_expressions_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service \
+         ORDER BY COUNT { MATCH (:Service)-[:DEPENDS_ON]->(:Service) } \
+           + CASE WHEN EXISTS { MATCH (:Service)-[:DEPENDS_ON]->(:Service {tier: 'dev'}) } \
+                  THEN 1 ELSE 0 END DESC, service",
+    )
+    .await
+    .expect("hidden uncorrelated relationship subquery ORDER BY expression should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .matches("CROSS JOIN (SELECT")
+            .count()
+            >= 2,
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"ops\".\"service_dependencies\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_hidden_exists_subquery_order_expressions_use_precomputed_joins() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -10135,10 +10135,10 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         ScalarExpression::Predicate(predicate) => Some(
             hidden_subquery_order_predicate_can_be_precomputed(predicate),
         ),
-        ScalarExpression::CountSubquery { pattern } => Some(matches!(
-            pattern.as_ref(),
-            CountSubqueryPattern::Relationships(_)
-        )),
+        ScalarExpression::CountSubquery { pattern } => Some(match pattern.as_ref() {
+            CountSubqueryPattern::Relationships(_) => true,
+            CountSubqueryPattern::Nodes { .. } => !pattern.references_outer_variables(),
+        }),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::UndirectedEndpointKey { .. }
@@ -10404,7 +10404,9 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ScalarExpression::Predicate(predicate) => {
             predicate_expression_correlated_subquery_count(predicate)
         }
-        ScalarExpression::CountSubquery { .. } => 1,
+        ScalarExpression::CountSubquery { pattern } => {
+            usize::from(pattern.references_outer_variables())
+        }
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -36130,11 +36132,34 @@ relationships:
     }
 
     #[test]
+    fn compiles_hidden_order_by_uncorrelated_node_count_subqueries() {
+        for cypher in [
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) } DESC, service",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = 'prod' } + 1 DESC",
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("hidden uncorrelated node-count subquery ordering should compile");
+
+            assert!(matches!(
+                plan.order_by.first(),
+                Some(OrderKey {
+                    expression: OrderExpression::Scalar(_),
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
     fn rejects_non_precomputable_hidden_order_by_correlated_subqueries() {
         let error = compile_cypher(
             "MATCH (service:Service) \
              RETURN service.name AS service \
-             ORDER BY COUNT { MATCH (other:Service) } + 1 DESC",
+             ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier } + 1 DESC",
         )
         .expect_err("hidden non-precomputable subquery ordering should still be rejected");
         assert!(

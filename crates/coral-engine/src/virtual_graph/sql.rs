@@ -330,16 +330,23 @@ impl<'a> Lowerer<'a> {
                     predicate, required, candidates,
                 );
             }
-            ScalarExpression::CountSubquery { pattern } => {
-                if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
-                    && Self::exists_pattern_has_outer_variables(predicate)
+            ScalarExpression::CountSubquery { pattern } => match pattern.as_ref() {
+                CountSubqueryPattern::Relationships(predicate)
+                    if required || predicate.references_outer_variables() =>
                 {
                     candidates.push(ScalarSubqueryCandidateUse {
                         candidate: ScalarSubqueryCandidate::Count((**pattern).clone()),
                         required,
                     });
                 }
-            }
+                CountSubqueryPattern::Nodes { .. } if required => {
+                    candidates.push(ScalarSubqueryCandidateUse {
+                        candidate: ScalarSubqueryCandidate::Count((**pattern).clone()),
+                        required,
+                    });
+                }
+                _ => {}
+            },
             ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::UndirectedEndpointKey { .. }
@@ -530,7 +537,7 @@ impl<'a> Lowerer<'a> {
     ) {
         match predicate {
             PredicateExpression::ExistsPattern(predicate) => {
-                if Self::exists_pattern_has_outer_variables(predicate) {
+                if required || predicate.references_outer_variables() {
                     candidates.push(ScalarSubqueryCandidateUse {
                         candidate: ScalarSubqueryCandidate::Exists(predicate.clone()),
                         required,
@@ -569,18 +576,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn exists_pattern_has_outer_variables(predicate: &ExistsPatternPredicate) -> bool {
-        let local_nodes = predicate
-            .nodes
-            .iter()
-            .map(|node| node.variable.as_str())
-            .collect::<BTreeSet<_>>();
-        predicate.relationships.iter().any(|relationship| {
-            !local_nodes.contains(relationship.left.as_str())
-                || !local_nodes.contains(relationship.right.as_str())
-        })
-    }
-
     fn render_precomputed_scalar_subquery_join(
         &self,
         precomputed: &PrecomputedScalarSubquery,
@@ -588,10 +583,74 @@ impl<'a> Lowerer<'a> {
         match &precomputed.candidate {
             ScalarSubqueryCandidate::Count(CountSubqueryPattern::Relationships(predicate))
             | ScalarSubqueryCandidate::Exists(predicate) => {
-                self.render_precomputed_relationship_scalar_subquery_join(predicate, precomputed)
+                if predicate.references_outer_variables() {
+                    self.render_precomputed_relationship_scalar_subquery_join(
+                        predicate,
+                        precomputed,
+                    )
+                } else {
+                    self.render_precomputed_uncorrelated_relationship_scalar_subquery_join(
+                        predicate,
+                        precomputed,
+                    )
+                    .map(Some)
+                }
             }
-            ScalarSubqueryCandidate::Count(CountSubqueryPattern::Nodes { .. }) => Ok(None),
+            ScalarSubqueryCandidate::Count(pattern @ CountSubqueryPattern::Nodes { .. }) => {
+                self.render_precomputed_node_count_scalar_subquery_join(pattern, precomputed)
+            }
         }
+    }
+
+    fn render_precomputed_uncorrelated_relationship_scalar_subquery_join(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        precomputed: &PrecomputedScalarSubquery,
+    ) -> Result<String, CoreError> {
+        let value_expression = match &precomputed.candidate {
+            ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0",
+            ScalarSubqueryCandidate::Count(_) => "COUNT(*)",
+        };
+        let select_expression = format!(
+            "{value_expression} AS {}",
+            quote_ident(&precomputed.value_alias)
+        );
+        Ok(format!(
+            "CROSS JOIN {} AS {}",
+            self.render_scoped_pattern_select(predicate, &select_expression)?,
+            quote_ident(&precomputed.table_alias)
+        ))
+    }
+
+    fn render_precomputed_node_count_scalar_subquery_join(
+        &self,
+        pattern: &CountSubqueryPattern,
+        precomputed: &PrecomputedScalarSubquery,
+    ) -> Result<Option<String>, CoreError> {
+        let CountSubqueryPattern::Nodes {
+            nodes,
+            predicates,
+            predicate,
+        } = pattern
+        else {
+            return Err(CoreError::internal(
+                "precomputed node count renderer received a relationship pattern",
+            ));
+        };
+        if pattern.references_outer_variables() {
+            return Ok(None);
+        }
+        let select_expression = format!("COUNT(*) AS {}", quote_ident(&precomputed.value_alias));
+        Ok(Some(format!(
+            "CROSS JOIN {} AS {}",
+            self.render_count_node_select(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                &select_expression,
+            )?,
+            quote_ident(&precomputed.table_alias)
+        )))
     }
 
     fn render_precomputed_relationship_scalar_subquery_join(

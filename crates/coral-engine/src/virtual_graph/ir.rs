@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use ordered_float::OrderedFloat;
 
 /// Direction of a relationship pattern relative to its left and right nodes.
@@ -812,6 +814,379 @@ pub struct ExistsPatternPredicate {
     /// Scoped `WHERE` predicate expression applied inside the existential
     /// subquery after local node and relationship bindings are introduced.
     pub predicate: Option<Box<PredicateExpression>>,
+}
+
+impl CountSubqueryPattern {
+    /// Returns whether this scoped count pattern references variables outside
+    /// the nodes and relationships introduced by the pattern itself.
+    #[must_use]
+    pub(crate) fn references_outer_variables(&self) -> bool {
+        count_subquery_pattern_references_outside_scope(self, &BTreeSet::new())
+    }
+}
+
+impl ExistsPatternPredicate {
+    /// Returns whether this scoped existential pattern references variables
+    /// outside the nodes and relationships introduced by the pattern itself.
+    #[must_use]
+    pub(crate) fn references_outer_variables(&self) -> bool {
+        exists_pattern_references_outside_scope(self, &BTreeSet::new())
+    }
+}
+
+fn count_subquery_pattern_references_outside_scope(
+    pattern: &CountSubqueryPattern,
+    scope: &BTreeSet<String>,
+) -> bool {
+    match pattern {
+        CountSubqueryPattern::Relationships(predicate) => {
+            exists_pattern_references_outside_scope(predicate, scope)
+        }
+        CountSubqueryPattern::Nodes {
+            nodes,
+            predicates,
+            predicate,
+        } => {
+            let mut local_scope = scope.clone();
+            for node in nodes {
+                local_scope.insert(node.variable.clone());
+            }
+            property_predicate_list_references_outside_scope(predicates, &local_scope)
+                || predicate.as_deref().is_some_and(|predicate| {
+                    predicate_expression_references_outside_scope(predicate, &local_scope)
+                })
+        }
+    }
+}
+
+fn exists_pattern_references_outside_scope(
+    predicate: &ExistsPatternPredicate,
+    scope: &BTreeSet<String>,
+) -> bool {
+    let mut local_scope = scope.clone();
+    for node in &predicate.nodes {
+        local_scope.insert(node.variable.clone());
+    }
+    for relationship in &predicate.relationships {
+        if let Some(variable) = &relationship.variable {
+            local_scope.insert(variable.clone());
+        }
+    }
+    predicate.relationships.iter().any(|relationship| {
+        variable_references_outside_scope(&relationship.left, &local_scope)
+            || variable_references_outside_scope(&relationship.right, &local_scope)
+    }) || property_predicate_list_references_outside_scope(&predicate.predicates, &local_scope)
+        || predicate.predicate.as_deref().is_some_and(|predicate| {
+            predicate_expression_references_outside_scope(predicate, &local_scope)
+        })
+}
+
+fn property_predicate_list_references_outside_scope(
+    predicates: &[PropertyPredicate],
+    scope: &BTreeSet<String>,
+) -> bool {
+    predicates
+        .iter()
+        .any(|predicate| property_predicate_references_outside_scope(predicate, scope))
+}
+
+fn property_predicate_references_outside_scope(
+    predicate: &PropertyPredicate,
+    scope: &BTreeSet<String>,
+) -> bool {
+    variable_references_outside_scope(&predicate.property.variable, scope)
+        || predicate_rhs_references_outside_scope(&predicate.rhs, scope)
+}
+
+fn predicate_rhs_references_outside_scope(rhs: &PredicateRhs, scope: &BTreeSet<String>) -> bool {
+    match rhs {
+        PredicateRhs::Property(property) => {
+            variable_references_outside_scope(&property.variable, scope)
+        }
+        PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
+            variable_references_outside_scope(variable, scope)
+        }
+        PredicateRhs::Literal(_) | PredicateRhs::List(_) => false,
+    }
+}
+
+fn scalar_predicate_rhs_references_outside_scope(
+    rhs: &ScalarPredicateRhs,
+    scope: &BTreeSet<String>,
+) -> bool {
+    match rhs {
+        ScalarPredicateRhs::Expression(expression) => {
+            scalar_expression_references_outside_scope(expression, scope)
+        }
+        ScalarPredicateRhs::List(_) => false,
+    }
+}
+
+fn predicate_expression_references_outside_scope(
+    predicate: &PredicateExpression,
+    scope: &BTreeSet<String>,
+) -> bool {
+    match predicate {
+        PredicateExpression::Boolean(_) => false,
+        PredicateExpression::Comparison(predicate) => {
+            property_predicate_references_outside_scope(predicate, scope)
+        }
+        PredicateExpression::KeyComparison(predicate) => {
+            variable_references_outside_scope(&predicate.variable, scope)
+                || predicate_rhs_references_outside_scope(&predicate.rhs, scope)
+        }
+        PredicateExpression::ElementIdComparison(predicate) => {
+            variable_references_outside_scope(&predicate.variable, scope)
+                || predicate_rhs_references_outside_scope(&predicate.rhs, scope)
+        }
+        PredicateExpression::Presence(predicate) => {
+            variable_references_outside_scope(&predicate.variable, scope)
+        }
+        PredicateExpression::PropertyKeyMembership(predicate) => {
+            variable_references_outside_scope(&predicate.variable, scope)
+                || predicate
+                    .presence_variable
+                    .as_deref()
+                    .is_some_and(|variable| variable_references_outside_scope(variable, scope))
+        }
+        PredicateExpression::ExistsPattern(predicate) => {
+            exists_pattern_references_outside_scope(predicate, scope)
+        }
+        PredicateExpression::ScalarComparison(predicate) => {
+            scalar_expression_references_outside_scope(&predicate.lhs, scope)
+                || scalar_predicate_rhs_references_outside_scope(&predicate.rhs, scope)
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            predicate_expression_references_outside_scope(left, scope)
+                || predicate_expression_references_outside_scope(right, scope)
+        }
+        PredicateExpression::Not { expression } => {
+            predicate_expression_references_outside_scope(expression, scope)
+        }
+    }
+}
+
+fn scalar_expression_references_outside_scope(
+    expression: &ScalarExpression,
+    scope: &BTreeSet<String>,
+) -> bool {
+    if let Some(variable) = scalar_expression_variable_reference(expression) {
+        return variable_references_outside_scope(variable, scope);
+    }
+    if let Some(operand) = scalar_expression_unary_operand(expression) {
+        return scalar_expression_references_outside_scope(operand, scope);
+    }
+    match expression {
+        ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. } => false,
+        ScalarExpression::Predicate(predicate) => {
+            predicate_expression_references_outside_scope(predicate, scope)
+        }
+        ScalarExpression::CountSubquery { pattern } => {
+            count_subquery_pattern_references_outside_scope(pattern, scope)
+        }
+        ScalarExpression::PresenceGated { .. }
+        | ScalarExpression::Coalesce { .. }
+        | ScalarExpression::NullIf { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::Atan2 { .. }
+        | ScalarExpression::Case { .. } => {
+            structural_scalar_expression_references_outside_scope(expression, scope)
+        }
+        ScalarExpression::Property(_)
+        | ScalarExpression::UndirectedEndpointProperty { .. }
+        | ScalarExpression::UndirectedEndpointKey { .. }
+        | ScalarExpression::UndirectedEndpointElementId { .. }
+        | ScalarExpression::UndirectedEndpointLabels { .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. }
+        | ScalarExpression::ToString { .. }
+        | ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::CharacterLength { .. }
+        | ScalarExpression::Reverse { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Sign { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. }
+        | ScalarExpression::Negate { .. } => unreachable!(
+            "direct variable and unary scalar expressions handled before scope recursion"
+        ),
+    }
+}
+
+fn scalar_expression_variable_reference(expression: &ScalarExpression) -> Option<&str> {
+    match expression {
+        ScalarExpression::Property(property) => Some(property.variable.as_str()),
+        ScalarExpression::UndirectedEndpointProperty { relationship, .. }
+        | ScalarExpression::UndirectedEndpointKey { relationship, .. }
+        | ScalarExpression::UndirectedEndpointElementId { relationship, .. }
+        | ScalarExpression::UndirectedEndpointLabels { relationship, .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
+            Some(relationship.as_str())
+        }
+        ScalarExpression::Key { variable }
+        | ScalarExpression::ElementId { variable }
+        | ScalarExpression::GraphIdentity { variable }
+        | ScalarExpression::GraphPresence { variable }
+        | ScalarExpression::NodeLabels { variable, .. }
+        | ScalarExpression::PropertyKeys { variable }
+        | ScalarExpression::RelationshipType { variable, .. } => Some(variable.as_str()),
+        _ => None,
+    }
+}
+
+fn scalar_expression_unary_operand(expression: &ScalarExpression) -> Option<&ScalarExpression> {
+    match expression {
+        ScalarExpression::ToString { expression }
+        | ScalarExpression::ToInteger { expression }
+        | ScalarExpression::ToFloat { expression }
+        | ScalarExpression::ToBoolean { expression }
+        | ScalarExpression::ToStringOrNull { expression }
+        | ScalarExpression::ToIntegerOrNull { expression }
+        | ScalarExpression::ToFloatOrNull { expression }
+        | ScalarExpression::ToBooleanOrNull { expression }
+        | ScalarExpression::ToLower { expression }
+        | ScalarExpression::ToUpper { expression }
+        | ScalarExpression::Trim { expression }
+        | ScalarExpression::LTrim { expression }
+        | ScalarExpression::RTrim { expression }
+        | ScalarExpression::CharacterLength { expression }
+        | ScalarExpression::Reverse { expression }
+        | ScalarExpression::Abs { expression }
+        | ScalarExpression::Ceil { expression }
+        | ScalarExpression::Floor { expression }
+        | ScalarExpression::Sqrt { expression }
+        | ScalarExpression::Sign { expression }
+        | ScalarExpression::Exp { expression }
+        | ScalarExpression::Log { expression }
+        | ScalarExpression::Log10 { expression }
+        | ScalarExpression::Sin { expression }
+        | ScalarExpression::Cos { expression }
+        | ScalarExpression::Tan { expression }
+        | ScalarExpression::Cot { expression }
+        | ScalarExpression::Asin { expression }
+        | ScalarExpression::Acos { expression }
+        | ScalarExpression::Atan { expression }
+        | ScalarExpression::Degrees { expression }
+        | ScalarExpression::Radians { expression }
+        | ScalarExpression::Negate { expression } => Some(expression),
+        _ => None,
+    }
+}
+
+fn structural_scalar_expression_references_outside_scope(
+    expression: &ScalarExpression,
+    scope: &BTreeSet<String>,
+) -> bool {
+    match expression {
+        ScalarExpression::PresenceGated {
+            presence_variable,
+            expression,
+        } => {
+            variable_references_outside_scope(presence_variable, scope)
+                || scalar_expression_references_outside_scope(expression, scope)
+        }
+        ScalarExpression::Coalesce { expressions } => expressions
+            .iter()
+            .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
+        ScalarExpression::NullIf { expression, value } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(value, scope)
+        }
+        ScalarExpression::Round { expression, places } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || places
+                    .as_deref()
+                    .is_some_and(|places| scalar_expression_references_outside_scope(places, scope))
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(count, scope)
+        }
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(search, scope)
+                || scalar_expression_references_outside_scope(replacement, scope)
+        }
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(start, scope)
+                || length
+                    .as_deref()
+                    .is_some_and(|length| scalar_expression_references_outside_scope(length, scope))
+        }
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            scalar_expression_references_outside_scope(left, scope)
+                || scalar_expression_references_outside_scope(right, scope)
+        }
+        ScalarExpression::Atan2 { y, x } => {
+            scalar_expression_references_outside_scope(y, scope)
+                || scalar_expression_references_outside_scope(x, scope)
+        }
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => {
+            alternatives.iter().any(|alternative| {
+                predicate_expression_references_outside_scope(&alternative.when, scope)
+                    || scalar_expression_references_outside_scope(&alternative.then, scope)
+            }) || else_expression.as_deref().is_some_and(|else_expression| {
+                scalar_expression_references_outside_scope(else_expression, scope)
+            })
+        }
+        _ => unreachable!("non-structural scalar expressions handled before scope recursion"),
+    }
+}
+
+fn variable_references_outside_scope(variable: &str, scope: &BTreeSet<String>) -> bool {
+    !scope.contains(variable)
 }
 
 /// Predicate over scalar graph expressions such as `coalesce(...)`.
