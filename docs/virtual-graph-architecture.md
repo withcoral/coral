@@ -466,15 +466,18 @@ The supported foundation subset is intentionally narrow:
   aggregate aliases, hidden direct `ORDER BY` over precomputable single-anchor
   relationship-pattern `COUNT { ... }` subqueries, and explicit null placement
   on supported sort keys;
-- transparent `WITH` pass-through, graph-variable aliasing, terminal
-  graph-variable `WITH DISTINCT` and row modifiers, and terminal `WITH`
-  projection subsets whose final `RETURN` can reorder or rename every projected
-  alias, including bounded `WITH *` plus explicit scalar aliases when the final
-  `RETURN` enumerates those aliases or uses `RETURN *` to expand visible graph
-  variables plus the aliases. Terminal graph-variable `WITH DISTINCT` preserves
-  graph-variable returns and `RETURN *`; scalar projections after that boundary
-  remain deferred with aggregate aliases in `WITH * ... RETURN *` because they
-  require grouped scoped planning;
+- transparent `WITH` pass-through, graph-variable aliasing, non-terminal
+  deterministic scalar aliases that can be inlined into later `MATCH`,
+  `WHERE`, `RETURN`, and `ORDER BY` expressions, terminal graph-variable
+  `WITH DISTINCT` and row modifiers, and terminal `WITH` projection subsets
+  whose final `RETURN` can reorder or rename every projected alias, including
+  bounded `WITH *` plus explicit scalar aliases when the final `RETURN`
+  enumerates those aliases or uses `RETURN *` to expand visible graph variables
+  plus the aliases. Terminal graph-variable `WITH DISTINCT` preserves
+  graph-variable returns and `RETURN *`; scalar projections after that boundary,
+  non-terminal aggregate or subquery aliases, and aggregate aliases in
+  `WITH * ... RETURN *` remain deferred because they require grouped or staged
+  scoped planning;
 - top-level `UNION` and `UNION ALL` over independently supported branch queries
   with identical output names, column order, and catalog-compatible output
   types;

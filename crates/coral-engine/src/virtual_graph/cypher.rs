@@ -328,11 +328,12 @@ struct VariableFunctionArgument {
     count: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct CypherCompileState {
     path_variables: BTreeMap<String, PathBinding>,
     hidden_graph_variables: BTreeSet<String>,
     out_of_scope_graph_names: BTreeSet<String>,
+    scalar_aliases: Vec<Projection>,
 }
 
 #[derive(Debug, Default)]
@@ -466,6 +467,10 @@ impl<'a> PredicateCompileMode<'a> {
             Self::Graph { path_state, .. } => path_state,
             Self::CaseWhen { .. } => None,
         }
+    }
+
+    fn scalar_alias_state(self) -> Option<&'a CypherCompileState> {
+        self.path_state()
     }
 
     fn unsupported_predicate_message(self) -> &'static str {
@@ -4663,6 +4668,9 @@ fn compile_terminal_with_projection(
     if !terminal_projection_candidate {
         return Ok(None);
     }
+    if query.parts.len() != 1 || !query.final_part.reading_clauses.is_empty() {
+        return Ok(None);
+    }
     let [part] = query.parts.as_slice() else {
         return Err(unsupported(
             "query.parts",
@@ -4675,13 +4683,6 @@ fn compile_terminal_with_projection(
             "write clauses are not supported by Coral virtual graphs",
         ));
     }
-    if !query.final_part.reading_clauses.is_empty() {
-        return Err(unsupported(
-            "final_part.reading_clauses",
-            "WITH projection boundaries before another MATCH require staged query planning and are not supported yet",
-        ));
-    }
-
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     let mut plan = GraphPlan::default();
     let mut state = CypherCompileState::default();
@@ -5097,6 +5098,112 @@ fn set_projection_output_alias(projection: &mut Projection, alias: String) {
     }
 }
 
+fn scalar_alias_names(state: &CypherCompileState) -> BTreeSet<String> {
+    state
+        .scalar_aliases
+        .iter()
+        .map(Projection::output_name)
+        .collect()
+}
+
+fn scalar_alias_projection<'a>(
+    state: &'a CypherCompileState,
+    alias: &str,
+) -> Option<&'a Projection> {
+    state
+        .scalar_aliases
+        .iter()
+        .find(|projection| projection.output_name() == alias)
+}
+
+fn scalar_alias_projection_expression(
+    projection: &Projection,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match projection {
+        Projection::Property { property, .. } => Ok(ScalarExpression::Property(property.clone())),
+        Projection::Key { variable, .. } => Ok(ScalarExpression::Key {
+            variable: variable.clone(),
+        }),
+        Projection::ElementId { variable, .. } => Ok(ScalarExpression::ElementId {
+            variable: variable.clone(),
+        }),
+        Projection::RelationshipType {
+            variable,
+            relationship_type,
+            ..
+        } => Ok(ScalarExpression::RelationshipType {
+            variable: variable.clone(),
+            relationship_type: relationship_type.clone(),
+        }),
+        Projection::NodeLabels {
+            variable, label, ..
+        } => Ok(ScalarExpression::NodeLabels {
+            variable: variable.clone(),
+            label: label.clone(),
+        }),
+        Projection::PropertyKeys { variable, .. } => Ok(ScalarExpression::PropertyKeys {
+            variable: variable.clone(),
+        }),
+        Projection::Literal { literal, .. } => Ok(ScalarExpression::Literal(literal.clone())),
+        Projection::LiteralList { literals, .. } => Ok(ScalarExpression::LiteralList {
+            literals: literals.clone(),
+        }),
+        Projection::Expression { expression, .. } => Ok(expression.clone()),
+        Projection::CountAll { .. } | Projection::Aggregate { .. } => Err(unsupported(
+            path,
+            "aggregate WITH aliases require staged query planning and are not supported before another MATCH",
+        )),
+    }
+}
+
+fn expression_variable_name(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => expression_variable_name(inner),
+        Expression::Variable(variable) => Some(variable_name(variable)),
+        _ => None,
+    }
+}
+
+fn compile_optional_scalar_alias_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    state: Option<&CypherCompileState>,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let Some(alias) = expression_variable_name(expression) else {
+        return Ok(None);
+    };
+    let Some(projection) = scalar_alias_projection(state, &alias) else {
+        return Ok(None);
+    };
+    scalar_alias_projection_expression(projection, path).map(Some)
+}
+
+fn compile_optional_scalar_alias_return_item(
+    item: &ProjectionItem,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let Some(alias) = expression_variable_name(&item.expression) else {
+        return Ok(None);
+    };
+    let Some(projection) = scalar_alias_projection(state, &alias) else {
+        return Ok(None);
+    };
+    let mut projection = projection.clone();
+    if let Some(alias) = &item.alias {
+        set_projection_output_alias(&mut projection, variable_name(alias));
+    }
+    reject_ignored_path_variable_references_in_projection(&projection, state, path)?;
+    Ok(Some(projection))
+}
+
 fn apply_terminal_return_modifiers(
     return_clause: &Return,
     plan: &mut GraphPlan,
@@ -5281,68 +5388,41 @@ fn apply_transparent_with_scope(
         ));
     }
 
-    let mut carried_inputs = BTreeSet::new();
-    let mut carried_outputs = BTreeSet::new();
-    let mut renames = BTreeMap::new();
-    for (index, item) in with.items.iter().enumerate() {
-        let Expression::Variable(variable) = &item.expression else {
-            return Err(unsupported(
-                format!("{path}.items[{index}].expression"),
-                "transparent WITH only supports pass-through graph variables",
-            ));
-        };
-        let input = variable_name(variable);
-        let output = item
-            .alias
-            .as_ref()
-            .map(validate_variable)
-            .transpose()?
-            .unwrap_or_else(|| input.clone());
-        if !carried_inputs.insert(input.clone()) {
-            return Err(unsupported(
-                format!("{path}.items[{index}].expression"),
-                format!("WITH carries graph variable '{input}' more than once"),
-            ));
-        }
-        if !carried_outputs.insert(output.clone()) {
-            return Err(unsupported(
-                format!("{path}.items[{index}].alias"),
-                format!("WITH output variable '{output}' is defined more than once"),
-            ));
-        }
-        renames.insert(input, output);
-    }
-
+    let scope = compile_transparent_with_items(with, plan, state, &path, context)?;
+    reject_explicit_with_where_path_variable_references(with, state, &scope, &path, context)?;
     let visible = visible_graph_variables(plan, state);
-    if !carried_inputs.is_subset(&visible) {
-        return Err(unsupported(
-            format!("{path}.items"),
-            "transparent WITH can only carry currently visible graph variables",
-        ));
-    }
     let dropped_variables = visible
-        .difference(&carried_inputs)
+        .difference(&scope.carried_inputs)
         .cloned()
         .collect::<Vec<_>>();
     let mut hidden_renames = BTreeMap::new();
+    let mut renames = scope.renames;
     for variable in &dropped_variables {
         let hidden = fresh_hidden_graph_variable(plan, state, variable);
         renames.insert(variable.clone(), hidden.clone());
         hidden_renames.insert(hidden.clone(), hidden);
     }
+    let mut next_scalar_aliases = scope.scalar_aliases;
     if renames.iter().any(|(from, to)| from != to) {
         rename_graph_plan_variables(plan, &renames);
         rename_hidden_graph_variables(state, &renames);
+        for projection in &mut next_scalar_aliases {
+            rename_projection_variables(projection, &renames);
+        }
     }
     state
         .hidden_graph_variables
         .extend(hidden_renames.into_values());
     state.out_of_scope_graph_names.extend(dropped_variables);
-    for variable in carried_outputs {
+    for variable in scope.carried_graph_outputs {
         state.out_of_scope_graph_names.remove(&variable);
     }
+    state.scalar_aliases = next_scalar_aliases;
 
-    let predicate = compile_transparent_with_where(with, plan, None, path.clone(), context)?;
+    let mut predicate_state = state.clone();
+    predicate_state.path_variables.clear();
+    let predicate =
+        compile_transparent_with_where(with, plan, Some(&predicate_state), path.clone(), context)?;
     reject_ignored_path_variable_references(plan, state, &path)?;
     if let Some(predicate) = predicate.as_ref() {
         reject_ignored_path_variable_references_in_predicate(
@@ -5353,6 +5433,322 @@ fn apply_transparent_with_scope(
     }
     state.path_variables.clear();
     Ok(predicate)
+}
+
+#[derive(Default)]
+struct TransparentWithScopePlan {
+    carried_inputs: BTreeSet<String>,
+    carried_outputs: BTreeSet<String>,
+    carried_graph_outputs: BTreeSet<String>,
+    scalar_aliases: Vec<Projection>,
+    renames: BTreeMap<String, String>,
+}
+
+fn compile_transparent_with_items(
+    with: &With,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<TransparentWithScopePlan, CoreError> {
+    let visible = visible_graph_variables(plan, state);
+    let mut scope = TransparentWithScopePlan::default();
+    for (index, item) in with.items.iter().enumerate() {
+        if compile_transparent_with_variable_item(item, index, path, state, &visible, &mut scope)? {
+            continue;
+        }
+        let projection = compile_transparent_with_scalar_alias(
+            item,
+            format!("{path}.items[{index}]"),
+            plan,
+            state,
+            context,
+        )?;
+        push_transparent_with_scalar_alias(&mut scope, projection, path, index)?;
+    }
+    Ok(scope)
+}
+
+fn reject_explicit_with_where_path_variable_references(
+    with: &With,
+    state: &CypherCompileState,
+    scope: &TransparentWithScopePlan,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    let Some(where_clause) = &with.where_clause else {
+        return Ok(());
+    };
+    if state.path_variables.is_empty() {
+        return Ok(());
+    }
+
+    let mut variables = BTreeSet::new();
+    expression_variables(where_clause, &mut variables);
+    recovered_function_argument_variables(where_clause, context, &mut variables);
+    if let Some(variable) = variables.iter().find(|variable| {
+        state.path_variables.contains_key(variable.as_str())
+            && !scope.carried_outputs.contains(variable.as_str())
+    }) {
+        return Err(unsupported(
+            format!("{path}.where"),
+            format!(
+                "path variable '{variable}' is not in scope after WITH because Coral does not materialize path values yet"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn recovered_function_argument_variables(
+    expression: &Expression,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            recovered_function_argument_variables(inner, context, variables);
+        }
+        Expression::UnaryOp { operand, .. } | Expression::IsNull { operand, .. } => {
+            recovered_function_argument_variables(operand, context, variables);
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            recovered_function_argument_variables(lhs, context, variables);
+            recovered_function_argument_variables(rhs, context, variables);
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            recovered_function_argument_variables(lhs, context, variables);
+            for (_, rhs) in operators {
+                recovered_function_argument_variables(rhs, context, variables);
+            }
+        }
+        Expression::ListIndex { list, index, .. } => {
+            recovered_function_argument_variables(list, context, variables);
+            recovered_function_argument_variables(index, context, variables);
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            recovered_function_argument_variables(list, context, variables);
+            if let Some(start) = start.as_deref() {
+                recovered_function_argument_variables(start, context, variables);
+            }
+            if let Some(end) = end.as_deref() {
+                recovered_function_argument_variables(end, context, variables);
+            }
+        }
+        Expression::Case(case) => {
+            if let Some(scrutinee) = case.scrutinee.as_deref() {
+                recovered_function_argument_variables(scrutinee, context, variables);
+            }
+            for alternative in &case.alternatives {
+                recovered_function_argument_variables(&alternative.when, context, variables);
+                recovered_function_argument_variables(&alternative.then, context, variables);
+            }
+            if let Some(default) = case.default.as_deref() {
+                recovered_function_argument_variables(default, context, variables);
+            }
+        }
+        Expression::FunctionCall(function) => {
+            if let Some(variable) = context.variable_function_argument(function) {
+                variables.insert(variable.to_string());
+            }
+            for argument in &function.arguments {
+                recovered_function_argument_variables(argument, context, variables);
+            }
+        }
+        Expression::ListComprehension(comprehension) => {
+            if let Some(filter) = comprehension.filter.as_deref() {
+                recovered_function_argument_variables(filter, context, variables);
+            }
+            if let Some(map) = comprehension.map.as_ref() {
+                recovered_function_argument_variables(map, context, variables);
+            }
+        }
+        Expression::PatternComprehension(comprehension) => {
+            if let Some(where_clause) = comprehension.where_clause.as_ref() {
+                recovered_function_argument_variables(where_clause, context, variables);
+            }
+            recovered_function_argument_variables(&comprehension.map, context, variables);
+        }
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => {
+            recovered_function_argument_variables(&filter.collection, context, variables);
+            if let Some(predicate) = filter.predicate.as_deref() {
+                recovered_function_argument_variables(predicate, context, variables);
+            }
+        }
+        Expression::Literal(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::CountStar { .. }
+        | Expression::PropertyLookup { .. }
+        | Expression::NodeLabels { .. }
+        | Expression::Pattern(_)
+        | Expression::Exists(_)
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_)
+        | Expression::MapProjection(_) => {}
+    }
+}
+
+fn compile_transparent_with_variable_item(
+    item: &ProjectionItem,
+    index: usize,
+    path: &str,
+    state: &CypherCompileState,
+    visible: &BTreeSet<String>,
+    scope: &mut TransparentWithScopePlan,
+) -> Result<bool, CoreError> {
+    let Expression::Variable(variable) = &item.expression else {
+        return Ok(false);
+    };
+    let input = variable_name(variable);
+    if visible.contains(&input) {
+        push_transparent_with_graph_variable(item, index, path, input, scope)?;
+        return Ok(true);
+    }
+    if let Some(projection) = scalar_alias_projection(state, &input) {
+        let output = item
+            .alias
+            .as_ref()
+            .map(validate_variable)
+            .transpose()?
+            .unwrap_or_else(|| input.clone());
+        push_transparent_with_output_name(scope, &output, path, index)?;
+        let mut projection = projection.clone();
+        set_projection_output_alias(&mut projection, output);
+        scope.scalar_aliases.push(projection);
+        return Ok(true);
+    }
+    Err(unsupported(
+        format!("{path}.items[{index}].expression"),
+        format!(
+            "WITH can only carry visible graph variables or scalar aliases; '{input}' is not in scope"
+        ),
+    ))
+}
+
+fn push_transparent_with_graph_variable(
+    item: &ProjectionItem,
+    index: usize,
+    path: &str,
+    input: String,
+    scope: &mut TransparentWithScopePlan,
+) -> Result<(), CoreError> {
+    let output = item
+        .alias
+        .as_ref()
+        .map(validate_variable)
+        .transpose()?
+        .unwrap_or_else(|| input.clone());
+    if !scope.carried_inputs.insert(input.clone()) {
+        return Err(unsupported(
+            format!("{path}.items[{index}].expression"),
+            format!("WITH carries graph variable '{input}' more than once"),
+        ));
+    }
+    push_transparent_with_output_name(scope, &output, path, index)?;
+    scope.carried_graph_outputs.insert(output.clone());
+    scope.renames.insert(input, output);
+    Ok(())
+}
+
+fn push_transparent_with_scalar_alias(
+    scope: &mut TransparentWithScopePlan,
+    projection: Projection,
+    path: &str,
+    index: usize,
+) -> Result<(), CoreError> {
+    let output = projection.output_name();
+    push_transparent_with_output_name(scope, &output, path, index)?;
+    scope.scalar_aliases.push(projection);
+    Ok(())
+}
+
+fn push_transparent_with_output_name(
+    scope: &mut TransparentWithScopePlan,
+    output: &str,
+    path: &str,
+    index: usize,
+) -> Result<(), CoreError> {
+    if !scope.carried_outputs.insert(output.to_string()) {
+        return Err(unsupported(
+            format!("{path}.items[{index}].alias"),
+            format!("WITH output variable '{output}' is defined more than once"),
+        ));
+    }
+    Ok(())
+}
+
+fn compile_transparent_with_scalar_alias(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    let Some(alias) = item.alias.as_ref().map(validate_variable).transpose()? else {
+        return Err(unsupported(
+            format!("{path}.alias"),
+            "non-terminal WITH scalar aliases require explicit aliases",
+        ));
+    };
+    if expression_contains_aggregate(&item.expression) {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            "aggregate WITH aliases require staged query planning and are not supported before another MATCH",
+        ));
+    }
+    if expression_contains_subquery(&item.expression) {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            "subquery WITH aliases require staged query planning and are not supported before another MATCH",
+        ));
+    }
+    let mut projection = compile_projection(item, path.clone(), context, plan, state)?;
+    set_projection_output_alias(&mut projection, alias);
+    if projection.is_aggregate() {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            "aggregate WITH aliases require staged query planning and are not supported before another MATCH",
+        ));
+    }
+    if projection_contains_correlated_subquery(&projection) {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            "subquery WITH aliases require staged query planning and are not supported before another MATCH",
+        ));
+    }
+    reject_ignored_path_variable_references_in_projection(&projection, state, path)?;
+    Ok(projection)
+}
+
+fn projection_contains_correlated_subquery(projection: &Projection) -> bool {
+    match projection {
+        Projection::Expression { expression, .. } => {
+            scalar_expression_contains_correlated_subquery(expression)
+        }
+        Projection::Aggregate { target, .. } => {
+            aggregate_target_contains_correlated_subquery(target)
+        }
+        Projection::Property { .. }
+        | Projection::Key { .. }
+        | Projection::ElementId { .. }
+        | Projection::RelationshipType { .. }
+        | Projection::NodeLabels { .. }
+        | Projection::PropertyKeys { .. }
+        | Projection::Literal { .. }
+        | Projection::LiteralList { .. }
+        | Projection::CountAll { .. } => false,
+    }
+}
+
+fn aggregate_target_contains_correlated_subquery(target: &AggregateTarget) -> bool {
+    matches!(target, AggregateTarget::Expression(expression) if scalar_expression_contains_correlated_subquery(expression))
 }
 
 fn compile_transparent_with_where(
@@ -6594,6 +6990,11 @@ fn compile_reading_clauses_into(
     for (index, clause) in reading_clauses.iter().enumerate() {
         match clause {
             ReadingClause::Match(match_clause) => {
+                reject_match_scalar_alias_conflicts(
+                    match_clause,
+                    state,
+                    format!("{path}[{index}].pattern"),
+                )?;
                 let predicate_start = plan.predicates.len();
                 let relationship_start = plan.relationships.len();
                 let path_variables_start = state
@@ -6650,6 +7051,29 @@ fn compile_reading_clauses_into(
                 return Err(unsupported(path, "LOAD CSV is not supported"));
             }
         }
+    }
+    Ok(())
+}
+
+fn reject_match_scalar_alias_conflicts(
+    match_clause: &Match,
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let aliases = scalar_alias_names(state);
+    if aliases.is_empty() {
+        return Ok(());
+    }
+    let variables = match_clause_bound_variables(match_clause);
+    if let Some(conflict) = variables
+        .iter()
+        .find(|variable| aliases.contains(*variable))
+    {
+        return Err(unsupported(
+            path,
+            format!("MATCH variable '{conflict}' conflicts with an in-scope WITH scalar alias"),
+        ));
     }
     Ok(())
 }
@@ -8436,6 +8860,14 @@ fn compile_return(
     }
 
     for (index, item) in return_clause.items.iter().enumerate() {
+        if let Some(projection) = compile_optional_scalar_alias_return_item(
+            item,
+            state,
+            format!("return.items[{index}]"),
+        )? {
+            plan.projections.push(projection);
+            continue;
+        }
         if let Some(projections) = compile_graph_variable_return_item(
             item,
             plan,
@@ -8513,6 +8945,9 @@ fn compile_return_star(
             &mut expansion,
             &path,
         )?;
+    }
+    for projection in &state.scalar_aliases {
+        push_unique_star_projection(&mut expansion, projection.clone(), &path)?;
     }
 
     if expansion.projections.is_empty() {
@@ -8825,6 +9260,16 @@ fn compile_order_expression(
             compile_order_expression(inner, projections, plan, state, context, path)
         }
         Expression::Variable(variable) => {
+            if let Some(order) =
+                optional_projection_order_expression_for_alias(variable, projections, path.clone())?
+            {
+                return Ok(order);
+            }
+            if let Some(expression) =
+                compile_optional_scalar_alias_expression(expression, path.clone(), Some(state))?
+            {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
             projection_order_expression_for_alias(variable, projections, path)
         }
         Expression::CountStar { .. } => {
@@ -13537,6 +13982,23 @@ fn projection_order_expression_for_alias(
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
     let alias = variable_name(variable);
+    optional_projection_order_expression_for_alias(variable, projections, path.clone())?.ok_or_else(
+        || {
+            unsupported(
+                path,
+                format!("ORDER BY alias '{alias}' does not match a projection"),
+            )
+        },
+    )
+}
+
+fn optional_projection_order_expression_for_alias(
+    variable: &Variable,
+    projections: &[Projection],
+    path: impl Into<String>,
+) -> Result<Option<OrderExpression>, CoreError> {
+    let path = path.into();
+    let alias = variable_name(variable);
     let mut found_property = None;
     let mut found_projected_alias = false;
     for projection in projections {
@@ -13610,15 +14072,12 @@ fn projection_order_expression_for_alias(
         ));
     }
     if let Some(property) = found_property {
-        return Ok(OrderExpression::Property(property));
+        return Ok(Some(OrderExpression::Property(property)));
     }
     if found_projected_alias {
-        return Ok(OrderExpression::ProjectionAlias(alias));
+        return Ok(Some(OrderExpression::ProjectionAlias(alias)));
     }
-    Err(unsupported(
-        path,
-        format!("ORDER BY alias '{alias}' does not match a projection"),
-    ))
+    Ok(None)
 }
 
 fn compile_projection(
@@ -13657,7 +14116,7 @@ fn compile_projection(
             compile_literal_projection(expression, item, path, context)
         }
         expression if is_boolean_scalar_expression(expression) => {
-            compile_boolean_scalar_projection(expression, item, path, plan, context)
+            compile_boolean_scalar_projection(expression, item, path, plan, state, context)
         }
         Expression::Parenthesized(inner) if is_arithmetic_expression(inner) => {
             compile_arithmetic_projection(item, path, plan, state, context)
@@ -14285,11 +14744,18 @@ fn compile_boolean_scalar_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let expression =
-        compile_boolean_scalar_expression(expression, format!("{path}.expression"), plan, context)?;
+    let expression = compile_predicate_expression_with_path_state(
+        expression,
+        format!("{path}.expression"),
+        plan,
+        Some(state),
+        context,
+    )
+    .map(|predicate| ScalarExpression::Predicate(Box::new(predicate)))?;
     Ok(Projection::Expression {
         expression,
         alias: item
@@ -15793,6 +16259,9 @@ fn compile_scalar_expression_in_predicate_mode(
         Expression::ListIndex { .. } => {
             compile_list_index_scalar_expression_in_mode(expression, path, plan, context)
         }
+        Expression::Variable(_) => {
+            compile_scalar_alias_expression(expression, path, mode.scalar_alias_state())
+        }
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
@@ -15862,6 +16331,20 @@ fn compile_scalar_expression_in_predicate_mode(
             "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
+}
+
+fn compile_scalar_alias_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    state: Option<&CypherCompileState>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    compile_optional_scalar_alias_expression(expression, path.clone(), state)?.ok_or_else(|| {
+        unsupported(
+            path,
+            "bare variables in scalar expressions must be in-scope WITH scalar aliases",
+        )
+    })
 }
 
 enum ProjectionLiteral {
@@ -16374,6 +16857,9 @@ fn compile_optional_predicate_scalar_expression(
             compile_optional_endpoint_property_scalar_expression(expression, path, plan, context)?
                 .map(|(expression, _)| expression),
         ),
+        Expression::Variable(_) => {
+            compile_optional_scalar_alias_expression(expression, path, mode.scalar_alias_state())
+        }
         Expression::BinaryOp { .. } => Ok(Some(compile_scalar_expression_in_predicate_mode(
             expression, path, mode, context,
         )?)),
@@ -16459,6 +16945,20 @@ fn compile_scalar_predicate_rhs(
         | Expression::ListIndex { .. } => Ok(ScalarPredicateRhs::Expression(
             compile_scalar_expression_in_predicate_mode(expression, path, mode, context)?,
         )),
+        Expression::Variable(_) => {
+            let Some(expression) = compile_optional_scalar_alias_expression(
+                expression,
+                path.clone(),
+                mode.scalar_alias_state(),
+            )?
+            else {
+                return Err(unsupported(
+                    path,
+                    "scalar predicates can only use bare variables when they are in-scope WITH scalar aliases",
+                ));
+            };
+            Ok(ScalarPredicateRhs::Expression(expression))
+        }
         Expression::Case(case) => Ok(ScalarPredicateRhs::Expression(
             compile_case_scalar_expression_in_mode(case, path, mode, context)?,
         )),
@@ -28744,7 +29244,7 @@ relationships:
         assert!(
             error
                 .to_string()
-                .contains("supported scalar expression operand"),
+                .contains("path variable 'path' is not in scope after WITH"),
             "{error}"
         );
     }
@@ -28811,7 +29311,12 @@ relationships:
         )
         .expect_err("transparent WITH should reject path values before dropping them");
 
-        assert_path_value_error(&error);
+        assert!(
+            error
+                .to_string()
+                .contains("path variable 'path' is not in scope after WITH"),
+            "{error}"
+        );
     }
 
     fn assert_path_value_error(error: &CoreError) {
@@ -28958,6 +29463,124 @@ relationships:
                     alias: Some("target".to_string()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_nonterminal_with_scalar_aliases() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service, service.name AS source_name \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN source_name, target.name AS target \
+             ORDER BY source_name, target",
+        )
+        .expect("non-terminal WITH scalar aliases should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source_name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_nonterminal_with_scalar_alias_predicates_and_hidden_ordering() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WITH service, service.name AS source_name \
+             WHERE source_name STARTS WITH 'billing' \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN target.name AS target \
+             ORDER BY source_name, target",
+        )
+        .expect("WITH scalar aliases should work in WITH WHERE and hidden ORDER BY");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                operator: ComparisonOperator::StartsWith,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "billing".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.order_by.first().map(|key| &key.expression),
+            Some(&OrderExpression::Scalar(ScalarExpression::Property(
+                PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }
+            )))
+        );
+    }
+
+    #[test]
+    fn compiles_nonterminal_with_scalar_aliases_from_dropped_graph_variables() {
+        let plan = compile_cypher(
+            "MATCH (person:Person)-[:OWNS]->(service:Service) \
+             WITH service, person.name AS owner \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN owner, target.name AS target",
+        )
+        .expect("WITH scalar aliases may preserve dropped graph-variable values");
+
+        let owner = plan
+            .projections
+            .first()
+            .expect("owner projection should exist");
+        let Projection::Property {
+            property,
+            alias: Some(alias),
+        } = owner
+        else {
+            panic!("expected owner property projection, got {owner:?}");
+        };
+        assert_eq!(alias, "owner");
+        assert_eq!(property.property, "name");
+        assert!(
+            property.variable.starts_with("__coral_hidden_person"),
+            "{property:?}"
         );
     }
 
@@ -39318,6 +39941,15 @@ relationships:
         );
         assert_unsupported(
             "MATCH (person:Person)-[:OWNS]->(service:Service) WITH service RETURN person.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service, count(*) AS services MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN services, target.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service.name AS target MATCH (target:Service) RETURN target.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH service, service.name AS name, service.tier AS name MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN name, target.name",
         );
     }
 

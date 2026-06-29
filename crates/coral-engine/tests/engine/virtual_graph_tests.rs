@@ -7564,6 +7564,41 @@ async fn cypher_transparent_with_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_nonterminal_with_scalar_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH service, service.name AS source_name \
+         WHERE source_name STARTS WITH 'billing' \
+         MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+         RETURN source_name AS source, target.name AS target \
+         ORDER BY source_name, target",
+    )
+    .await
+    .expect("non-terminal WITH scalar alias query should execute");
+
+    assert!(
+        !execution.translated_sql().contains("WITH"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "target": "deployments"}),
+            json!({"source": "billing-api", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_transparent_with_where_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
