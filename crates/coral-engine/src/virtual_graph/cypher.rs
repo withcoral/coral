@@ -68,6 +68,9 @@ const MAX_FIXED_LABEL_SEQUENCE_RESULTS: usize = 2;
 const INTERNAL_GRAPH_IDENTITY_FUNCTION: &str = "__coral_graph_identity";
 const INTERNAL_GRAPH_PRESENCE_FUNCTION: &str = "__coral_graph_presence";
 const INTERNAL_STATIC_RANGE_FUNCTION: &str = "__coral_static_range";
+const INTERNAL_STRING_CONTAINS_FUNCTION: &str = "__coral_string_contains";
+const INTERNAL_STRING_STARTS_WITH_FUNCTION: &str = "__coral_string_starts_with";
+const INTERNAL_STRING_ENDS_WITH_FUNCTION: &str = "__coral_string_ends_with";
 
 #[derive(Debug, Clone)]
 enum StaticLabelTypeAlternativeSite {
@@ -703,7 +706,10 @@ fn compile_cypher_query_with_optional_graph(
 ) -> Result<GraphQuery, CoreError> {
     let count_normalized = normalize_compact_count_subqueries(cypher);
     let range_normalized = normalize_static_range_functions(count_normalized.as_ref());
-    let null_normalized = normalize_order_null_placements(range_normalized.as_ref());
+    let string_predicate_function_normalized =
+        normalize_string_predicate_functions(range_normalized.as_ref());
+    let null_normalized =
+        normalize_order_null_placements(string_predicate_function_normalized.as_ref());
     let cypher = null_normalized.cypher.as_ref();
     let query = decypher::parse(cypher).map_err(|error| {
         Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
@@ -1929,6 +1935,27 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
             rewrite_missing_branch_scalar_expression_as_null(count, graph, nodes, relationships);
             true
         }
+        ScalarExpression::StringContains {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern: operand,
+        } => {
+            rewrite_missing_branch_scalar_expression_as_null(
+                expression,
+                graph,
+                nodes,
+                relationships,
+            );
+            rewrite_missing_branch_scalar_expression_as_null(operand, graph, nodes, relationships);
+            true
+        }
         _ => false,
     }
 }
@@ -2811,6 +2838,9 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_substring_function(function)
         || is_left_function(function)
         || is_right_function(function)
+        || is_contains_function(function)
+        || is_starts_with_function(function)
+        || is_ends_with_function(function)
         || is_reverse_function(function)
         || is_abs_function(function)
         || is_ceil_function(function)
@@ -6674,6 +6704,12 @@ fn rename_non_unary_scalar_expression_variables(
     expression: &mut ScalarExpression,
     renames: &BTreeMap<String, String>,
 ) {
+    if let Some((left, right)) = binary_scalar_expression_operands_mut(expression) {
+        rename_scalar_expression_variables(left, renames);
+        rename_scalar_expression_variables(right, renames);
+        return;
+    }
+
     match expression {
         ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
         ScalarExpression::UndirectedEndpointProperty { relationship, .. }
@@ -6708,20 +6744,11 @@ fn rename_non_unary_scalar_expression_variables(
         ScalarExpression::Coalesce { expressions } => {
             rename_scalar_expression_list_variables(expressions, renames);
         }
-        ScalarExpression::NullIf { expression, value } => {
-            rename_scalar_expression_variables(expression, renames);
-            rename_scalar_expression_variables(value, renames);
-        }
         ScalarExpression::Round { expression, places } => {
             rename_scalar_expression_variables(expression, renames);
             if let Some(places) = places {
                 rename_scalar_expression_variables(places, renames);
             }
-        }
-        ScalarExpression::Left { expression, count }
-        | ScalarExpression::Right { expression, count } => {
-            rename_scalar_expression_variables(expression, renames);
-            rename_scalar_expression_variables(count, renames);
         }
         ScalarExpression::Replace {
             expression,
@@ -6743,14 +6770,6 @@ fn rename_non_unary_scalar_expression_variables(
                 rename_scalar_expression_variables(length, renames);
             }
         }
-        ScalarExpression::Arithmetic { left, right, .. } => {
-            rename_scalar_expression_variables(left, renames);
-            rename_scalar_expression_variables(right, renames);
-        }
-        ScalarExpression::Atan2 { y, x } => {
-            rename_scalar_expression_variables(y, renames);
-            rename_scalar_expression_variables(x, renames);
-        }
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -6760,6 +6779,31 @@ fn rename_non_unary_scalar_expression_variables(
         _ => {
             unreachable!("unary scalar expressions handled before structural rename")
         }
+    }
+}
+
+fn binary_scalar_expression_operands_mut(
+    expression: &mut ScalarExpression,
+) -> Option<(&mut ScalarExpression, &mut ScalarExpression)> {
+    match expression {
+        ScalarExpression::NullIf { expression, value } => Some((expression, value)),
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => Some((expression, count)),
+        ScalarExpression::StringContains {
+            expression,
+            pattern,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern,
+        } => Some((expression, pattern)),
+        ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
+        ScalarExpression::Atan2 { y, x } => Some((y, x)),
+        _ => None,
     }
 }
 
@@ -7226,6 +7270,23 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             state,
             path,
         ),
+        ScalarExpression::StringContains {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern: operand,
+        } => reject_path_variables_in_scalar_pair(
+            ("expression", expression),
+            ("pattern", operand),
+            state,
+            path,
+        ),
         ScalarExpression::Replace {
             expression,
             search,
@@ -7336,6 +7397,9 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Round { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringContains { .. }
+        | ScalarExpression::StringStartsWith { .. }
+        | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Replace { .. }
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Arithmetic { .. }
@@ -10526,6 +10590,9 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringContains { .. }
+        | ScalarExpression::StringStartsWith { .. }
+        | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Round { .. }
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::Atan2 { .. }
@@ -10590,6 +10657,21 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         | ScalarExpression::Right { expression, count } => {
             hidden_subquery_order_expression_can_be_precomputed(expression)
                 && hidden_subquery_order_expression_can_be_precomputed(count)
+        }
+        ScalarExpression::StringContains {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern: operand,
+        } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(operand)
         }
         ScalarExpression::Replace {
             expression,
@@ -10727,6 +10809,21 @@ fn compound_scalar_expression_correlated_subquery_count(
             scalar_expression_correlated_subquery_count(expression)
                 + scalar_expression_correlated_subquery_count(count),
         ),
+        ScalarExpression::StringContains {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern: operand,
+        } => Some(
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(operand),
+        ),
         ScalarExpression::Replace {
             expression,
             search,
@@ -10802,6 +10899,9 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringContains { .. }
+        | ScalarExpression::StringStartsWith { .. }
+        | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Round { .. }
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::Atan2 { .. }
@@ -16131,6 +16231,15 @@ fn default_scalar_function_alias(function: &FunctionInvocation) -> String {
     if is_character_length_function(function) {
         return "size".to_string();
     }
+    if is_contains_function(function) {
+        return "contains".to_string();
+    }
+    if is_starts_with_function(function) {
+        return "startsWith".to_string();
+    }
+    if is_ends_with_function(function) {
+        return "endsWith".to_string();
+    }
     qualified_function_name(function)
 }
 
@@ -16700,6 +16809,48 @@ fn compile_right_scalar_expression(
     })
 }
 
+fn compile_contains_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, substring) =
+        compile_two_scalar_function_arguments(function, path, "contains", mode, context)?;
+    Ok(ScalarExpression::StringContains {
+        expression: Box::new(expression),
+        pattern: Box::new(substring),
+    })
+}
+
+fn compile_starts_with_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, prefix) =
+        compile_two_scalar_function_arguments(function, path, "startsWith", mode, context)?;
+    Ok(ScalarExpression::StringStartsWith {
+        expression: Box::new(expression),
+        pattern: Box::new(prefix),
+    })
+}
+
+fn compile_ends_with_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, suffix) =
+        compile_two_scalar_function_arguments(function, path, "endsWith", mode, context)?;
+    Ok(ScalarExpression::StringEndsWith {
+        expression: Box::new(expression),
+        pattern: Box::new(suffix),
+    })
+}
+
 fn compile_reverse_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -17256,6 +17407,12 @@ fn compile_core_scalar_function_expression(
         compile_left_scalar_expression(function, path, mode, context)?
     } else if is_right_function(function) {
         compile_right_scalar_expression(function, path, mode, context)?
+    } else if is_contains_function(function) {
+        compile_contains_scalar_expression(function, path, mode, context)?
+    } else if is_starts_with_function(function) {
+        compile_starts_with_scalar_expression(function, path, mode, context)?
+    } else if is_ends_with_function(function) {
+        compile_ends_with_scalar_expression(function, path, mode, context)?
     } else if is_reverse_function(function) {
         compile_reverse_scalar_expression(function, path, mode, context)?
     } else {
@@ -19728,6 +19885,119 @@ fn normalize_static_range_functions(cypher: &str) -> Cow<'_, str> {
     Cow::Owned(normalized)
 }
 
+fn normalize_string_predicate_functions(cypher: &str) -> Cow<'_, str> {
+    const FUNCTIONS: [(&str, &str); 3] = [
+        ("contains", INTERNAL_STRING_CONTAINS_FUNCTION),
+        ("startsWith", INTERNAL_STRING_STARTS_WITH_FUNCTION),
+        ("endsWith", INTERNAL_STRING_ENDS_WITH_FUNCTION),
+    ];
+
+    let mut rewrites = Vec::new();
+    let mut index = 0usize;
+    let mut in_string = false;
+    let mut in_escaped_identifier = false;
+
+    while index < cypher.len() {
+        let Some(rest) = cypher.get(index..) else {
+            break;
+        };
+        let Some(character) = rest.chars().next() else {
+            break;
+        };
+        let character_len = character.len_utf8();
+
+        if in_string {
+            if character == '\'' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('\''))
+                {
+                    index = next_index + '\''.len_utf8();
+                    continue;
+                }
+                in_string = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        if in_escaped_identifier {
+            if character == '`' {
+                let next_index = index + character_len;
+                if cypher
+                    .get(next_index..)
+                    .is_some_and(|value| value.starts_with('`'))
+                {
+                    index = next_index + '`'.len_utf8();
+                    continue;
+                }
+                in_escaped_identifier = false;
+            }
+            index += character_len;
+            continue;
+        }
+
+        match character {
+            '\'' => {
+                in_string = true;
+                index += character_len;
+                continue;
+            }
+            '`' => {
+                in_escaped_identifier = true;
+                index += character_len;
+                continue;
+            }
+            _ => {}
+        }
+
+        let Some((keyword, replacement)) = FUNCTIONS.iter().find(|(keyword, _)| {
+            rest.get(..keyword.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(keyword))
+                && keyword_has_boundaries(cypher, index, keyword.len())
+                && previous_non_whitespace(cypher, index) != Some('.')
+        }) else {
+            index += character_len;
+            continue;
+        };
+
+        let after_keyword = skip_ascii_whitespace(cypher, index + keyword.len());
+        if cypher
+            .get(after_keyword..)
+            .is_some_and(|value| value.starts_with('('))
+        {
+            rewrites.push((index, index + keyword.len(), *replacement));
+            index = after_keyword + '('.len_utf8();
+            continue;
+        }
+
+        index += character_len;
+    }
+
+    if rewrites.is_empty() {
+        return Cow::Borrowed(cypher);
+    }
+
+    let additional_capacity: usize = rewrites
+        .iter()
+        .map(|(start, end, replacement)| replacement.len().saturating_sub(end - start))
+        .sum();
+    let mut normalized = String::with_capacity(cypher.len() + additional_capacity);
+    let mut cursor = 0usize;
+    for (start, end, replacement) in rewrites {
+        if let Some(prefix) = cypher.get(cursor..start) {
+            normalized.push_str(prefix);
+        }
+        normalized.push_str(replacement);
+        cursor = end;
+    }
+    if let Some(suffix) = cypher.get(cursor..) {
+        normalized.push_str(suffix);
+    }
+    Cow::Owned(normalized)
+}
+
 fn compact_count_body_should_normalize(body: &str) -> bool {
     let trimmed = body.trim_start();
     if trimmed.starts_with('(') {
@@ -20770,6 +21040,30 @@ fn is_right_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("right")
+    )
+}
+
+fn is_contains_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("contains")
+            || name.name == INTERNAL_STRING_CONTAINS_FUNCTION
+    )
+}
+
+fn is_starts_with_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("startsWith")
+            || name.name == INTERNAL_STRING_STARTS_WITH_FUNCTION
+    )
+}
+
+fn is_ends_with_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("endsWith")
+            || name.name == INTERNAL_STRING_ENDS_WITH_FUNCTION
     )
 }
 
@@ -38206,6 +38500,84 @@ relationships:
                 nulls: None,
             }]
         ));
+    }
+
+    #[test]
+    fn compiles_string_predicate_function_scalar_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN contains(service.name, 'api') AS has_api, \
+                    startsWith(service.name, 'bill') AS starts_bill, \
+                    endsWith(service.name, 'api') AS ends_api \
+             ORDER BY contains(service.name, 'api') DESC",
+        )
+        .expect("string predicate function scalar projections should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::StringContains {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                            "api".to_string()
+                        ))),
+                    },
+                    alias: "has_api".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::StringStartsWith {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                            "bill".to_string()
+                        ))),
+                    },
+                    alias: "starts_bill".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::StringEndsWith {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                            "api".to_string()
+                        ))),
+                    },
+                    alias: "ends_api".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::StringContains { .. }),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn rejects_contains_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN contains(service.name) AS has_api",
+        )
+        .expect_err("contains() requires a substring argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("contains() requires exactly two arguments"),
+            "{error}"
+        );
     }
 
     #[test]

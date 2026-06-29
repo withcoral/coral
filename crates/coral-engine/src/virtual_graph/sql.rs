@@ -424,6 +424,12 @@ impl<'a> Lowerer<'a> {
         required: bool,
         candidates: &mut Vec<ScalarSubqueryCandidateUse>,
     ) {
+        if let Some((left, right)) = Self::structural_scalar_binary_operands(expression) {
+            self.collect_scalar_expression_subquery_candidates(left, required, candidates);
+            self.collect_scalar_expression_subquery_candidates(right, required, candidates);
+            return;
+        }
+
         match expression {
             ScalarExpression::PresenceGated { expression, .. } => {
                 self.collect_scalar_expression_subquery_candidates(
@@ -437,12 +443,6 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
-            ScalarExpression::NullIf { expression, value } => {
-                self.collect_scalar_expression_subquery_candidates(
-                    expression, required, candidates,
-                );
-                self.collect_scalar_expression_subquery_candidates(value, required, candidates);
-            }
             ScalarExpression::Round { expression, places } => {
                 self.collect_scalar_expression_subquery_candidates(
                     expression, required, candidates,
@@ -452,13 +452,6 @@ impl<'a> Lowerer<'a> {
                         places, required, candidates,
                     );
                 }
-            }
-            ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => {
-                self.collect_scalar_expression_subquery_candidates(
-                    expression, required, candidates,
-                );
-                self.collect_scalar_expression_subquery_candidates(count, required, candidates);
             }
             ScalarExpression::Replace {
                 expression,
@@ -490,10 +483,6 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                self.collect_scalar_expression_subquery_candidates(left, required, candidates);
-                self.collect_scalar_expression_subquery_candidates(right, required, candidates);
-            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -505,13 +494,34 @@ impl<'a> Lowerer<'a> {
                     candidates,
                 );
             }
-            ScalarExpression::Atan2 { y, x } => {
-                self.collect_scalar_expression_subquery_candidates(y, required, candidates);
-                self.collect_scalar_expression_subquery_candidates(x, required, candidates);
-            }
             _ => {
                 unreachable!("unary scalar expressions handled before candidate collection")
             }
+        }
+    }
+
+    fn structural_scalar_binary_operands(
+        expression: &ScalarExpression,
+    ) -> Option<(&ScalarExpression, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::NullIf { expression, value } => Some((expression, value)),
+            ScalarExpression::Left { expression, count }
+            | ScalarExpression::Right { expression, count } => Some((expression, count)),
+            ScalarExpression::StringContains {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringStartsWith {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringEndsWith {
+                expression,
+                pattern,
+            } => Some((expression, pattern)),
+            ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
+            ScalarExpression::Atan2 { y, x } => Some((y, x)),
+            _ => None,
         }
     }
 
@@ -1408,6 +1418,9 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Round { .. }
             | ScalarExpression::Left { .. }
             | ScalarExpression::Right { .. }
+            | ScalarExpression::StringContains { .. }
+            | ScalarExpression::StringStartsWith { .. }
+            | ScalarExpression::StringEndsWith { .. }
             | ScalarExpression::Replace { .. }
             | ScalarExpression::Substring { .. }
             | ScalarExpression::Arithmetic { .. }
@@ -1464,6 +1477,15 @@ impl<'a> Lowerer<'a> {
         relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
     ) -> bool {
+        if let Some((left, right)) = Self::structural_scalar_binary_operands(expression) {
+            return Self::scoped_scalar_pair_is_inner(
+                left,
+                right,
+                relationship_bindings,
+                local_nodes,
+            );
+        }
+
         match expression {
             ScalarExpression::PresenceGated {
                 presence_variable,
@@ -1486,12 +1508,6 @@ impl<'a> Lowerer<'a> {
                     local_nodes,
                 )
             }),
-            ScalarExpression::NullIf { expression, value } => Self::scoped_scalar_pair_is_inner(
-                expression,
-                value,
-                relationship_bindings,
-                local_nodes,
-            ),
             ScalarExpression::Round { expression, places } => {
                 Self::scoped_scalar_expression_is_inner(
                     expression,
@@ -1505,13 +1521,6 @@ impl<'a> Lowerer<'a> {
                     )
                 })
             }
-            ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => Self::scoped_scalar_pair_is_inner(
-                expression,
-                count,
-                relationship_bindings,
-                local_nodes,
-            ),
             ScalarExpression::Replace {
                 expression,
                 search,
@@ -1546,9 +1555,6 @@ impl<'a> Lowerer<'a> {
                     )
                 })
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                Self::scoped_scalar_pair_is_inner(left, right, relationship_bindings, local_nodes)
-            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -1558,9 +1564,6 @@ impl<'a> Lowerer<'a> {
                 relationship_bindings,
                 local_nodes,
             ),
-            ScalarExpression::Atan2 { y, x } => {
-                Self::scoped_scalar_pair_is_inner(y, x, relationship_bindings, local_nodes)
-            }
             _ => unreachable!("non-structural scalar expression reached structural scoped check"),
         }
     }
@@ -3479,6 +3482,9 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Round { .. }
             | ScalarExpression::Left { .. }
             | ScalarExpression::Right { .. }
+            | ScalarExpression::StringContains { .. }
+            | ScalarExpression::StringStartsWith { .. }
+            | ScalarExpression::StringEndsWith { .. }
             | ScalarExpression::Replace { .. }
             | ScalarExpression::Substring { .. }
             | ScalarExpression::Arithmetic { .. }
@@ -3569,6 +3575,21 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Right { expression, count } => {
                 self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
                 self.reject_unprecomputed_projection_scalar_subqueries(count)?;
+            }
+            ScalarExpression::StringContains {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringStartsWith {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringEndsWith {
+                expression,
+                pattern: operand,
+            } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(operand)?;
             }
             ScalarExpression::Replace {
                 expression,
@@ -5289,50 +5310,7 @@ impl<'a> Lowerer<'a> {
                 self.render_scoped_scalar_expression(y, relationships, local_nodes, local_aliases)?,
                 self.render_scoped_scalar_expression(x, relationships, local_nodes, local_aliases)?
             )),
-            ScalarExpression::ToString { .. }
-            | ScalarExpression::ToInteger { .. }
-            | ScalarExpression::ToFloat { .. }
-            | ScalarExpression::ToBoolean { .. }
-            | ScalarExpression::ToStringOrNull { .. }
-            | ScalarExpression::ToIntegerOrNull { .. }
-            | ScalarExpression::ToFloatOrNull { .. }
-            | ScalarExpression::ToBooleanOrNull { .. }
-            | ScalarExpression::ToLower { .. }
-            | ScalarExpression::ToUpper { .. }
-            | ScalarExpression::Trim { .. }
-            | ScalarExpression::LTrim { .. }
-            | ScalarExpression::RTrim { .. }
-            | ScalarExpression::CharacterLength { .. }
-            | ScalarExpression::Left { .. }
-            | ScalarExpression::Right { .. }
-            | ScalarExpression::Reverse { .. }
-            | ScalarExpression::Abs { .. }
-            | ScalarExpression::Ceil { .. }
-            | ScalarExpression::Floor { .. }
-            | ScalarExpression::Sqrt { .. }
-            | ScalarExpression::Sign { .. }
-            | ScalarExpression::Exp { .. }
-            | ScalarExpression::Log { .. }
-            | ScalarExpression::Log10 { .. }
-            | ScalarExpression::Sin { .. }
-            | ScalarExpression::Cos { .. }
-            | ScalarExpression::Tan { .. }
-            | ScalarExpression::Cot { .. }
-            | ScalarExpression::Asin { .. }
-            | ScalarExpression::Acos { .. }
-            | ScalarExpression::Atan { .. }
-            | ScalarExpression::Degrees { .. }
-            | ScalarExpression::Radians { .. }
-            | ScalarExpression::Negate { .. }
-            | ScalarExpression::Key { .. }
-            | ScalarExpression::ElementId { .. }
-            | ScalarExpression::GraphIdentity { .. }
-            | ScalarExpression::GraphPresence { .. }
-            | ScalarExpression::NodeLabels { .. }
-            | ScalarExpression::PropertyKeys { .. }
-            | ScalarExpression::RelationshipType { .. } => {
-                unreachable!("scoped scalar expression handled above")
-            }
+            _ => unreachable!("scoped scalar expression handled above"),
         }
     }
 
@@ -5380,6 +5358,12 @@ impl<'a> Lowerer<'a> {
                 )?
             )))
         };
+
+        if let Some((function_name, expression, pattern)) =
+            Self::string_predicate_function_expression(expression)
+        {
+            return binary(function_name, expression, pattern);
+        }
 
         match expression {
             ScalarExpression::ToLower { expression } => unary("LOWER", expression),
@@ -6672,57 +6656,6 @@ impl<'a> Lowerer<'a> {
                 self.render_scalar_expression(expression)?,
                 self.render_scalar_expression(value)?
             )),
-            ScalarExpression::ToString { .. }
-            | ScalarExpression::ToInteger { .. }
-            | ScalarExpression::ToFloat { .. }
-            | ScalarExpression::ToBoolean { .. }
-            | ScalarExpression::ToStringOrNull { .. }
-            | ScalarExpression::ToIntegerOrNull { .. }
-            | ScalarExpression::ToFloatOrNull { .. }
-            | ScalarExpression::ToBooleanOrNull { .. }
-            | ScalarExpression::ToLower { .. }
-            | ScalarExpression::ToUpper { .. }
-            | ScalarExpression::Trim { .. }
-            | ScalarExpression::LTrim { .. }
-            | ScalarExpression::RTrim { .. }
-            | ScalarExpression::CharacterLength { .. }
-            | ScalarExpression::Left { .. }
-            | ScalarExpression::Right { .. }
-            | ScalarExpression::Reverse { .. }
-            | ScalarExpression::Abs { .. }
-            | ScalarExpression::Ceil { .. }
-            | ScalarExpression::Floor { .. }
-            | ScalarExpression::Sqrt { .. }
-            | ScalarExpression::Sign { .. }
-            | ScalarExpression::Exp { .. }
-            | ScalarExpression::Log { .. }
-            | ScalarExpression::Log10 { .. }
-            | ScalarExpression::Sin { .. }
-            | ScalarExpression::Cos { .. }
-            | ScalarExpression::Tan { .. }
-            | ScalarExpression::Cot { .. }
-            | ScalarExpression::Asin { .. }
-            | ScalarExpression::Acos { .. }
-            | ScalarExpression::Atan { .. }
-            | ScalarExpression::Atan2 { .. }
-            | ScalarExpression::Degrees { .. }
-            | ScalarExpression::Radians { .. }
-            | ScalarExpression::Negate { .. }
-            | ScalarExpression::Key { .. }
-            | ScalarExpression::ElementId { .. }
-            | ScalarExpression::GraphIdentity { .. }
-            | ScalarExpression::GraphPresence { .. }
-            | ScalarExpression::GraphKeyList { .. }
-            | ScalarExpression::NodeLabels { .. }
-            | ScalarExpression::PropertyKeys { .. }
-            | ScalarExpression::UndirectedEndpointProperty { .. }
-            | ScalarExpression::UndirectedEndpointKey { .. }
-            | ScalarExpression::UndirectedEndpointElementId { .. }
-            | ScalarExpression::UndirectedEndpointLabels { .. }
-            | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
-            | ScalarExpression::RelationshipType { .. } => {
-                unreachable!("scalar expression handled above")
-            }
             ScalarExpression::Replace {
                 expression,
                 search,
@@ -6745,6 +6678,7 @@ impl<'a> Lowerer<'a> {
                 alternatives,
                 else_expression,
             } => self.render_case_expression(alternatives, else_expression.as_deref()),
+            _ => unreachable!("scalar expression handled above"),
         }
     }
 
@@ -6829,6 +6763,13 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Option<String>, CoreError> {
         if let Some(rendered) = self.render_scalar_cast_expression(expression)? {
             return Ok(Some(rendered));
+        }
+        if let Some((function_name, expression, pattern)) =
+            Self::string_predicate_function_expression(expression)
+        {
+            return self
+                .render_binary_function_expression(function_name, expression, pattern)
+                .map(Some);
         }
 
         match expression {
@@ -6918,6 +6859,26 @@ impl<'a> Lowerer<'a> {
                 self.render_scalar_expression(expression)?
             ))),
             _ => Ok(None),
+        }
+    }
+
+    fn string_predicate_function_expression(
+        expression: &ScalarExpression,
+    ) -> Option<(&'static str, &ScalarExpression, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::StringContains {
+                expression,
+                pattern,
+            } => Some(("contains", expression, pattern)),
+            ScalarExpression::StringStartsWith {
+                expression,
+                pattern,
+            } => Some(("starts_with", expression, pattern)),
+            ScalarExpression::StringEndsWith {
+                expression,
+                pattern,
+            } => Some(("ends_with", expression, pattern)),
+            _ => None,
         }
     }
 
@@ -9502,6 +9463,83 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY reverse(\"n1\".\"service_name\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_string_predicate_function_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![
+            expression_projection(
+                "has_api",
+                ScalarExpression::StringContains {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                        "api".to_string(),
+                    ))),
+                },
+            ),
+            expression_projection(
+                "starts_bill",
+                ScalarExpression::StringStartsWith {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                        "bill".to_string(),
+                    ))),
+                },
+            ),
+            expression_projection(
+                "ends_api",
+                ScalarExpression::StringEndsWith {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                        "api".to_string(),
+                    ))),
+                },
+            ),
+        ];
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Scalar(ScalarExpression::StringContains {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                })),
+                pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                    "api".to_string(),
+                ))),
+            }),
+            direction: OrderDirection::Descending,
+            nulls: None,
+        }];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("string predicate function expressions should lower");
+
+        assert!(
+            translation.sql().contains(
+                "SELECT contains(\"n1\".\"service_name\", 'api') AS \"has_api\", starts_with(\"n1\".\"service_name\", 'bill') AS \"starts_bill\", ends_with(\"n1\".\"service_name\", 'api') AS \"ends_api\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("ORDER BY contains(\"n1\".\"service_name\", 'api') DESC"),
             "{}",
             translation.sql()
         );

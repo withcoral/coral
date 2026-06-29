@@ -410,6 +410,27 @@ pub enum ScalarExpression {
         /// Character count expression.
         count: Box<ScalarExpression>,
     },
+    /// Test whether one scalar string expression contains another.
+    StringContains {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Substring expression.
+        pattern: Box<ScalarExpression>,
+    },
+    /// Test whether a scalar string expression starts with another.
+    StringStartsWith {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Prefix expression.
+        pattern: Box<ScalarExpression>,
+    },
+    /// Test whether a scalar string expression ends with another.
+    StringEndsWith {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Suffix expression.
+        pattern: Box<ScalarExpression>,
+    },
     /// Reverse the characters in a scalar string expression.
     Reverse {
         /// Inner expression to reverse.
@@ -1005,6 +1026,9 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Round { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringContains { .. }
+        | ScalarExpression::StringStartsWith { .. }
+        | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Replace { .. }
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Arithmetic { .. }
@@ -1153,6 +1177,21 @@ fn structural_scalar_expression_references_outside_scope(
         | ScalarExpression::Right { expression, count } => {
             scalar_expression_references_outside_scope(expression, scope)
                 || scalar_expression_references_outside_scope(count, scope)
+        }
+        ScalarExpression::StringContains {
+            expression,
+            pattern,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern,
+        } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(pattern, scope)
         }
         ScalarExpression::Replace {
             expression,

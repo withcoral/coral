@@ -11331,6 +11331,79 @@ async fn cypher_left_right_and_reverse_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_string_predicate_function_projections_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                contains(service.name, 'api') AS has_api, \
+                startsWith(service.name, 'deploy') AS starts_deploy, \
+                endsWith(service.name, 'sync') AS ends_sync \
+         ORDER BY service",
+    )
+    .await
+    .expect("string predicate function projection query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("contains(\"n0\".\"service_name\", 'api') AS \"has_api\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("starts_with(\"n0\".\"service_name\", 'deploy') AS \"starts_deploy\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ends_with(\"n0\".\"service_name\", 'sync') AS \"ends_sync\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "billing-api",
+                "has_api": true,
+                "starts_deploy": false,
+                "ends_sync": false,
+            }),
+            json!({
+                "service": "deployments",
+                "has_api": false,
+                "starts_deploy": true,
+                "ends_sync": false,
+            }),
+            json!({
+                "service": "experiments",
+                "has_api": false,
+                "starts_deploy": false,
+                "ends_sync": false,
+            }),
+            json!({
+                "service": "legacy-sync",
+                "has_api": false,
+                "starts_deploy": false,
+                "ends_sync": true,
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_numeric_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
