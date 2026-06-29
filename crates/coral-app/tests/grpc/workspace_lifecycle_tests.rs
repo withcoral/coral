@@ -374,7 +374,7 @@ async fn delete_workspace_ignores_malformed_trace_history() {
     reason = "Boundary test keeps the trace cleanup failure fixture and assertions together for readability."
 )]
 #[tokio::test]
-async fn delete_workspace_leaves_state_untouched_when_trace_cleanup_fails() {
+async fn delete_workspace_removes_state_when_trace_cleanup_fails() {
     use std::os::unix::fs::PermissionsExt;
 
     let _trace_store_guard = TRACE_STORE_DELETE_TEST_LOCK.lock().await;
@@ -431,59 +431,40 @@ async fn delete_workspace_leaves_state_untouched_when_trace_cleanup_fails() {
     fs::set_permissions(&trace_file, fs::Permissions::from_mode(0o000))
         .expect("make trace file unreadable");
 
-    let result = harness
+    let deleted = harness
         .workspace_client()
         .delete_workspace(Request::new(DeleteWorkspaceRequest {
             workspace: Some(workspace("work")),
         }))
-        .await;
+        .await
+        .expect("workspace delete should succeed when diagnostic trace cleanup fails")
+        .into_inner()
+        .workspace
+        .expect("delete workspace response");
     fs::set_permissions(&trace_file, fs::Permissions::from_mode(0o600))
         .expect("restore trace file permissions");
 
-    let error = result.expect_err("workspace delete should fail when trace cleanup cannot read");
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
-    assert!(
-        error
-            .message()
-            .contains("cannot be removed until local trace history can be cleaned up"),
-        "expected trace cleanup failure message, got: {}",
-        error.message()
-    );
-    assert_eq!(workspace_names(&harness).await, vec!["default", "work"]);
+    assert_eq!(deleted.name, "work");
+    assert_eq!(workspace_names(&harness).await, vec!["default"]);
 
     let raw = fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
     assert!(
-        raw.contains("[workspaces.work]"),
-        "workspace config should remain when trace cleanup fails: {raw}"
+        !raw.contains("[workspaces.work"),
+        "workspace config should be removed when trace cleanup fails: {raw}"
     );
     assert!(
-        raw.contains("[workspaces.work.sources.secured_messages]"),
-        "workspace source config should remain when trace cleanup fails: {raw}"
+        !source_dir.exists(),
+        "workspace artifact dir should be removed when trace cleanup fails"
     );
     assert!(
-        source_dir.exists(),
-        "workspace artifact dir should remain when trace cleanup fails"
-    );
-    assert!(
-        secret_path.exists(),
-        "workspace credential material should remain when trace cleanup fails"
+        !secret_path.exists(),
+        "workspace credential material should be removed when trace cleanup fails"
     );
 
-    let sources = harness
-        .source_client()
-        .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(workspace("work")),
-        }))
-        .await
-        .expect("list sources after failed delete")
-        .into_inner()
-        .sources;
-    assert_eq!(
-        sources
-            .iter()
-            .map(|source| source.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["secured_messages"]
+    let raw_trace = fs::read_to_string(&trace_file).expect("read trace file");
+    assert!(
+        raw_trace.contains("work-trace"),
+        "failed trace cleanup should leave the diagnostic trace file untouched"
     );
 }
 
