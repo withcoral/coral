@@ -38,7 +38,7 @@ use crate::{
         optional_episode_id_argument, required_string_argument, search_catalog_arguments,
         search_catalog_tool, search_catalog_value, sql_arguments, sql_tool, status_to_error_data,
         tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
-        tool_error_with_data_result, with_episode_id_argument,
+        with_episode_id_argument,
     },
     telemetry,
 };
@@ -782,14 +782,17 @@ fn finish_tool_call(
                 Ok(value) => value,
                 Err(status) => {
                     telemetry::record_tonic_status(span, &status);
-                    return Ok(tool_error_result(tool_error_from_status("Query", &status)));
+                    return Ok(tool_error_result(
+                        tool_error_from_status("Query", &status),
+                        None,
+                    ));
                 }
             };
             if batch.has_errors() {
                 telemetry::record_sql_batch_partial_failure(span);
-                Ok(tool_error_with_data_result(
+                Ok(tool_error_result(
                     batch.partial_failure_error(),
-                    serialized,
+                    Some(serialized),
                 ))
             } else {
                 telemetry::record_success(span);
@@ -798,9 +801,10 @@ fn finish_tool_call(
         }
         Ok(ToolCallOutcome::ToolError { operation, status }) => {
             telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(tool_error_from_status(
-                operation, &status,
-            )))
+            Ok(tool_error_result(
+                tool_error_from_status(operation, &status),
+                None,
+            ))
         }
         Err(error) => {
             telemetry::record_protocol_error(span, &error);

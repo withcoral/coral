@@ -17,17 +17,9 @@ pub(crate) struct ToolError {
     pub(crate) metadata: HashMap<String, String>,
 }
 
-pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
-    let structured = serde_json::to_value(StructuredToolErrorValue { error })
+pub(crate) fn tool_error_result(error: ToolError, data: Option<Value>) -> CallToolResult {
+    let structured = serde_json::to_value(StructuredToolErrorValue { error, data })
         .expect("tool error value serializes");
-    let mut result = CallToolResult::structured_error(structured);
-    result.content = Vec::new();
-    result
-}
-
-pub(crate) fn tool_error_with_data_result(error: ToolError, data: Value) -> CallToolResult {
-    let structured = serde_json::to_value(StructuredToolErrorWithDataValue { error, data })
-        .expect("tool error with data value serializes");
     let mut result = CallToolResult::structured_error(structured);
     result.content = Vec::new();
     result
@@ -138,12 +130,8 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
 #[derive(Serialize)]
 struct StructuredToolErrorValue {
     error: ToolError,
-}
-
-#[derive(Serialize)]
-struct StructuredToolErrorWithDataValue {
-    error: ToolError,
-    data: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -173,32 +161,38 @@ mod tests {
 
     use coral_client::CORAL_ERROR_DOMAIN;
 
-    use super::{
-        ToolError, status_to_error_data, tool_error_from_status, tool_error_result,
-        tool_error_with_data_result,
-    };
+    use super::{ToolError, status_to_error_data, tool_error_from_status, tool_error_result};
 
     #[test]
     fn tool_error_result_includes_structured_error_payload() {
-        let result = tool_error_result(ToolError {
-            summary: "Query failed".to_string(),
-            detail: "planner error".to_string(),
-            hint: Some("Retry with valid SQL.".to_string()),
-            grpc_code: "InvalidArgument".to_string(),
-            reason: None,
-            retryable: false,
-            metadata: HashMap::new(),
-        });
+        let result = tool_error_result(
+            ToolError {
+                summary: "Query failed".to_string(),
+                detail: "planner error".to_string(),
+                hint: Some("Retry with valid SQL.".to_string()),
+                grpc_code: "InvalidArgument".to_string(),
+                reason: None,
+                retryable: false,
+                metadata: HashMap::new(),
+            },
+            None,
+        );
         assert_eq!(result.is_error, Some(true));
         assert!(result.content.is_empty());
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
         assert_eq!(json["error"]["retryable"], false);
+        assert!(
+            json.as_object()
+                .expect("structured object")
+                .get("data")
+                .is_none()
+        );
     }
 
     #[test]
-    fn tool_error_with_data_result_keeps_canonical_error_envelope() {
-        let result = tool_error_with_data_result(
+    fn tool_error_result_can_include_data_in_canonical_error_envelope() {
+        let result = tool_error_result(
             ToolError {
                 summary: "One or more SQL queries failed".to_string(),
                 detail: "Inspect `data.results` for per-query successes and errors.".to_string(),
@@ -208,7 +202,7 @@ mod tests {
                 retryable: false,
                 metadata: HashMap::new(),
             },
-            serde_json::json!({ "total_count": 2, "results": [] }),
+            Some(serde_json::json!({ "total_count": 2, "results": [] })),
         );
 
         assert_eq!(result.is_error, Some(true));
@@ -322,7 +316,7 @@ mod tests {
             false,
         );
         let error = tool_error_from_status("Query", &status);
-        let result = tool_error_result(error);
+        let result = tool_error_result(error, None);
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["reason"], "PROVIDER_REQUEST_FAILED");
         assert_eq!(json["error"]["retryable"], false);
@@ -347,7 +341,7 @@ mod tests {
         );
         let error = tool_error_from_status("Query", &status);
         assert!(error.retryable);
-        let result = tool_error_result(error);
+        let result = tool_error_result(error, None);
         assert_eq!(
             result.structured_content.expect("structured content")["error"]["retryable"],
             true
@@ -372,7 +366,7 @@ mod tests {
             false,
         );
         let error = tool_error_from_status("Query", &status);
-        let result = tool_error_result(error);
+        let result = tool_error_result(error, None);
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["retryable"], false);
         assert_eq!(

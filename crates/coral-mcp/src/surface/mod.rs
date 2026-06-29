@@ -16,7 +16,7 @@ pub(crate) use catalog::{
 pub(crate) use discovery::{Pagination, parse_pagination, parse_pagination_with_limits};
 pub(crate) use errors::{
     ToolError, status_to_error_data, tool_error_from_status, tool_error_output_schema,
-    tool_error_result, tool_error_with_data_result,
+    tool_error_result,
 };
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,

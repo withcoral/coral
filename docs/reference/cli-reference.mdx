@@ -246,7 +246,7 @@ By default, this server exposes:
 
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | MCP tool that executes 1 to 10 independent read-only SQL queries against the Coral database |
+| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
@@ -261,7 +261,7 @@ Catalog helpers include the `coral` system schema, so `list_catalog`,
 `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and
 `coral.inputs`.
 
-For the `sql` tool's `queries: ["..."]` contract and MCP structured result-format details, see [Use Coral over MCP](/guides/use-coral-over-mcp).
+For client setup and MCP result-format details, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 
 ## `coral completion <SHELL>`
 
