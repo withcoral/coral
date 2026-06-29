@@ -1,8 +1,10 @@
 //! Native file table provider backed by local files or object-store URLs.
 
 mod error;
+mod file_groups;
 mod json;
 mod listing;
+mod metadata;
 mod parquet_schema;
 mod partitions;
 mod provider;
@@ -21,10 +23,13 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, BackendRegistrationContext, CompiledBackendSource,
-    RegisteredSource, RegisteredTable, build_registered_inputs, build_registered_table,
-    registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
+    build_registered_inputs, build_registered_table, registered_columns_from_schema,
+    registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
+use coral_spec::SourceBackend;
 use coral_spec::backends::file::{FileFormat, FileSourceManifest, FileTableSpec};
 
 use self::json::JsonFileTableProvider;
@@ -72,6 +77,18 @@ impl CompiledBackendSource for FileCompiledSource {
 
     fn source_name(&self) -> &str {
         &self.manifest.common.name
+    }
+
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::File,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(FileTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
     }
 
     async fn register(
@@ -128,15 +145,17 @@ impl CompiledBackendSource for FileCompiledSource {
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions: HashMap::default(),
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: vec![],
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                tables,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: vec![],
+                    inputs,
+                },
+            }],
         })
     }
 }

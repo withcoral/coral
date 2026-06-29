@@ -1,4 +1,5 @@
-use super::json::json_file_groups;
+use super::file_groups::file_groups_for_scan;
+use super::metadata::FileMetadataColumns;
 use super::partitions::{
     PartitionColumns, partition_filter_constraints, partition_values_for_path,
 };
@@ -159,7 +160,7 @@ fn partition_pruning_canonicalizes_literals_by_partition_type() {
 }
 
 #[test]
-fn json_file_groups_split_partitioned_files_unless_preservation_is_enabled() {
+fn file_groups_split_partitioned_files_unless_preservation_is_enabled() {
     let table_path = ListingTableUrl::parse("s3://bucket/sessions/")
         .expect("table path")
         .with_glob("20??/**/*.jsonl")
@@ -186,17 +187,34 @@ fn json_file_groups_split_partitioned_files_unless_preservation_is_enabled() {
     let files = (0..4)
         .map(|index| object_meta(&format!("sessions/2026/05/14/session-{index}.jsonl")))
         .collect::<Vec<_>>();
+    let metadata_columns = FileMetadataColumns::try_new(&[]).expect("empty metadata should parse");
 
-    let split = json_file_groups(&table_path, &partition_columns, files.clone(), &[], 4, 0)
-        .expect("file groups should build");
+    let split = file_groups_for_scan(
+        &table_path,
+        &partition_columns,
+        files.clone(),
+        &metadata_columns,
+        &[],
+        4,
+        0,
+    )
+    .expect("file groups should build");
     assert_eq!(split.groups.len(), 4);
     assert!(
         !split.grouped_by_partition,
         "split groups must not claim DataFusion partition-preserving layout"
     );
 
-    let preserved = json_file_groups(&table_path, &partition_columns, files, &[], 4, 1)
-        .expect("file groups should build");
+    let preserved = file_groups_for_scan(
+        &table_path,
+        &partition_columns,
+        files,
+        &metadata_columns,
+        &[],
+        4,
+        1,
+    )
+    .expect("file groups should build");
     assert_eq!(preserved.groups.len(), 1);
     assert!(preserved.grouped_by_partition);
 }
@@ -282,6 +300,65 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
     assert!(rendered.contains("metric"));
     assert!(rendered.contains("value"));
     assert!(rendered.contains("Float64"));
+}
+
+#[tokio::test]
+async fn parquet_inferred_schema_rejects_metadata_name_collision() {
+    let fixture_dir = tempdir().expect("tempdir should be created");
+    let file = std::fs::File::create(fixture_dir.path().join("events.parquet"))
+        .expect("fixture file should be created");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["from-file"])),
+            Arc::new(Float64Array::from(vec![1.0])),
+        ],
+    )
+    .expect("record batch should be created");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("writer should be created");
+    writer.write(&batch).expect("batch should be written");
+    writer.close().expect("writer should close");
+
+    let location = file_url_from_directory_path(fixture_dir.path());
+    let manifest = parse_source_manifest_value(json!({
+        "dsl_version": 3,
+        "name": "parquet_collision",
+        "version": "0.1.0",
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "events",
+            "format": "parquet",
+            "source": {
+                "location": location,
+                "glob": "**/*.parquet",
+                "metadata": [{ "name": "file_path", "kind": "relative_path" }]
+            },
+            "columns": [],
+        }]
+    }))
+    .expect("manifest should parse");
+
+    let ctx = SessionContext::new();
+    let registration = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
+        .expect("source registration should collect provider failures");
+
+    assert!(registration.active_sources.is_empty());
+    let failure = registration
+        .failures
+        .first()
+        .expect("metadata collision should fail source registration");
+    assert!(
+        failure.detail.contains(
+            "parquet_collision.events metadata column 'file_path' duplicates a file column"
+        ),
+        "{}",
+        failure.detail
+    );
 }
 
 #[tokio::test]

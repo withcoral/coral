@@ -1,10 +1,12 @@
 name: gmail
-version: 0.1.0
+version: 0.2.0
 dsl_version: 3
 backend: http
 description: >-
   Query Gmail messages, threads, labels, drafts, and profile
   information from your Google Gmail account using the Gmail REST API.
+  Search with provider-native functions and join message metadata for
+  cross-source workflows on sender email.
 inputs:
   GMAIL_ACCESS_TOKEN:
     kind: secret
@@ -63,6 +65,98 @@ test_queries:
   - SELECT history_id, messages_total, threads_total FROM gmail.profile LIMIT 1
   - SELECT id, thread_id FROM gmail.messages LIMIT 5
   - SELECT id, name, type FROM gmail.labels LIMIT 5
+  - SELECT function_name FROM coral.table_functions WHERE schema_name = 'gmail' ORDER BY function_name LIMIT 1
+  - SELECT id, thread_id FROM gmail.search_messages(q => 'in:inbox') LIMIT 3
+
+functions:
+  - name: search_messages
+    kind: search
+    description: >
+      Provider-native Gmail search using the messages.list q parameter.
+      Accepts standard Gmail search syntax (from:, subject:, newer_than:, etc.).
+    fetch_limit_default: 20
+    search_limits:
+      default_top_k: 20
+      max_top_k: 100
+      max_calls_per_query: 1
+    args:
+      - name: q
+        required: true
+        bind:
+          arg: q
+      - name: label_ids
+        bind:
+          arg: label_ids
+      - name: include_spam_trash
+        bind:
+          arg: include_spam_trash
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages
+      query:
+        - name: q
+          from: arg
+          key: q
+        - name: labelIds
+          from: arg
+          key: label_ids
+        - name: includeSpamTrash
+          from: arg
+          key: include_spam_trash
+    response:
+      rows_path:
+        - messages
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      page_size:
+        default: 100
+        max: 500
+        query_param: maxResults
+    columns:
+      - name: q
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Gmail search query passed to the function.
+        expr:
+          kind: from_arg
+          key: q
+      - name: label_ids
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: Optional label filter (e.g. INBOX).
+        expr:
+          kind: from_arg
+          key: label_ids
+      - name: include_spam_trash
+        type: Boolean
+        nullable: true
+        virtual: true
+        description: Whether to include SPAM and TRASH in results.
+        expr:
+          kind: from_arg
+          key: include_spam_trash
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique message ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: ID of the thread the message belongs to.
+        expr:
+          kind: path
+          path:
+            - threadId
+
 tables:
   - name: profile
     description: >
@@ -172,10 +266,13 @@ tables:
       Lists messages in the authenticated user's mailbox. Returns message ID
       and thread ID. Use label_ids filter to scope to INBOX, SENT, DRAFT, SPAM,
       or TRASH. Use include_spam_trash filter to include SPAM and TRASH results.
+      Fetch From/Subject metadata via `gmail.message_details` using a literal
+      `message_id` from this table (see `message_details` guide).
     guide: >
       `SELECT id, thread_id FROM gmail.messages LIMIT 100`.
       Filter by label: `SELECT id, thread_id FROM gmail.messages
       WHERE label_ids = 'INBOX' LIMIT 100`.
+      Then query `gmail.message_details` with `WHERE message_id = '<id>'`.
     fetch_limit_default: 100
     filters:
       - name: label_ids
@@ -250,6 +347,131 @@ tables:
           kind: path
           path:
             - threadId
+
+  - name: message_details
+    description: >
+      Returns metadata for a single message (From, Subject, Date headers and
+      internal timestamp). Requires message_id from gmail.messages or
+      gmail.search_messages. One API call per message_id filter value.
+    guide: >
+      `SELECT message_id, from_header, subject, internal_date
+      FROM gmail.message_details WHERE message_id = '<id>' LIMIT 1`.
+      The `message_id` filter must be a literal predicate (copy an `id` from
+      `gmail.messages` or `gmail.search_messages` first). Coral cannot fetch
+      this table from join-derived `message_id` values.
+    filters:
+      - name: message_id
+        required: true
+    request:
+      method: GET
+      path: /gmail/v1/users/me/messages/{{filter.message_id}}
+      query:
+        - name: format
+          from: literal
+          value: metadata
+        - name: metadataHeaders
+          from: literal
+          value: From
+        - name: metadataHeaders
+          from: literal
+          value: Subject
+        - name: metadataHeaders
+          from: literal
+          value: Date
+    response:
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: message_id
+        type: Utf8
+        nullable: false
+        description: Message ID used for the request.
+        expr:
+          kind: from_filter
+          key: message_id
+      - name: id
+        type: Utf8
+        nullable: false
+        description: Unique message ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: thread_id
+        type: Utf8
+        nullable: true
+        description: ID of the thread the message belongs to.
+        expr:
+          kind: path
+          path:
+            - threadId
+      - name: snippet
+        type: Utf8
+        nullable: true
+        description: Short snippet of the message body.
+        expr:
+          kind: path
+          path:
+            - snippet
+      - name: from_header
+        type: Utf8
+        nullable: true
+        description: >
+          Raw From header value (often includes a display name and angle-bracket
+          email). Parse the address in SQL for joins, e.g. with regexp_match.
+        expr:
+          kind: tag_value
+          path:
+            - payload
+            - headers
+          key: From
+          key_field: name
+          value_field: value
+      - name: subject
+        type: Utf8
+        nullable: true
+        description: Subject header value.
+        expr:
+          kind: tag_value
+          path:
+            - payload
+            - headers
+          key: Subject
+          key_field: name
+          value_field: value
+      - name: date_header
+        type: Utf8
+        nullable: true
+        description: Date header value as returned by Gmail.
+        expr:
+          kind: tag_value
+          path:
+            - payload
+            - headers
+          key: Date
+          key_field: name
+          value_field: value
+      - name: internal_date
+        type: Timestamp
+        nullable: true
+        description: Message internal timestamp (milliseconds since epoch).
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - internalDate
+      - name: label_ids
+        type: Utf8
+        nullable: true
+        description: Comma-separated label IDs on the message.
+        expr:
+          kind: join_array
+          path:
+            - labelIds
+          separator: ","
 
   - name: threads
     description: >

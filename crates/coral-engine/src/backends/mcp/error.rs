@@ -35,6 +35,18 @@ pub(crate) enum McpProviderQueryError {
         detail: String,
     },
 
+    #[error("MCP HTTP transport for source '{source_schema}' requires authorization: {detail}")]
+    AuthRequired {
+        source_schema: String,
+        detail: String,
+    },
+
+    #[error("MCP HTTP transport authorization failed for source '{source_schema}': {detail}")]
+    AuthFailed {
+        source_schema: String,
+        detail: String,
+    },
+
     #[error("{source_schema}.{relation}: MCP tool '{tool}' call failed: {detail}")]
     ToolCall {
         source_schema: String,
@@ -68,6 +80,36 @@ pub(crate) enum McpProviderQueryError {
         tool: String,
         detail: String,
     },
+
+    #[error("MCP HTTP request for source '{source_schema}' failed: {detail}")]
+    HttpRequestFailed {
+        source_schema: String,
+        detail: String,
+    },
+
+    #[error("MCP HTTP server for source '{source_schema}' returned an unexpected status: {detail}")]
+    HttpStatusFailed {
+        source_schema: String,
+        detail: String,
+    },
+
+    #[error(
+        "MCP HTTP server for source '{source_schema}' returned an undecodable SSE stream: {detail}"
+    )]
+    HttpSseDecodeFailed {
+        source_schema: String,
+        detail: String,
+    },
+
+    #[error("MCP HTTP session expired for source '{source_schema}'")]
+    SessionExpired { source_schema: String },
+    // NOTE: `MCP_OAUTH_DISCOVERY_FAILED` and `MCP_OAUTH_REFRESH_FAILED` from
+    // `PLAN_mcp_http.md` are intentionally not yet defined. They map to
+    // OAuth code paths Coral doesn't implement today: protected-resource /
+    // authorization-server metadata discovery on 401, and refresh-token
+    // exchange before retrying expired-token requests. Add the variants
+    // (and their `to_structured` mappings) at the same time those features
+    // land, so we don't introduce dead enum variants in the meantime.
 }
 
 impl McpProviderQueryError {
@@ -165,6 +207,48 @@ impl McpProviderQueryError {
                     ),
                     true,
                     StatusCode::Unavailable,
+                    metadata,
+                )
+            }
+            Self::AuthRequired {
+                source_schema,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "auth".to_string());
+                StructuredQueryError::new(
+                    "MCP_AUTH_REQUIRED",
+                    format!("MCP HTTP server for source `{source_schema}` requires authorization"),
+                    detail.clone(),
+                    Some(
+                        "Install or update the source with the required OAuth or bearer-token \
+                         credential, then retry the query."
+                            .to_string(),
+                    ),
+                    false,
+                    StatusCode::FailedPrecondition,
+                    metadata,
+                )
+            }
+            Self::AuthFailed {
+                source_schema,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "auth".to_string());
+                StructuredQueryError::new(
+                    "MCP_AUTH_FAILED",
+                    format!("MCP HTTP authorization failed for source `{source_schema}`"),
+                    detail.clone(),
+                    Some(
+                        "Refresh or replace the source credential. If the server reports an \
+                         insufficient scope, update the manifest OAuth scopes and reinstall."
+                            .to_string(),
+                    ),
+                    false,
+                    StatusCode::FailedPrecondition,
                     metadata,
                 )
             }
@@ -266,6 +350,91 @@ impl McpProviderQueryError {
                     ),
                     false,
                     StatusCode::FailedPrecondition,
+                    metadata,
+                )
+            }
+            Self::HttpRequestFailed {
+                source_schema,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "http_request".to_string());
+                StructuredQueryError::new(
+                    "MCP_HTTP_REQUEST_FAILED",
+                    format!("MCP HTTP request for source `{source_schema}` failed"),
+                    detail.clone(),
+                    Some(
+                        "The HTTP request to the MCP server failed before a response was \
+                         received. Check network connectivity and TLS configuration."
+                            .to_string(),
+                    ),
+                    true,
+                    StatusCode::Unavailable,
+                    metadata,
+                )
+            }
+            Self::HttpStatusFailed {
+                source_schema,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "http_status".to_string());
+                StructuredQueryError::new(
+                    "MCP_HTTP_STATUS_FAILED",
+                    format!(
+                        "MCP HTTP server for source `{source_schema}` returned an unexpected status"
+                    ),
+                    detail.clone(),
+                    Some(
+                        "The MCP server returned a non-success HTTP status that is not an \
+                         authentication failure. Inspect the server's response body for diagnostics."
+                            .to_string(),
+                    ),
+                    true,
+                    StatusCode::Unavailable,
+                    metadata,
+                )
+            }
+            Self::HttpSseDecodeFailed {
+                source_schema,
+                detail,
+            } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "http_sse_decode".to_string());
+                StructuredQueryError::new(
+                    "MCP_HTTP_SSE_DECODE_FAILED",
+                    format!(
+                        "MCP HTTP server for source `{source_schema}` returned an undecodable SSE stream"
+                    ),
+                    detail.clone(),
+                    Some(
+                        "The MCP server's SSE response could not be parsed, or its content \
+                         type was unexpected. Confirm the server speaks MCP Streamable HTTP."
+                            .to_string(),
+                    ),
+                    false,
+                    StatusCode::FailedPrecondition,
+                    metadata,
+                )
+            }
+            Self::SessionExpired { source_schema } => {
+                let mut metadata = HashMap::new();
+                metadata.insert("source".to_string(), source_schema.clone());
+                metadata.insert("mcp_stage".to_string(), "session_expired".to_string());
+                StructuredQueryError::new(
+                    "MCP_SESSION_EXPIRED",
+                    format!("MCP HTTP session expired for source `{source_schema}`"),
+                    format!("MCP HTTP session expired for source `{source_schema}`"),
+                    Some(
+                        "The MCP server returned HTTP 404 for an attached session ID and the \
+                         transport could not transparently reinitialize. Retry the query."
+                            .to_string(),
+                    ),
+                    true,
+                    StatusCode::Unavailable,
                     metadata,
                 )
             }
@@ -374,5 +543,60 @@ mod tests {
         .to_structured();
         assert_eq!(error.reason(), "MCP_RESULT_DECODE_FAILED");
         assert_eq!(error.metadata().get("mcp_stage").unwrap(), "result_decode");
+    }
+
+    #[test]
+    fn http_request_failed_is_retryable_unavailable() {
+        let error = McpProviderQueryError::HttpRequestFailed {
+            source_schema: "demo_mcp".to_string(),
+            detail: "connection refused".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "MCP_HTTP_REQUEST_FAILED");
+        assert_eq!(error.metadata().get("mcp_stage").unwrap(), "http_request");
+        assert_eq!(error.status(), StatusCode::Unavailable);
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn http_status_failed_is_retryable_unavailable() {
+        let error = McpProviderQueryError::HttpStatusFailed {
+            source_schema: "demo_mcp".to_string(),
+            detail: "HTTP 502: bad gateway".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "MCP_HTTP_STATUS_FAILED");
+        assert_eq!(error.metadata().get("mcp_stage").unwrap(), "http_status");
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn http_sse_decode_failed_is_not_retryable_failed_precondition() {
+        let error = McpProviderQueryError::HttpSseDecodeFailed {
+            source_schema: "demo_mcp".to_string(),
+            detail: "unexpected content type".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "MCP_HTTP_SSE_DECODE_FAILED");
+        assert_eq!(
+            error.metadata().get("mcp_stage").unwrap(),
+            "http_sse_decode"
+        );
+        assert_eq!(error.status(), StatusCode::FailedPrecondition);
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn session_expired_is_retryable_unavailable() {
+        let error = McpProviderQueryError::SessionExpired {
+            source_schema: "demo_mcp".to_string(),
+        }
+        .to_structured();
+        assert_eq!(error.reason(), "MCP_SESSION_EXPIRED");
+        assert_eq!(
+            error.metadata().get("mcp_stage").unwrap(),
+            "session_expired"
+        );
+        assert!(error.retryable());
     }
 }
