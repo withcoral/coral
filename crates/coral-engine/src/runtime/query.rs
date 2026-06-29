@@ -717,7 +717,7 @@ fn is_parameterized_source_function_call(plan: &LogicalPlan) -> bool {
     extension.node.name() == SOURCE_FUNCTION_NODE_NAME
 }
 
-fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
+pub(crate) fn query_parameter_scalar_value(value: &QueryParameterValue) -> ScalarValue {
     match value {
         QueryParameterValue::String(value) => ScalarValue::Utf8(value.clone()),
         QueryParameterValue::Integer(value) => ScalarValue::Int64(*value),
