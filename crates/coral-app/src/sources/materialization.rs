@@ -32,6 +32,9 @@ use crate::workspaces::WorkspaceName;
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
+pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
+pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
+pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -650,9 +653,9 @@ fn write_materialization(
     };
     validate_materialized_source(manifest, &materialized)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    write_yaml(&temp_dir.join("fingerprint.yaml"), &fingerprint)?;
-    write_yaml(&temp_dir.join("projections.yaml"), &projections)?;
-    write_yaml(&temp_dir.join("diagnostics.yaml"), &diagnostics)?;
+    write_yaml(&temp_dir.join(FINGERPRINT_FILENAME), &fingerprint)?;
+    write_yaml(&temp_dir.join(PROJECTIONS_FILENAME), &projections)?;
+    write_yaml(&temp_dir.join(DIAGNOSTICS_FILENAME), &diagnostics)?;
     Ok(())
 }
 
@@ -1336,7 +1339,7 @@ surfaces:
         );
 
         let projections: ProjectionCatalog =
-            read_yaml(&build.temp_dir.join("projections.yaml")).expect("read projections");
+            read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
         let projection = projections.projections.first().expect("projection");
         assert_eq!(projection.namespace, "mcp_materialization_test");
         let column_names = projection
@@ -1394,7 +1397,7 @@ surfaces:
         .expect("partial materialization should succeed");
 
         let fingerprint: Fingerprint =
-            read_yaml(&build.temp_dir.join("fingerprint.yaml")).expect("read fingerprint");
+            read_yaml(&build.temp_dir.join(FINGERPRINT_FILENAME)).expect("read fingerprint");
         let surface_ids = fingerprint
             .surfaces
             .iter()
@@ -1405,7 +1408,7 @@ surfaces:
         assert!(!build.temp_dir.join("surfaces").join("mcp").exists());
 
         let diagnostics: Vec<Diagnostic> =
-            read_yaml(&build.temp_dir.join("diagnostics.yaml")).expect("read diagnostics");
+            read_yaml(&build.temp_dir.join(DIAGNOSTICS_FILENAME)).expect("read diagnostics");
         assert!(
             diagnostics.iter().any(|diagnostic| {
                 diagnostic.code == "SURFACE_MATERIALIZATION_FAILED"
