@@ -1151,9 +1151,9 @@ mod tests {
 
     use super::{
         AppConfig, AppError, ConfigStore, PersistedAppConfig, PersistedEngineConfig,
-        RawFeatureContainerState, RawFeatureValue, RegisteredSourceSpec, SourceCatalog,
-        SourceSpecCatalog, WorkspaceCatalog, load_raw_feature_overrides, render_config,
-        set_raw_feature_override,
+        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, RegisteredSourceSpec,
+        SourceCatalog, SourceSpecCatalog, WorkspaceCatalog, load_raw_feature_overrides,
+        render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
