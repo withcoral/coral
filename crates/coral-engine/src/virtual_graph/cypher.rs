@@ -1055,9 +1055,9 @@ fn compile_static_unwind_values(
 ) -> Result<Vec<Literal>, CoreError> {
     let expression_path = format!("{path}.reading_clauses[{index}].unwind.expression");
     let value = if let Some(source) = context.unwind_expression_source(unwind) {
-        compile_static_list_value_source(source, expression_path.clone(), None, context)?
+        compile_static_unwind_value_source(source, expression_path.clone(), context)?
     } else {
-        compile_optional_static_list_value(&unwind.expression, expression_path.clone(), None, context)?
+        compile_optional_static_unwind_value(&unwind.expression, expression_path.clone(), context)?
     }
     .ok_or_else(|| {
         unsupported(
@@ -1072,6 +1072,131 @@ fn compile_static_unwind_values(
         ));
     }
     Ok(value.literals)
+}
+
+fn compile_static_unwind_value_source(
+    source: &str,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let (expression, fragment_context) =
+        parse_cypher_expression_fragment(source, path.clone(), context)?;
+    compile_optional_static_unwind_value(&expression, path, &fragment_context)
+}
+
+fn compile_optional_static_unwind_value(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_static_unwind_value(inner, path, context)
+        }
+        Expression::Case(case) => compile_optional_static_unwind_case_value(case, path, context),
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            if let Some(value) =
+                compile_optional_static_unwind_value(list, format!("{path}.list"), context)?
+            {
+                return slice_static_list_value(
+                    value,
+                    start.as_deref(),
+                    end.as_deref(),
+                    path,
+                    context,
+                )
+                .map(Some);
+            }
+            compile_optional_static_list_value(expression, path, None, context)
+        }
+        _ => compile_optional_static_list_value(expression, path, None, context),
+    }
+}
+
+fn compile_optional_static_unwind_case_value(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<StaticListValue>, CoreError> {
+    let path = path.into();
+    let Some(parts) = compile_optional_static_list_case_parts(
+        case,
+        path.clone(),
+        PredicateCompileMode::CaseWhen { plan: None },
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    for (index, (when, result)) in parts.alternatives.into_iter().enumerate() {
+        match when {
+            PredicateExpression::Boolean(true) => {
+                return Ok(Some(static_unwind_case_result_value(
+                    result,
+                    parts.element_type,
+                )));
+            }
+            PredicateExpression::Boolean(false) => {}
+            _ => {
+                return Err(unsupported(
+                    format!("{path}.alternatives[{index}].when"),
+                    "UNWIND over list-valued CASE expressions requires statically foldable WHEN predicates",
+                ));
+            }
+        }
+    }
+    match parts.default {
+        Some(result) => Ok(Some(static_unwind_case_result_value(
+            result,
+            parts.element_type,
+        ))),
+        None => Ok(Some(StaticListValue {
+            presence_variable: None,
+            literals: Vec::new(),
+            element_type: parts.element_type,
+        })),
+    }
+}
+
+fn static_unwind_case_result_value(
+    result: StaticListCaseResult,
+    element_type: Option<LiteralListElementType>,
+) -> StaticListValue {
+    match result {
+        StaticListCaseResult::Null => StaticListValue {
+            presence_variable: None,
+            literals: Vec::new(),
+            element_type,
+        },
+        StaticListCaseResult::List(value) => match element_type {
+            Some(element_type) => with_static_list_element_type(value, element_type),
+            None => value,
+        },
+        StaticListCaseResult::Coalesce(coalesce) => {
+            let Some(element_type) = element_type else {
+                return StaticListValue {
+                    presence_variable: None,
+                    literals: Vec::new(),
+                    element_type: None,
+                };
+            };
+            for argument in coalesce.arguments {
+                let StaticListCoalesceArgument::List(value) = argument else {
+                    continue;
+                };
+                return with_static_list_element_type(value, element_type);
+            }
+            StaticListValue {
+                presence_variable: None,
+                literals: Vec::new(),
+                element_type: Some(element_type),
+            }
+        }
+    }
 }
 
 fn validate_static_unwind_scope(
@@ -27857,6 +27982,79 @@ relationships:
                 operator: ComparisonOperator::Equal,
                 rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_unwind_over_list_case_expressions() {
+        let query = compile_cypher_query(
+            "UNWIND (CASE WHEN true THEN ['prod', 'dev', 'stage'] ELSE ['legacy'] END)[0..2] AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN tier AS tier, service.name AS service \
+             ORDER BY tier, service",
+        )
+        .expect("static UNWIND over sliced list CASE should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static CASE UNWIND to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union.first.projections.first(),
+            Some(&Projection::Literal {
+                literal: Literal::String("prod".to_string()),
+                alias: "tier".to_string(),
+            })
+        );
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .expect("static UNWIND branch should exist")
+                .plan
+                .projections
+                .first(),
+            Some(&Projection::Literal {
+                literal: Literal::String("dev".to_string()),
+                alias: "tier".to_string(),
+            })
+        );
+
+        let generic = compile_cypher_query(
+            "UNWIND CASE 'prod' WHEN 'dev' THEN ['dev'] ELSE coalesce(null, ['prod']) END AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN tier AS tier, service.name AS service",
+        )
+        .expect("static UNWIND over generic list CASE should compile");
+
+        let GraphQuery::Plan(plan) = generic else {
+            panic!("single selected static CASE branch should compile as a plan");
+        };
+        assert_eq!(
+            plan.projections.first(),
+            Some(&Projection::Literal {
+                literal: Literal::String("prod".to_string()),
+                alias: "tier".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_static_unwind_over_dynamic_list_case_predicates() {
+        let error = compile_cypher_query(
+            "MATCH (service:Service) \
+             UNWIND CASE WHEN service.tier = 'prod' THEN ['prod'] ELSE ['other'] END AS tier \
+             RETURN tier",
+        )
+        .expect_err("dynamic CASE predicate in static UNWIND should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("UNWIND over list-valued CASE expressions requires statically foldable WHEN predicates"),
+            "{error}"
         );
     }
 

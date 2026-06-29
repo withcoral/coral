@@ -497,17 +497,21 @@ The supported foundation subset is intentionally narrow:
   with identical output names, column order, and catalog-compatible output
   types;
 - single-part static `UNWIND` over literal lists, list parameters, static
-  `range(...)`, static `split(...)`, and folded static list expressions. The
+  `range(...)`, static `split(...)`, folded static list expressions, and
+  list-valued `CASE` expressions whose predicates fold before planning. The
   Cypher frontend expands these into capped
   `UNION ALL` branches and substitutes the unwind variable as a scalar literal
-  before normal graph planning. Duplicate list elements are intentionally
+  before normal graph planning. Sliced static `CASE` lists are folded before
+  branch expansion, and null-selected static CASE branches behave like empty
+  unwind sources. Duplicate list elements are intentionally
   preserved, aggregate projections are hoisted through the same outer union
   aggregation path used by static pattern alternatives, and empty lists compile
   to a forced-empty graph plan. Row-preserving hidden `ORDER BY` expressions are
   evaluated inside each expanded branch and stripped by the outer projection;
   explicit null placement is preserved on the final outer order keys.
-  Dynamic list-valued columns and `WITH`-scoped unwinds remain future row-source
-  IR work rather than SQL-rendering shortcuts;
+  Dynamic list-valued columns, graph-dependent CASE predicates, and
+  `WITH`-scoped unwinds remain future row-source IR work rather than
+  SQL-rendering shortcuts;
 - exact fixed relationship ranges greater than one hop lowered as repeated
   fixed-hop joins when the graph declaration yields one unambiguous intermediate
   label sequence, including cross-label paths such as

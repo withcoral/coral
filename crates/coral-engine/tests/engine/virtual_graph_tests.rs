@@ -2190,6 +2190,41 @@ async fn cypher_static_unwind_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_case_lists_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND (CASE WHEN true THEN ['prod', 'dev', 'stage'] ELSE ['legacy'] END)[0..2] AS tier \
+         MATCH (service:Service) \
+         WHERE service.tier = tier \
+         RETURN tier AS tier, service.name AS service \
+         ORDER BY tier, service",
+    )
+    .await
+    .expect("static UNWIND over list-valued CASE should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"tier": "dev", "service": "experiments"}),
+            json!({"tier": "prod", "service": "billing-api"}),
+            json!({"tier": "prod", "service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_unwind_range_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
