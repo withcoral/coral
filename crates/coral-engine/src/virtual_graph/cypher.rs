@@ -1291,6 +1291,7 @@ fn rewrite_missing_branch_properties_as_null(
             .iter()
             .map(|node| (node.variable.clone(), node.label.clone()))
             .collect::<BTreeMap<_, _>>();
+        rewrite_missing_branch_scalar_expressions_as_null(plan, graph, &nodes);
         rewrite_missing_branch_property_predicates_as_null(plan, graph, &nodes);
         for projection in &mut plan.projections {
             let (variable, property_name, alias) = match projection {
@@ -1318,6 +1319,54 @@ fn rewrite_missing_branch_properties_as_null(
                 alias,
             };
         }
+    }
+}
+
+fn rewrite_missing_branch_scalar_expressions_as_null(
+    plan: &mut GraphPlan,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    for projection in &mut plan.projections {
+        match projection {
+            Projection::Expression { expression, .. } => {
+                rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            }
+            Projection::Aggregate { target, .. } => {
+                rewrite_missing_branch_aggregate_target_as_null(target, graph, nodes);
+            }
+            Projection::Property { .. }
+            | Projection::Key { .. }
+            | Projection::ElementId { .. }
+            | Projection::RelationshipType { .. }
+            | Projection::NodeLabels { .. }
+            | Projection::PropertyKeys { .. }
+            | Projection::Literal { .. }
+            | Projection::LiteralList { .. }
+            | Projection::CountAll { .. } => {}
+        }
+    }
+
+    for order_key in &mut plan.order_by {
+        if let OrderExpression::Scalar(expression) = &mut order_key.expression {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+        }
+    }
+}
+
+fn rewrite_missing_branch_aggregate_target_as_null(
+    target: &mut AggregateTarget,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    match target {
+        AggregateTarget::Expression(expression) => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+        }
+        AggregateTarget::Property(_)
+        | AggregateTarget::PresenceGatedProperty { .. }
+        | AggregateTarget::VariableKey { .. }
+        | AggregateTarget::PresenceGatedVariableKey { .. } => {}
     }
 }
 
@@ -1359,6 +1408,9 @@ fn rewrite_missing_branch_property_predicate_expression(
                 BranchPropertyPredicateRewrite::Rewrite(expression) => expression,
             }
         }
+        PredicateExpression::ScalarComparison(predicate) => {
+            rewrite_missing_branch_scalar_predicate(predicate, graph, nodes)
+        }
         PredicateExpression::And { left, right } => PredicateExpression::And {
             left: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *left, graph, nodes,
@@ -1391,6 +1443,205 @@ fn rewrite_missing_branch_property_predicate_expression(
             )),
         },
         _ => expression,
+    }
+}
+
+fn rewrite_missing_branch_scalar_predicate(
+    mut predicate: ScalarPredicate,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) -> PredicateExpression {
+    let lhs_was_missing =
+        rewrite_missing_branch_scalar_expression_as_null(&mut predicate.lhs, graph, nodes);
+    let rhs_was_missing =
+        rewrite_missing_branch_scalar_predicate_rhs_as_null(&mut predicate.rhs, graph, nodes);
+    if rhs_was_missing
+        || (lhs_was_missing
+            && scalar_predicate_rhs_is_literal_null(&predicate.rhs)
+            && (matches!(
+                predicate.operator,
+                ComparisonOperator::Equal | ComparisonOperator::NotEqual
+            ) || is_range_comparison_operator(predicate.operator)))
+    {
+        return unknown_boolean_predicate();
+    }
+    PredicateExpression::ScalarComparison(predicate)
+}
+
+fn rewrite_missing_branch_scalar_predicate_rhs_as_null(
+    rhs: &mut ScalarPredicateRhs,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) -> bool {
+    match rhs {
+        ScalarPredicateRhs::Expression(expression) => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes)
+        }
+        ScalarPredicateRhs::List(_) => false,
+    }
+}
+
+fn scalar_predicate_rhs_is_literal_null(rhs: &ScalarPredicateRhs) -> bool {
+    matches!(
+        rhs,
+        ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null))
+    )
+}
+
+fn rewrite_missing_branch_scalar_expression_as_null(
+    expression: &mut ScalarExpression,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) -> bool {
+    if let ScalarExpression::Property(property) = expression
+        && branch_node_property_is_missing(graph, nodes, property)
+    {
+        *expression = ScalarExpression::Literal(Literal::Null);
+        return true;
+    }
+
+    if let Some(expression) = unary_scalar_expression_operand_mut(expression) {
+        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+        return false;
+    }
+
+    rewrite_nested_missing_branch_scalar_expressions_as_null(expression, graph, nodes);
+    false
+}
+
+fn rewrite_nested_missing_branch_scalar_expressions_as_null(
+    expression: &mut ScalarExpression,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    if rewrite_missing_branch_scalar_leaf_as_null(expression, graph, nodes) {
+        return;
+    }
+    rewrite_missing_branch_compound_scalar_expression_as_null(expression, graph, nodes);
+}
+
+fn rewrite_missing_branch_scalar_leaf_as_null(
+    expression: &mut ScalarExpression,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) -> bool {
+    match expression {
+        ScalarExpression::Property(_)
+        | ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. }
+        | ScalarExpression::CountSubquery { .. } => true,
+        ScalarExpression::Predicate(predicate) => {
+            **predicate = rewrite_missing_branch_property_predicate_expression(
+                (**predicate).clone(),
+                graph,
+                nodes,
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+fn rewrite_missing_branch_compound_scalar_expression_as_null(
+    expression: &mut ScalarExpression,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    match expression {
+        ScalarExpression::PresenceGated { expression, .. } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+        }
+        ScalarExpression::Coalesce { expressions } => {
+            rewrite_missing_branch_scalar_expression_list_as_null(expressions, graph, nodes);
+        }
+        ScalarExpression::NullIf { expression, value } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(value, graph, nodes);
+        }
+        ScalarExpression::Round { expression, places } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            if let Some(places) = places {
+                rewrite_missing_branch_scalar_expression_as_null(places, graph, nodes);
+            }
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(count, graph, nodes);
+        }
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(search, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(replacement, graph, nodes);
+        }
+        ScalarExpression::Substring {
+            expression,
+            start,
+            length,
+        } => {
+            rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(start, graph, nodes);
+            if let Some(length) = length {
+                rewrite_missing_branch_scalar_expression_as_null(length, graph, nodes);
+            }
+        }
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            rewrite_missing_branch_scalar_expression_as_null(left, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(right, graph, nodes);
+        }
+        ScalarExpression::Atan2 { y, x } => {
+            rewrite_missing_branch_scalar_expression_as_null(y, graph, nodes);
+            rewrite_missing_branch_scalar_expression_as_null(x, graph, nodes);
+        }
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => rewrite_missing_branch_case_expression_as_null(
+            alternatives,
+            else_expression.as_deref_mut(),
+            graph,
+            nodes,
+        ),
+        _ => unreachable!("scalar leaves and unary expressions handled before compound rewrite"),
+    }
+}
+
+fn rewrite_missing_branch_scalar_expression_list_as_null(
+    expressions: &mut [ScalarExpression],
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    for expression in expressions {
+        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes);
+    }
+}
+
+fn rewrite_missing_branch_case_expression_as_null(
+    alternatives: &mut [ScalarCaseAlternative],
+    else_expression: Option<&mut ScalarExpression>,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+) {
+    for alternative in alternatives {
+        let original = std::mem::replace(&mut alternative.when, PredicateExpression::Boolean(true));
+        alternative.when =
+            rewrite_missing_branch_property_predicate_expression(original, graph, nodes);
+        rewrite_missing_branch_scalar_expression_as_null(&mut alternative.then, graph, nodes);
+    }
+    if let Some(else_expression) = else_expression {
+        rewrite_missing_branch_scalar_expression_as_null(else_expression, graph, nodes);
     }
 }
 

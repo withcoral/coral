@@ -785,6 +785,96 @@ async fn cypher_graph_aware_unlabeled_node_scan_treats_missing_rhs_property_as_u
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_projects_missing_scalar_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         RETURN labels(entity)[0] AS label, entity.name AS name, coalesce(entity.tier, 'unknown') AS tier_bucket \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing scalar projection property should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Person", "name": "Ada Lovelace", "tier_bucket": "unknown"}),
+            json!({"label": "Person", "name": "Grace Hopper", "tier_bucket": "unknown"}),
+            json!({"label": "Person", "name": "Katherine Johnson", "tier_bucket": "unknown"}),
+            json!({"label": "Service", "name": "billing-api", "tier_bucket": "prod"}),
+            json!({"label": "Service", "name": "deployments", "tier_bucket": "prod"}),
+            json!({"label": "Service", "name": "experiments", "tier_bucket": "dev"}),
+            json!({"label": "Service", "name": "legacy-sync", "tier_bucket": "unknown"}),
+            json!({"label": "Team", "name": "analytics", "tier_bucket": "unknown"}),
+            json!({"label": "Team", "name": "infra", "tier_bucket": "unknown"}),
+            json!({"label": "Team", "name": "platform", "tier_bucket": "unknown"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_filters_missing_scalar_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         WHERE coalesce(entity.tier, 'unknown') = 'unknown' \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing scalar predicate property should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Person", "name": "Ada Lovelace"}),
+            json!({"label": "Person", "name": "Grace Hopper"}),
+            json!({"label": "Person", "name": "Katherine Johnson"}),
+            json!({"label": "Service", "name": "legacy-sync"}),
+            json!({"label": "Team", "name": "analytics"}),
+            json!({"label": "Team", "name": "infra"}),
+            json!({"label": "Team", "name": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_aggregates_missing_scalar_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) RETURN count(coalesce(entity.tier, 'unknown')) AS tier_buckets",
+    )
+    .await
+    .expect("heterogeneous missing scalar aggregate property should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"tier_buckets": 10})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
