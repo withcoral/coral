@@ -23,8 +23,8 @@
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 4,
-    "Where": 10,
-    "With": 5
+    "Where": 11,
+    "With": 6
   },
   "scenarios": [
     {
@@ -178,6 +178,19 @@
           { "name": "Alice" },
           { "name": "Bob" },
           { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "where-property-to-property-comparison",
+      "feature": "Where",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WHERE p.age < friend.age RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend": "Carol" },
+          { "person": "Bob", "friend": "Carol" }
         ]
       }
     },
@@ -1095,6 +1108,19 @@
         "rows": [
           { "person": "Alice", "friend": "Carol" },
           { "person": "Bob", "friend": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "nonterminal-with-scalar-alias-before-match",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p, p.city AS city WHERE city <> '' MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, city, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "city": "London", "friend": "Bob" },
+          { "person": "Alice", "city": "London", "friend": "Carol" }
         ]
       }
     },
