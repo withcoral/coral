@@ -13,7 +13,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 4,
+    "ScalarExpressions": 7,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -371,12 +371,47 @@
       }
     },
     {
+      "id": "to-upper-string-where-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE toUpper(p.name) = 'ALICE' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "to-lower-string-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, toLower(p.city) AS city_lower ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "city_lower": "london" },
+          { "name": "Bob", "city_lower": "" },
+          { "name": "Carol", "city_lower": "paris" }
+        ]
+      }
+    },
+    {
       "id": "is-empty-string-wrong-arity-rejected",
       "feature": "ScalarExpressions",
       "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
       "expected": {
         "kind": "error",
         "contains": "isEmpty() supports exactly one scalar string argument"
+      }
+    },
+    {
+      "id": "to-upper-string-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN toUpper(p.name, 'extra') AS name_upper",
+      "expected": {
+        "kind": "error",
+        "contains": "toUpper() requires exactly one argument"
       }
     },
     {
