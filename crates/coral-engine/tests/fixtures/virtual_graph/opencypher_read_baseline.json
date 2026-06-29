@@ -7,6 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 4,
     "Match": 3,
+    "MathematicalFunctions": 4,
     "OptionalMatch": 3,
     "PathMetadata": 1,
     "PathValues": 2,
@@ -547,6 +548,53 @@
       "expected": {
         "kind": "error",
         "contains": "sqrt() requires exactly one argument"
+      }
+    },
+    {
+      "id": "log-exp-and-constant-functions",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE round(log(exp(1.0)), 2) = 1.0 AND round(log10(100.0), 2) = 2.0 AND round(ln(e()), 2) = 1.0 RETURN count(p) AS people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3 }
+        ]
+      }
+    },
+    {
+      "id": "trigonometric-functions",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE round(sin(radians(90.0)), 2) = 1.0 AND round(cos(0.0), 2) = 1.0 AND round(degrees(atan(1.0)), 0) = 45.0 RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "atan2-and-haversin-functions",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE abs(atan2(1.0, 1.0) - radians(45.0)) < 0.01 AND abs(haversin(radians(180.0)) - 1.0) < 0.01 RETURN p.name AS name ORDER BY name LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "math-constant-wrong-arity-rejected",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN pi(1) AS value",
+      "expected": {
+        "kind": "error",
+        "contains": "requires exactly zero arguments"
       }
     },
     {
