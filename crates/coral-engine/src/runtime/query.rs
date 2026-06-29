@@ -42,6 +42,7 @@ use crate::runtime::source_functions::{
 use crate::runtime::udf_calls::{
     UDF_CALL_NODE_NAME, UdfCallAnalyzerRule, UdfCallNode, UdfCallRegistry,
 };
+use crate::runtime::udfs::published_table_functions;
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
@@ -184,17 +185,28 @@ async fn build_registered_runtime(
         config.source_decorators,
     )
     .await?;
-    catalog::register(&ctx, &registration.active_sources)
-        .map_err(|err| datafusion_to_core(&err, &[]))?;
-    let tables = catalog::collect_tables(&registration.active_sources);
-    let table_functions = catalog::collect_table_functions(&registration.active_sources);
     let source_functions = SourceFunctionRegistry::new(
         registration
             .active_sources
             .iter()
             .flat_map(|source| source.table_functions.iter()),
     );
-    install_table_function_call_planners(&ctx, source_functions, config.udfs, &tables).await?;
+    let source_function_names = source_functions.names();
+    let udf_table_functions = published_table_functions(config.udfs, &source_function_names)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    catalog::register(&ctx, &registration.active_sources, &udf_table_functions)
+        .map_err(|err| datafusion_to_core(&err, &[]))?;
+    let tables = catalog::collect_tables(&registration.active_sources);
+    let table_functions =
+        catalog::collect_table_functions(&registration.active_sources, &udf_table_functions);
+    install_table_function_call_planners(
+        &ctx,
+        source_functions,
+        source_function_names,
+        config.udfs,
+        &tables,
+    )
+    .await?;
     for failure in &registration.failures {
         tracing::warn!(
             source = %failure.schema_name,
@@ -214,10 +226,10 @@ async fn build_registered_runtime(
 async fn install_table_function_call_planners(
     ctx: &SessionContext,
     source_functions: SourceFunctionRegistry,
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
     udfs: &[UdfRuntimeDefinition],
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
-    let source_table_function_names = source_functions.names();
     match (!source_functions.is_empty(), !udfs.is_empty()) {
         (false, false) => Ok(()),
         (true, false) => source_functions

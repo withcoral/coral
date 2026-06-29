@@ -954,3 +954,51 @@ async fn udf_table_function_cannot_replace_source_table_function() {
     )
     .await;
 }
+#[tokio::test]
+async fn published_udf_table_function_is_cataloged() {
+    let server = MockServer::start().await;
+    let source = search_source(&server, "catalog_udf_search");
+    let runtime = test_runtime().with_udfs(vec![published_review_queue_udf("catalog_udf_search")]);
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+        .await
+        .expect("catalog should include udf function");
+
+    assert!(catalog.tables.is_empty());
+    assert_eq!(catalog.table_functions.len(), 1);
+    let function = catalog.table_functions.first().expect("udf table function");
+    assert_eq!(function.schema_name, "udfs");
+    assert_eq!(function.function_name, "review_queue");
+    let [_min_score, _mode, payload, _query, _since] = function.arguments.as_slice() else {
+        panic!("expected five review queue arguments");
+    };
+    assert_eq!(payload.name, "payload");
+    assert!(payload.required);
+    assert_eq!(function.result_columns.len(), 2);
+    assert_eq!(
+        function
+            .result_columns
+            .first()
+            .expect("title result column")
+            .name,
+        "title"
+    );
+}
+
+#[tokio::test]
+async fn published_udf_table_function_catalog_uses_normalized_publish_identifiers() {
+    let (_temp, source) = events_source("catalog_mixed_case_udf_events");
+    let runtime = test_runtime().with_udfs(vec![mixed_case_published_min_id_udf(
+        "catalog_mixed_case_udf_events",
+    )]);
+
+    let catalog = CoralQuery::list_catalog(&[source], runtime, Some("udfs"))
+        .await
+        .expect("catalog should include normalized udf function");
+
+    assert!(catalog.tables.is_empty());
+    assert_eq!(catalog.table_functions.len(), 1);
+    let function = catalog.table_functions.first().expect("udf table function");
+    assert_eq!(function.schema_name, "udfs");
+    assert_eq!(function.function_name, "min_id_events");
+}

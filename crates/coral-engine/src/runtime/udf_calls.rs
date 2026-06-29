@@ -65,7 +65,7 @@ impl UdfCallRegistry {
         for udf in udfs {
             let body_plan = ctx.state().create_logical_plan(udf_sql(udf)).await?;
             read_only_sql_options().verify_plan(&body_plan)?;
-            registry.insert_function(udf, &body_plan, &source_functions)?;
+            registry.insert_function(udf, &body_plan)?;
         }
 
         Ok(registry)
@@ -82,16 +82,9 @@ impl UdfCallRegistry {
         &mut self,
         udf: &UdfRuntimeDefinition,
         body_plan: &LogicalPlan,
-        source_functions: &HashSet<ScopedTableFunctionName>,
     ) -> Result<()> {
         let publish = &udf.publish.table_function;
         let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
-        if source_functions.contains(&key) {
-            return Err(DataFusionError::Plan(format!(
-                "udf table function {} conflicts with existing table function",
-                qualified_name(&key.schema, &key.function)
-            )));
-        }
         if self
             .functions
             .insert(
@@ -100,8 +93,8 @@ impl UdfCallRegistry {
             )
             .is_some()
         {
-            return Err(DataFusionError::Plan(format!(
-                "duplicate udf table function {}",
+            return Err(DataFusionError::Internal(format!(
+                "validated udf table function {} was registered twice",
                 qualified_name(&key.schema, &key.function)
             )));
         }

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use coral_spec::{ManifestInputKind, SearchLimitsSpec};
+use coral_spec::{ManifestInputKind, SearchLimitsSpec, SourceTableFunctionKind};
 use datafusion::arrow::array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::datasource::MemTable;
@@ -11,10 +11,7 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
 use serde::Serialize;
 
-use crate::backends::common::{
-    RegisteredTableFunctionArgument, RegisteredTableFunctionResultColumn,
-};
-use crate::backends::{RegisteredSource, RegisteredTableFunction};
+use crate::backends::RegisteredSource;
 use crate::runtime::schema_provider::StaticSchemaProvider;
 use crate::{
     ColumnInfo, TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo,
@@ -24,18 +21,50 @@ use crate::{
 /// Schema name for source metadata tables such as `coral.tables`.
 pub(crate) const SYSTEM_SCHEMA: &str = "coral";
 
+/// Catalog-only metadata for one SQL table-function surface.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogTableFunction {
+    pub(crate) schema_name: String,
+    pub(crate) function_name: String,
+    pub(crate) description: String,
+    pub(crate) arguments: Vec<CatalogTableFunctionArgument>,
+    pub(crate) result_columns: Vec<CatalogTableFunctionResultColumn>,
+    pub(crate) kind: SourceTableFunctionKind,
+    pub(crate) search_limits: Option<SearchLimitsSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogTableFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) required: bool,
+    pub(crate) values: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogTableFunctionResultColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) nullable: bool,
+    pub(crate) description: String,
+}
+
 /// Register `coral.tables` and `coral.columns` for the active source set.
 ///
 /// # Errors
 ///
 /// Returns a `DataFusionError` if the catalog is missing or the metadata
 /// tables cannot be materialized.
-pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]) -> Result<()> {
+pub(crate) fn register(
+    ctx: &SessionContext,
+    active_sources: &[RegisteredSource],
+    catalog_only_table_functions: &[CatalogTableFunction],
+) -> Result<()> {
     let tables_table = build_tables_table(active_sources)?;
     let columns_table = build_columns_table(active_sources)?;
     let filters_table = build_filters_table(active_sources)?;
     let inputs_table = build_inputs_table(active_sources)?;
-    let table_functions_table = build_table_functions_table(active_sources)?;
+    let table_functions_table =
+        build_table_functions_table(active_sources, catalog_only_table_functions)?;
 
     let mut meta_tables: HashMap<String, Arc<dyn datafusion::datasource::TableProvider>> =
         HashMap::new();
@@ -59,7 +88,10 @@ pub(crate) fn register(ctx: &SessionContext, active_sources: &[RegisteredSource]
     Ok(())
 }
 
-fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<MemTable> {
+fn build_table_functions_table(
+    active_sources: &[RegisteredSource],
+    catalog_only_table_functions: &[CatalogTableFunction],
+) -> Result<MemTable> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("schema_name", DataType::Utf8, false),
         Field::new("function_name", DataType::Utf8, false),
@@ -70,21 +102,15 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
         Field::new("search_limits_json", DataType::Utf8, true),
     ]));
 
-    let mut rows = active_sources
-        .iter()
-        .flat_map(|source| source.table_functions.iter())
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
-    });
+    let rows = catalog_table_functions(active_sources, catalog_only_table_functions);
 
     let arguments_json = rows
         .iter()
-        .map(|row| table_function_arguments_json(row))
+        .map(table_function_arguments_json)
         .collect::<Result<Vec<_>>>()?;
     let result_columns_json = rows
         .iter()
-        .map(|row| table_function_result_columns_json(row))
+        .map(table_function_result_columns_json)
         .collect::<Result<Vec<_>>>()?;
     let search_limits_json = rows
         .iter()
@@ -108,7 +134,7 @@ fn build_table_functions_table(active_sources: &[RegisteredSource]) -> Result<Me
     MemTable::try_new(schema, vec![vec![batch]])
 }
 
-fn table_function_arguments_json(row: &RegisteredTableFunction) -> Result<String> {
+fn table_function_arguments_json(row: &CatalogTableFunction) -> Result<String> {
     let arguments = row
         .arguments
         .iter()
@@ -117,7 +143,7 @@ fn table_function_arguments_json(row: &RegisteredTableFunction) -> Result<String
     serde_json::to_string(&arguments).map_err(|error| DataFusionError::External(Box::new(error)))
 }
 
-fn table_function_result_columns_json(row: &RegisteredTableFunction) -> Result<String> {
+fn table_function_result_columns_json(row: &CatalogTableFunction) -> Result<String> {
     let columns = row
         .result_columns
         .iter()
@@ -142,8 +168,8 @@ struct TableFunctionArgumentJson<'a> {
     values: &'a [String],
 }
 
-impl<'a> From<&'a RegisteredTableFunctionArgument> for TableFunctionArgumentJson<'a> {
-    fn from(argument: &'a RegisteredTableFunctionArgument) -> Self {
+impl<'a> From<&'a CatalogTableFunctionArgument> for TableFunctionArgumentJson<'a> {
+    fn from(argument: &'a CatalogTableFunctionArgument) -> Self {
         Self {
             name: &argument.name,
             required: argument.required,
@@ -161,8 +187,8 @@ struct TableFunctionResultColumnJson<'a> {
     description: &'a str,
 }
 
-impl<'a> From<&'a RegisteredTableFunctionResultColumn> for TableFunctionResultColumnJson<'a> {
-    fn from(column: &'a RegisteredTableFunctionResultColumn) -> Self {
+impl<'a> From<&'a CatalogTableFunctionResultColumn> for TableFunctionResultColumnJson<'a> {
+    fn from(column: &'a CatalogTableFunctionResultColumn) -> Self {
         Self {
             name: &column.name,
             data_type: &column.data_type,
@@ -454,7 +480,7 @@ const SYSTEM_TABLE_DEFINITIONS: &[SystemTableDefinition] = &[
     },
     SystemTableDefinition {
         table_name: "table_functions",
-        description: "Metadata for source-scoped Coral table functions.",
+        description: "Metadata for Coral table functions.",
         guide: "Use this table to discover function arguments and result columns before calling a table function in SQL.",
         columns: TABLE_FUNCTIONS_COLUMNS,
     },
@@ -526,25 +552,61 @@ pub(crate) fn collect_tables(active_sources: &[RegisteredSource]) -> Vec<TableIn
     tables
 }
 
-/// Collect typed source-scoped table function metadata for the active source set.
+/// Collect typed table function metadata for the active runtime.
 #[must_use]
 pub(crate) fn collect_table_functions(
     active_sources: &[RegisteredSource],
+    catalog_only_table_functions: &[CatalogTableFunction],
 ) -> Vec<TableFunctionInfo> {
+    catalog_table_functions(active_sources, catalog_only_table_functions)
+        .into_iter()
+        .map(|function| TableFunctionInfo {
+            schema_name: function.schema_name,
+            function_name: function.function_name,
+            description: function.description,
+            arguments: function
+                .arguments
+                .into_iter()
+                .map(|argument| TableFunctionArgumentInfo {
+                    name: argument.name,
+                    required: argument.required,
+                    values: argument.values,
+                })
+                .collect(),
+            result_columns: function
+                .result_columns
+                .into_iter()
+                .map(|column| TableFunctionResultColumnInfo {
+                    name: column.name,
+                    data_type: column.data_type,
+                    nullable: column.nullable,
+                    description: column.description,
+                })
+                .collect(),
+            kind: function.kind,
+            search_limits: function.search_limits,
+        })
+        .collect()
+}
+
+fn catalog_table_functions(
+    active_sources: &[RegisteredSource],
+    catalog_only_table_functions: &[CatalogTableFunction],
+) -> Vec<CatalogTableFunction> {
     let mut functions = active_sources
         .iter()
         .flat_map(|source| {
             source
                 .table_functions
                 .iter()
-                .map(move |function| TableFunctionInfo {
+                .map(|function| CatalogTableFunction {
                     schema_name: function.schema_name.clone(),
                     function_name: function.function_name.clone(),
                     description: function.description.clone(),
                     arguments: function
                         .arguments
                         .iter()
-                        .map(|argument| TableFunctionArgumentInfo {
+                        .map(|argument| CatalogTableFunctionArgument {
                             name: argument.name.clone(),
                             required: argument.required,
                             values: argument.values.clone(),
@@ -553,7 +615,7 @@ pub(crate) fn collect_table_functions(
                     result_columns: function
                         .result_columns
                         .iter()
-                        .map(|column| TableFunctionResultColumnInfo {
+                        .map(|column| CatalogTableFunctionResultColumn {
                             name: column.name.clone(),
                             data_type: column.data_type.clone(),
                             nullable: column.nullable,
@@ -564,6 +626,7 @@ pub(crate) fn collect_table_functions(
                     search_limits: function.search_limits.clone(),
                 })
         })
+        .chain(catalog_only_table_functions.iter().cloned())
         .collect::<Vec<_>>();
     functions.sort_by(|left, right| {
         (&left.schema_name, &left.function_name).cmp(&(&right.schema_name, &right.function_name))
@@ -969,21 +1032,24 @@ mod tests {
 
     #[test]
     fn collect_table_functions_preserves_registered_function_schema() {
-        let functions = collect_table_functions(&[RegisteredSource {
-            schema_name: "source_schema".to_string(),
-            tables: Vec::new(),
-            table_functions: vec![RegisteredTableFunction {
-                schema_name: "function_schema".to_string(),
-                function_name: "search".to_string(),
-                factory: Arc::new(StubSourceFunctionFactory::default()),
-                kind: coral_spec::SourceTableFunctionKind::Search,
-                description: String::new(),
-                arguments: Vec::new(),
-                result_columns: Vec::new(),
-                search_limits: None,
+        let functions = collect_table_functions(
+            &[RegisteredSource {
+                schema_name: "source_schema".to_string(),
+                tables: Vec::new(),
+                table_functions: vec![RegisteredTableFunction {
+                    schema_name: "function_schema".to_string(),
+                    function_name: "search".to_string(),
+                    factory: Arc::new(StubSourceFunctionFactory::default()),
+                    kind: coral_spec::SourceTableFunctionKind::Search,
+                    description: String::new(),
+                    arguments: Vec::new(),
+                    result_columns: Vec::new(),
+                    search_limits: None,
+                }],
+                inputs: Vec::new(),
             }],
-            inputs: Vec::new(),
-        }]);
+            &[],
+        );
 
         assert_eq!(functions.len(), 1);
         assert_eq!(

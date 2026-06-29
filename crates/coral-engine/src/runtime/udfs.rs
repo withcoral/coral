@@ -1,5 +1,6 @@
-//! UDF SQL signature inference and runtime argument binding helpers.
+//! UDF SQL signature inference, runtime argument binding, and catalog helpers.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
@@ -8,7 +9,11 @@ use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::Expr;
 
+use crate::runtime::catalog::{
+    CatalogTableFunction, CatalogTableFunctionArgument, CatalogTableFunctionResultColumn,
+};
 use crate::runtime::query::{QueryRuntimeAdapter, query_parameter_scalar_value};
+use crate::runtime::scoped_table_functions::{ScopedTableFunctionName, qualified_name};
 use crate::types::parameter_binding_is_string_shaped;
 use crate::{
     CoreError, QueryParameterValue, QueryParameters, UdfRuntimeArgument, UdfRuntimeDefinition,
@@ -77,6 +82,106 @@ pub(crate) fn udf_query_parameters(
     arguments: &QueryParameters,
 ) -> DataFusionResult<QueryParameters> {
     UdfArgumentBinding::new(udf, arguments).into_query_params()
+}
+
+pub(crate) fn published_table_functions(
+    udfs: &[UdfRuntimeDefinition],
+    source_function_names: &HashSet<ScopedTableFunctionName>,
+) -> DataFusionResult<Vec<CatalogTableFunction>> {
+    PublishedTableFunctions::new(source_function_names).build(udfs)
+}
+
+struct PublishedTableFunctions<'a> {
+    source_function_names: &'a HashSet<ScopedTableFunctionName>,
+    seen_udfs: HashSet<ScopedTableFunctionName>,
+    rows: Vec<CatalogTableFunction>,
+}
+
+impl<'a> PublishedTableFunctions<'a> {
+    fn new(source_function_names: &'a HashSet<ScopedTableFunctionName>) -> Self {
+        Self {
+            source_function_names,
+            seen_udfs: HashSet::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn build(
+        mut self,
+        udfs: &[UdfRuntimeDefinition],
+    ) -> DataFusionResult<Vec<CatalogTableFunction>> {
+        for udf in udfs {
+            self.push_udf(udf)?;
+        }
+        self.rows.sort_by(|left, right| {
+            (&left.schema_name, &left.function_name)
+                .cmp(&(&right.schema_name, &right.function_name))
+        });
+        Ok(self.rows)
+    }
+
+    fn push_udf(&mut self, udf: &UdfRuntimeDefinition) -> DataFusionResult<()> {
+        let publish = &udf.publish.table_function;
+        let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
+        self.reject_duplicate_udf(&key)?;
+        self.reject_source_collision(&key)?;
+        udf_arrow_schema(udf)?;
+        self.rows.push(catalog_table_function(udf, &key));
+        Ok(())
+    }
+
+    fn reject_duplicate_udf(&mut self, key: &ScopedTableFunctionName) -> DataFusionResult<()> {
+        if self.seen_udfs.insert(key.clone()) {
+            return Ok(());
+        }
+        let display_name = qualified_name(&key.schema, &key.function);
+        Err(DataFusionError::Plan(format!(
+            "duplicate udf table function {display_name}"
+        )))
+    }
+
+    fn reject_source_collision(&self, key: &ScopedTableFunctionName) -> DataFusionResult<()> {
+        if !self.source_function_names.contains(key) {
+            return Ok(());
+        }
+        let display_name = qualified_name(&key.schema, &key.function);
+        Err(DataFusionError::Plan(format!(
+            "udf table function {display_name} conflicts with existing table function"
+        )))
+    }
+}
+
+fn catalog_table_function(
+    udf: &UdfRuntimeDefinition,
+    key: &ScopedTableFunctionName,
+) -> CatalogTableFunction {
+    let publish = &udf.publish.table_function;
+    CatalogTableFunction {
+        schema_name: key.schema.clone(),
+        function_name: key.function.clone(),
+        kind: coral_spec::SourceTableFunctionKind::Table,
+        description: publish_description(&publish.description, &udf.description),
+        arguments: udf
+            .arguments
+            .iter()
+            .map(|argument| CatalogTableFunctionArgument {
+                name: argument.name.clone(),
+                required: true,
+                values: Vec::new(),
+            })
+            .collect(),
+        result_columns: udf
+            .result_columns
+            .iter()
+            .map(|column| CatalogTableFunctionResultColumn {
+                name: column.name.clone(),
+                data_type: column.data_type.to_string(),
+                nullable: column.nullable,
+                description: String::new(),
+            })
+            .collect(),
+        search_limits: None,
+    }
 }
 
 pub(crate) fn udf_argument_values(
@@ -385,6 +490,14 @@ fn scalar_literal_kind(value: &ScalarValue) -> &'static str {
         | ScalarValue::TimestampMicrosecond(_, _)
         | ScalarValue::TimestampNanosecond(_, _) => "timestamp",
         _ => "unsupported literal",
+    }
+}
+
+fn publish_description(target_description: &str, udf_description: &str) -> String {
+    if target_description.trim().is_empty() {
+        udf_description.to_string()
+    } else {
+        target_description.to_string()
     }
 }
 

@@ -275,7 +275,7 @@ async fn parquet_provider_exposes_inferred_schema_in_coral_columns() {
 
     let active_sources = register_sources_blocking(&ctx, compile_sources(vec![manifest]))
         .expect("file source should register");
-    catalog::register(&ctx, &active_sources.active_sources)
+    catalog::register(&ctx, &active_sources.active_sources, &[])
         .expect("metadata tables should register");
 
     let batches = ctx
