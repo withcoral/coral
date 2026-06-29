@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use coral_engine::{CoralQuery, GraphDeclaration};
+use coral_engine::{CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphLiteral};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -22,6 +22,8 @@ struct TckScenario {
     id: String,
     feature: String,
     query: String,
+    #[serde(default)]
+    parameters: BTreeMap<String, Value>,
     expected: TckExpectation,
 }
 
@@ -51,8 +53,19 @@ async fn opencypher_tck_read_baseline_gate() {
 
     for scenario in suite.scenarios {
         let source = build_source(tck_manifest(temp.path()));
-        let result =
-            CoralQuery::execute_cypher(&[source], test_runtime(), &graph, &scenario.query).await;
+        let result = if scenario.parameters.is_empty() {
+            CoralQuery::execute_cypher(&[source], test_runtime(), &graph, &scenario.query).await
+        } else {
+            let parameters = scenario_parameters(&scenario);
+            CoralQuery::execute_cypher_with_parameters(
+                &[source],
+                test_runtime(),
+                &graph,
+                &scenario.query,
+                &parameters,
+            )
+            .await
+        };
         match scenario.expected {
             TckExpectation::Rows { ordered, mut rows } => {
                 let execution = result.unwrap_or_else(|error| {
@@ -121,6 +134,59 @@ fn assert_tck_coverage_contract(suite: &TckSuite) {
 
 fn sort_rows(rows: &mut [Value]) {
     rows.sort_by_key(std::string::ToString::to_string);
+}
+
+fn scenario_parameters(scenario: &TckScenario) -> BTreeMap<String, GraphCypherParameterValue> {
+    scenario
+        .parameters
+        .iter()
+        .map(|(name, value)| {
+            let parameter = if let Some(values) = value.as_array() {
+                GraphCypherParameterValue::List(
+                    values
+                        .iter()
+                        .map(|value| scenario_literal(scenario, name, value))
+                        .collect(),
+                )
+            } else {
+                GraphCypherParameterValue::Literal(scenario_literal(scenario, name, value))
+            };
+            (name.clone(), parameter)
+        })
+        .collect()
+}
+
+fn scenario_literal(scenario: &TckScenario, name: &str, value: &Value) -> GraphLiteral {
+    match value {
+        Value::Null => GraphLiteral::Null,
+        Value::Bool(value) => GraphLiteral::Boolean(*value),
+        Value::String(value) => GraphLiteral::String(value.clone()),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                return GraphLiteral::Integer(value);
+            }
+            if let Some(value) = value.as_u64() {
+                return GraphLiteral::Integer(i64::try_from(value).unwrap_or_else(|_| {
+                    panic!(
+                        "scenario {} parameter '{}' integer is outside i64 range: {}",
+                        scenario.id, name, value
+                    )
+                }));
+            }
+            GraphLiteral::Float(ordered_float::OrderedFloat(value.as_f64().unwrap_or_else(
+                || {
+                    panic!(
+                        "scenario {} parameter '{}' number cannot be represented as f64: {}",
+                        scenario.id, name, value
+                    )
+                },
+            )))
+        }
+        Value::Array(_) | Value::Object(_) => panic!(
+            "scenario {} parameter '{}' must be a scalar or scalar list",
+            scenario.id, name
+        ),
+    }
 }
 
 fn write_tck_fixture(dir: &Path) {

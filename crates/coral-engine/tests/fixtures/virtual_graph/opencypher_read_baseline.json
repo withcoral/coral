@@ -12,6 +12,7 @@
     "MathematicalFunctions": 4,
     "NullSemantics": 3,
     "OptionalMatch": 4,
+    "Parameters": 2,
     "PathMetadata": 1,
     "PathValues": 4,
     "RelationshipProperties": 1,
@@ -944,6 +945,32 @@
           { "name": "Carol" },
           { "name": "Bob" }
         ]
+      }
+    },
+    {
+      "id": "parameterized-scalar-list-and-limit",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person {city: $city}) WHERE p.age IN $ages RETURN p.name AS name ORDER BY name LIMIT $limit",
+      "parameters": {
+        "city": "London",
+        "ages": [34, 41],
+        "limit": 2
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "missing-parameter-rejected",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.city = $city RETURN p.name AS name",
+      "expected": {
+        "kind": "error",
+        "contains": "MISSING_PARAMETER"
       }
     },
     {

@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-90 scenarios, which is 5.57% of the full upstream scenario-definition inventory
-and 6.96% of the read-candidate inventory.
+92 scenarios, which is 5.70% of the full upstream scenario-definition inventory
+and 7.11% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 90 representative read-only scenarios:
+The baseline currently contains 92 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -193,6 +193,8 @@ The baseline currently contains 90 representative read-only scenarios:
   `startNode(...)`, `endNode(...)`, `labels(...)`, and `keys(...)`.
 - `RowModifiers`: 2 scenarios for `ORDER BY`, `NULLS FIRST` / `NULLS LAST`,
   `SKIP`, and `LIMIT`.
+- `Parameters`: 2 scenarios for scalar/list/limit parameter binding and missing
+  parameter rejection through the public parameterized Cypher execution API.
 - `Unwind`: 1 scenario for `UNWIND` list expansion.
 - `ReturnDistinct`: 1 scenario for `RETURN DISTINCT`.
 - `Union`: 2 scenarios for `UNION` duplicate removal and `UNION ALL`
