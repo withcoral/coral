@@ -180,7 +180,6 @@ fn materialization_inputs_from_bindings(
     }
 }
 
-#[expect(dead_code, reason = "store methods are wired by the next stack branch")]
 impl SourceManager {
     pub(crate) fn new(
         config_store: ConfigStore,

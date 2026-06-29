@@ -72,6 +72,71 @@ async fn import_source_persists_and_lists() {
 }
 
 #[tokio::test]
+async fn global_source_spec_registers_installs_and_orphans_on_delete() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+
+    let registered = harness.register_source_spec(manifest_yaml.clone()).await;
+
+    assert_eq!(registered.name, "local_messages");
+    assert_eq!(registered.version, "0.1.0");
+    assert!(!registered.installed);
+    assert_eq!(registered.origin, SourceOrigin::GlobalSpec as i32);
+    let source_specs = harness.list_source_specs().await;
+    assert_eq!(source_specs.len(), 1);
+    assert_eq!(source_specs[0].name, "local_messages");
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(config_raw.contains("[source_specs.local_messages]"));
+    assert_eq!(
+        fs::read_to_string(
+            harness
+                .config_dir()
+                .join("source_specs")
+                .join("local_messages")
+                .join("manifest.yaml")
+        )
+        .expect("read global source spec manifest"),
+        manifest_yaml
+    );
+    assert!(harness.list_sources().await.is_empty());
+
+    let created = harness.create_global_source("local_messages").await;
+
+    assert_eq!(created.name, "local_messages");
+    assert_eq!(created.version, "0.1.0");
+    assert_eq!(created.origin, SourceOrigin::GlobalSpec as i32);
+    assert!(
+        !source_dir(harness.config_dir(), "local_messages")
+            .join("manifest.yaml")
+            .exists()
+    );
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].origin, SourceOrigin::GlobalSpec as i32);
+    harness.validate_source("local_messages").await;
+
+    let removed = harness.delete_source_spec("local_messages").await;
+
+    assert_eq!(removed.name, "local_messages");
+    assert!(harness.list_source_specs().await.is_empty());
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "local_messages");
+    assert_eq!(listed[0].origin, SourceOrigin::GlobalSpec as i32);
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect_err("orphaned global source should fail validation");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(error.message().contains("global source spec"));
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

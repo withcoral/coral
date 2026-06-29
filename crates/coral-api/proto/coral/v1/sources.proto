@@ -351,6 +351,51 @@ message CreateBundledSourceWithOAuthResponse {
   }
 }
 
+// Installs one globally registered source spec by name.
+message CreateGlobalSourceRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical globally registered source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-owned secret values.
+  repeated SourceSecret secrets = 4;
+}
+
+// Returns the installed globally registered source.
+message CreateGlobalSourceResponse {
+  // The installed source resource.
+  Source source = 1;
+}
+
+// Installs one globally registered source spec with app-owned OAuth credential retrieval.
+message CreateGlobalSourceWithOAuthRequest {
+  // Owning workspace resource.
+  Workspace workspace = 1;
+  // Canonical globally registered source name.
+  string name = 2;
+  // Visible configured non-secret variables.
+  repeated SourceVariable variables = 3;
+  // Source-config secret bindings.
+  repeated SourceSecret secrets = 4;
+  // OAuth credential retrievals the app should run before validation and install.
+  repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
+}
+
+// Streaming event emitted while installing a globally registered source with OAuth.
+message CreateGlobalSourceWithOAuthResponse {
+  // Installation progress or completion event.
+  oneof event {
+    // Global source installation completed.
+    Source source = 1;
+    // OAuth authorization URL is ready.
+    OAuthCredentialAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    OAuthCredentialCompleted oauth_completed = 3;
+  }
+}
+
 // Imports one user-supplied source manifest into Coral ownership.
 message ImportSourceRequest {
   // Owning workspace resource.
@@ -471,6 +516,42 @@ message GetSourceInfoResponse {
   SourceInfo source_info = 1;
 }
 
+// Lists globally registered source specs.
+message ListSourceSpecsRequest {}
+
+// Returns globally registered source-spec summaries.
+message ListSourceSpecsResponse {
+  // Globally registered source specs.
+  repeated SourceInfo source_specs = 1;
+}
+
+// Registers one user-supplied source manifest in the global source-spec registry.
+message RegisterSourceSpecRequest {
+  // Raw source manifest YAML to validate and register.
+  string manifest_yaml = 1;
+}
+
+// Returns the registered source-spec metadata.
+message RegisterSourceSpecResponse {
+  // Registered source spec metadata.
+  SourceInfo source_spec = 1;
+}
+
+// Deletes one globally registered source spec.
+//
+// Installed global-origin sources are intentionally not removed; they become
+// orphaned until the spec is registered again or the source is removed.
+message DeleteSourceSpecRequest {
+  // Bare source-spec name to remove.
+  string name = 1;
+}
+
+// Returns the source-spec metadata that was removed.
+message DeleteSourceSpecResponse {
+  // Removed source spec metadata.
+  SourceInfo source_spec = 1;
+}
+
 // Deletes one registered source and its managed artifacts.
 message DeleteSourceRequest {
   // Owning workspace resource.
@@ -542,9 +623,20 @@ service SourceService {
   // Installs one bundled source with app-owned OAuth credential retrieval.
   rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
       returns (stream CreateBundledSourceWithOAuthResponse);
+  // Installs one globally registered source spec.
+  rpc CreateGlobalSource(CreateGlobalSourceRequest) returns (CreateGlobalSourceResponse);
+  // Installs one globally registered source spec with app-owned OAuth credential retrieval.
+  rpc CreateGlobalSourceWithOAuth(CreateGlobalSourceWithOAuthRequest)
+      returns (stream CreateGlobalSourceWithOAuthResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
   // progress before the final source event when credentials are app-owned.
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
+  // Lists globally registered source specs.
+  rpc ListSourceSpecs(ListSourceSpecsRequest) returns (ListSourceSpecsResponse);
+  // Registers one source manifest in the global source-spec registry.
+  rpc RegisterSourceSpec(RegisterSourceSpecRequest) returns (RegisterSourceSpecResponse);
+  // Deletes one globally registered source spec.
+  rpc DeleteSourceSpec(DeleteSourceSpecRequest) returns (DeleteSourceSpecResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.
