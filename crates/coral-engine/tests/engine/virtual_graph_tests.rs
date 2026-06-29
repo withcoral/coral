@@ -2608,6 +2608,49 @@ async fn cypher_cross_label_fixed_relationship_ranges_infer_intermediate_labels(
 }
 
 #[tokio::test]
+async fn cypher_path_element_list_sizes_execute_as_folded_metadata() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[:ROUTES*2]->(incident:Incident) \
+         WHERE size(nodes(path)) = 3 AND size(relationships(path)) = 2 \
+         RETURN person.name AS person, \
+                incident.title AS incident, \
+                size(nodes(path)) AS path_nodes, \
+                size(relationships(path)) AS path_relationships \
+         ORDER BY person, incident",
+    )
+    .await
+    .expect("path element-list sizes should execute as folded path metadata");
+
+    assert!(
+        execution.translated_sql().contains("3 AS \"path_nodes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("2 AS \"path_relationships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"person": "Ada Lovelace", "incident": "billing latency", "path_nodes": 3, "path_relationships": 2}),
+            json!({"person": "Grace Hopper", "incident": "deploy failed", "path_nodes": 3, "path_relationships": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_fixed_relationship_ranges_infer_unlabeled_endpoints() {
     let temp = TempDir::new().expect("temp dir");
     write_route_fixture(temp.path());

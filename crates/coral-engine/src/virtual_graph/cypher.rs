@@ -13905,18 +13905,45 @@ fn compile_path_length_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let arguments_path = arguments_path.into();
+    let binding =
+        compile_path_function_binding(function, arguments_path.clone(), "length", state, context)?;
+    compile_path_length_binding_scalar_expression(binding, arguments_path, "length")
+}
+
+fn compile_path_function_binding<'a>(
+    function: &FunctionInvocation,
+    arguments_path: impl Into<String>,
+    function_name: &str,
+    state: &'a CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<&'a PathBinding, CoreError> {
+    let arguments_path = arguments_path.into();
     let variable = compile_single_variable_function_argument(
         function,
         arguments_path.clone(),
-        "length() supports exactly one path variable argument",
+        match function_name {
+            "length" => "length() supports exactly one path variable argument",
+            "nodes" => "nodes() supports exactly one path variable argument",
+            "relationships" => "relationships() supports exactly one path variable argument",
+            _ => "path metadata function supports exactly one path variable argument",
+        },
         context,
     )?;
     let binding = state.path_variables.get(&variable).ok_or_else(|| {
         unsupported(
             format!("{arguments_path}[0]"),
-            format!("length() argument '{variable}' is not a bound path variable"),
+            format!("{function_name}() argument '{variable}' is not a bound path variable"),
         )
     })?;
+    Ok(binding)
+}
+
+fn compile_path_length_binding_scalar_expression(
+    binding: &PathBinding,
+    arguments_path: impl Into<String>,
+    function_name: &str,
+) -> Result<ScalarExpression, CoreError> {
+    let arguments_path = arguments_path.into();
     let length = i64::try_from(binding.length)
         .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))?;
     let expression = ScalarExpression::Literal(Literal::Integer(length));
@@ -13927,7 +13954,9 @@ fn compile_path_length_scalar_expression(
             } else {
                 Err(unsupported(
                     format!("{arguments_path}[0]"),
-                    "length() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path length can be gated",
+                    format!(
+                        "{function_name}() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path metadata can be gated"
+                    ),
                 ))
             };
         };
@@ -13957,13 +13986,130 @@ fn compile_optional_size_path_length_scalar_expression(
         return Ok(None);
     }
     let arguments_path = arguments_path.into();
-    let Some(variable) = optional_single_variable_function_argument(function, context) else {
+    if let Some(variable) = optional_single_variable_function_argument(function, context) {
+        if !state.path_variables.contains_key(&variable) {
+            return Ok(None);
+        }
+        return compile_path_length_scalar_expression(function, arguments_path, state, context)
+            .map(Some);
+    }
+    let [argument] = function.arguments.as_slice() else {
         return Ok(None);
     };
-    if !state.path_variables.contains_key(&variable) {
+    let path_list_function = match argument {
+        Expression::Parenthesized(inner) => match inner.as_ref() {
+            Expression::FunctionCall(function) => function,
+            _ => return Ok(None),
+        },
+        Expression::FunctionCall(function) => function,
+        _ => return Ok(None),
+    };
+    let Some(target) = path_list_size_target(path_list_function) else {
         return Ok(None);
+    };
+    compile_path_list_size_scalar_expression(
+        path_list_function,
+        target,
+        format!("{arguments_path}[0].arguments"),
+        state,
+        context,
+    )
+    .map(Some)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathListSizeTarget {
+    Nodes,
+    Relationships,
+}
+
+impl PathListSizeTarget {
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::Nodes => "nodes",
+            Self::Relationships => "relationships",
+        }
     }
-    compile_path_length_scalar_expression(function, arguments_path, state, context).map(Some)
+}
+
+fn path_list_size_target(function: &FunctionInvocation) -> Option<PathListSizeTarget> {
+    if is_nodes_function(function) {
+        Some(PathListSizeTarget::Nodes)
+    } else if is_relationships_function(function) {
+        Some(PathListSizeTarget::Relationships)
+    } else {
+        None
+    }
+}
+
+fn compile_path_list_size_scalar_expression(
+    function: &FunctionInvocation,
+    target: PathListSizeTarget,
+    arguments_path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let arguments_path = arguments_path.into();
+    let binding = compile_path_function_binding(
+        function,
+        arguments_path.clone(),
+        target.function_name(),
+        state,
+        context,
+    )?;
+    let length = compile_path_length_binding_scalar_expression(
+        binding,
+        arguments_path,
+        target.function_name(),
+    )?;
+    match target {
+        PathListSizeTarget::Relationships => Ok(length),
+        PathListSizeTarget::Nodes => add_one_to_path_length_scalar_expression(length),
+    }
+}
+
+fn add_one_to_path_length_scalar_expression(
+    expression: ScalarExpression,
+) -> Result<ScalarExpression, CoreError> {
+    match expression {
+        ScalarExpression::Literal(Literal::Integer(value)) => Ok(ScalarExpression::Literal(
+            Literal::Integer(value.checked_add(1).ok_or_else(|| {
+                CoreError::internal("path node count overflow while adding path endpoint")
+            })?),
+        )),
+        ScalarExpression::Literal(Literal::Null) => Ok(ScalarExpression::Literal(Literal::Null)),
+        ScalarExpression::PresenceGated {
+            presence_variable,
+            expression,
+        } => Ok(ScalarExpression::PresenceGated {
+            presence_variable,
+            expression: Box::new(add_one_to_path_length_scalar_expression(*expression)?),
+        }),
+        ScalarExpression::Case {
+            alternatives,
+            else_expression,
+        } => Ok(ScalarExpression::Case {
+            alternatives: alternatives
+                .into_iter()
+                .map(|alternative| {
+                    Ok(ScalarCaseAlternative {
+                        when: alternative.when,
+                        then: add_one_to_path_length_scalar_expression(alternative.then)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, CoreError>>()?,
+            else_expression: else_expression
+                .map(|expression| {
+                    add_one_to_path_length_scalar_expression(*expression).map(Box::new)
+                })
+                .transpose()?,
+        }),
+        expression => Ok(ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Add,
+            left: Box::new(expression),
+            right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        }),
+    }
 }
 
 fn path_length_function_alias(function: &FunctionInvocation) -> String {
@@ -18377,6 +18523,20 @@ fn is_size_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("size")
+    )
+}
+
+fn is_nodes_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("nodes")
+    )
+}
+
+fn is_relationships_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("relationships")
     )
 }
 
@@ -27364,6 +27524,68 @@ relationships:
     }
 
     #[test]
+    fn compiles_size_over_path_element_lists() {
+        let plan = compile_cypher(
+            "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
+             WHERE size(nodes(path)) = 3 AND size(relationships(path)) = 2 \
+             RETURN size(nodes(path)) AS node_count, \
+                    size(relationships(path)) AS relationship_count, \
+                    size(nodes(path)) + size(relationships(path)) AS path_items \
+             ORDER BY size(nodes(path)) DESC",
+        )
+        .expect("path element-list sizes should compile as folded path metadata");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(3)),
+                    alias: "node_count".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(2)),
+                    alias: "relationship_count".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Add,
+                        left: Box::new(ScalarExpression::Literal(Literal::Integer(3))),
+                        right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+                    },
+                    alias: "path_items".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(3)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(3)
+                    )),
+                })),
+                right: Box::new(PredicateExpression::ScalarComparison(ScalarPredicate {
+                    lhs: ScalarExpression::Literal(Literal::Integer(2)),
+                    operator: ComparisonOperator::Equal,
+                    rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                        Literal::Integer(2)
+                    )),
+                })),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::Integer(3)),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_path_metadata_arithmetic() {
         let plan = compile_cypher(
             "MATCH path = (source:Service)-[:DEPENDS_ON*2]->(target:Service) \
@@ -27583,6 +27805,36 @@ relationships:
     }
 
     #[test]
+    fn rejects_path_element_lists_outside_size() {
+        for cypher in [
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) RETURN nodes(path) AS nodes",
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) RETURN relationships(path) AS relationships",
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) WHERE nodes(path) IS NOT NULL RETURN person.name",
+        ] {
+            let error =
+                compile_cypher(cypher).expect_err("path element lists should not be materialized");
+
+            assert!(error.to_string().contains("UNSUPPORTED_CYPHER"), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_path_element_list_size_over_non_path_variable() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN size(nodes(service)) AS node_count",
+        )
+        .expect_err("nodes() should require a bound path variable");
+
+        assert!(
+            error
+                .to_string()
+                .contains("nodes() argument 'service' is not a bound path variable"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn compiles_size_over_named_optional_path_variable() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -27607,6 +27859,50 @@ relationships:
             plan.order_by,
             vec![OrderKey {
                 expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_size_over_optional_path_element_lists() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[dependency:DEPENDS_ON]->(target:Service) \
+             RETURN service.name AS service, \
+                    size(nodes(path)) AS node_count, \
+                    size(relationships(path)) AS relationship_count \
+             ORDER BY size(nodes(path))",
+        )
+        .expect("optional path element-list sizes should preserve nullability");
+
+        let expected_node_count = ScalarExpression::PresenceGated {
+            presence_variable: "dependency".to_string(),
+            expression: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+        };
+        let expected_relationship_count = ScalarExpression::PresenceGated {
+            presence_variable: "dependency".to_string(),
+            expression: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        };
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: expected_node_count.clone(),
+                alias: "node_count".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.projections.get(2),
+            Some(&Projection::Expression {
+                expression: expected_relationship_count,
+                alias: "relationship_count".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected_node_count),
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]

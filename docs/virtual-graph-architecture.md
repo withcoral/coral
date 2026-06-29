@@ -131,8 +131,9 @@ The supported foundation subset is intentionally narrow:
   nullable optional scope. Same-label exact zero-hop optional ranges such as
   `*0` lower to an identity predicate for newly introduced endpoints when no
   nullable row boundary is needed; deterministic named zero-hop optional paths
-  fold `length(path)` and `size(path)` to `0` when the endpoint is newly
-  introduced or the same already-bound variable. Zero-hop optional ranges over
+  fold `length(path)`, `size(path)`, and `size(relationships(path))` to `0`,
+  and `size(nodes(path))` to `1`, when the endpoint is newly introduced or the
+  same already-bound variable. Zero-hop optional ranges over
   distinct endpoints that were already bound are row-preserving and do not add
   equality filters when path metadata is unused; named path metadata for those
   endpoints lowers as a searched `CASE` gated by endpoint identity, and
@@ -140,9 +141,10 @@ The supported foundation subset is intentionally narrow:
   into that same metadata gate. Multi-length optional branch expansion remains
   deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
-  `length(path)` and `size(path)` over optional relationships via the
-  presence-gated scalar expression IR and compiler-generated internal
-  relationship bindings when an anonymous optional path needs a presence gate;
+  `length(path)`, `size(path)`, `size(relationships(path))`, and
+  `size(nodes(path))` over optional relationships via the presence-gated scalar
+  expression IR and compiler-generated internal relationship bindings when an
+  anonymous optional path needs a presence gate;
 - declaration-aware `RETURN *` expansion in runtime Cypher execution/explain
   paths and `compile_cypher*_for_graph` helpers. Because Coral does not
   materialize graph objects, star expansion lowers visible graph variables to
@@ -501,10 +503,10 @@ The supported foundation subset is intentionally narrow:
   projections and result schemas remain stable;
 - non-materialized path variable bindings in `MATCH p = (...)`, including
   `WITH *` pass-through when the path is later used only for supported metadata
-  such as `length(path)` or `size(path)`, including in `WITH * WHERE`, and not
-  as a graph value. Path metadata scalars can participate in supported scalar
-  arithmetic, scalar functions, and `CASE` expressions such as
-  `coalesce(length(path), 0)`;
+  such as `length(path)`, `size(path)`, `size(relationships(path))`, or
+  `size(nodes(path))`, including in `WITH * WHERE`, and not as a graph value.
+  Path metadata scalars can participate in supported scalar arithmetic, scalar
+  functions, and `CASE` expressions such as `coalesce(length(path), 0)`;
 - non-negative integer `SKIP` and `LIMIT` literals, scalar parameters, and
   static scalar expressions such as `(1 + 1)` and `coalesce($limit, 10)`.
 
