@@ -275,18 +275,6 @@ impl SourceCatalog {
             .unwrap_or_default()
     }
 
-    pub(crate) fn workspace_source_names(&self, workspace_name: &WorkspaceName) -> Vec<String> {
-        self.0
-            .get(workspace_name)
-            .map(|sources| {
-                sources
-                    .keys()
-                    .map(|source_name| source_name.as_str().to_string())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -590,7 +578,11 @@ impl ConfigStore {
     ) -> Result<Vec<String>, AppError> {
         let config = self.load_config()?;
         config.require_workspace(workspace_name)?;
-        Ok(config.catalog.workspace_source_names(workspace_name))
+        Ok(config
+            .workspace_sources(workspace_name)
+            .into_iter()
+            .map(|source| source.name.as_str().to_string())
+            .collect())
     }
 
     /// Loads one installed source without taking the app state lock.
@@ -1242,24 +1234,6 @@ origin = "bundled"
     }
 
     #[test]
-    fn lists_workspace_source_names_in_lexical_order() {
-        let workspace_name = default_workspace();
-        let mut catalog = SourceCatalog::default();
-        catalog.upsert_source(&workspace_name, installed_source("slack"));
-        catalog.upsert_source(&workspace_name, installed_source("github"));
-        catalog.upsert_source(&workspace_name, installed_source("linear"));
-
-        assert_eq!(
-            catalog.workspace_source_names(&workspace_name),
-            vec![
-                "github".to_string(),
-                "linear".to_string(),
-                "slack".to_string()
-            ]
-        );
-    }
-
-    #[test]
     fn scoped_config_store_methods_reject_missing_workspace() {
         let temp = TempDir::new().expect("temp dir");
         let store = ConfigStore::new(test_layout(&temp));
@@ -1268,10 +1242,6 @@ origin = "bundled"
 
         assert_workspace_not_found(
             store.list_workspace_sources(&missing_workspace),
-            &missing_workspace,
-        );
-        assert_workspace_not_found(
-            store.list_workspace_source_names(&missing_workspace),
             &missing_workspace,
         );
         assert_workspace_not_found(
