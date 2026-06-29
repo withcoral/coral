@@ -7,7 +7,7 @@ use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strateg
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::storage::fs::ensure_dir;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
@@ -190,6 +190,12 @@ impl AppStateLayout {
         self.v4_materialized_dir(workspace_name, source_name)
             .join("surfaces")
             .join(surface_id)
+    }
+}
+
+impl WorkspacePaths for AppStateLayout {
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        AppStateLayout::workspace_dir(self, workspace_name)
     }
 }
 

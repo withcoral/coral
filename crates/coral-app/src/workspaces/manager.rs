@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::warn;
@@ -6,26 +5,28 @@ use tracing::warn;
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
 use crate::storage::fs::DirectoryBackup;
-use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{
+    DeletedWorkspace, WorkspaceName, WorkspacePaths, WorkspaceRecord, WorkspaceStore,
+};
 
 /// App-owned workspace lifecycle behavior.
 #[derive(Clone)]
 pub(crate) struct WorkspaceManager {
     store: Arc<dyn WorkspaceStore>,
     credential_manager: CredentialManager,
-    workspaces_root: PathBuf,
+    paths: Arc<dyn WorkspacePaths>,
 }
 
 impl WorkspaceManager {
     pub(crate) fn new(
         store: impl WorkspaceStore,
         credential_manager: CredentialManager,
-        workspaces_root: impl Into<PathBuf>,
+        paths: impl WorkspacePaths,
     ) -> Self {
         Self {
             store: Arc::new(store),
             credential_manager,
-            workspaces_root: workspaces_root.into(),
+            paths: Arc::new(paths),
         }
     }
 
@@ -119,8 +120,8 @@ impl WorkspaceManager {
         }
     }
 
-    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
-        self.workspaces_root.join(workspace_name.as_str())
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> std::path::PathBuf {
+        self.paths.workspace_dir(workspace_name)
     }
 }
 
@@ -159,11 +160,8 @@ mod tests {
         let store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = WorkspaceManager::new(
-            store.clone(),
-            credential_manager.clone(),
-            layout.workspaces_root(),
-        );
+        let manager =
+            WorkspaceManager::new(store.clone(), credential_manager.clone(), layout.clone());
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source = installed_source("github");
         let credential_set_id = CredentialSetId::for_source(&source.name);
