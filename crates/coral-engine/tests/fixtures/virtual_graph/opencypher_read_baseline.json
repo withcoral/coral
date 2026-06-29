@@ -7,6 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 4,
     "LiteralExpressions": 2,
+    "ListExpressions": 4,
     "Match": 3,
     "MathematicalFunctions": 4,
     "NullSemantics": 3,
@@ -403,6 +404,54 @@
       "expected": {
         "kind": "error",
         "contains": "literal-only null comparisons"
+      }
+    },
+    {
+      "id": "range-and-split-list-projection",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN range(1, 3) AS numbers, split('red,blue', ',') AS colors, size(range(1, 3)) AS number_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "numbers": [1, 2, 3], "colors": ["red", "blue"], "number_count": 3 }
+        ]
+      }
+    },
+    {
+      "id": "list-index-slice-and-endpoint-functions",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ['a', 'b', 'c'][1] AS second, ['a', 'b', 'c'][0..2] AS first_two, head(['a', 'b']) AS first, last(['a', 'b']) AS last_value, tail(['a', 'b', 'c']) AS tail_values",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "second": "b", "first_two": ["a", "b"], "first": "a", "last_value": "b", "tail_values": ["b", "c"] }
+        ]
+      }
+    },
+    {
+      "id": "static-collection-predicates",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE all(x IN [1, 2, 3] WHERE x > 0) AND any(city IN ['London', 'Rome'] WHERE city = 'London') AND p.city = 'London' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "static-list-comprehension-projection",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN [1, 2, 3] WHERE x > 1 | x + 1] AS incremented, [city IN split('London,Paris', ',') | toUpper(city)] AS city_codes",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "incremented": [3, 4], "city_codes": ["LONDON", "PARIS"] }
+        ]
       }
     },
     {
