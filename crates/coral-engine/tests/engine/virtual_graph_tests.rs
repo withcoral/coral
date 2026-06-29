@@ -7165,6 +7165,85 @@ async fn graphql_edge_fragments_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_fragment_definition_directives_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([
+        (
+            "includeRoot".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+        ),
+        (
+            "includeOwner".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+        ),
+        (
+            "includeEdge".to_string(),
+            GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query FragmentDirectives(
+          $includeRoot: Boolean!
+          $includeOwner: Boolean!
+          $includeEdge: Boolean!
+        ) {
+          ...OwnerRoot
+        }
+
+        fragment OwnerRoot on Query @include(if: $includeRoot) {
+          Person(where: { team: { eq: "infra" } }) {
+            ...OwnerFields
+            out_OWNS(
+              to: Service
+              relationshipWhere: { source: { eq: "pagerduty" } }
+            ) {
+              service: name
+              _edge {
+                ...OwnershipEdge
+              }
+            }
+          }
+        }
+
+        fragment OwnerFields on Person @include(if: $includeOwner) {
+          owner: name
+        }
+
+        fragment OwnershipEdge on OWNS @include(if: $includeEdge) {
+          ownershipSource: source
+        }
+        "#,
+        &variables,
+    )
+    .await
+    .expect("GraphQL fragment definition directives should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r0\".\"source\" AS \"ownershipSource\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner": "Grace Hopper",
+            "service": "deployments",
+            "ownershipSource": "pagerduty",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn graphql_boolean_nested_filters_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -261,12 +261,10 @@ fn compile_document<'query>(
                 operations.push((index, next_operation));
             }
             Definition::Fragment(fragment) => {
-                if !fragment.directives.is_empty() {
-                    return Err(unsupported(
-                        format!("query.definitions[{index}].directives"),
-                        "GraphQL fragment definition directives are not supported yet",
-                    ));
-                }
+                validate_graphql_directive_syntax(
+                    &fragment.directives,
+                    format!("query.definitions[{index}].directives"),
+                )?;
                 if fragments
                     .insert(fragment.name.clone(), fragment.clone())
                     .is_some()
@@ -449,6 +447,9 @@ fn collect_root_fields<'query>(
                             format!("unknown GraphQL fragment '{}'", spread.fragment_name),
                         )
                     })?;
+                if !fragment_definition_is_included(fragment, context)? {
+                    continue;
+                }
                 ensure_root_fragment_type_condition(
                     Some(&fragment.type_condition),
                     format!("{item_path}.typeCondition"),
@@ -1110,6 +1111,9 @@ fn compile_fragment_spread(
                 format!("unknown GraphQL fragment '{}'", spread.fragment_name),
             )
         })?;
+    if !fragment_definition_is_included(fragment, selection_context.compile_context)? {
+        return Ok(());
+    }
     ensure_fragment_type_condition(
         Some(&fragment.type_condition),
         context,
@@ -1694,6 +1698,9 @@ fn compile_edge_fragment_spread(
                 format!("unknown GraphQL fragment '{}'", spread.fragment_name),
             )
         })?;
+    if !fragment_definition_is_included(fragment, compile_context)? {
+        return Ok(());
+    }
     ensure_edge_fragment_type_condition(
         Some(&fragment.type_condition),
         edge_relationship_type,
@@ -2103,6 +2110,71 @@ fn selection_is_included(
     Ok(included)
 }
 
+fn validate_graphql_directive_syntax(
+    directives: &[Directive<'_, String>],
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    let mut seen_directives = BTreeSet::new();
+    for (index, directive) in directives.iter().enumerate() {
+        let directive_path = format!("{path}[{index}]");
+        if !seen_directives.insert(directive.name.clone()) {
+            return Err(unsupported(
+                format!("{directive_path}.name"),
+                format!("GraphQL directive '@{}' is repeated", directive.name),
+            ));
+        }
+        match directive.name.as_str() {
+            "include" | "skip" => {
+                validate_directive_if_argument_syntax(directive, &directive_path)?;
+            }
+            _ => {
+                return Err(unsupported(
+                    format!("{directive_path}.name"),
+                    format!("unsupported GraphQL directive '@{}'", directive.name),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_directive_if_argument_syntax(
+    directive: &Directive<'_, String>,
+    path: &str,
+) -> Result<(), CoreError> {
+    let [(name, _)] = directive.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "GraphQL @{} directive requires exactly one 'if' argument",
+                directive.name
+            ),
+        ));
+    };
+    if name != "if" {
+        return Err(unsupported(
+            format!("{path}.arguments[0]"),
+            format!(
+                "GraphQL @{} directive requires an 'if' argument",
+                directive.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn fragment_definition_is_included(
+    fragment: &FragmentDefinition<'_, String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<bool, CoreError> {
+    selection_is_included(
+        &fragment.directives,
+        format!("fragment.{}.directives", fragment.name),
+        context,
+    )
+}
+
 fn compile_directive_if_argument(
     directive: &Directive<'_, String>,
     path: &str,
@@ -2174,6 +2246,9 @@ fn relationship_selection_needs_edge_variable(
                             format!("unknown GraphQL fragment '{}'", spread.fragment_name),
                         )
                     })?;
+                if !fragment_definition_is_included(fragment, context)? {
+                    continue;
+                }
                 ensure_fragment_type_condition(
                     Some(&fragment.type_condition),
                     &NodeContext {
@@ -6149,6 +6224,51 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_fragment_definition_directives() {
+        let variables = BTreeMap::from([
+            (
+                "includeFields".to_string(),
+                GraphqlVariableValue::Literal(Literal::Boolean(true)),
+            ),
+            (
+                "skipRisk".to_string(),
+                GraphqlVariableValue::Literal(Literal::Boolean(true)),
+            ),
+        ]);
+        let plan = compile_graphql_with_variables(
+            r"
+            query Services($includeFields: Boolean!, $skipRisk: Boolean!) {
+              Service {
+                ...ServiceFields
+                ...RiskFields
+              }
+            }
+
+            fragment ServiceFields on Service @include(if: $includeFields) {
+              serviceName: name
+            }
+
+            fragment RiskFields on Service @skip(if: $skipRisk) {
+              risk
+            }
+            ",
+            &variables,
+        )
+        .expect("GraphQL fragment definition directives should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("serviceName".to_string()),
+            }]
+        );
+    }
+
+    #[test]
     fn merges_duplicate_graphql_relationship_fields_across_fragments() {
         let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
         let plan = compile_graphql_for_graph(
@@ -6268,11 +6388,11 @@ mod tests {
               }
             }
 
-            fragment RootServices on Query {
+            fragment RootServices on Query @include(if: $includeService) {
               services: Service(
                 orderBy: [{ field: name, direction: ASC }]
                 limit: 2
-              ) @include(if: $includeService) {
+              ) {
                 service: name
                 tier
               }
@@ -6684,7 +6804,7 @@ nodes:
               }
             }
 
-            fragment OwnershipEdge on Service {
+            fragment OwnershipEdge on Service @include(if: true) {
               _edge { source }
             }
             ",
@@ -6707,6 +6827,43 @@ nodes:
                 } if variable == "relationship0"
                     && property == "source"
                     && alias == "relationship0_source"
+            )
+        }));
+    }
+
+    #[test]
+    fn skipped_graphql_fragment_definition_directives_do_not_require_edge_variables() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            {
+              Person {
+                out_OWNS(to: Service) {
+                  service: name
+                  ...SkippedEdgeFields
+                }
+              }
+            }
+
+            fragment SkippedEdgeFields on Service @skip(if: true) {
+              _edge { source }
+            }
+            ",
+        )
+        .expect("skipped GraphQL fragment definition directives should compile");
+
+        assert!(matches!(
+            plan.relationships.as_slice(),
+            [RelationshipPattern { variable: None, .. }]
+        ));
+        assert!(plan.projections.iter().all(|projection| {
+            !matches!(
+                projection,
+                Projection::Property {
+                    property: PropertyRef { variable, property },
+                    ..
+                } if variable == "relationship0" && property == "source"
             )
         }));
     }
@@ -6989,6 +7146,29 @@ nodes:
     }
 
     #[test]
+    fn rejects_unknown_graphql_fragment_definition_directives() {
+        let error = compile_graphql(
+            r"
+            {
+              Service { ...ServiceFields }
+            }
+
+            fragment ServiceFields on Service @defer {
+              name
+            }
+            ",
+        )
+        .expect_err("unknown GraphQL fragment definition directives should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported GraphQL directive '@defer'"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_invalid_graphql_directives() {
         for (query, message) in [
             (
@@ -7022,6 +7202,41 @@ nodes:
             )]);
             let error = compile_graphql_with_variables(query, &variables)
                 .expect_err("invalid GraphQL directive should fail");
+
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_graphql_fragment_definition_directives() {
+        for (query, message) in [
+            (
+                r"
+                {
+                  Service { ...ServiceFields }
+                }
+
+                fragment ServiceFields on Service @include(unless: true) {
+                  name
+                }
+                ",
+                "requires an 'if' argument",
+            ),
+            (
+                r"
+                {
+                  Service { ...ServiceFields }
+                }
+
+                fragment ServiceFields on Service @include(if: true) @include(if: false) {
+                  name
+                }
+                ",
+                "directive '@include' is repeated",
+            ),
+        ] {
+            let error = compile_graphql(query)
+                .expect_err("invalid fragment definition directive should fail");
 
             assert!(error.to_string().contains(message), "{error}");
         }
