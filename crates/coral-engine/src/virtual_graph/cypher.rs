@@ -341,6 +341,11 @@ struct VariableFunctionArgument {
     count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FunctionArgumentSources {
+    arguments: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone)]
 struct CypherCompileState {
     path_variables: BTreeMap<String, PathBinding>,
@@ -353,6 +358,7 @@ struct CypherCompileState {
 #[derive(Debug, Default)]
 struct CypherCompileContext {
     variable_function_arguments: BTreeMap<(usize, usize), VariableFunctionArgument>,
+    function_argument_sources: BTreeMap<(usize, usize), FunctionArgumentSources>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
@@ -372,6 +378,7 @@ impl CypherCompileContext {
     ) -> Self {
         Self {
             variable_function_arguments: collect_variable_function_arguments(cypher),
+            function_argument_sources: collect_function_argument_sources(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
@@ -393,6 +400,14 @@ impl CypherCompileContext {
         function: &FunctionInvocation,
     ) -> Option<&VariableFunctionArgument> {
         self.variable_function_arguments
+            .get(&(function.span.start, function.span.end))
+    }
+
+    fn function_argument_sources(
+        &self,
+        function: &FunctionInvocation,
+    ) -> Option<&FunctionArgumentSources> {
+        self.function_argument_sources
             .get(&(function.span.start, function.span.end))
     }
 
@@ -12225,7 +12240,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), haversin(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -12569,6 +12584,138 @@ fn evaluate_static_map_numeric_function(
         )
         .map(Some);
     }
+    evaluate_static_map_trigonometric_function(function, path, evaluation)
+}
+
+fn evaluate_static_map_trigonometric_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if let Some(literal) =
+        evaluate_static_map_unary_trigonometric_function(function, path, evaluation)?
+    {
+        return Ok(Some(literal));
+    }
+    evaluate_static_map_angle_function(function, path, evaluation)
+}
+
+fn evaluate_static_map_unary_trigonometric_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_sin_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "sin",
+            f64::sin,
+        )
+        .map(Some);
+    }
+    if is_cos_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "cos",
+            f64::cos,
+        )
+        .map(Some);
+    }
+    if is_tan_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "tan",
+            f64::tan,
+        )
+        .map(Some);
+    }
+    if is_cot_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "cot",
+            |value| 1.0 / value.tan(),
+        )
+        .map(Some);
+    }
+    if is_asin_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "asin",
+            f64::asin,
+        )
+        .map(Some);
+    }
+    if is_acos_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "acos",
+            f64::acos,
+        )
+        .map(Some);
+    }
+    if is_atan_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "atan",
+            f64::atan,
+        )
+        .map(Some);
+    }
+    Ok(None)
+}
+
+fn evaluate_static_map_angle_function(
+    function: &FunctionInvocation,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Option<Literal>, CoreError> {
+    if is_atan2_function(function) {
+        return evaluate_static_map_atan2(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_degrees_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "degrees",
+            f64::to_degrees,
+        )
+        .map(Some);
+    }
+    if is_radians_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "radians",
+            f64::to_radians,
+        )
+        .map(Some);
+    }
+    if is_haversin_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "haversin",
+            |value| (1.0 - value.cos()) / 2.0,
+        )
+        .map(Some);
+    }
     Ok(None)
 }
 
@@ -12677,6 +12824,15 @@ fn evaluate_static_map_function_arguments(
     evaluation: StaticFilterEvaluation<'_>,
     function_name: &str,
 ) -> Result<Vec<Literal>, CoreError> {
+    if let Some(argument_sources) = evaluation.context.function_argument_sources(function) {
+        return evaluate_static_map_function_argument_sources(
+            argument_sources,
+            path,
+            evaluation,
+            function_name,
+        );
+    }
+
     let variable_argument = evaluation.context.variable_function_argument_info(function);
     if let Some(argument) = variable_argument {
         if argument.variable != evaluation.variable {
@@ -12718,6 +12874,49 @@ fn evaluate_static_map_function_arguments(
         literals.insert(argument.index, evaluation.item.clone());
     }
     Ok(literals)
+}
+
+fn evaluate_static_map_function_argument_sources(
+    argument_sources: &FunctionArgumentSources,
+    path: &str,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+) -> Result<Vec<Literal>, CoreError> {
+    argument_sources
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let (expression, fragment_context) = parse_cypher_expression_fragment(
+                source,
+                format!("{path}.arguments[{index}]"),
+                evaluation.context,
+            )?;
+            evaluate_static_map_expression(
+                &expression,
+                StaticFilterEvaluation {
+                    context: &fragment_context,
+                    ..evaluation
+                },
+                format!("{path}.arguments[{index}]"),
+            )
+            .map_err(|error| {
+                if parse_collection_filter_variable(source)
+                    .is_some_and(|variable| variable != evaluation.variable)
+                {
+                    unsupported(
+                        format!("{path}.arguments[{index}]"),
+                        format!(
+                            "{function_name}() argument '{}' is not the item variable '{}'",
+                            source, evaluation.variable
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })
+        })
+        .collect()
 }
 
 fn evaluate_static_map_coalesce(
@@ -12978,6 +13177,35 @@ fn evaluate_static_map_power(
         ));
     };
     evaluate_static_literal_arithmetic(base, ArithmeticOperator::Power, exponent, path)
+}
+
+fn evaluate_static_map_atan2(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let arguments = evaluate_static_map_function_arguments(function, &path, evaluation, "atan2")?;
+    let [y, x] = arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "atan2() in static list comprehension maps requires exactly two arguments",
+        ));
+    };
+    let Some(y) = StaticNumericLiteral::from_literal(y, format!("{path}.arguments[0]"))? else {
+        return Ok(Literal::Null);
+    };
+    let Some(x) = StaticNumericLiteral::from_literal(x, format!("{path}.arguments[1]"))? else {
+        return Ok(Literal::Null);
+    };
+    let value = y.as_f64().atan2(x.as_f64());
+    if !value.is_finite() {
+        return Err(unsupported(
+            path,
+            "atan2() in static list comprehension maps produced a non-finite float",
+        ));
+    }
+    Ok(Literal::Float(OrderedFloat(value)))
 }
 
 fn evaluate_static_map_constant_function(
@@ -13563,6 +13791,15 @@ fn static_map_function_argument_element_types(
     source_element_type: Option<LiteralListElementType>,
     context: &CypherCompileContext,
 ) -> Result<Vec<Option<LiteralListElementType>>, CoreError> {
+    if let Some(argument_sources) = context.function_argument_sources(function) {
+        return static_map_function_argument_source_element_types(
+            argument_sources,
+            variable,
+            source_element_type,
+            context,
+        );
+    }
+
     let variable_argument = context.variable_function_argument_info(function);
     if let Some(argument) = variable_argument {
         if argument.variable != variable {
@@ -13600,6 +13837,32 @@ fn static_map_function_argument_element_types(
         element_types.insert(argument.index, source_element_type);
     }
     Ok(element_types)
+}
+
+fn static_map_function_argument_source_element_types(
+    argument_sources: &FunctionArgumentSources,
+    variable: &str,
+    source_element_type: Option<LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Vec<Option<LiteralListElementType>>, CoreError> {
+    argument_sources
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let (expression, fragment_context) = parse_cypher_expression_fragment(
+                source,
+                format!("list_comprehension.map.arguments[{index}]"),
+                context,
+            )?;
+            static_list_comprehension_map_element_type(
+                &expression,
+                variable,
+                source_element_type,
+                &fragment_context,
+            )
+        })
+        .collect()
 }
 
 fn static_map_single_function_argument_element_type(
@@ -19752,6 +20015,21 @@ fn collect_variable_function_arguments(
         .collect()
 }
 
+fn collect_function_argument_sources(
+    cypher: &str,
+) -> BTreeMap<(usize, usize), FunctionArgumentSources> {
+    // decypher's high-level AST can omit variable-only function arguments.
+    // Keep the lossless argument text available for static expression folders
+    // that need to recover repeated item-variable arguments such as atan2(x, x).
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
+        .filter_map(|node| function_argument_sources_from_cst(&node))
+        .collect()
+}
+
 fn collect_collection_filter_calls(cypher: &str) -> BTreeMap<(usize, usize), CollectionFilterCall> {
     // decypher's high-level AST currently lowers all/any/none/single(...)
     // filter expressions as normal function calls and drops the collection
@@ -21165,6 +21443,27 @@ fn variable_function_argument_from_cst(
             variable,
             index,
             count: arguments.len(),
+        },
+    ))
+}
+
+fn function_argument_sources_from_cst(
+    node: &SyntaxNode,
+) -> Option<((usize, usize), FunctionArgumentSources)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = node.text().to_string();
+    let open = source.find('(')?;
+    let close = source.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let arguments = split_top_level_arguments(source.get(open + 1..close)?)?;
+    Some((
+        (start, end),
+        FunctionArgumentSources {
+            arguments: arguments.into_iter().map(str::to_string).collect(),
         },
     ))
 }
@@ -29370,6 +29669,19 @@ relationships:
         .expect("star test graph should parse")
     }
 
+    fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
+        Projection::Expression {
+            expression: ScalarExpression::TypedLiteralList {
+                literals: values
+                    .into_iter()
+                    .map(|value| Literal::Float(OrderedFloat(value)))
+                    .collect(),
+                element_type: LiteralListElementType::Float,
+            },
+            alias: alias.to_string(),
+        }
+    }
+
     fn route_test_graph() -> Declaration {
         Declaration::from_yaml(
             r"
@@ -36392,6 +36704,64 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_unary_trigonometric_function_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [0.0, 1.5707963267948966] | round(sin(x), 0)] AS sines, \
+                    [x IN [0.0, 1.5707963267948966] | round(cos(x), 0)] AS cosines, \
+                    [x IN [0.0, 0.7853981633974483] | round(tan(x), 0)] AS tangents, \
+                    [x IN [0.7853981633974483] | round(cot(x), 0)] AS cotangents, \
+                    [x IN [1.0] | round(asin(x), 0)] AS arcsines, \
+                    [x IN [1.0] | round(acos(x), 0)] AS arccosines, \
+                    [x IN [1.0] | round(atan(x), 0)] AS arctangents",
+        )
+        .expect("static list comprehension trigonometric maps should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                typed_float_list_projection("sines", vec![0.0, 1.0]),
+                typed_float_list_projection("cosines", vec![1.0, 0.0]),
+                typed_float_list_projection("tangents", vec![0.0, 1.0]),
+                typed_float_list_projection("cotangents", vec![1.0]),
+                typed_float_list_projection("arcsines", vec![2.0]),
+                typed_float_list_projection("arccosines", vec![0.0]),
+                typed_float_list_projection("arctangents", vec![1.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_list_comprehension_angle_function_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [1.0] | round(atan2(x, x), 2)] AS arctangent_pairs, \
+                    [x IN [3.141592653589793] | round(degrees(x), 0)] AS degree_values, \
+                    [x IN [180.0] | round(radians(x), 2)] AS radian_values, \
+                    [x IN [0.0] | haversin(x)] AS haversines",
+        )
+        .expect("static list comprehension angle maps should compile");
+
+        let atan2_rounded =
+            round_static_float(1.0_f64.atan2(1.0), 2, "test").expect("atan2 should round");
+        let radians_rounded =
+            round_static_float(180.0_f64.to_radians(), 2, "test").expect("radians should round");
+        assert_eq!(
+            plan.projections,
+            vec![
+                typed_float_list_projection("arctangent_pairs", vec![atan2_rounded]),
+                typed_float_list_projection("degree_values", vec![180.0]),
+                typed_float_list_projection("radian_values", vec![radians_rounded]),
+                typed_float_list_projection("haversines", vec![0.0]),
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_static_list_comprehension_rounding_function_maps() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
@@ -36561,6 +36931,19 @@ relationships:
             error
                 .to_string()
                 .contains("pi() in static list comprehension maps requires exactly zero arguments"),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN [2] | atan2(x)] AS values",
+        )
+        .expect_err("atan2() should require two static map arguments");
+
+        assert!(
+            error.to_string().contains(
+                "atan2() in static list comprehension maps requires exactly two arguments"
+            ),
             "{error}"
         );
     }

@@ -350,8 +350,13 @@ The supported foundation subset is intentionally narrow:
   before SQL lowering. Static map expressions over folded items support
   identity, scalar literals and parameters, numeric arithmetic, predicate-valued
   maps, numeric functions such as `abs`, `round`, `sqrt`, `sign`, `exp`,
-  `log`, `log10`, `pow`, `power`, constants `pi` and `e`, `toString`, string
+  `log`, `log10`, `pow`, `power`, constants `pi` and `e`, trigonometric
+  functions such as `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`,
+  `atan2`, degree/radian conversion, `haversin`, `toString`, string
   case conversion, trim variants, and `replace`.
+  Static map function arguments are reparsed from lossless CST argument text
+  when the typed AST omits item-variable arguments, so repeated item-variable
+  forms such as `atan2(x, x)` remain foldable.
   Conditional sources with slices remain a parser-front-end gap rather than a
   dynamic-list runtime feature;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar

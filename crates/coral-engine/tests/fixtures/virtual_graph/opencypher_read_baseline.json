@@ -7,7 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 6,
+    "ListExpressions": 7,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -534,6 +534,18 @@
         "ordered": true,
         "rows": [
           { "exponentials": [1.0, 3.0, null], "natural_logs": [0.0, 1.0, null], "base10_logs": [0.0, 2.0, null], "rounded_pi": [3.1, 3.14], "rounded_e": [2.7, 2.72] }
+        ]
+      }
+    },
+    {
+      "id": "static-list-comprehension-trigonometric-map",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN [0.0, 1.5707963267948966] | round(sin(x), 0)] AS sines, [x IN [0.0, 1.5707963267948966] | round(cos(x), 0)] AS cosines, [x IN [1.0] | round(atan2(x, x), 2)] AS arctangent_pairs, [x IN [3.141592653589793] | round(degrees(x), 0)] AS degree_values, [x IN [180.0] | round(radians(x), 2)] AS radian_values, [x IN [0.0] | haversin(x)] AS haversines",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "sines": [0.0, 1.0], "cosines": [1.0, 0.0], "arctangent_pairs": [0.79], "degree_values": [180.0], "radian_values": [3.14], "haversines": [0.0] }
         ]
       }
     },
