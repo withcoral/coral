@@ -86,6 +86,15 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
+    /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
+    /// episode store appends `OpenEpisode` records here; indexing and retrieval
+    /// land in a later PR.
+    pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
+        self.workspace_dir(workspace_name)
+            .join("episodes")
+            .join("episodes.jsonl")
+    }
+
     pub(crate) fn source_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -122,6 +131,65 @@ impl AppStateLayout {
             .join("credentials")
             .join(workspace_name.as_str())
             .join(format!("{}.refresh.lock", source_name.as_str()))
+    }
+
+    pub(crate) fn v4_materialized_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.source_dir(workspace_name, source_name)
+            .join("materialized")
+            .join("v4")
+    }
+
+    pub(crate) fn v4_materialized_tmp_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        suffix: &str,
+    ) -> PathBuf {
+        self.source_dir(workspace_name, source_name)
+            .join("materialized")
+            .join(format!("v4.{suffix}"))
+    }
+
+    pub(crate) fn v4_fingerprint_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("fingerprint.yaml")
+    }
+
+    pub(crate) fn v4_projections_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("projections.yaml")
+    }
+
+    pub(crate) fn v4_diagnostics_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("diagnostics.yaml")
+    }
+
+    pub(crate) fn v4_surface_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> PathBuf {
+        self.v4_materialized_dir(workspace_name, source_name)
+            .join("surfaces")
+            .join(surface_id)
     }
 }
 
@@ -166,6 +234,14 @@ mod tests {
                 .join("default")
                 .join("feedback")
                 .join("reports.jsonl")
+        );
+        assert_eq!(
+            layout.episodes_file(&workspace_name),
+            config_dir
+                .join("workspaces")
+                .join("default")
+                .join("episodes")
+                .join("episodes.jsonl")
         );
         assert_eq!(
             layout.local_trace_store_dir(),

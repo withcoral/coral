@@ -1,0 +1,265 @@
+name: ansible
+version: 0.1.0
+dsl_version: 3
+backend: file
+description: >-
+  Query sanitized, normalized Ansible fact exports as SQL tables for host
+  inventory, service state, package inventory, mount pressure, network
+  interfaces, security posture, and role assignment analysis.
+
+test_queries:
+  - SELECT hostname, distribution, service_mgr, pkg_mgr FROM ansible.hosts LIMIT 5
+  - SELECT hostname, name, source, state, status FROM ansible.services LIMIT 5
+  - SELECT hostname, name, version, source FROM ansible.packages LIMIT 5
+  - SELECT hostname, mount, size_available, size_total FROM ansible.mounts LIMIT 5
+  - SELECT hostname, selinux_status, selinux_mode, apparmor_status FROM ansible.security LIMIT 5
+  - SELECT hostname, interface, ipv4_address, active FROM ansible.interfaces LIMIT 5
+  - SELECT hostname, role, expected_service FROM ansible.roles LIMIT 5
+
+tables:
+  - name: hosts
+    description: Host-level facts gathered from ansible.builtin.setup and normalized into safe inventory columns.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: hosts.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: fqdn
+        type: Utf8
+        description: Fully qualified domain name, if available.
+      - name: distribution
+        type: Utf8
+        description: Distribution name such as RedHat, Debian, Alpine, Archlinux, or openSUSE.
+      - name: distribution_version
+        type: Utf8
+        description: Distribution version string.
+      - name: distribution_major_version
+        type: Utf8
+        description: Major distribution version when available.
+      - name: os_family
+        type: Utf8
+        description: OS family reported by Ansible.
+      - name: kernel
+        type: Utf8
+        description: Kernel release.
+      - name: architecture
+        type: Utf8
+        description: CPU architecture.
+      - name: system
+        type: Utf8
+        description: System type reported by setup facts.
+      - name: service_mgr
+        type: Utf8
+        description: Service manager such as systemd, openrc, sysv, upstart, rcctl, or src.
+      - name: pkg_mgr
+        type: Utf8
+        description: Package manager such as dnf, apt, apk, pacman, rpm, yum, zypper, pkg, or portage.
+      - name: processor_vcpus
+        type: Int64
+        description: Virtual CPU count when available.
+      - name: processor_cores
+        type: Int64
+        description: Processor core count when available.
+      - name: memtotal_mb
+        type: Int64
+        description: Total memory in MB.
+      - name: uptime_seconds
+        type: Int64
+        description: Host uptime in seconds.
+      - name: virtualization_type
+        type: Utf8
+        description: Virtualization technology reported by Ansible.
+      - name: virtualization_role
+        type: Utf8
+        description: Virtualization role, usually guest or host.
+      - name: python_executable
+        type: Utf8
+        description: Python executable used by Ansible on the managed host.
+      - name: python_version
+        type: Utf8
+        description: Python version used by Ansible on the managed host.
+
+  - name: services
+    description: Service state facts gathered from ansible.builtin.service_facts and flattened to one row per service per host.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: services.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Service/unit name.
+      - name: source
+        type: Utf8
+        description: Init system/source such as systemd, sysv, upstart, openrc, rcctl, or src.
+      - name: state
+        type: Utf8
+        description: Runtime state such as running, stopped, failed, or unknown.
+      - name: status
+        type: Utf8
+        description: Enablement/availability status such as enabled, disabled, static, indirect, not-found, or unknown.
+
+  - name: packages
+    description: Installed package facts gathered from ansible.builtin.package_facts and flattened to one row per installed package version.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: packages.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: name
+        type: Utf8
+        nullable: false
+        description: Package name.
+      - name: version
+        type: Utf8
+        description: Installed package version.
+      - name: release
+        type: Utf8
+        description: Package release when available, mainly RPM-style systems.
+      - name: arch
+        type: Utf8
+        description: Package architecture when available.
+      - name: source
+        type: Utf8
+        description: Package source/manager such as apt, rpm, apk, pacman, pkg, or portage.
+      - name: epoch
+        type: Utf8
+        description: Package epoch when available.
+      - name: origin
+        type: Utf8
+        description: Package origin when available.
+
+  - name: mounts
+    description: Filesystem mount facts gathered from setup facts and flattened to one row per mount.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: mounts.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: mount
+        type: Utf8
+        description: Mount path.
+      - name: device
+        type: Utf8
+        description: Device backing the mount.
+      - name: fstype
+        type: Utf8
+        description: Filesystem type.
+      - name: size_total
+        type: Int64
+        description: Total filesystem size in bytes.
+      - name: size_available
+        type: Int64
+        description: Available filesystem size in bytes.
+      - name: options
+        type: Utf8
+        description: Comma-separated mount options.
+
+  - name: interfaces
+    description: Network interface facts gathered from setup facts and flattened to one row per interface.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: interfaces.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: interface
+        type: Utf8
+        nullable: false
+        description: Interface name.
+      - name: ipv4_address
+        type: Utf8
+        description: Primary IPv4 address when available.
+      - name: ipv6_addresses
+        type: Json
+        description: JSON array of IPv6 addresses, when available.
+      - name: macaddress
+        type: Utf8
+        description: Interface MAC address when available.
+      - name: mtu
+        type: Int64
+        description: Interface MTU.
+      - name: active
+        type: Boolean
+        description: Whether the interface is active.
+      - name: type
+        type: Utf8
+        description: Interface type when available.
+
+  - name: security
+    description: Safe, coarse security posture facts. This intentionally avoids raw policy dumps, key material, users, and environment variables.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: security.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: selinux_status
+        type: Utf8
+        description: SELinux status such as enabled, disabled, or unknown.
+      - name: selinux_mode
+        type: Utf8
+        description: SELinux mode such as enforcing or permissive, when known.
+      - name: selinux_policy
+        type: Utf8
+        description: SELinux policy name, when known.
+      - name: apparmor_status
+        type: Utf8
+        description: AppArmor status, when gathered.
+      - name: fips
+        type: Boolean
+        description: Whether FIPS mode is reported as enabled.
+      - name: ssh_host_keys_collected
+        type: Boolean
+        description: Whether SSH host key facts were present in raw facts. Key values are not exported.
+      - name: firewall_hint
+        type: Utf8
+        description: Coarse firewall hint only; no raw rule dump.
+
+  - name: roles
+    description: Optional intended role assignment metadata exported from inventory, group_vars, host_vars, or a curated mapping file.
+    format: jsonl
+    source:
+      location: file://~/.coral/ansible-facts/
+      glob: roles.jsonl
+    columns:
+      - name: hostname
+        type: Utf8
+        nullable: false
+        description: Ansible inventory hostname.
+      - name: role
+        type: Utf8
+        nullable: false
+        description: Intended Ansible role name.
+      - name: environment
+        type: Utf8
+        description: Environment such as dev, staging, prod, or homelab.
+      - name: source_file
+        type: Utf8
+        description: Inventory/group_vars/host_vars file or curated mapping source.
+      - name: expected_service
+        type: Utf8
+        description: Optional service expected to exist because of this role.

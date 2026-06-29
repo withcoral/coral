@@ -11,8 +11,9 @@ use base64::engine::general_purpose::{
 };
 use chrono::{DateTime, Utc};
 use coral_spec::{
-    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthFlowKind,
-    ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort, ManifestOAuthScopeDelimiter,
+    ManifestOAuthClientSecretTransport, ManifestOAuthCredentialSpec, ManifestOAuthEndpointUrls,
+    ManifestOAuthFlowKind, ManifestOAuthPkceMode, ManifestOAuthRedirectBindPort,
+    ManifestOAuthScopeDelimiter,
 };
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::Value;
@@ -42,6 +43,7 @@ pub(crate) struct OAuthCredentialService {
 pub(crate) struct StartOAuthCredentialRequest<'a> {
     pub(crate) input_key: &'a str,
     pub(crate) oauth: &'a ManifestOAuthCredentialSpec,
+    pub(crate) source_inputs: &'a BTreeMap<String, String>,
     pub(crate) credential_inputs: Vec<(String, String)>,
 }
 
@@ -83,6 +85,7 @@ pub(crate) struct OAuthCredentialMaterial {
 struct OAuthSessionCommon {
     input_key: String,
     oauth: ManifestOAuthCredentialSpec,
+    endpoints: ManifestOAuthEndpointUrls,
     client_id: String,
     client_secret: Option<String>,
 }
@@ -172,6 +175,7 @@ impl OAuthCredentialService {
         Fut: Future<Output = Result<(), AppError>>,
     {
         let oauth = request.oauth.clone();
+        let endpoints = oauth_endpoint_urls(&oauth, request.source_inputs)?;
         let credential_inputs = normalize_credential_inputs(request.credential_inputs)?;
         reject_unknown_credential_inputs(&oauth, &credential_inputs)?;
         let client_id = resolve_client_id(&oauth, &credential_inputs)?;
@@ -181,6 +185,7 @@ impl OAuthCredentialService {
                 self.authorize_authorization_code(
                     request.input_key.to_string(),
                     oauth,
+                    endpoints,
                     client_id,
                     client_secret,
                     on_authorization,
@@ -191,6 +196,7 @@ impl OAuthCredentialService {
                 self.authorize_device_code(
                     request.input_key.to_string(),
                     oauth,
+                    endpoints,
                     client_id,
                     client_secret,
                     on_authorization,
@@ -204,6 +210,7 @@ impl OAuthCredentialService {
         &self,
         input_key: String,
         oauth: ManifestOAuthCredentialSpec,
+        endpoints: ManifestOAuthEndpointUrls,
         client_id: String,
         client_secret: Option<String>,
         on_authorization: F,
@@ -218,6 +225,7 @@ impl OAuthCredentialService {
         let code_verifier = pkce_code_verifier(&oauth);
         let authorization_url = build_authorization_url(
             &oauth,
+            &endpoints,
             &provider_redirect_uri,
             &client_id,
             &state,
@@ -227,6 +235,7 @@ impl OAuthCredentialService {
         let common = OAuthSessionCommon {
             input_key,
             oauth,
+            endpoints,
             client_id,
             client_secret,
         };
@@ -252,8 +261,10 @@ impl OAuthCredentialService {
 
     pub(crate) fn validate_credential_inputs(
         oauth: &ManifestOAuthCredentialSpec,
+        source_inputs: &BTreeMap<String, String>,
         credential_inputs: Vec<(String, String)>,
     ) -> Result<(), AppError> {
+        let endpoints = oauth_endpoint_urls(oauth, source_inputs)?;
         let credential_inputs = normalize_credential_inputs(credential_inputs)?;
         reject_unknown_credential_inputs(oauth, &credential_inputs)?;
         let _client_id = resolve_client_id(oauth, &credential_inputs)?;
@@ -263,13 +274,10 @@ impl OAuthCredentialService {
                 oauth
                     .redirect_bind_port()
                     .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-                let authorization_url = oauth.authorization_url.as_deref().ok_or_else(|| {
+                endpoints.authorization_url.as_ref().ok_or_else(|| {
                     AppError::InvalidInput(
                         "authorization_code OAuth method is missing authorization_url".to_string(),
                     )
-                })?;
-                Url::parse(authorization_url).map_err(|error| {
-                    AppError::InvalidInput(format!("invalid OAuth authorization URL: {error}"))
                 })?;
             }
             ManifestOAuthFlowKind::DeviceCode => {
@@ -278,22 +286,13 @@ impl OAuthCredentialService {
                         "device_code OAuth methods must not declare a client secret".to_string(),
                     ));
                 }
-                let device_authorization_url =
-                    oauth.device_authorization_url.as_deref().ok_or_else(|| {
-                        AppError::InvalidInput(
-                            "device_code OAuth method is missing device_authorization_url"
-                                .to_string(),
-                        )
-                    })?;
-                Url::parse(device_authorization_url).map_err(|error| {
-                    AppError::InvalidInput(format!(
-                        "invalid OAuth device authorization URL: {error}"
-                    ))
+                endpoints.device_authorization_url.as_ref().ok_or_else(|| {
+                    AppError::InvalidInput(
+                        "device_code OAuth method is missing device_authorization_url".to_string(),
+                    )
                 })?;
             }
         }
-        Url::parse(&oauth.token_url)
-            .map_err(|error| AppError::InvalidInput(format!("invalid OAuth token URL: {error}")))?;
         Ok(())
     }
 
@@ -327,6 +326,7 @@ impl OAuthCredentialService {
         &self,
         input_key: String,
         oauth: ManifestOAuthCredentialSpec,
+        endpoints: ManifestOAuthEndpointUrls,
         client_id: String,
         client_secret: Option<String>,
         on_authorization: F,
@@ -340,9 +340,14 @@ impl OAuthCredentialService {
                 "device_code OAuth methods must not declare a client secret".to_string(),
             ));
         }
-        let device =
-            request_device_code(&self.http, &oauth, &client_id, DEVICE_CODE_REQUEST_TIMEOUT)
-                .await?;
+        let device = request_device_code(
+            &self.http,
+            &oauth,
+            &endpoints,
+            &client_id,
+            DEVICE_CODE_REQUEST_TIMEOUT,
+        )
+        .await?;
         let authorization_url = device
             .verification_uri_complete
             .clone()
@@ -354,6 +359,7 @@ impl OAuthCredentialService {
         let common = OAuthSessionCommon {
             input_key,
             oauth,
+            endpoints,
             client_id,
             client_secret: None,
         };
@@ -408,6 +414,15 @@ fn token_http_client(timeout: Duration) -> reqwest::Client {
         .timeout(timeout)
         .build()
         .expect("OAuth token HTTP client configuration should be valid")
+}
+
+fn oauth_endpoint_urls(
+    oauth: &ManifestOAuthCredentialSpec,
+    source_inputs: &BTreeMap<String, String>,
+) -> Result<ManifestOAuthEndpointUrls, AppError> {
+    oauth
+        .endpoint_urls(source_inputs)
+        .map_err(|error| AppError::InvalidInput(error.to_string()))
 }
 
 fn normalize_credential_inputs(
@@ -573,12 +588,13 @@ async fn bind_redirect_listener(
 
 fn build_authorization_url(
     oauth: &ManifestOAuthCredentialSpec,
+    endpoints: &ManifestOAuthEndpointUrls,
     provider_redirect_uri: &str,
     client_id: &str,
     state: &str,
     code_verifier: Option<&str>,
 ) -> Result<String, AppError> {
-    let authorization_url = oauth.authorization_url.as_deref().ok_or_else(|| {
+    let authorization_url = endpoints.authorization_url.as_deref().ok_or_else(|| {
         AppError::InvalidInput(
             "authorization_code OAuth method is missing authorization_url".to_string(),
         )
@@ -849,14 +865,19 @@ async fn write_callback_response(
 async fn request_device_code(
     http: &reqwest::Client,
     oauth: &ManifestOAuthCredentialSpec,
+    endpoints: &ManifestOAuthEndpointUrls,
     client_id: &str,
     timeout: Duration,
 ) -> Result<DeviceAuthorizationResponse, AppError> {
-    let device_authorization_url = oauth.device_authorization_url.as_deref().ok_or_else(|| {
-        AppError::InvalidInput(
-            "device_code OAuth method is missing device_authorization_url".to_string(),
-        )
-    })?;
+    let device_authorization_url =
+        endpoints
+            .device_authorization_url
+            .as_deref()
+            .ok_or_else(|| {
+                AppError::InvalidInput(
+                    "device_code OAuth method is missing device_authorization_url".to_string(),
+                )
+            })?;
     let mut form = vec![("client_id", client_id.to_string())];
     if let Some(scopes) = oauth.scopes.as_ref() {
         form.push((
@@ -952,7 +973,7 @@ async fn poll_device_token(
             ),
         ];
         let response = http
-            .post(&session.common.oauth.token_url)
+            .post(&session.common.endpoints.token_url)
             .header(ACCEPT, "application/json")
             .form(&form)
             .send()
@@ -1023,7 +1044,7 @@ async fn exchange_authorization_code(
         ("redirect_uri", session.provider_redirect_uri.clone()),
     ];
     let mut request = http
-        .post(&session.common.oauth.token_url)
+        .post(&session.common.endpoints.token_url)
         .header(ACCEPT, "application/json");
     request = apply_token_request_client_auth(
         request,
@@ -1230,7 +1251,7 @@ fn oauth_credential_material(
     internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
     internal_metadata.insert(
         format!("{prefix}token_url"),
-        session.oauth.token_url.clone(),
+        session.endpoints.token_url.clone(),
     );
     if let Some(secret) = session.oauth.client.secret.as_ref() {
         internal_metadata.insert(
@@ -1424,6 +1445,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
+    use std::sync::LazyLock;
     use std::time::Duration;
 
     use super::{
@@ -1443,6 +1465,8 @@ mod tests {
     use tokio::task::JoinHandle;
     use tokio::{io::AsyncReadExt as _, io::AsyncWriteExt as _};
     use url::Url;
+
+    static EMPTY_SOURCE_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
 
     #[test]
     fn joins_scope_values_with_configured_delimiter() {
@@ -1794,6 +1818,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![(
                     "OAUTH_CLIENT_ID".to_string(),
                     "override-client".to_string(),
@@ -1888,6 +1913,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![(
                     "OAUTH_CLIENT_ID".to_string(),
                     "device-client".to_string(),
@@ -1947,6 +1973,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_code_oauth_session_renders_endpoint_templates_from_source_inputs() {
+        let fixture = DeviceOAuthFixture::new();
+        let device_url_template = fixture
+            .device_url
+            .replace("/device/code", "/{{input.OUTLOOK_TENANT_ID}}/device/code");
+        let token_url_template = fixture
+            .token_url
+            .replace("/access_token", "/{{input.OUTLOOK_TENANT_ID}}/access_token");
+        let oauth = device_oauth_spec(&device_url_template, &token_url_template);
+        let source_inputs =
+            BTreeMap::from([("OUTLOOK_TENANT_ID".to_string(), "organizations".to_string())]);
+        let rendered_token_url = fixture
+            .token_url
+            .replace("/access_token", "/organizations/access_token");
+        let service = OAuthCredentialService::new();
+
+        let authorize = service.authorize(
+            StartOAuthCredentialRequest {
+                input_key: "API_TOKEN",
+                oauth: &oauth,
+                source_inputs: &source_inputs,
+                credential_inputs: vec![(
+                    "OAUTH_CLIENT_ID".to_string(),
+                    "device-client".to_string(),
+                )],
+            },
+            |_authorization| async { Ok(()) },
+        );
+
+        let completed = authorize.await.expect("authorize oauth");
+        let _captured = fixture.server.await.expect("device server");
+        assert_eq!(completed.access_token, "access-token");
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&format!("{}token_url", oauth_metadata_prefix("API_TOKEN")))
+                .map(String::as_str),
+            Some(rendered_token_url.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn device_code_request_times_out_before_session_start() {
         let listener = StdTcpListener::bind("127.0.0.1:0").expect("device listener");
         let device_url = format!(
@@ -1963,10 +2031,14 @@ mod tests {
             request
         });
         let oauth = device_oauth_spec(&device_url, "http://127.0.0.1/token");
+        let endpoints = oauth
+            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+            .expect("render endpoints");
 
         let result = request_device_code(
             &reqwest::Client::new(),
             &oauth,
+            &endpoints,
             "device-client",
             std::time::Duration::from_millis(50),
         )
@@ -2006,6 +2078,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
@@ -2055,21 +2128,26 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
             .await
             .expect("bind callback listener");
+        let oauth = oauth_spec(
+            "https://provider.example.com/oauth/token",
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+        );
+        let endpoints = oauth
+            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+            .expect("render endpoints");
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
-                oauth: oauth_spec(
-                    "https://provider.example.com/oauth/token",
-                    redirect_port,
-                    ManifestOAuthPkceMode::Disabled,
-                    ManifestOAuthClientSpec {
-                        id: ManifestOAuthClientIdSpec {
-                            default: Some("client".to_string()),
-                            input: None,
-                        },
-                        secret: None,
-                    },
-                ),
+                oauth,
+                endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
             },
@@ -2117,21 +2195,26 @@ mod tests {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", redirect_port))
             .await
             .expect("bind callback listener");
+        let oauth = oauth_spec(
+            "https://provider.example.com/oauth/token",
+            redirect_port,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("client".to_string()),
+                    input: None,
+                },
+                secret: None,
+            },
+        );
+        let endpoints = oauth
+            .endpoint_urls(&EMPTY_SOURCE_INPUTS)
+            .expect("render endpoints");
         let session = AuthorizationCodeSessionConfig {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
-                oauth: oauth_spec(
-                    "https://provider.example.com/oauth/token",
-                    redirect_port,
-                    ManifestOAuthPkceMode::Disabled,
-                    ManifestOAuthClientSpec {
-                        id: ManifestOAuthClientIdSpec {
-                            default: Some("client".to_string()),
-                            input: None,
-                        },
-                        secret: None,
-                    },
-                ),
+                oauth,
+                endpoints,
                 client_id: "client".to_string(),
                 client_secret: None,
             },
@@ -2190,6 +2273,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: vec![
                     ("OAUTH_CLIENT_ID".to_string(), "client".to_string()),
                     ("OAUTH_CLIENT_SECRET".to_string(), "secret".to_string()),
@@ -2243,6 +2327,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
             },
             move |authorization| async move {
@@ -2302,6 +2387,7 @@ mod tests {
             StartOAuthCredentialRequest {
                 input_key: "API_TOKEN",
                 oauth: &oauth,
+                source_inputs: &EMPTY_SOURCE_INPUTS,
                 credential_inputs: Vec::new(),
             },
             move |authorization| async move {

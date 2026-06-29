@@ -1,5 +1,5 @@
 name: google_calendar
-version: 0.1.0
+version: 0.1.1
 dsl_version: 3
 backend: http
 description: >-
@@ -14,19 +14,21 @@ inputs:
   GOOGLE_CALENDAR_ACCESS_TOKEN:
     kind: secret
     hint: |
-      Use a read-only OAuth 2.0 access token for the Google Calendar API.
-      For the guided OAuth flow, enable the Google Calendar API in a Google
-      Cloud project and create an OAuth 2.0 client of type "Desktop app".
-      The guided OAuth credential method uses that client ID and client secret,
-      then requests the https://www.googleapis.com/auth/calendar.readonly scope.
-      See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
-
-      To paste a token manually, use a token issued with that same scope.
+      Connect with Google OAuth or paste an access token. Either way the
+      token needs the read-only
+      `https://www.googleapis.com/auth/calendar.readonly` scope.
     credential:
       methods:
         - type: oauth
           label: Connect Google Calendar
           description: Use Google OAuth to retrieve a Calendar access token.
+          hint: |
+            Enable the Google Calendar API in a Google Cloud project and
+            create an OAuth 2.0 client of type "Desktop app", then enter
+            its Client ID and Client secret below. Requests read-only
+            access with the
+            `https://www.googleapis.com/auth/calendar.readonly` scope.
+            See [Google OAuth client setup](https://support.google.com/cloud/answer/6158849).
           oauth:
             flow:
               type: authorization_code
@@ -50,6 +52,9 @@ inputs:
         - type: source_config
           label: Paste access token
           description: Paste an existing Google Calendar OAuth access token.
+          hint: |
+            Paste a read-only OAuth 2.0 access token issued with the
+            `https://www.googleapis.com/auth/calendar.readonly` scope.
 base_url: "{{input.GOOGLE_CALENDAR_API_BASE}}"
 auth:
   type: HeaderAuth

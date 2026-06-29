@@ -146,10 +146,10 @@ tables:
           from: filter
           key: metric_name
         - path: [StartTime]
-          from: filter
+          from: filter_int
           key: start_time
         - path: [EndTime]
-          from: filter
+          from: filter_int
           key: end_time
         - path: [Period]
           from: filter_int
@@ -209,16 +209,16 @@ tables:
         description: Metric name filter.
         expr: {kind: from_filter, key: metric_name}
       - name: start_time
-        type: Utf8
+        type: Int64
         nullable: true
         virtual: true
-        description: CloudWatch start time filter.
+        description: CloudWatch start time filter as Unix epoch seconds.
         expr: {kind: from_filter, key: start_time}
       - name: end_time
-        type: Utf8
+        type: Int64
         nullable: true
         virtual: true
-        description: CloudWatch end time filter.
+        description: CloudWatch end time filter as Unix epoch seconds.
         expr: {kind: from_filter, key: end_time}
       - name: timestamp
         type: Timestamp
@@ -276,9 +276,13 @@ tables:
       - name: metric_name
         required: true
       - name: start_time
+        type: Int64
         required: true
+        description: CloudWatch start time filter as Unix epoch seconds.
       - name: end_time
+        type: Int64
         required: true
+        description: CloudWatch end time filter as Unix epoch seconds.
       - name: period
       - name: unit
       - name: dimension_name

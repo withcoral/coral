@@ -198,9 +198,14 @@ export function TracesPage() {
       selectedIndex >= 0 && selectedIndex < filtered.length - 1
         ? filtered[selectedIndex + 1].traceId
         : null
+    const initialSummary =
+      selectedIndex >= 0
+        ? filtered[selectedIndex]
+        : traces.find((trace) => trace.traceId === selectedTraceId)
 
     return (
       <TraceDetail
+        initialSummary={initialSummary}
         newerTraceId={newerTraceId}
         olderTraceId={olderTraceId}
         onClose={() => setSelectedTraceId(null)}

@@ -104,6 +104,11 @@
     }
   },
   "$defs": {
+    "table_function_identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "description": "Source-scoped table function identifier: starts with an ASCII letter or underscore, then uses only ASCII letters, numbers, or underscores"
+    },
     "inputs": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/input" },
@@ -156,7 +161,8 @@
           "properties": {
             "type": { "const": "source_config" },
             "label": { "type": "string" },
-            "description": { "type": "string" }
+            "description": { "type": "string" },
+            "hint": { "type": "string" }
           }
         },
         {
@@ -167,6 +173,7 @@
             "type": { "const": "oauth" },
             "label": { "type": "string" },
             "description": { "type": "string" },
+            "hint": { "type": "string" },
             "oauth": { "$ref": "#/$defs/oauth_credential_method" }
           }
         }
@@ -401,6 +408,35 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "description", "format", "source"],
+      "allOf": [
+        {
+          "if": {
+            "required": ["format"],
+            "properties": {
+              "format": { "not": { "const": "jsonl" } }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "metadata": {
+                    "not": {
+                      "contains": {
+                        "type": "object",
+                        "required": ["kind"],
+                        "properties": {
+                          "kind": { "const": "line_number" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
@@ -432,6 +468,10 @@
         "partitions": {
           "type": "array",
           "items": { "$ref": "#/$defs/partition_column" }
+        },
+        "metadata": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/file_metadata_column" }
         },
         "object_store": { "$ref": "#/$defs/object_store" }
       }
@@ -520,6 +560,18 @@
         }
       ]
     },
+    "file_metadata_column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "enum": ["relative_path", "file_name", "file_stem", "line_number"]
+        }
+      }
+    },
     "manifest_data_type": {
       "type": "string",
       "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"]
@@ -539,7 +591,8 @@
             { "const": "contains" }
           ]
         },
-        "description": { "type": "string" }
+        "description": { "type": "string" },
+        "lookup_key": { "type": "boolean" }
       }
     },
     "search_limits": {
@@ -577,7 +630,7 @@
       ],
       "required": ["name", "request"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/table_function_identifier" },
         "kind": { "type": "string", "enum": ["table", "search"] },
         "description": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
@@ -604,7 +657,7 @@
       "additionalProperties": false,
       "required": ["name", "tool"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "$ref": "#/$defs/table_function_identifier" },
         "tool": { "type": "string", "minLength": 1 },
         "description": { "type": "string" },
         "fetch_limit_default": { "type": "integer", "minimum": 1 },
@@ -711,11 +764,17 @@
       "allOf": [{ "$ref": "#/$defs/value_source_switch" }]
     },
     "mcp_server": {
+      "oneOf": [
+        { "$ref": "#/$defs/mcp_stdio_server" },
+        { "$ref": "#/$defs/mcp_streamable_http_server" }
+      ]
+    },
+    "mcp_stdio_server": {
       "type": "object",
       "additionalProperties": false,
       "required": ["transport", "command"],
       "properties": {
-        "transport": { "type": "string", "enum": ["stdio"] },
+        "transport": { "const": "stdio" },
         "command": { "type": "string", "minLength": 1 },
         "args": {
           "type": "array",
@@ -725,6 +784,31 @@
           "type": "array",
           "items": { "$ref": "#/$defs/mcp_env" }
         }
+      }
+    },
+    "mcp_streamable_http_server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "url"],
+      "properties": {
+        "transport": { "const": "streamable_http" },
+        "url": { "type": "string", "minLength": 1 },
+        "auth": { "$ref": "#/$defs/mcp_http_auth" }
+      }
+    },
+    "mcp_http_auth": {
+      "oneOf": [
+        { "$ref": "#/$defs/mcp_bearer_auth" }
+      ]
+    },
+    "mcp_bearer_auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "from", "key"],
+      "properties": {
+        "type": { "const": "bearer" },
+        "from": { "const": "input" },
+        "key": { "type": "string", "minLength": 1 }
       }
     },
     "mcp_env": {

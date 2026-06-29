@@ -126,6 +126,7 @@ fn credential_method_from_proto(
         kind,
         label: (!method.label.is_empty()).then(|| method.label.clone()),
         description: (!method.description.is_empty()).then(|| method.description.clone()),
+        hint: (!method.hint.is_empty()).then(|| method.hint.clone()),
         oauth,
     })
 }
@@ -290,6 +291,7 @@ mod tests {
                         SourceCredentialMethod {
                             label: "Connect".to_string(),
                             description: String::new(),
+                            hint: "Authorize in your browser.".to_string(),
                             method: Some(ProtoCredentialMethod::Oauth(Box::new(
                                 OAuthCredentialMethod {
                                     flow: OauthCredentialFlowType::AuthorizationCode as i32,
@@ -320,6 +322,7 @@ mod tests {
                         SourceCredentialMethod {
                             label: "Paste token".to_string(),
                             description: String::new(),
+                            hint: String::new(),
                             method: Some(ProtoCredentialMethod::SourceConfig(
                                 SourceConfigCredentialMethod {},
                             )),
@@ -337,6 +340,15 @@ mod tests {
             ManifestCredentialMethodKind::OAuth
         );
         assert_eq!(credential.methods[0].label.as_deref(), Some("Connect"));
+        assert_eq!(
+            credential.methods[0].hint.as_deref(),
+            Some("Authorize in your browser."),
+            "non-empty method hint should survive proto decoding"
+        );
+        assert_eq!(
+            credential.methods[1].hint, None,
+            "empty proto hint should decode to None"
+        );
         assert_eq!(
             credential.methods[0]
                 .oauth
@@ -384,6 +396,7 @@ mod tests {
                     methods: vec![SourceCredentialMethod {
                         label: "Connect".to_string(),
                         description: String::new(),
+                        hint: String::new(),
                         method: Some(ProtoCredentialMethod::Oauth(Box::new(
                             OAuthCredentialMethod {
                                 flow: flow as i32,
@@ -471,6 +484,7 @@ mod tests {
                     methods: vec![SourceCredentialMethod {
                         label: "Connect".to_string(),
                         description: String::new(),
+                        hint: String::new(),
                         method: None,
                     }],
                 }),

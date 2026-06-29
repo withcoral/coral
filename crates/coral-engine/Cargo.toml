@@ -39,6 +39,7 @@ url.workspace = true
 urlencoding.workspace = true
 
 coral-spec.workspace = true
+coral-telemetry.workspace = true
 
 [dev-dependencies]
 arrow.workspace = true

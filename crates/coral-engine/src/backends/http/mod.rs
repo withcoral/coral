@@ -10,17 +10,20 @@ use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
 use crate::backends::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, SourceTableFunctions, build_registered_inputs, build_registered_table,
-    build_registered_table_function, internal_table_function_name, registered_columns_from_specs,
-    required_filter_names,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
+    SourceFunctionProviderFactory, build_registered_inputs, build_registered_table,
+    build_registered_table_function, registered_columns_from_specs, required_filter_names,
+    validate_lookup_key_filter_backend_support,
 };
-use crate::{QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
+use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
 pub(crate) mod client;
 pub(crate) mod error;
 mod fetch;
+pub(crate) mod filter_usage;
 pub(crate) mod function;
 mod pagination;
 pub(crate) mod provider;
@@ -35,37 +38,34 @@ mod trace;
 mod transport;
 mod url;
 
-pub(crate) use client::HttpSourceClient;
+pub(crate) use client::{HttpSourceClient, HttpSourceClientRuntime};
 pub(crate) use error::ProviderQueryError;
 pub(crate) use provider::HttpSourceTableProvider;
 
 #[derive(Debug, Clone)]
 struct HttpCompiledSource {
     manifest: HttpSourceManifest,
-    source: QuerySource,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
+    trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
 pub(crate) fn compile_source(
     manifest: HttpSourceManifest,
-    source: QuerySource,
-    source_secrets: std::collections::BTreeMap<String, String>,
-    source_variables: std::collections::BTreeMap<String, String>,
+    source_input_resolution: SourceInputResolutionContext,
     request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     body_capture_max_bytes: Option<usize>,
+    trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
-        source,
-        source_secrets,
-        source_variables,
+        source_input_resolution,
         request_authenticators,
         body_capture_max_bytes,
+        trace_context,
         source_input_resolver,
     })
 }
@@ -76,11 +76,10 @@ pub(crate) fn compile_manifest(
 ) -> Box<dyn CompiledBackendSource> {
     compile_source(
         manifest.clone(),
-        request.source.clone(),
-        request.source_secrets.clone(),
-        request.source_variables.clone(),
+        SourceInputResolutionContext::from_query_source(request.source),
         request.request_authenticators.clone(),
-        request.runtime_context.http_body_capture_max_bytes,
+        request.runtime_context.body_capture_max_bytes,
+        request.runtime_context.trace_context.clone(),
         request.source_input_resolver.clone(),
     )
 }
@@ -95,15 +94,37 @@ impl CompiledBackendSource for HttpCompiledSource {
         &self.manifest.common.name
     }
 
-    async fn register(&self, _ctx: &SessionContext) -> Result<BackendRegistration> {
-        let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
-            &self.manifest,
-            &self.source_secrets,
-            &self.source_variables,
-            &self.request_authenticators,
-            self.source.clone(),
+    fn validate_runtime_capabilities(&self) -> Result<()> {
+        validate_lookup_key_filter_backend_support(
+            self.source_name(),
+            SourceBackend::Http,
+            self.manifest
+                .tables
+                .iter()
+                .flat_map(HttpTableSpec::filters)
+                .any(|filter| filter.lookup_key),
+        )
+    }
+
+    async fn register(
+        &self,
+        _ctx: &SessionContext,
+        registration: &BackendRegistrationContext,
+    ) -> Result<BackendRegistration> {
+        let http = client::default_http_client(registration, &self.manifest.common.name)?;
+        let runtime = HttpSourceClientRuntime::new(
+            self.source_input_resolution.clone(),
             self.source_input_resolver.clone(),
             self.body_capture_max_bytes,
+            self.trace_context.clone(),
+            http,
+        );
+        let backend = HttpSourceClient::from_manifest_with_source_input_resolver(
+            &self.manifest,
+            self.source_input_resolution.secrets(),
+            self.source_input_resolution.variables(),
+            &self.request_authenticators,
+            runtime,
         )?;
         let mut tables: HashMap<String, Arc<dyn TableProvider>> = HashMap::new();
         let mut table_infos = Vec::with_capacity(self.manifest.tables.len());
@@ -117,42 +138,44 @@ impl CompiledBackendSource for HttpCompiledSource {
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
         }
-        let mut table_functions =
-            SourceTableFunctions::with_capacity(self.manifest.functions.len());
         let mut table_function_infos = Vec::with_capacity(self.manifest.functions.len());
         for function in &self.manifest.functions {
-            let internal_name =
-                internal_table_function_name(&self.manifest.common.name, &function.name);
-            let function_impl: Arc<dyn datafusion::catalog::TableFunctionImpl> =
+            let factory: Arc<dyn SourceFunctionProviderFactory> =
                 Arc::new(function::HttpSourceTableFunction::new(
                     backend.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
                 )?);
-            table_functions.insert(internal_name.clone(), function_impl);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
                 function,
-                internal_name,
+                factory,
             ));
         }
 
-        let secret_keys = self.source_secrets.keys().cloned().collect();
+        let secret_keys = self
+            .source_input_resolution
+            .secrets()
+            .keys()
+            .cloned()
+            .collect();
         let inputs = build_registered_inputs(
-            &self.manifest.declared_inputs,
-            &self.source_variables,
+            self.source_input_resolution.declared_inputs(),
+            self.source_input_resolution.variables(),
             &secret_keys,
         );
 
+        let schema_name = self.manifest.common.name.clone();
         Ok(BackendRegistration {
-            tables,
-            table_functions,
-            source: RegisteredSource {
-                schema_name: self.manifest.common.name.clone(),
-                tables: table_infos,
-                table_functions: table_function_infos,
-                inputs,
-            },
+            schemas: vec![BackendSchemaRegistration {
+                tables,
+                source: RegisteredSource {
+                    schema_name,
+                    tables: table_infos,
+                    table_functions: table_function_infos,
+                    inputs,
+                },
+            }],
         })
     }
 }

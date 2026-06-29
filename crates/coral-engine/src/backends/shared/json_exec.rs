@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -16,7 +16,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use futures::stream;
+use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
 /// Fetches raw JSON rows for one logical table scan.
@@ -137,30 +137,70 @@ impl ExecutionPlan for JsonExec {
     fn execute(
         &self,
         _partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let fetcher = self.fetcher.clone();
         let converter = self.converter.clone();
         let projected_schema = self.projected_schema.clone();
         let projection = self.projection.clone();
+        // Emit the fetched rows in `batch_size`-row chunks rather than a single
+        // batch spanning the whole result set. Each chunk's `Vec<Value>` is
+        // dropped as soon as it is converted, so the heavy serde_json
+        // representation is released incrementally instead of being held
+        // alongside one large `RecordBatch`.
+        let batch_size = context.session_config().batch_size().max(1);
 
         let stream = stream::once(async move {
             let items = fetcher.fetch().await?;
-            let batch = converter(&items)?;
-
-            match &projection {
-                Some(indices) => batch.project(indices).map_err(|error| {
-                    datafusion::error::DataFusionError::ArrowError(Box::new(error), None)
-                }),
-                None => Ok(batch),
-            }
-        });
+            let state = ChunkState {
+                rows: items.into_iter(),
+                converter,
+                projection,
+                batch_size,
+                emitted: false,
+            };
+            Ok::<_, DataFusionError>(stream::try_unfold(state, next_projected_batch))
+        })
+        .try_flatten();
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             projected_schema,
             stream,
         )))
     }
+}
+
+/// Streaming state for [`JsonExec`]: the remaining fetched rows plus the
+/// conversion/projection context needed to emit each bounded batch.
+struct ChunkState {
+    rows: std::vec::IntoIter<Value>,
+    converter: Converter,
+    projection: Option<Vec<usize>>,
+    batch_size: usize,
+    emitted: bool,
+}
+
+/// Pulls up to `batch_size` rows, converts them into one projected
+/// `RecordBatch`, and returns the advanced state. An empty result still yields
+/// a single empty batch so the schema is carried downstream, matching the
+/// previous single-batch behavior.
+async fn next_projected_batch(mut state: ChunkState) -> Result<Option<(RecordBatch, ChunkState)>> {
+    let chunk: Vec<Value> = state.rows.by_ref().take(state.batch_size).collect();
+    if chunk.is_empty() && state.emitted {
+        return Ok(None);
+    }
+    state.emitted = true;
+
+    let batch = (state.converter)(&chunk)?;
+    let batch = match &state.projection {
+        Some(indices) => batch
+            .project(indices)
+            .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?,
+        None => batch,
+    };
+    // `chunk` is dropped here, releasing this slice of `serde_json::Value`
+    // rows before the next batch is produced.
+    Ok(Some((batch, state)))
 }
 
 #[cfg(test)]
@@ -175,7 +215,7 @@ mod tests {
     use datafusion::physical_plan::ExecutionPlan;
     use serde_json::Value;
 
-    use super::{Converter, Fetcher, JsonExec, RowFetcher};
+    use super::{ChunkState, Converter, Fetcher, JsonExec, RowFetcher, next_projected_batch};
 
     #[derive(Debug)]
     struct NoopFetcher;
@@ -199,6 +239,87 @@ mod tests {
             )
             .map_err(|error| datafusion::error::DataFusionError::ArrowError(Box::new(error), None))
         })
+    }
+
+    fn int_schema() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![Field::new("n", DataType::Int32, false)]))
+    }
+
+    // Builds one Int32 column "n" with one row per item, sized to the chunk so
+    // per-batch row counts and ordering are observable.
+    fn int_converter(schema: Arc<Schema>) -> Converter {
+        Arc::new(move |items: &[Value]| {
+            let values: Int32Array = items
+                .iter()
+                .map(|value| value.as_i64().and_then(|n| i32::try_from(n).ok()))
+                .collect();
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(values) as Arc<dyn Array>]).map_err(
+                |error| datafusion::error::DataFusionError::ArrowError(Box::new(error), None),
+            )
+        })
+    }
+
+    #[test]
+    fn streams_rows_in_bounded_batches_preserving_order() {
+        let rows: Vec<Value> = (0..5).map(Value::from).collect();
+        let mut state = ChunkState {
+            rows: rows.into_iter(),
+            converter: int_converter(int_schema()),
+            projection: None,
+            batch_size: 2,
+            emitted: false,
+        };
+
+        let mut batches = Vec::new();
+        while let Some((batch, next)) =
+            futures::executor::block_on(next_projected_batch(state)).expect("batch")
+        {
+            batches.push(batch);
+            state = next;
+        }
+
+        // 5 rows at batch_size 2 -> [2, 2, 1], not one batch of 5.
+        assert_eq!(
+            batches
+                .iter()
+                .map(RecordBatch::num_rows)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+        let observed: Vec<i32> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .expect("int column")
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(observed, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn empty_result_yields_single_empty_batch() {
+        let state = ChunkState {
+            rows: Vec::new().into_iter(),
+            converter: int_converter(int_schema()),
+            projection: None,
+            batch_size: 8,
+            emitted: false,
+        };
+
+        let (batch, state) = futures::executor::block_on(next_projected_batch(state))
+            .expect("batch")
+            .expect("empty results still emit one schema-carrying batch");
+        assert_eq!(batch.num_rows(), 0);
+        assert!(
+            futures::executor::block_on(next_projected_batch(state))
+                .expect("done")
+                .is_none()
+        );
     }
 
     #[test]

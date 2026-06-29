@@ -528,6 +528,11 @@ async fn codex_session_style_segment_partitions_and_json_payload_are_queryable()
                         "type": "Int64",
                         "path": { "kind": "segment", "index": 2 }
                     }
+                ],
+                "metadata": [
+                    { "name": "session_path", "kind": "relative_path" },
+                    { "name": "session_file", "kind": "file_stem" },
+                    { "name": "event_index", "kind": "line_number" }
                 ]
             },
             "columns": [
@@ -542,10 +547,11 @@ async fn codex_session_style_segment_partitions_and_json_payload_are_queryable()
         &CoralQuery::execute_sql(
             &[source],
             test_runtime(),
-            "SELECT year, month, day, type, json_get_str(payload, 'id') AS payload_id \
+            "SELECT year, month, day, session_path, session_file, event_index, \
+                    type, json_get_str(payload, 'id') AS payload_id \
              FROM codex_sessions_fixture.events \
              WHERE year = 2026 AND month = 5 AND day = 14 \
-             ORDER BY payload_id",
+             ORDER BY event_index",
         )
         .await
         .expect("codex-style sessions should query"),
@@ -558,6 +564,9 @@ async fn codex_session_style_segment_partitions_and_json_payload_are_queryable()
                 "year": 2026,
                 "month": 5,
                 "day": 14,
+                "session_path": "2026/05/14/rollout-2026-05-14T12-34-33.jsonl",
+                "session_file": "rollout-2026-05-14T12-34-33",
+                "event_index": 1,
                 "type": "event_msg",
                 "payload_id": "evt_1"
             }),
@@ -565,8 +574,222 @@ async fn codex_session_style_segment_partitions_and_json_payload_are_queryable()
                 "year": 2026,
                 "month": 5,
                 "day": 14,
+                "session_path": "2026/05/14/rollout-2026-05-14T12-34-33.jsonl",
+                "session_file": "rollout-2026-05-14T12-34-33",
+                "event_index": 2,
                 "type": "response_item",
                 "payload_id": "evt_2"
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn jsonl_metadata_columns_are_queryable_and_discoverable() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(
+        temp.path(),
+        "2026/06/02/session.with.dots.jsonl",
+        &[
+            json!({
+                "id": 1,
+                "file_path": "payload/file.jsonl",
+                "file_name": "payload-file.jsonl",
+                "file_stem": "payload-file",
+                "event_index": -1
+            }),
+            json!({"id": 2}),
+        ],
+    );
+    let source = build_source(json!({
+        "name": "jsonl_metadata_fixture",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "JSONL events with metadata",
+            "format": "jsonl",
+            "source": {
+                "location": dir_url(temp.path()),
+                "glob": "**/*.jsonl",
+                "metadata": [
+                    { "name": "file_path", "kind": "relative_path" },
+                    { "name": "file_name", "kind": "file_name" },
+                    { "name": "file_stem", "kind": "file_stem" },
+                    { "name": "event_index", "kind": "line_number" }
+                ]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    }));
+    let sources = [source];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT id, file_path, file_name, file_stem, event_index \
+             FROM jsonl_metadata_fixture.events \
+             ORDER BY event_index",
+        )
+        .await
+        .expect("metadata columns should query"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "id": 1,
+                "file_path": "2026/06/02/session.with.dots.jsonl",
+                "file_name": "session.with.dots.jsonl",
+                "file_stem": "session.with.dots",
+                "event_index": 1
+            }),
+            json!({
+                "id": 2,
+                "file_path": "2026/06/02/session.with.dots.jsonl",
+                "file_name": "session.with.dots.jsonl",
+                "file_stem": "session.with.dots",
+                "event_index": 2
+            }),
+        ]
+    );
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT column_name, data_type \
+             FROM coral.columns \
+             WHERE schema_name = 'jsonl_metadata_fixture' \
+               AND table_name = 'events' \
+               AND column_name IN ('file_path', 'file_name', 'file_stem', 'event_index') \
+             ORDER BY column_name",
+        )
+        .await
+        .expect("metadata columns should appear in catalog"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({"column_name": "event_index", "data_type": "Int64"}),
+            json!({"column_name": "file_name", "data_type": "Utf8"}),
+            json!({"column_name": "file_path", "data_type": "Utf8"}),
+            json!({"column_name": "file_stem", "data_type": "Utf8"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn jsonl_metadata_columns_work_for_single_file_locations() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "events.jsonl", &[json!({"id": 1})]);
+    let file_url = url::Url::from_file_path(temp.path().join("events.jsonl"))
+        .expect("file path should convert to URL")
+        .to_string();
+    let source = build_source(json!({
+        "name": "jsonl_single_file_metadata",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "Single JSONL file with metadata",
+            "format": "jsonl",
+            "source": {
+                "location": file_url,
+                "metadata": [
+                    { "name": "file_path", "kind": "relative_path" },
+                    { "name": "file_name", "kind": "file_name" },
+                    { "name": "file_stem", "kind": "file_stem" },
+                    { "name": "event_index", "kind": "line_number" }
+                ]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    }));
+    let sources = [source];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT id, file_path, file_name, file_stem, event_index \
+             FROM jsonl_single_file_metadata.events",
+        )
+        .await
+        .expect("single-file metadata columns should query"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![json!({
+            "id": 1,
+            "file_path": "events.jsonl",
+            "file_name": "events.jsonl",
+            "file_stem": "events",
+            "event_index": 1
+        })]
+    );
+}
+
+#[tokio::test]
+async fn jsonl_metadata_preserves_object_store_path_text() {
+    let temp = TempDir::new().expect("temp dir");
+    write_jsonl_file(temp.path(), "L%3ABC.jsonl", &[json!({"id": 1})]);
+    write_jsonl_file(temp.path(), "bad%ZZ.jsonl", &[json!({"id": 2})]);
+    let source = build_source(json!({
+        "name": "jsonl_percent_metadata",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [{
+            "name": "events",
+            "description": "JSONL files with literal percent path text",
+            "format": "jsonl",
+            "source": {
+                "location": dir_url(temp.path()),
+                "glob": "*.jsonl",
+                "metadata": [
+                    { "name": "file_path", "kind": "relative_path" },
+                    { "name": "file_name", "kind": "file_name" },
+                    { "name": "file_stem", "kind": "file_stem" }
+                ]
+            },
+            "columns": [{ "name": "id", "type": "Int64" }]
+        }]
+    }));
+    let sources = [source];
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &sources,
+            test_runtime(),
+            "SELECT id, file_path, file_name, file_stem \
+             FROM jsonl_percent_metadata.events \
+             ORDER BY id",
+        )
+        .await
+        .expect("metadata should preserve object-store path text"),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "id": 1,
+                "file_path": "L%3ABC.jsonl",
+                "file_name": "L%3ABC.jsonl",
+                "file_stem": "L%3ABC"
+            }),
+            json!({
+                "id": 2,
+                "file_path": "bad%ZZ.jsonl",
+                "file_name": "bad%ZZ.jsonl",
+                "file_stem": "bad%ZZ"
             }),
         ]
     );
