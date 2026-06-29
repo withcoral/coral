@@ -639,6 +639,152 @@ async fn cypher_graph_aware_unlabeled_node_scan_counts_missing_properties_as_nul
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_filters_missing_property_comparisons_as_unknown() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         WHERE entity.tier = 'prod' \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing property comparison should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Service", "name": "billing-api"}),
+            json!({"label": "Service", "name": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_matches_missing_property_is_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         WHERE entity.tier IS NULL \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing property null predicate should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Person", "name": "Ada Lovelace"}),
+            json!({"label": "Person", "name": "Grace Hopper"}),
+            json!({"label": "Person", "name": "Katherine Johnson"}),
+            json!({"label": "Service", "name": "legacy-sync"}),
+            json!({"label": "Team", "name": "analytics"}),
+            json!({"label": "Team", "name": "infra"}),
+            json!({"label": "Team", "name": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_filters_missing_property_is_not_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         WHERE entity.tier IS NOT NULL \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing property non-null predicate should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Service", "name": "billing-api"}),
+            json!({"label": "Service", "name": "deployments"}),
+            json!({"label": "Service", "name": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_preserves_missing_property_null_under_not() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         WHERE NOT entity.tier = 'prod' \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("heterogeneous missing property negated comparison should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"label": "Service", "name": "experiments"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_treats_missing_rhs_property_as_unknown() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service), (entity) \
+         WHERE service.tier = entity.tier \
+         RETURN service.name AS service, labels(entity)[0] AS entity_label, entity.name AS entity \
+         ORDER BY service, entity_label, entity",
+    )
+    .await
+    .expect("heterogeneous missing RHS property comparison should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api", "entity_label": "Service", "entity": "billing-api"}),
+            json!({"service": "billing-api", "entity_label": "Service", "entity": "deployments"}),
+            json!({"service": "deployments", "entity_label": "Service", "entity": "billing-api"}),
+            json!({"service": "deployments", "entity_label": "Service", "entity": "deployments"}),
+            json!({"service": "experiments", "entity_label": "Service", "entity": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

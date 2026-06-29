@@ -157,14 +157,16 @@ The supported foundation subset is intentionally narrow:
   standalone unlabeled node scans such as `MATCH (n)` and anonymous `MATCH ()`
   are lowered by expanding over the declared node labels through the same
   capped union-branch planner used for explicit label alternatives. After
-  branch compilation, missing node-property projections introduced by those
+  branch compilation, missing node-property references introduced by those
   expanded labels are normalized to branch-local `NULL` literals for
-  projections, hidden `ORDER BY` columns, and aggregate source columns; property
-  predicates over missing branch properties still require a dedicated nullable
-  predicate rewrite. Declaration-free compilation keeps rejecting first-bound
-  named variables and anonymous nodes without labels. Bounded
-  relationship-range pruning resolves the same compile-time dynamic endpoint
-  labels before it consults graph declaration topology;
+  projections, hidden `ORDER BY` columns, aggregate source columns, and
+  predicates. Predicate normalization lowers missing-property comparisons into
+  scalar `NULL` comparisons so SQL three-valued logic preserves Cypher unknown
+  behavior under `AND` / `OR` / `XOR` / `NOT`, while `IS NULL` / `IS NOT NULL`
+  keep their expected null-check semantics. Declaration-free compilation keeps
+  rejecting first-bound named variables and anonymous nodes without labels.
+  Bounded relationship-range pruning resolves the same compile-time dynamic
+  endpoint labels before it consults graph declaration topology;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
