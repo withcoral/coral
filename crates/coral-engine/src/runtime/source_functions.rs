@@ -72,13 +72,12 @@ impl SourceFunctionRegistry {
         self.functions.is_empty()
     }
 
-    /// Installs this relation planner together with the analyzer rule that
-    /// resolves the nodes it parks. The two are a pair: any session that can
-    /// plan source-function calls must also be able to bind them.
-    pub(crate) fn install(self, ctx: &SessionContext) -> Result<()> {
-        ctx.register_relation_planner(Arc::new(self))?;
+    pub(crate) fn install_relation_planner(self, ctx: &SessionContext) -> Result<()> {
+        ctx.register_relation_planner(Arc::new(self))
+    }
+
+    pub(crate) fn install_analyzer(ctx: &SessionContext) {
         ctx.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
-        Ok(())
     }
 
     fn find(&self, call: &ScopedTableFunctionCall) -> Option<&SourceFunction> {
