@@ -1,6 +1,6 @@
 //! Concrete `DataFusion` runtime assembly for the data plane.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -32,6 +32,7 @@ use crate::runtime::query_planner::CoralQueryPlanner;
 use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
+use crate::runtime::scoped_table_functions::ScopedTableFunctionName;
 use crate::runtime::source_functions::{
     SOURCE_FUNCTION_NODE_NAME, SourceFunctionNode, SourceFunctionRegistry,
 };
@@ -209,19 +210,22 @@ async fn install_table_function_call_planners(
     udfs: &[UdfRuntimeDefinition],
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
+    let source_table_function_names = source_functions.names();
     match (!source_functions.is_empty(), !udfs.is_empty()) {
         (false, false) => Ok(()),
         (true, false) => source_functions
             .install(ctx)
             .map_err(|err| datafusion_to_core(&err, tables)),
-        (false, true) => install_udf_call_planner(ctx, udfs, tables).await,
+        (false, true) => {
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await
+        }
         (true, true) => {
             // UDF expansion can reveal source-function calls inside the UDF body.
             // Install source planning first, then run the source analyzer after UDF expansion.
             source_functions
                 .install_relation_planner(ctx)
                 .map_err(|err| datafusion_to_core(&err, tables))?;
-            install_udf_call_planner(ctx, udfs, tables).await?;
+            install_udf_call_planner(ctx, udfs, source_table_function_names, tables).await?;
             SourceFunctionRegistry::install_analyzer(ctx);
             Ok(())
         }
@@ -231,9 +235,10 @@ async fn install_table_function_call_planners(
 async fn install_udf_call_planner(
     ctx: &SessionContext,
     udfs: &[UdfRuntimeDefinition],
+    source_table_function_names: HashSet<ScopedTableFunctionName>,
     tables: &[TableInfo],
 ) -> Result<(), CoreError> {
-    let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs))
+    let udf_calls = Box::pin(UdfCallRegistry::new(ctx, udfs, source_table_function_names))
         .await
         .map_err(|err| datafusion_to_core(&err, tables))?;
     udf_calls

@@ -43,19 +43,29 @@ pub(crate) const UDF_CALL_NODE_NAME: &str = "CoralUdfCall";
 pub(crate) struct UdfCallRegistry {
     functions: HashMap<ScopedTableFunctionName, UdfCallTarget>,
     udf_schemas: HashSet<String>,
+    source_function_schemas: HashSet<String>,
 }
 
 impl UdfCallRegistry {
-    pub(crate) async fn new(ctx: &SessionContext, udfs: &[UdfRuntimeDefinition]) -> Result<Self> {
+    pub(crate) async fn new(
+        ctx: &SessionContext,
+        udfs: &[UdfRuntimeDefinition],
+        source_functions: HashSet<ScopedTableFunctionName>,
+    ) -> Result<Self> {
+        let source_function_schemas = source_functions
+            .iter()
+            .map(|function| function.schema.clone())
+            .collect();
         let mut registry = Self {
             functions: HashMap::new(),
             udf_schemas: HashSet::new(),
+            source_function_schemas,
         };
 
         for udf in udfs {
             let body_plan = ctx.state().create_logical_plan(udf_sql(udf)).await?;
             read_only_sql_options().verify_plan(&body_plan)?;
-            registry.insert_function(udf, &body_plan)?;
+            registry.insert_function(udf, &body_plan, &source_functions)?;
         }
 
         Ok(registry)
@@ -74,9 +84,16 @@ impl UdfCallRegistry {
         &mut self,
         udf: &UdfRuntimeDefinition,
         body_plan: &LogicalPlan,
+        source_functions: &HashSet<ScopedTableFunctionName>,
     ) -> Result<()> {
         let publish = &udf.publish.table_function;
         let key = ScopedTableFunctionName::from_parts(&publish.schema, &publish.name);
+        if source_functions.contains(&key) {
+            return Err(DataFusionError::Plan(format!(
+                "udf table function {} conflicts with existing table function",
+                qualified_name(&publish.schema, &publish.name)
+            )));
+        }
         if self
             .functions
             .insert(
@@ -98,8 +115,11 @@ impl UdfCallRegistry {
         self.functions.get(&call.lookup_key)
     }
 
-    fn owns_udf_schema(&self, call: &ScopedTableFunctionCall) -> bool {
+    fn owns_udf_only_schema(&self, call: &ScopedTableFunctionCall) -> bool {
         self.udf_schemas.contains(&call.lookup_key.schema)
+            && !self
+                .source_function_schemas
+                .contains(&call.lookup_key.schema)
     }
 
     fn available_functions_hint(&self, schema: &str) -> String {
@@ -123,7 +143,7 @@ impl RelationPlanner for UdfCallRegistry {
         };
 
         let Some(function) = self.find(&call) else {
-            if self.owns_udf_schema(&call) {
+            if self.owns_udf_only_schema(&call) {
                 let hint = self.available_functions_hint(&call.lookup_key.schema);
                 return Err(call.unknown_function_error("udf table function", &hint));
             }

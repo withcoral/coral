@@ -13,10 +13,13 @@ use coral_engine::{
 };
 use coral_spec::ManifestDataType;
 use serde_json::{Value, json};
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
 
 const EVENTS_CALL: &str = "select * from udfs.min_id_events(min_id => 1)";
+const REVIEW_QUERY: &str = "repo:withcoral/coral review";
 
 #[derive(Debug, Default)]
 struct RowCountObserver {
@@ -67,13 +70,13 @@ fn events_manifest(name: &str, dir: &Path) -> Value {
     })
 }
 
-fn search_function_manifest(name: &str) -> Value {
+fn search_function_manifest(name: &str, base_url: &str) -> Value {
     json!({
         "name": name,
         "version": "0.1.0",
         "dsl_version": 3,
         "backend": "http",
-        "base_url": "https://example.test",
+        "base_url": base_url,
         "functions": [{
             "name": "search_issues",
             "description": "Search issues",
@@ -82,6 +85,11 @@ fn search_function_manifest(name: &str) -> Value {
                     "name": "q",
                     "required": true,
                     "bind": { "arg": "q" }
+                },
+                {
+                    "name": "mode",
+                    "values": ["lexical", "semantic", "hybrid"],
+                    "bind": { "arg": "search_type" }
                 },
                 {
                     "name": "min_score",
@@ -104,6 +112,7 @@ fn search_function_manifest(name: &str) -> Value {
                 "path": "/api/search/issues",
                 "query": [
                     { "name": "q", "from": "arg", "key": "q" },
+                    { "name": "search_type", "from": "arg", "key": "search_type" },
                     { "name": "min_score", "from": "arg", "key": "min_score" },
                     { "name": "payload", "from": "arg", "key": "payload" },
                     { "name": "since", "from": "arg", "key": "since" }
@@ -118,6 +127,31 @@ fn search_function_manifest(name: &str) -> Value {
             ]
         }]
     })
+}
+
+async fn search_source_with_response(
+    server: &MockServer,
+    source_name: &str,
+    mode: &str,
+    title: &str,
+    score: f64,
+) -> coral_engine::QuerySource {
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", REVIEW_QUERY))
+        .and(query_param("search_type", mode))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{ "title": title, "score": score }]
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+
+    build_source(search_function_manifest(source_name, &server.uri()))
+}
+
+fn search_source(server: &MockServer, source_name: &str) -> coral_engine::QuerySource {
+    build_source(search_function_manifest(source_name, &server.uri()))
 }
 
 fn events_source(source_name: &str) -> (tempfile::TempDir, coral_engine::QuerySource) {
@@ -278,6 +312,56 @@ fn column_types(signature: &UdfRuntimeSignature) -> Vec<(&str, &DataType)> {
         .collect()
 }
 
+fn review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
+    UdfRuntimeDefinition {
+        name: "review_queue".to_string(),
+        description: "Review queue".to_string(),
+        arguments: vec![
+            udf_argument("min_score", ManifestDataType::Float64),
+            udf_argument("mode", ManifestDataType::Utf8),
+            udf_argument("payload", ManifestDataType::Json),
+            udf_argument("query", ManifestDataType::Utf8),
+            udf_argument("since", ManifestDataType::Timestamp),
+        ],
+        implementation: UdfRuntimeImplementation::CoralSql {
+            query: format!(
+                "select title, score from {source_name}.search_issues(q => $query, mode => $mode, min_score => $min_score, payload => $payload, since => $since)"
+            ),
+        },
+        publish: udf_publish("review_queue"),
+        result_columns: Vec::new(),
+    }
+}
+
+fn published_review_queue_udf(source_name: &str) -> UdfRuntimeDefinition {
+    let mut udf = review_queue_udf(source_name);
+    udf.result_columns = vec![
+        udf_result_column("title", DataType::Utf8),
+        udf_result_column("score", DataType::Float64),
+    ];
+    udf
+}
+
+fn review_queue_udf_published_as(source_name: &str, schema: &str) -> UdfRuntimeDefinition {
+    review_queue_udf_published_at(source_name, schema, "review_queue")
+}
+
+fn review_queue_udf_published_at(
+    source_name: &str,
+    schema: &str,
+    name: &str,
+) -> UdfRuntimeDefinition {
+    let mut udf = published_review_queue_udf(source_name);
+    udf.publish = UdfRuntimePublish {
+        table_function: UdfRuntimeTableFunctionPublish {
+            schema: schema.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+        },
+    };
+    udf
+}
+
 fn runtime_with_observer(observer: Arc<dyn QueryResultObserver>) -> QueryRuntimeConfig {
     let mut extensions = EngineExtensions::default();
     extensions.query_result_observers.push(observer);
@@ -310,9 +394,29 @@ async fn assert_udf_sql_error(
     assert_invalid_input_contains(error, expected);
 }
 
+async fn assert_source_udf_sql_error(
+    source_name: &str,
+    udfs: Vec<UdfRuntimeDefinition>,
+    sql: &str,
+    expected: &str,
+) {
+    let server = MockServer::start().await;
+    let source = search_source(&server, source_name);
+    let runtime = test_runtime().with_udfs(udfs);
+
+    let error = CoralQuery::execute_sql(&[source], runtime, sql)
+        .await
+        .expect_err("udf SQL should fail");
+
+    assert_invalid_input_contains(error, expected);
+}
+
 #[tokio::test]
 async fn infer_udf_signature_uses_source_function_schema_with_parameters() {
-    let source = build_source(search_function_manifest("signature_param_search"));
+    let source = build_source(search_function_manifest(
+        "signature_param_search",
+        "https://example.test",
+    ));
 
     let signature = CoralQuery::infer_udf_signature(
         &[source],
@@ -702,4 +806,102 @@ async fn published_udf_table_function_preserves_inner_limit() {
     .expect("published udf table function should preserve inner limit");
 
     assert_eq!(execution_to_rows(&execution), vec![json!({"count": 1})]);
+}
+
+#[tokio::test]
+async fn udf_body_source_call_accepts_query_params() {
+    let server = MockServer::start().await;
+    let source = search_source_with_response(
+        &server,
+        "published_param_udf_search",
+        "semantic",
+        "Param review",
+        8.25,
+    )
+    .await;
+    let runtime = test_runtime().with_udfs(vec![published_review_queue_udf(
+        "published_param_udf_search",
+    )]);
+
+    let execution = CoralQuery::execute_sql_with_params(
+        &[source],
+        runtime,
+        "select title, score from udfs.review_queue(query => $query, mode => $mode)",
+        QueryParameters::from([
+            (
+                "query".to_string(),
+                QueryParameterValue::string(REVIEW_QUERY),
+            ),
+            ("mode".to_string(), QueryParameterValue::string("semantic")),
+        ]),
+    )
+    .await
+    .expect("udf body source call should accept params");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({
+            "title": "Param review",
+            "score": 8.25
+        })]
+    );
+}
+
+#[tokio::test]
+async fn udf_function_can_share_source_schema_with_source_functions() {
+    let server = MockServer::start().await;
+    let source = search_source_with_response(
+        &server,
+        "shared_udf_schema",
+        "hybrid",
+        "Schema-shared udf",
+        3.0,
+    )
+    .await;
+    let runtime = test_runtime().with_udfs(vec![review_queue_udf_published_as(
+        "shared_udf_schema",
+        "shared_udf_schema",
+    )]);
+
+    let execution = CoralQuery::execute_sql(
+        &[source],
+        runtime,
+        "select title, score from shared_udf_schema.review_queue(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+    )
+    .await
+    .expect("udf should plan before source-schema unknown-function handling");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({"title": "Schema-shared udf", "score": 3.0})]
+    );
+}
+
+#[tokio::test]
+async fn unknown_function_in_shared_source_schema_keeps_source_diagnostic() {
+    assert_source_udf_sql_error(
+        "shared_udf_schema",
+        vec![review_queue_udf_published_as(
+            "shared_udf_schema",
+            "shared_udf_schema",
+        )],
+        "select * from shared_udf_schema.nope()",
+        "unknown source table function shared_udf_schema.nope; available functions: shared_udf_schema.search_issues",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn udf_table_function_cannot_replace_source_table_function() {
+    assert_source_udf_sql_error(
+        "source_function_collision_search",
+        vec![review_queue_udf_published_at(
+            "source_function_collision_search",
+            "source_function_collision_search",
+            "search_issues",
+        )],
+        "select * from source_function_collision_search.search_issues(query => 'repo:withcoral/coral review', mode => 'hybrid')",
+        "udf table function source_function_collision_search.search_issues conflicts with existing table function",
+    )
+    .await;
 }

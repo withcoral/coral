@@ -75,6 +75,10 @@ impl SourceFunctionRegistry {
         self.functions.is_empty()
     }
 
+    pub(crate) fn names(&self) -> HashSet<ScopedTableFunctionName> {
+        self.functions.keys().cloned().collect()
+    }
+
     /// Installs source-function planning and binding for one session.
     ///
     /// The two hooks are a pair: any session that can plan source-function
