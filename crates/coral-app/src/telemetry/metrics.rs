@@ -1,18 +1,38 @@
 //! Shared query metric instruments.
 
 use std::sync::RwLock;
+use std::time::Duration;
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 
 #[derive(Clone)]
 pub(crate) struct Metrics {
-    pub(crate) count: Counter<u64>,
-    pub(crate) duration: Histogram<f64>,
-    pub(crate) rows: Histogram<u64>,
+    count: Counter<u64>,
+    duration: Histogram<f64>,
+    rows: Histogram<u64>,
 }
 
-pub(crate) fn status_attr(ok: bool) -> KeyValue {
+impl Metrics {
+    pub(crate) fn record_query(
+        &self,
+        operation: &'static str,
+        duration: Duration,
+        row_count: Option<u64>,
+        ok: bool,
+    ) {
+        let status = status_attr(ok);
+        let attributes = [status, KeyValue::new("operation", operation)];
+        self.count.add(1, &attributes);
+        self.duration.record(duration.as_secs_f64(), &attributes);
+
+        if let Some(row_count) = row_count {
+            self.rows.record(row_count, &attributes);
+        }
+    }
+}
+
+fn status_attr(ok: bool) -> KeyValue {
     KeyValue::new("status", if ok { "ok" } else { "error" })
 }
 
@@ -140,10 +160,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use opentelemetry::Value;
-    use opentelemetry_sdk::metrics::data::{
-        AggregatedMetrics, Histogram, MetricData, ResourceMetrics,
-    };
+    use opentelemetry::{KeyValue, Value};
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 
     use super::metrics;
 
@@ -159,49 +177,15 @@ mod tests {
             .find(|metric| metric.name() == name)
     }
 
-    fn histogram_total_count(metrics: &[ResourceMetrics], name: &str) -> u64 {
-        find_metric(metrics, name).map_or(0, |metric| match metric.data() {
-            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => histogram
-                .data_points()
-                .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
-                .sum(),
-            AggregatedMetrics::U64(MetricData::Histogram(histogram)) => histogram
-                .data_points()
-                .map(opentelemetry_sdk::metrics::data::HistogramDataPoint::count)
-                .sum(),
-            _ => 0,
-        })
+    #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
+    struct MetricPoint {
+        attributes: Vec<(String, String)>,
+        value: u64,
     }
 
-    fn histogram_has_status(metrics: &[ResourceMetrics], name: &str, status: &str) -> bool {
-        find_metric(metrics, name).is_some_and(|metric| match metric.data() {
-            AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
-                histogram_data_has_status(histogram, status)
-            }
-            AggregatedMetrics::U64(MetricData::Histogram(histogram)) => {
-                histogram_data_has_status(histogram, status)
-            }
-            _ => false,
-        })
-    }
-
-    fn histogram_data_has_status<T>(histogram: &Histogram<T>, status: &str) -> bool {
-        histogram.data_points().any(|point| {
-            point.attributes().any(|attr| {
-                attr.key.as_str() == "status"
-                    && matches!(&attr.value, Value::String(value) if value.as_str() == status)
-            })
-        })
-    }
-
-    fn counter_total(metrics: &[ResourceMetrics], name: &str) -> u64 {
-        find_metric(metrics, name).map_or(0, |metric| match metric.data() {
-            AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
-                .data_points()
-                .map(opentelemetry_sdk::metrics::data::SumDataPoint::value)
-                .sum(),
-            _ => 0,
-        })
+    struct ExpectedMetricPoint<'a> {
+        attributes: &'a [(&'a str, &'a str)],
+        value: u64,
     }
 
     #[test]
@@ -210,19 +194,177 @@ mod tests {
         let exporter = super::test_support::install_metrics_exporter();
         let metrics = metrics();
 
-        let ok = super::status_attr(true);
-        let err = super::status_attr(false);
-        metrics.count.add(2, std::slice::from_ref(&ok));
-        metrics.count.add(1, std::slice::from_ref(&err));
-        metrics.duration.record(0.5, std::slice::from_ref(&ok));
-        metrics.duration.record(0.1, std::slice::from_ref(&err));
-        metrics.rows.record(7, std::slice::from_ref(&ok));
+        metrics.record_query(
+            "execute_sql",
+            std::time::Duration::from_millis(500),
+            Some(7),
+            true,
+        );
+        metrics.record_query(
+            "execute_sql",
+            std::time::Duration::from_millis(100),
+            None,
+            false,
+        );
+        metrics.record_query(
+            "explain_sql",
+            std::time::Duration::from_millis(250),
+            None,
+            true,
+        );
 
         super::test_support::flush_metrics();
         let finished = exporter.get_finished_metrics().expect("finished metrics");
-        assert_eq!(counter_total(&finished, "coral.query.count"), 3);
-        assert_eq!(histogram_total_count(&finished, "coral.query.duration"), 2);
-        assert_eq!(histogram_total_count(&finished, "coral.query.rows"), 1);
-        assert!(histogram_has_status(&finished, "coral.query.rows", "ok"));
+        assert_counter_points(
+            &finished,
+            "coral.query.count",
+            &[
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "execute_sql"), ("status", "error")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "execute_sql"), ("status", "ok")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "explain_sql"), ("status", "ok")],
+                    value: 1,
+                },
+            ],
+        );
+        assert_histogram_counts(
+            &finished,
+            "coral.query.duration",
+            &[
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "execute_sql"), ("status", "error")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "execute_sql"), ("status", "ok")],
+                    value: 1,
+                },
+                ExpectedMetricPoint {
+                    attributes: &[("operation", "explain_sql"), ("status", "ok")],
+                    value: 1,
+                },
+            ],
+        );
+        assert_u64_histogram_points(
+            &finished,
+            "coral.query.rows",
+            &[ExpectedMetricPoint {
+                attributes: &[("operation", "execute_sql"), ("status", "ok")],
+                value: 7,
+            }],
+        );
+    }
+
+    fn assert_counter_points(
+        metrics: &[ResourceMetrics],
+        name: &str,
+        expected: &[ExpectedMetricPoint<'_>],
+    ) {
+        let metric = find_metric(metrics, name).unwrap_or_else(|| panic!("metric {name} missing"));
+        let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+            panic!("metric {name} should be a u64 sum");
+        };
+        let mut actual = sum
+            .data_points()
+            .map(|point| MetricPoint {
+                attributes: attributes(point.attributes()),
+                value: point.value(),
+            })
+            .collect::<Vec<_>>();
+        assert_metric_points(name, &mut actual, expected);
+    }
+
+    fn assert_histogram_counts(
+        metrics: &[ResourceMetrics],
+        name: &str,
+        expected: &[ExpectedMetricPoint<'_>],
+    ) {
+        let metric = find_metric(metrics, name).unwrap_or_else(|| panic!("metric {name} missing"));
+        let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metric.data() else {
+            panic!("metric {name} should be an f64 histogram");
+        };
+        let mut actual = histogram
+            .data_points()
+            .map(|point| MetricPoint {
+                attributes: attributes(point.attributes()),
+                value: point.count(),
+            })
+            .collect::<Vec<_>>();
+        assert_metric_points(name, &mut actual, expected);
+    }
+
+    fn assert_u64_histogram_points(
+        metrics: &[ResourceMetrics],
+        name: &str,
+        expected: &[ExpectedMetricPoint<'_>],
+    ) {
+        let metric = find_metric(metrics, name).unwrap_or_else(|| panic!("metric {name} missing"));
+        let AggregatedMetrics::U64(MetricData::Histogram(histogram)) = metric.data() else {
+            panic!("metric {name} should be a u64 histogram");
+        };
+        let mut actual = histogram
+            .data_points()
+            .map(|point| MetricPoint {
+                attributes: attributes(point.attributes()),
+                value: point.sum(),
+            })
+            .collect::<Vec<_>>();
+        assert_metric_points(name, &mut actual, expected);
+    }
+
+    fn assert_metric_points(
+        name: &str,
+        actual: &mut Vec<MetricPoint>,
+        expected: &[ExpectedMetricPoint<'_>],
+    ) {
+        actual.sort();
+        let mut expected = expected_points(expected);
+        expected.sort();
+        assert_eq!(actual, &expected, "metric {name} data points");
+    }
+
+    fn expected_points(expected: &[ExpectedMetricPoint<'_>]) -> Vec<MetricPoint> {
+        expected
+            .iter()
+            .map(|point| MetricPoint {
+                attributes: expected_attributes(point.attributes),
+                value: point.value,
+            })
+            .collect()
+    }
+
+    fn attributes<'a>(attributes: impl Iterator<Item = &'a KeyValue>) -> Vec<(String, String)> {
+        let mut attributes = attributes
+            .map(|attribute| {
+                (
+                    attribute.key.as_str().to_string(),
+                    value_string(&attribute.value),
+                )
+            })
+            .collect::<Vec<_>>();
+        attributes.sort();
+        attributes
+    }
+
+    fn expected_attributes(attributes: &[(&str, &str)]) -> Vec<(String, String)> {
+        let mut attributes = attributes
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect::<Vec<_>>();
+        attributes.sort();
+        attributes
+    }
+
+    fn value_string(value: &Value) -> String {
+        match value {
+            Value::String(value) => value.to_string(),
+            _ => value.to_string(),
+        }
     }
 }

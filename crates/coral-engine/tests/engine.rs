@@ -7,6 +7,12 @@
 
 #[path = "engine/catalog_tests.rs"]
 mod catalog_tests;
+#[path = "engine/composite_tests.rs"]
+mod composite_tests;
+#[path = "engine/dependent_join_execution_tests.rs"]
+mod dependent_join_execution_tests;
+#[path = "engine/dependent_join_registration_tests.rs"]
+mod dependent_join_registration_tests;
 #[path = "engine/file_format_tests.rs"]
 mod file_format_tests;
 #[path = "engine/harness.rs"]

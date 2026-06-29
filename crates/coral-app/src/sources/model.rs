@@ -13,7 +13,7 @@ use crate::sources::SourceName;
 pub(crate) struct CandidateSource {
     pub(crate) name: SourceName,
     pub(crate) description: String,
-    pub(crate) version: String,
+    pub(crate) version: Option<String>,
     pub(crate) inputs: Vec<ManifestInputSpec>,
     pub(crate) installed: bool,
     pub(crate) origin: SourceOrigin,
@@ -23,7 +23,7 @@ pub(crate) struct CandidateSource {
 /// App-owned model for one source installed in a workspace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct InstalledSource {
-    /// Bare source name. This is also the visible SQL schema name.
+    /// Bare installed source name.
     pub(crate) name: SourceName,
     /// Persisted manifest version when it should live in app state.
     ///

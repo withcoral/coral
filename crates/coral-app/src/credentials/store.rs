@@ -95,8 +95,6 @@ fn update_hasher_with_os_str(hasher: &mut Sha256, value: &OsStr) {
 }
 
 trait CredentialMaterialBackend: Send + Sync {
-    fn kind(&self) -> CredentialStorageKind;
-
     fn probe(&self) -> Result<(), CredentialsError> {
         Ok(())
     }
@@ -427,10 +425,6 @@ impl TestKeychainBackend {
 
 #[cfg(test)]
 impl CredentialMaterialBackend for TestKeychainBackend {
-    fn kind(&self) -> CredentialStorageKind {
-        CredentialStorageKind::Keychain
-    }
-
     fn probe(&self) -> Result<(), CredentialsError> {
         if self.available {
             Ok(())
@@ -465,7 +459,7 @@ impl CredentialMaterialBackend for TestKeychainBackend {
     ) -> Result<CredentialMaterialSnapshot, CredentialsError> {
         self.probe()?;
         Ok(CredentialMaterialSnapshot::new(
-            self.kind(),
+            CredentialStorageKind::Keychain,
             self.lock_material()?.clone(),
         ))
     }
@@ -503,10 +497,6 @@ impl FileCredentialBackend {
 }
 
 impl CredentialMaterialBackend for FileCredentialBackend {
-    fn kind(&self) -> CredentialStorageKind {
-        CredentialStorageKind::File
-    }
-
     fn read(
         &self,
         set: &CredentialSetRef<'_>,
@@ -539,10 +529,13 @@ impl CredentialMaterialBackend for FileCredentialBackend {
         let path = self.material_file(set)?;
         let _lock = FileLock::shared(self.layout.state_lock())?;
         match std::fs::read(path) {
-            Ok(bytes) => Ok(CredentialMaterialSnapshot::new(self.kind(), Some(bytes))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Ok(CredentialMaterialSnapshot::new(self.kind(), None))
-            }
+            Ok(bytes) => Ok(CredentialMaterialSnapshot::new(
+                CredentialStorageKind::File,
+                Some(bytes),
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(
+                CredentialMaterialSnapshot::new(CredentialStorageKind::File, None),
+            ),
             Err(error) => Err(error.into()),
         }
     }
@@ -552,10 +545,10 @@ impl CredentialMaterialBackend for FileCredentialBackend {
         set: &CredentialSetRef<'_>,
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), CredentialsError> {
-        if snapshot.storage() != self.kind() {
+        if snapshot.storage() != CredentialStorageKind::File {
             return Err(CredentialsError::SnapshotStorageMismatch {
                 snapshot: snapshot.storage().as_config_value(),
-                requested: self.kind().as_config_value(),
+                requested: CredentialStorageKind::File.as_config_value(),
             });
         }
         let path = self.material_file(set)?;
@@ -652,10 +645,6 @@ impl KeychainCredentialBackend {
 }
 
 impl CredentialMaterialBackend for KeychainCredentialBackend {
-    fn kind(&self) -> CredentialStorageKind {
-        CredentialStorageKind::Keychain
-    }
-
     fn probe(&self) -> Result<(), CredentialsError> {
         self.run_native(|backend| backend.probe_native())
     }
@@ -739,10 +728,10 @@ impl CredentialMaterialBackend for KeychainCredentialBackend {
         set: &CredentialSetRef<'_>,
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), CredentialsError> {
-        if snapshot.storage() != self.kind() {
+        if snapshot.storage() != CredentialStorageKind::Keychain {
             return Err(CredentialsError::SnapshotStorageMismatch {
                 snapshot: snapshot.storage().as_config_value(),
-                requested: self.kind().as_config_value(),
+                requested: CredentialStorageKind::Keychain.as_config_value(),
             });
         }
         match snapshot.material() {
@@ -1121,10 +1110,6 @@ mod tests {
     }
 
     impl CredentialMaterialBackend for FakeKeychainBackend {
-        fn kind(&self) -> CredentialStorageKind {
-            CredentialStorageKind::Keychain
-        }
-
         fn probe(&self) -> Result<(), super::CredentialsError> {
             if self.probe_ok {
                 Ok(())
@@ -1159,7 +1144,7 @@ mod tests {
         ) -> Result<CredentialMaterialSnapshot, super::CredentialsError> {
             self.probe()?;
             Ok(CredentialMaterialSnapshot::new(
-                self.kind(),
+                CredentialStorageKind::Keychain,
                 self.lock_material()?.clone(),
             ))
         }

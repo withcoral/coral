@@ -1,22 +1,34 @@
 //! Shared internal backend contracts and registry-visible metadata.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt::Write;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
 use coral_spec::{
     ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
-    SearchLimitsSpec, SourceTableFunctionSpec, TableCommon,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use datafusion::catalog::TableFunctionImpl;
 use datafusion::datasource::TableProvider;
 use datafusion::error::DataFusionError;
+use datafusion::logical_expr::Expr;
 use datafusion::prelude::SessionContext;
 
-pub(crate) type SourceTableFunctions = HashMap<String, Arc<dyn TableFunctionImpl>>;
+/// Provider factory for one registered source-scoped table function.
+///
+/// Implementations bind one call site's positional arguments (manifest order,
+/// NULL meaning "absent") into a scannable provider. Binding is pure argument
+/// validation plus request-value capture — no I/O happens until the returned
+/// provider is scanned.
+pub(crate) trait SourceFunctionProviderFactory: std::fmt::Debug + Send + Sync {
+    /// Manifest-declared result schema for this function.
+    fn schema(&self) -> SchemaRef;
+
+    /// Binds positional call arguments into a provider for one call site.
+    fn provider_for_args(&self, args: &[Expr])
+    -> datafusion::error::Result<Arc<dyn TableProvider>>;
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredColumn {
@@ -44,7 +56,7 @@ pub(crate) struct RegisteredTable {
 pub(crate) struct RegisteredTableFunction {
     pub(crate) schema_name: String,
     pub(crate) function_name: String,
-    pub(crate) internal_name: String,
+    pub(crate) factory: Arc<dyn SourceFunctionProviderFactory>,
     pub(crate) kind: String,
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
@@ -100,30 +112,12 @@ pub(crate) struct RegisteredSource {
 }
 
 pub(crate) struct BackendRegistration {
+    pub(crate) schemas: Vec<BackendSchemaRegistration>,
+}
+
+pub(crate) struct BackendSchemaRegistration {
     pub(crate) tables: HashMap<String, Arc<dyn TableProvider>>,
-    pub(crate) table_functions: SourceTableFunctions,
     pub(crate) source: RegisteredSource,
-}
-
-/// Build a collision-free `DataFusion` UDTF name for a source-scoped function.
-///
-/// `DataFusion`'s UDTF registry is flat, so both source schema and public
-/// function name are hex-encoded to preserve arbitrary valid identifiers
-/// without delimiter collisions.
-pub(crate) fn internal_table_function_name(schema: &str, function: &str) -> String {
-    format!(
-        "__coral_udtf_{}_{}",
-        hex_encode(schema),
-        hex_encode(function)
-    )
-}
-
-fn hex_encode(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len() * 2);
-    for byte in value.as_bytes() {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String never fails");
-    }
-    encoded
 }
 
 pub(crate) struct BackendCompileRequest<'a> {
@@ -135,16 +129,70 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 }
 
+/// Shared resources available while registering one batch of compiled sources.
+///
+/// Every backend receives this context. Most backends ignore it today; HTTP uses
+/// it to share default transport setup across sources registered in the same
+/// runtime build.
+#[derive(Default)]
+pub(crate) struct BackendRegistrationContext {
+    default_http_client: OnceLock<Result<reqwest::Client, String>>,
+}
+
+impl BackendRegistrationContext {
+    pub(crate) fn default_http_client(
+        &self,
+        build_client: impl FnOnce() -> Result<reqwest::Client, String>,
+    ) -> Result<reqwest::Client, String> {
+        self.default_http_client
+            .get_or_init(build_client)
+            .as_ref()
+            .cloned()
+            .map_err(Clone::clone)
+    }
+}
+
 #[async_trait]
 pub(crate) trait CompiledBackendSource: Send + Sync {
     fn schema_name(&self) -> &str;
 
     fn source_name(&self) -> &str;
 
+    fn validate_runtime_capabilities(&self) -> datafusion::error::Result<()>;
+
+    /// Register this compiled source into a `DataFusion` session.
+    ///
+    /// The registration context is batch-scoped and backend-agnostic. Backends
+    /// should use it only for resources that are safe to share across sources in
+    /// the same registration pass.
     async fn register(
         &self,
         ctx: &SessionContext,
+        registration: &BackendRegistrationContext,
     ) -> datafusion::error::Result<BackendRegistration>;
+}
+
+pub(crate) fn validate_lookup_key_filter_backend_support(
+    source_name: &str,
+    backend_kind: SourceBackend,
+    has_lookup_key_filters: bool,
+) -> datafusion::error::Result<()> {
+    if !has_lookup_key_filters || matches!(backend_kind, SourceBackend::Http) {
+        return Ok(());
+    }
+
+    Err(DataFusionError::Execution(format!(
+        "source '{source_name}': lookup_key filters are not supported by the current engine for backend '{}'",
+        backend_kind_label(backend_kind)
+    )))
+}
+
+fn backend_kind_label(kind: SourceBackend) -> &'static str {
+    match kind {
+        SourceBackend::Http => "http",
+        SourceBackend::File => "file",
+        SourceBackend::Mcp => "mcp",
+    }
 }
 
 pub(crate) fn required_filter_names(filters: &[FilterSpec]) -> Vec<String> {
@@ -282,7 +330,7 @@ pub(crate) fn build_registered_table(
 pub(crate) fn build_registered_table_function(
     schema_name: &str,
     function: &SourceTableFunctionSpec,
-    internal_name: String,
+    factory: Arc<dyn SourceFunctionProviderFactory>,
 ) -> RegisteredTableFunction {
     let arguments = function
         .args
@@ -306,7 +354,7 @@ pub(crate) fn build_registered_table_function(
     RegisteredTableFunction {
         schema_name: schema_name.to_string(),
         function_name: function.name.clone(),
-        internal_name,
+        factory,
         kind: function.kind.as_str().to_string(),
         description: function.description.clone(),
         arguments,
@@ -359,4 +407,82 @@ pub(crate) fn schema_from_columns(
         ));
     }
     Ok(Arc::new(Schema::new(fields)))
+}
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Minimal factory for tests that need `RegisteredTableFunction` metadata
+    /// without a live backend.
+    #[derive(Debug)]
+    pub(crate) struct StubSourceFunctionFactory {
+        schema: SchemaRef,
+    }
+
+    impl Default for StubSourceFunctionFactory {
+        fn default() -> Self {
+            Self {
+                schema: Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)])),
+            }
+        }
+    }
+
+    impl SourceFunctionProviderFactory for StubSourceFunctionFactory {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+
+        fn provider_for_args(
+            &self,
+            _args: &[Expr],
+        ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
+            Err(DataFusionError::Internal(
+                "stub source function factory cannot bind arguments".to_string(),
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn default_http_client_is_shared_only_within_registration_context() {
+        let build_count = AtomicUsize::new(0);
+        let first_context = BackendRegistrationContext::default();
+
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should build a client");
+        first_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("first context should reuse its client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "one registration context should build one default HTTP client"
+        );
+
+        let second_context = BackendRegistrationContext::default();
+        second_context
+            .default_http_client(|| build_counted_client(&build_count))
+            .expect("new context should build its own client");
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            2,
+            "default HTTP clients should not be process-global"
+        );
+    }
+
+    fn build_counted_client(build_count: &AtomicUsize) -> Result<reqwest::Client, String> {
+        build_count.fetch_add(1, Ordering::SeqCst);
+        reqwest::Client::builder()
+            .build()
+            .map_err(|error| error.to_string())
+    }
 }

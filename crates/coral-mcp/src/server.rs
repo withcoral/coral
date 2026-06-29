@@ -3,12 +3,13 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, PaginationRequest, SearchCatalogRequest, Source, SubmitFeedbackRequest,
-    TableSummary as ProtoTableSummary, catalog_item,
+    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchCatalogRequest, Source,
+    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, FeedbackClient, QueryClient, SourceClient, batches_to_json_rows,
-    decode_execute_sql_response, default_workspace,
+    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SourceClient,
+    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
+    with_episode_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -21,25 +22,29 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tonic::Request;
+use tonic::{
+    Request,
+    metadata::{Ascii, MetadataValue},
+};
 
 use crate::{
     McpOptions,
     surface::{
-        CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-        describe_table_value, feedback_tool, guide_resource, guide_resource_content,
-        initial_instructions, internal_status, list_catalog_arguments, list_catalog_tool,
+        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
+        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
         list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
+        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
         required_string_argument, search_catalog_arguments, search_catalog_tool,
         search_catalog_value, sql_tool, status_to_error_data, tables_resource,
         tables_resource_content, tool_error_from_status, tool_error_result,
+        with_episode_id_argument,
     },
     telemetry,
 };
 
-const LIST_TABLES_COUNT_LIMIT: u32 = 1;
-const LIST_TABLE_FUNCTIONS_COUNT_LIMIT: u32 = 1;
 const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
+const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
@@ -64,6 +69,14 @@ struct FeedbackStoredValue {
     message: &'static str,
 }
 
+#[derive(Serialize)]
+struct EpisodeOpenedValue {
+    episode_id: String,
+    parent_episode_id: Option<String>,
+    message: &'static str,
+    instructions: &'static str,
+}
+
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
 }
@@ -77,22 +90,100 @@ impl ToolCallOutcome {
     }
 }
 
+#[derive(Debug, Default)]
+struct EpisodeTag {
+    episode_id: Option<String>,
+    episode_id_metadata: Option<MetadataValue<Ascii>>,
+}
+
+impl EpisodeTag {
+    fn from_tool_request(
+        options: &McpOptions,
+        arguments: Option<&Map<String, Value>>,
+    ) -> Result<Self, ErrorData> {
+        if !options.episodes_enabled {
+            return Ok(Self::default());
+        }
+        let episode_id = optional_episode_id_argument(arguments, "episode_id")?;
+        let episode_id_metadata = episode_id
+            .as_deref()
+            .map(|episode_id| {
+                episode_id.parse().map_err(|error| {
+                    ErrorData::invalid_params(
+                        format!("argument 'episode_id' is not valid metadata: {error}"),
+                        None,
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            episode_id,
+            episode_id_metadata,
+        })
+    }
+
+    fn record_telemetry(&self, span: &tracing::Span) {
+        if let Some(episode_id) = self.episode_id.as_deref() {
+            telemetry::record_episode_id(span, episode_id);
+        }
+    }
+
+    fn into_metadata(self) -> Option<MetadataValue<Ascii>> {
+        self.episode_id_metadata
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CoralMcpServer {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
     feedback: FeedbackClient,
+    episode: EpisodeClient,
+    startup_context: McpStartupContext,
     options: McpOptions,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct McpStartupContext {
+    source_names: Vec<String>,
+}
+
+impl McpStartupContext {
+    fn from_source_names(source_names: impl IntoIterator<Item = String>) -> Self {
+        let mut source_names = source_names
+            .into_iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        source_names.sort_unstable();
+        source_names.dedup();
+        Self { source_names }
+    }
+
+    fn source_names(&self) -> &[String] {
+        &self.source_names
+    }
 }
 
 impl CoralMcpServer {
     pub(crate) fn new(app: &AppClient, options: McpOptions) -> Self {
+        let startup_context = McpStartupContext::from_source_names(options.source_names.clone());
+        Self::new_with_startup_context(app, options, startup_context)
+    }
+
+    pub(crate) fn new_with_startup_context(
+        app: &AppClient,
+        options: McpOptions,
+        startup_context: McpStartupContext,
+    ) -> Self {
         Self {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
             feedback: app.feedback_client(),
+            episode: app.episode_client(),
+            startup_context,
             options,
         }
     }
@@ -127,15 +218,8 @@ impl CoralMcpServer {
     }
 
     async fn load_all_table_summaries(&self) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
-        self.load_table_summaries(None).await
-    }
-
-    async fn load_table_summaries(
-        &self,
-        schema_name: Option<&str>,
-    ) -> Result<Vec<ProtoTableSummary>, tonic::Status> {
         self.load_catalog(
-            schema_name,
+            None,
             CATALOG_KIND_TABLE,
             PaginationRequest {
                 limit: LIST_CATALOG_UNBOUNDED_LIMIT,
@@ -186,48 +270,33 @@ impl CoralMcpServer {
             .into_inner())
     }
 
-    async fn load_table_count(&self) -> Result<usize, tonic::Status> {
-        self.load_catalog(
-            None,
-            CATALOG_KIND_TABLE,
-            PaginationRequest {
-                limit: LIST_TABLES_COUNT_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response
-                .pagination
-                .map_or(0, |pagination| pagination.total_count as usize)
-        })
-    }
-
-    async fn load_table_function_count(&self) -> Result<usize, tonic::Status> {
-        self.load_catalog(
-            None,
-            CATALOG_KIND_TABLE_FUNCTION,
-            PaginationRequest {
-                limit: LIST_TABLE_FUNCTIONS_COUNT_LIMIT,
-                offset: 0,
-            },
-        )
-        .await
-        .map(|response| {
-            response
-                .pagination
-                .map_or(0, |pagination| pagination.total_count as usize)
-        })
+    async fn load_catalog_counts(&self) -> Result<(usize, usize), tonic::Status> {
+        // One item is enough: the app returns per-kind counts before pagination.
+        let response = self
+            .load_catalog(
+                None,
+                CATALOG_KIND_ALL,
+                PaginationRequest {
+                    limit: LIST_CATALOG_COUNT_LIMIT,
+                    offset: 0,
+                },
+            )
+            .await?;
+        let counts = response
+            .counts
+            .ok_or_else(|| tonic::Status::internal("catalog response missing counts"))?;
+        Ok((
+            usize::try_from(counts.table_count).unwrap_or(usize::MAX),
+            usize::try_from(counts.table_function_count).unwrap_or(usize::MAX),
+        ))
     }
 
     async fn load_sources_and_catalog_counts(
         &self,
     ) -> Result<(Vec<Source>, usize, usize), tonic::Status> {
-        tokio::try_join!(
-            self.load_sources(),
-            self.load_table_count(),
-            self.load_table_function_count()
-        )
+        let (sources, (table_count, table_function_count)) =
+            tokio::try_join!(self.load_sources(), self.load_catalog_counts())?;
+        Ok((sources, table_count, table_function_count))
     }
 
     async fn load_sources_and_guide_catalog(
@@ -238,24 +307,47 @@ impl CoralMcpServer {
         Ok((sources, tables, table_function_schema_names))
     }
 
-    async fn query_rows(&self, sql: &str) -> Result<Vec<Value>, tonic::Status> {
+    async fn query_rows(
+        &self,
+        request: Request<ExecuteSqlRequest>,
+    ) -> Result<Vec<Value>, tonic::Status> {
         let mut query_client = self.query.clone();
-        let response = query_client
-            .execute_sql(Request::new(ExecuteSqlRequest {
-                workspace: Some(default_workspace()),
-                sql: sql.to_string(),
-            }))
-            .await?
-            .into_inner();
+        let response = query_client.execute_sql(request).await?.into_inner();
         let result = decode_execute_sql_response(&response)
             .map_err(|error| tonic::Status::internal(error.to_string()))?;
-        batches_to_json_rows(result.batches())
+        batches_to_json_rows_json_safe_numbers(result.batches())
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_value(&self, sql: &str) -> Result<Value, tonic::Status> {
+    async fn execute_sql_value(
+        &self,
+        request: Request<ExecuteSqlRequest>,
+    ) -> Result<Value, tonic::Status> {
         serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(sql).await?,
+            rows: self.query_rows(request).await?,
+        })
+    }
+
+    async fn open_episode(
+        &self,
+        intent: &str,
+        parent_episode_id: Option<&str>,
+    ) -> Result<EpisodeOpenedValue, tonic::Status> {
+        let episode_id = format!("ep_{}", uuid::Uuid::new_v4().simple());
+        let mut episode_client = self.episode.clone();
+        episode_client
+            .open_episode(Request::new(OpenEpisodeRequest {
+                workspace: Some(default_workspace()),
+                episode_id: episode_id.clone(),
+                intent: intent.to_string(),
+                parent_episode_id: parent_episode_id.unwrap_or_default().to_string(),
+            }))
+            .await?;
+        Ok(EpisodeOpenedValue {
+            episode_id,
+            parent_episode_id: parent_episode_id.map(str::to_string),
+            message: "Episode opened.",
+            instructions: "Pass this episode_id as episode_id on subsequent Coral MCP tool calls for this work.",
         })
     }
 
@@ -365,13 +457,18 @@ impl CoralMcpServer {
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
+        span: &tracing::Span,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
                 let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
+                let request = Request::new(ExecuteSqlRequest {
+                    workspace: Some(default_workspace()),
+                    sql,
+                });
                 Ok(ToolCallOutcome::from_value_result(
                     "Query",
-                    self.execute_sql_value(&sql).await,
+                    self.execute_sql_value(request).await,
                 ))
             }
             "list_catalog" => {
@@ -389,6 +486,25 @@ impl CoralMcpServer {
             "list_columns" => {
                 self.list_columns_tool_result(request.arguments.as_ref())
                     .await
+            }
+            "open_episode" if self.options.episodes_enabled => {
+                let arguments = open_episode_arguments(request.arguments.as_ref())?;
+                match self
+                    .open_episode(&arguments.intent, arguments.parent_episode_id.as_deref())
+                    .await
+                    .and_then(|episode| {
+                        telemetry::record_episode_id(span, &episode.episode_id);
+                        serialize_tool_value(episode)
+                    }) {
+                    Ok(value) => Ok(ToolCallOutcome::Success(value)),
+                    Err(status) if status.code() == tonic::Code::InvalidArgument => {
+                        Err(status_to_error_data(&status))
+                    }
+                    Err(status) => Ok(ToolCallOutcome::ToolError {
+                        operation: "Episode opening",
+                        status,
+                    }),
+                }
             }
             "feedback" if self.options.feedback_enabled => {
                 let trying_to_do =
@@ -470,7 +586,7 @@ impl ServerHandler for CoralMcpServer {
                 .build(),
         )
         .with_server_info(Implementation::new("coral", env!("CARGO_PKG_VERSION")))
-        .with_instructions(initial_instructions())
+        .with_instructions(initial_instructions(self.startup_context.source_names()))
     }
 
     async fn list_tools(
@@ -480,19 +596,44 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<ListToolsResult, ErrorData> {
         let span = telemetry::list_tools_span(self.options.trace_parent.as_deref());
         telemetry::instrument_protocol(span, async {
-            let (sources, visible_table_count, visible_function_count) = self
-                .load_sources_and_catalog_counts()
+            let (visible_table_count, visible_function_count) = self
+                .load_catalog_counts()
                 .await
                 .map_err(|status| status_to_error_data(&status))?;
+            let source_names = match self.load_sources().await {
+                Ok(sources) => sources.into_iter().map(|source| source.name).collect(),
+                Err(status) => {
+                    tracing::warn!(
+                        error = %status,
+                        "failed to load source names for MCP tool descriptions"
+                    );
+                    Vec::new()
+                }
+            };
+            let tool_context = ToolDescriptionContext::new(
+                visible_table_count,
+                visible_function_count,
+                source_names,
+            );
             let mut tools = vec![
-                sql_tool(&sources, visible_table_count),
-                list_catalog_tool(visible_table_count, visible_function_count),
-                search_catalog_tool(visible_table_count, visible_function_count),
+                sql_tool(&tool_context),
+                list_catalog_tool(&tool_context),
+                search_catalog_tool(&tool_context),
                 describe_table_tool(),
                 list_columns_tool(),
             ];
+            if self.options.episodes_enabled {
+                tools = tools.into_iter().map(with_episode_id_argument).collect();
+                tools.push(open_episode_tool());
+            }
             if self.options.feedback_enabled {
-                tools.push(feedback_tool());
+                let feedback = feedback_tool();
+                let feedback = if self.options.episodes_enabled {
+                    with_episode_id_argument(feedback)
+                } else {
+                    feedback
+                };
+                tools.push(feedback);
             }
             Ok(ListToolsResult::with_all_items(tools))
         })
@@ -506,7 +647,22 @@ impl ServerHandler for CoralMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
-        let outcome = telemetry::instrument(span.clone(), self.dispatch_tool(request)).await;
+        let inject_episode_metadata = request.name.as_ref() != "open_episode";
+        let episode_tag = EpisodeTag::from_tool_request(&self.options, request.arguments.as_ref());
+        let outcome = match episode_tag {
+            Ok(episode_tag) => {
+                episode_tag.record_telemetry(&span);
+                let episode_id_metadata = inject_episode_metadata
+                    .then(|| episode_tag.into_metadata())
+                    .flatten();
+                telemetry::instrument(
+                    span.clone(),
+                    with_episode_metadata(episode_id_metadata, self.dispatch_tool(request, &span)),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         finish_tool_call(&span, outcome)
     }
 
@@ -559,8 +715,7 @@ impl ServerHandler for CoralMcpServer {
                         .await
                         .map_err(|status| status_to_error_data(&status))?;
                     let text = tables_resource_content(&tables)
-                        .map_err(|error| internal_status(&error))
-                        .map_err(|status| status_to_error_data(&status))?;
+                        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
                     Ok(ReadResourceResult::new(vec![
                         ResourceContents::text(text, request.uri)
                             .with_mime_type("application/json"),
@@ -622,4 +777,28 @@ fn guide_catalog_from_response(
         }
     }
     (tables, table_function_schema_names)
+}
+
+#[cfg(test)]
+mod startup_context_tests {
+    use super::McpStartupContext;
+
+    #[test]
+    fn startup_context_sorts_and_dedupes_source_names() {
+        let context = McpStartupContext::from_source_names([
+            "slack".to_string(),
+            "github".to_string(),
+            "linear".to_string(),
+            "github".to_string(),
+        ]);
+
+        assert_eq!(
+            context
+                .source_names()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["github", "linear", "slack"]
+        );
+    }
 }

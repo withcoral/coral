@@ -115,6 +115,7 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         }
         TraceStoreError::ReadDir { .. }
         | TraceStoreError::OpenFile { .. }
+        | TraceStoreError::FileMetadata { .. }
         | TraceStoreError::ReadFile { .. }
         | TraceStoreError::DecodeLine { .. }
         | TraceStoreError::PruneExpired { .. }

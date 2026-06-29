@@ -1,0 +1,93 @@
+name: defillama
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  DeFi protocol TVL and change metrics from DeFiLlama.
+  No authentication required.
+base_url: https://api.llama.fi
+test_queries:
+  - SELECT name, slug, tvl FROM defillama.protocols WHERE tvl IS NOT NULL ORDER BY tvl DESC LIMIT 1
+  - SELECT slug, change_7d FROM defillama.protocols WHERE change_7d < -10 AND tvl IS NOT NULL LIMIT 5
+  - SELECT name, current_chain_tvls FROM defillama.protocol_tvl WHERE slug = 'aave' LIMIT 1
+tables:
+  - name: protocols
+    description: >-
+      All DeFi protocols tracked by DeFiLlama with TVL and
+      TVL change metrics over 1d and 7d windows.
+    request:
+      method: GET
+      path: /protocols
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: name
+        type: Utf8
+        description: Protocol display name.
+      - name: slug
+        type: Utf8
+        description: Protocol slug identifier used for cross-referencing.
+      - name: category
+        type: Utf8
+        description: DeFi category (e.g. Liquid Staking, Lending, DEX).
+      - name: chains
+        type: Json
+        description: Array of chain names the protocol operates on.
+      - name: tvl
+        type: Float64
+        description: Total value locked in USD.
+      - name: change_1d
+        type: Float64
+        description: TVL percentage change over the last 1 day.
+      - name: change_7d
+        type: Float64
+        description: TVL percentage change over the last 7 days.
+  - name: protocol_tvl
+    description: >-
+      Protocol metadata with chain-level TVL breakdown.
+      Returns a single row with currentChainTvls and chainTvls.
+    filters:
+      - name: slug
+        required: true
+        description: Protocol slug (e.g. 'aave', 'uniswap', 'lido').
+    request:
+      method: GET
+      path: /protocol/{{filter.slug}}
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: none
+    columns:
+      - name: slug
+        type: Utf8
+        description: Protocol slug used to scope the request (echoed from the filter).
+        expr:
+          kind: from_filter
+          key: slug
+      - name: name
+        type: Utf8
+        description: Protocol display name.
+      - name: category
+        type: Utf8
+        description: DeFi category.
+      - name: chains
+        type: Json
+        description: Array of chain names the protocol operates on.
+      - name: current_chain_tvls
+        type: Json
+        description: 'Current TVL per chain as a JSON object (e.g. {"Ethereum": 5000000000}).'
+        expr:
+          kind: path
+          path:
+            - currentChainTvls
+      - name: chain_tvls
+        type: Json
+        description: Historical TVL data per chain as a JSON object.
+        expr:
+          kind: path
+          path:
+            - chainTvls

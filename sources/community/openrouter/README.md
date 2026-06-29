@@ -64,14 +64,14 @@ queries bounded and small.
 
 ## Provider docs
 
-- OpenRouter API reference: https://openrouter.ai/docs/api-reference/overview
-- Authentication: https://openrouter.ai/docs/api-reference/authentication
-- List models: https://openrouter.ai/docs/api-reference/list-available-models
-- Get current key: https://openrouter.ai/docs/api-reference/get-current-api-key
-- Chat completions: https://openrouter.ai/docs/api-reference/chat-completion
-- Embeddings: https://openrouter.ai/docs/api-reference/create-embedding
-- List embedding models: https://openrouter.ai/docs/api-reference/list-embedding-models
-- Rate limits and credits: https://openrouter.ai/docs/api-reference/limits
+- OpenRouter API reference: https://openrouter.ai/docs/api/reference/overview
+- Authentication: https://openrouter.ai/docs/api/reference/authentication
+- List models: https://openrouter.ai/docs/api/api-reference/models/get-models
+- Get current key: https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key
+- Chat completions: https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request
+- Embeddings: https://openrouter.ai/docs/api/api-reference/embeddings/create-embeddings
+- List embedding models: https://openrouter.ai/docs/api/api-reference/embeddings/list-embeddings-models
+- Rate limits and credits: https://openrouter.ai/docs/api/reference/limits
 
 ## Tables
 

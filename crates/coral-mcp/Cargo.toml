@@ -20,9 +20,11 @@ tonic.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
+uuid.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
+coral-telemetry.workspace = true
 
 [dev-dependencies]
 coral-app.workspace = true

@@ -25,5 +25,9 @@ discovery, and normalized source-definition models.
   types.
 - Keep runtime execution concerns out of this crate. Engine behavior belongs in
   `coral-engine`.
+- Backends that declare SQL relations, including tables and source-scoped table
+  functions, must project those names into the shared declared-relation
+  namespace validator in `src/validate.rs`; do not hand-roll backend-local
+  table/function collision checks.
 - Prefer normalized source-spec values over raw YAML plumbing in public
   helpers.

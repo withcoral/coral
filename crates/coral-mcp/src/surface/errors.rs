@@ -141,10 +141,6 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     }
 }
 
-pub(crate) fn internal_status(error: &serde_json::Error) -> tonic::Status {
-    tonic::Status::internal(error.to_string())
-}
-
 #[derive(Serialize)]
 struct StructuredToolErrorValue<'a> {
     error: ToolErrorValue<'a>,

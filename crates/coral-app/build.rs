@@ -16,8 +16,22 @@ fn main() {
     let bundled_root = manifest_dir.join("../../sources/core");
     println!("cargo:rerun-if-changed={}", bundled_root.display());
 
-    let mut entries = fs::read_dir(&bundled_root)
-        .expect("read bundled sources")
+    let mut generated = String::new();
+    let entries = bundled_entries(&bundled_root);
+    write_entries(&mut generated, "BUNDLED_SOURCES", &entries);
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("out dir"));
+    fs::write(out_dir.join("bundled_sources.rs"), generated).expect("write bundled source table");
+}
+
+struct BundledEntry {
+    name: String,
+    manifest_yaml: String,
+}
+
+fn bundled_entries(root: &Path) -> Vec<BundledEntry> {
+    let mut entries = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("read bundled sources '{}': {error}", root.display()))
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
         .map(|entry| {
@@ -28,30 +42,43 @@ fn main() {
                     entry.path().display()
                 )
             });
-            (name, manifest_path)
+            println!("cargo:rerun-if-changed={}", manifest_path.display());
+            let raw = fs::read_to_string(&manifest_path).expect("read bundled manifest");
+            let manifest_name = manifest_name(&raw).unwrap_or_else(|| {
+                panic!(
+                    "bundled source '{}' is missing a top-level string name",
+                    manifest_path.display()
+                )
+            });
+            assert_eq!(
+                manifest_name, name,
+                "bundled source directory '{name}' must match manifest name '{manifest_name}'"
+            );
+            BundledEntry {
+                name,
+                manifest_yaml: raw,
+            }
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries
+}
 
-    let mut generated = String::from("pub(crate) const BUNDLED_SOURCES: &[(&str, &str)] = &[\n");
-    for (name, manifest_path) in entries {
-        let raw = fs::read_to_string(&manifest_path).expect("read bundled manifest");
-        let manifest_name = manifest_name(&raw).unwrap_or_else(|| {
-            panic!(
-                "bundled source '{}' is missing a top-level string name",
-                manifest_path.display()
-            )
-        });
-        assert_eq!(
-            manifest_name, name,
-            "bundled source directory '{name}' must match manifest name '{manifest_name}'"
-        );
-        writeln!(generated, "    ({name:?}, {raw:?}),").expect("writing to String is infallible");
+fn write_entries(generated: &mut String, const_name: &str, entries: &[BundledEntry]) {
+    writeln!(
+        generated,
+        "pub(crate) const {const_name}: &[(&str, &str)] = &["
+    )
+    .expect("writing to String is infallible");
+    for entry in entries {
+        writeln!(
+            generated,
+            "    ({:?}, {:?}),",
+            entry.name, entry.manifest_yaml
+        )
+        .expect("writing to String is infallible");
     }
     generated.push_str("];\n");
-
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("out dir"));
-    fs::write(out_dir.join("bundled_sources.rs"), generated).expect("write bundled source table");
 }
 
 fn find_manifest_file(dir: &Path) -> Option<PathBuf> {

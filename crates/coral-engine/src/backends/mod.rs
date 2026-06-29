@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | `mod.rs` | Module entry. `CompiledBackendSource` impl, `compile_source` / `compile_manifest`, internal module declarations. | always |
 //! | `provider.rs` | `DataFusion` `TableProvider` implementation. | if the backend exposes tables |
-//! | `function.rs` | `DataFusion` `TableFunctionImpl` for source-scoped UDTFs. | only if the backend exposes table functions |
+//! | `function.rs` | Source-function provider factory and `build_registered_table_function` wiring. | only if the backend exposes table functions |
 //! | `client.rs` | Configured stateful wrapper (the value the rest of the backend talks to) and any transport-abstracting trait. | if the backend has a per-source client; skip if config is per-table (file backend) |
 //! | `transport.rs` | Per-instance transport impls (HTTP requests, stdio child spawn, object-store wiring, ...). | if there are multiple transports or transport code is non-trivial |
 //! | `response.rs` | Decode one response from the backend into the JSON payload that `shared/response_rows::extract_rows` consumes. | if response decoding is non-trivial |
@@ -70,16 +70,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CoreError, QuerySource, RequestAuthenticator, SourceInputResolver};
+use crate::{
+    CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
+};
+#[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
 
 pub(crate) mod common;
+mod composite;
 pub(crate) use common::{
-    BackendCompileRequest, BackendRegistration, CompiledBackendSource, RegisteredSource,
-    RegisteredTable, RegisteredTableFunction, SourceTableFunctions, build_registered_inputs,
-    build_registered_table, build_registered_table_function, internal_table_function_name,
+    BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
+    BackendSchemaRegistration, CompiledBackendSource, RegisteredInput, RegisteredSource,
+    RegisteredTable, RegisteredTableFunction, SourceFunctionProviderFactory,
+    build_registered_inputs, build_registered_table, build_registered_table_function,
     registered_columns_from_schema, registered_columns_from_specs, required_filter_names,
-    schema_from_columns,
+    schema_from_columns, validate_lookup_key_filter_backend_support,
 };
 
 pub(crate) mod file;
@@ -93,17 +98,40 @@ pub(crate) fn compile_query_source(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
-    compile_validated_manifest(
-        source.source_spec(),
-        &BackendCompileRequest {
-            source,
-            runtime_context,
-            source_secrets: source.secrets().clone(),
-            source_variables: source.variables().clone(),
-            request_authenticators,
-            source_input_resolver,
-        },
-    )
+    if source.components().is_empty() {
+        return Err(CoreError::FailedPrecondition(format!(
+            "source '{}' has no runtime components",
+            source.source_name()
+        )));
+    }
+    let request = BackendCompileRequest {
+        source,
+        runtime_context,
+        source_secrets: source.secrets().clone(),
+        source_variables: source.variables().clone(),
+        request_authenticators,
+        source_input_resolver,
+    };
+    let compiled_components = source
+        .components()
+        .iter()
+        .map(|component| compile_component(component, &request))
+        .collect::<Vec<_>>();
+    Ok(composite::compile_source(
+        source.source_name().to_string(),
+        compiled_components,
+    ))
+}
+
+fn compile_component(
+    component: &RuntimeSourceComponent,
+    request: &BackendCompileRequest<'_>,
+) -> Box<dyn CompiledBackendSource> {
+    match component {
+        RuntimeSourceComponent::Http(manifest) => http::compile_manifest(manifest, request),
+        RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
+        RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +160,7 @@ pub(crate) fn compile_source_manifest(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn compile_validated_manifest(
     manifest: &ValidatedSourceManifest,
     request: &BackendCompileRequest<'_>,

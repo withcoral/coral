@@ -1,0 +1,531 @@
+---
+name: windmill
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query Windmill scripts, flows, apps, and schedules through Coral SQL using
+  the Windmill HTTP API. Read-only SQL tables expose selected metadata columns.
+  Windmill API list responses may still transfer unmapped operational fields to
+  Coral before they are discarded.
+
+inputs:
+  WINDMILL_BASE_URL:
+    kind: variable
+    default: http://localhost
+    hint: >-
+      Base URL for the Windmill instance, without a trailing slash.
+      For Windmill Cloud use https://app.windmill.dev.
+  WINDMILL_WORKSPACE:
+    kind: variable
+    required: true
+    hint: Windmill workspace id or slug used in workspace-scoped API paths.
+  WINDMILL_TOKEN:
+    kind: secret
+    required: true
+    hint: >-
+      Windmill user token with read-only enabled and scripts:read, flows:read,
+      apps:read, and schedules:read scopes.
+
+base_url: "{{input.WINDMILL_BASE_URL}}/api"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.WINDMILL_TOKEN}}"
+
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT path, hash, language, created_at FROM windmill.scripts LIMIT 5
+  - SELECT path, edited_at FROM windmill.flows LIMIT 5
+  - SELECT path, execution_mode, edited_at FROM windmill.apps LIMIT 5
+  - SELECT path, script_path, enabled FROM windmill.schedules LIMIT 5
+
+tables:
+  - name: scripts
+    description: Windmill script metadata columns.
+    guide: |
+      Each row is one script visible in the configured workspace. Use
+      `path` to narrow the upstream request. This table intentionally omits
+      script source code and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
+    filters:
+      - name: path
+    request:
+      method: GET
+      path: /w/{{input.WINDMILL_WORKSPACE}}/scripts/list
+      query:
+        - name: path_exact
+          from: filter
+          key: path
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Workspace-relative script path.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: hash
+        type: Utf8
+        nullable: false
+        description: Stable script version identifier.
+        expr:
+          kind: path
+          path:
+            - hash
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Script summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Script description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: language
+        type: Utf8
+        nullable: true
+        description: Script language.
+        expr:
+          kind: path
+          path:
+            - language
+      - name: created_by
+        type: Utf8
+        nullable: true
+        description: User who created the script version.
+        expr:
+          kind: path
+          path:
+            - created_by
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Time the script version was created.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - created_at
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the script is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the script is starred.
+        expr:
+          kind: path
+          path:
+            - starred
+      - name: draft_only
+        type: Boolean
+        nullable: true
+        description: Whether only a draft version exists.
+        expr:
+          kind: path
+          path:
+            - draft_only
+      - name: dedicated_worker
+        type: Boolean
+        nullable: true
+        description: Whether the script uses a dedicated worker.
+        expr:
+          kind: path
+          path:
+            - dedicated_worker
+      - name: labels
+        type: Json
+        nullable: true
+        description: Script labels.
+        expr:
+          kind: path
+          path:
+            - labels
+
+  - name: flows
+    description: Windmill flow metadata columns.
+    guide: |
+      Each row is one flow visible in the configured workspace. Use
+      `path` to narrow the upstream request. This table intentionally omits raw
+      flow definitions and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
+    filters:
+      - name: path
+    request:
+      method: GET
+      path: /w/{{input.WINDMILL_WORKSPACE}}/flows/list
+      query:
+        - name: path_exact
+          from: filter
+          key: path
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Workspace-relative flow path.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: Flow summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        description: Flow description.
+        expr:
+          kind: path
+          path:
+            - description
+      - name: edited_by
+        type: Utf8
+        nullable: true
+        description: User who last edited the flow.
+        expr:
+          kind: path
+          path:
+            - edited_by
+      - name: edited_at
+        type: Timestamp
+        nullable: true
+        description: Time the flow was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_at
+      - name: archived
+        type: Boolean
+        nullable: true
+        description: Whether the flow is archived.
+        expr:
+          kind: path
+          path:
+            - archived
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the flow is starred.
+        expr:
+          kind: path
+          path:
+            - starred
+      - name: draft_only
+        type: Boolean
+        nullable: true
+        description: Whether only a draft version exists.
+        expr:
+          kind: path
+          path:
+            - draft_only
+      - name: tag
+        type: Utf8
+        nullable: true
+        description: Flow worker tag.
+        expr:
+          kind: path
+          path:
+            - tag
+      - name: dedicated_worker
+        type: Boolean
+        nullable: true
+        description: Whether the flow uses a dedicated worker.
+        expr:
+          kind: path
+          path:
+            - dedicated_worker
+      - name: timeout
+        type: Float64
+        nullable: true
+        description: Flow timeout in seconds.
+        expr:
+          kind: path
+          path:
+            - timeout
+      - name: labels
+        type: Json
+        nullable: true
+        description: Flow labels.
+        expr:
+          kind: path
+          path:
+            - labels
+
+  - name: apps
+    description: Windmill app metadata columns.
+    guide: |
+      Each row is one app visible in the configured workspace. Use
+      `path` to narrow the upstream request. This table intentionally omits raw
+      app definitions and permission maps from the SQL table. Windmill's API
+      response may still transfer unmapped fields to Coral before projection.
+    filters:
+      - name: path
+    request:
+      method: GET
+      path: /w/{{input.WINDMILL_WORKSPACE}}/apps/list
+      query:
+        - name: path_exact
+          from: filter
+          key: path
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: id
+        type: Int64
+        nullable: false
+        description: App ID.
+        expr:
+          kind: path
+          path:
+            - id
+      - name: workspace_id
+        type: Utf8
+        nullable: false
+        description: Workspace containing the app.
+        expr:
+          kind: path
+          path:
+            - workspace_id
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Workspace-relative app path.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: summary
+        type: Utf8
+        nullable: true
+        description: App summary.
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: version
+        type: Int64
+        nullable: true
+        description: Current app version.
+        expr:
+          kind: path
+          path:
+            - version
+      - name: starred
+        type: Boolean
+        nullable: true
+        description: Whether the app is starred.
+        expr:
+          kind: path
+          path:
+            - starred
+      - name: edited_at
+        type: Timestamp
+        nullable: true
+        description: Time the app was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_at
+      - name: execution_mode
+        type: Utf8
+        nullable: true
+        description: App execution mode.
+        expr:
+          kind: path
+          path:
+            - execution_mode
+      - name: raw_app
+        type: Boolean
+        nullable: true
+        description: Whether the app uses the raw-app format.
+        expr:
+          kind: path
+          path:
+            - raw_app
+      - name: labels
+        type: Json
+        nullable: true
+        description: App labels.
+        expr:
+          kind: path
+          path:
+            - labels
+
+  - name: schedules
+    description: Windmill schedule metadata columns.
+    guide: |
+      Each row is one schedule visible in the configured workspace. Use `path`
+      to filter the schedule record path, `script_path` to filter the target
+      script or flow path, or `is_flow` to filter the target kind. This table
+      intentionally omits args, permission maps, errors, email fields, and
+      callback arguments from the SQL table. Windmill's API response may still
+      transfer unmapped fields to Coral before projection.
+    filters:
+      - name: path
+      - name: script_path
+      - name: is_flow
+    request:
+      method: GET
+      path: /w/{{input.WINDMILL_WORKSPACE}}/schedules/list
+      query:
+        - name: schedule_path
+          from: filter
+          key: path
+        - name: path
+          from: filter
+          key: script_path
+        - name: is_flow
+          from: filter_bool
+          key: is_flow
+    response:
+      rows_path: []
+      row_strategy: direct
+    pagination:
+      mode: page
+      page_param: page
+      page_start: 1
+      page_step: 1
+      page_size:
+        default: 100
+        max: 100
+        query_param: per_page
+      link_header_require_results: false
+    columns:
+      - name: path
+        type: Utf8
+        nullable: false
+        description: Workspace-relative schedule path.
+        expr:
+          kind: path
+          path:
+            - path
+      - name: edited_by
+        type: Utf8
+        nullable: true
+        description: User who last edited the schedule.
+        expr:
+          kind: path
+          path:
+            - edited_by
+      - name: edited_at
+        type: Timestamp
+        nullable: true
+        description: Time the schedule was last edited.
+        expr:
+          kind: format_timestamp
+          input: iso8601
+          expr:
+            kind: path
+            path:
+              - edited_at
+      - name: schedule
+        type: Utf8
+        nullable: false
+        description: Cron schedule expression.
+        expr:
+          kind: path
+          path:
+            - schedule
+      - name: timezone
+        type: Utf8
+        nullable: false
+        description: Schedule timezone.
+        expr:
+          kind: path
+          path:
+            - timezone
+      - name: enabled
+        type: Boolean
+        nullable: false
+        description: Whether the schedule is enabled.
+        expr:
+          kind: path
+          path:
+            - enabled
+      - name: script_path
+        type: Utf8
+        nullable: false
+        description: Script or flow path invoked by the schedule.
+        expr:
+          kind: path
+          path:
+            - script_path
+      - name: is_flow
+        type: Boolean
+        nullable: false
+        description: Whether the schedule invokes a flow.
+        expr:
+          kind: path
+          path:
+            - is_flow

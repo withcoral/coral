@@ -27,6 +27,8 @@ This release is intended for single-user local use:
 Coral reduces data exposure by keeping execution local and by exposing a narrow
 MCP surface: `sql`, `list_catalog`, `search_catalog`, `describe_table`,
 `list_columns`, optional `feedback`, `coral://guide`, and `coral://tables`.
+MCP tool and resource metadata can include installed source/schema names so
+clients can route source-specific requests to Coral during discovery.
 Secret values are not returned through `coral.inputs`; secret rows show only
 whether a value is configured.
 
