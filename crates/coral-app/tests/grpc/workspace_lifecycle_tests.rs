@@ -245,13 +245,13 @@ async fn delete_workspace_removes_workspace_trace_history() {
     fs::write(
         &trace_file,
         [
+            local_trace_line("work-trace", "work-root", None, &json!({})),
             local_trace_line(
                 "work-trace",
-                "work-root",
-                None,
+                "work-child",
+                Some("work-root"),
                 &json!({ "workspace": "work" }),
             ),
-            local_trace_line("work-trace", "work-child", Some("work-root"), &json!({})),
             local_trace_line(
                 "other-trace",
                 "other-root",
@@ -280,7 +280,7 @@ async fn delete_workspace_removes_workspace_trace_history() {
     let raw = fs::read_to_string(&trace_file).expect("read trace file");
     assert!(
         !raw.contains("work-trace"),
-        "workspace trace should be removed from local trace history: {raw}"
+        "workspace trace should remove its unattributed root and attributed child: {raw}"
     );
     assert!(
         raw.contains("other-trace"),
