@@ -345,13 +345,17 @@ fn compile_operation<'query>(
                 compile_variable_definitions(&query.variable_definitions)?,
                 fragments,
             );
-            if !query.directives.is_empty() {
-                return Err(unsupported(
-                    "query.directives",
-                    "GraphQL query directives are not supported yet",
-                ));
+            let included = selection_is_included(&query.directives, "query.directives", &context)?;
+            let mut plan = compile_root_selection_set(
+                &query.selection_set,
+                graph,
+                "query.selectionSet",
+                &context,
+            )?;
+            if !included {
+                append_where_predicate(&mut plan, Some(PredicateExpression::Boolean(false)));
             }
-            compile_root_selection_set(&query.selection_set, graph, "query.selectionSet", &context)
+            Ok(plan)
         }
         OperationDefinition::Mutation(_) | OperationDefinition::Subscription(_) => {
             Err(unsupported(
@@ -6224,6 +6228,56 @@ mod tests {
     }
 
     #[test]
+    fn compiles_query_operation_include_skip_directives() {
+        let included_variables = BTreeMap::from([(
+            "runQuery".to_string(),
+            GraphqlVariableValue::Literal(Literal::Boolean(true)),
+        )]);
+        let included = compile_graphql_with_variables(
+            r"
+            query Services($runQuery: Boolean!) @include(if: $runQuery) {
+              Service {
+                name
+              }
+            }
+            ",
+            &included_variables,
+        )
+        .expect("included GraphQL query operation directive should compile");
+
+        assert_eq!(included.predicate, None);
+        assert_eq!(
+            included.projections,
+            vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("name".to_string()),
+            }]
+        );
+
+        let skipped_variables = BTreeMap::from([(
+            "skipQuery".to_string(),
+            GraphqlVariableValue::Literal(Literal::Boolean(true)),
+        )]);
+        let skipped = compile_graphql_with_variables(
+            r"
+            query Services($skipQuery: Boolean!) @skip(if: $skipQuery) {
+              Service {
+                name
+              }
+            }
+            ",
+            &skipped_variables,
+        )
+        .expect("skipped GraphQL query operation directive should compile");
+
+        assert_eq!(skipped.predicate, Some(PredicateExpression::Boolean(false)));
+        assert_eq!(skipped.projections, included.projections);
+    }
+
+    #[test]
     fn compiles_graphql_fragment_definition_directives() {
         let variables = BTreeMap::from([
             (
@@ -7183,6 +7237,14 @@ nodes:
                 r"
                 {
                   Service { name @include(if: true) @include(if: false) }
+                }
+                ",
+                "directive '@include' is repeated",
+            ),
+            (
+                r"
+                query Services @include(if: true) @include(if: false) {
+                  Service { name }
                 }
                 ",
                 "directive '@include' is repeated",

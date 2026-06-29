@@ -627,10 +627,13 @@ Relationship-field merging shares one graph traversal, which avoids accidental
 row multiplication when generated clients repeat a traversal through fragments.
 Same-response root or relationship fields with different traversal arguments
 are rejected rather than guessed or lowered as separate joins.
-Fragment definition directives, operation directives, unknown directives,
-mutations, subscriptions, nested row modifiers, and optional GraphQL traversals
-are rejected with GraphQL-specific diagnostics until their IR contracts are
-defined.
+Built-in `@include(if:)` / `@skip(if:)` directives are evaluated on query
+operations, fields, spreads, inline fragments, and fragment definitions. When a
+query operation is skipped, Coral compiles the requested projection shape and
+adds an always-false predicate so execution returns zero rows with normal
+DataFusion SQL. Unknown/custom directives, mutations, subscriptions, nested row
+modifiers, and optional GraphQL traversals are rejected with GraphQL-specific
+diagnostics until their IR contracts are defined.
 
 `graphql_schema_sdl_for_graph` generates a GraphQL execution schema from the
 same declaration model. It is intentionally a schema view over the supported

@@ -6633,6 +6633,55 @@ async fn graphql_generated_client_shape_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn graphql_query_operation_directives_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let variables = BTreeMap::from([(
+        "skipQuery".to_string(),
+        GraphGraphqlVariableValue::Literal(GraphLiteral::Boolean(true)),
+    )]);
+
+    let execution = CoralQuery::execute_graphql_with_variables(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services($skipQuery: Boolean!) @skip(if: $skipQuery) {
+          services: Service(
+            orderBy: [{ field: name, direction: ASC }]
+            limit: 2
+          ) {
+            service: name
+            tier
+          }
+        }
+        ",
+        &variables,
+    )
+    .await
+    .expect("GraphQL query operation directives should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"service_name\" AS \"service\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("WHERE FALSE"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        Vec::<Value>::new()
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_fragments_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
