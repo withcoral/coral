@@ -20511,11 +20511,8 @@ fn compile_regular_query_scoped_plan(
     };
     match &single_part.body {
         SinglePartBody::Finish(_) => {}
-        SinglePartBody::Return(_) => {
-            return Err(unsupported(
-                format!("{path}.return"),
-                format!("RETURN inside {feature_name} is not supported yet"),
-            ));
+        SinglePartBody::Return(return_clause) => {
+            validate_scoped_subquery_noop_return(return_clause, &path, feature_name)?;
         }
         SinglePartBody::Updating {
             updating,
@@ -20525,10 +20522,10 @@ fn compile_regular_query_scoped_plan(
             updating,
             return_clause,
         } if updating.is_empty() && return_clause.is_some() => {
-            return Err(unsupported(
-                format!("{path}.return"),
-                format!("RETURN inside {feature_name} is not supported yet"),
-            ));
+            let Some(return_clause) = return_clause else {
+                unreachable!("return_clause.is_some() was checked above");
+            };
+            validate_scoped_subquery_noop_return(return_clause, &path, feature_name)?;
         }
         SinglePartBody::Updating { .. } => {
             return Err(unsupported(
@@ -20573,6 +20570,64 @@ fn compile_regular_query_scoped_plan(
             predicate_offset: predicate_start,
         },
     })
+}
+
+fn validate_scoped_subquery_noop_return(
+    return_clause: &Return,
+    path: &str,
+    feature_name: &'static str,
+) -> Result<(), CoreError> {
+    if return_clause.distinct {
+        return Err(unsupported(
+            format!("{path}.return.distinct"),
+            format!(
+                "RETURN DISTINCT inside {feature_name} requires scoped projection planning and is not supported yet"
+            ),
+        ));
+    }
+    if return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Err(unsupported(
+            format!("{path}.return"),
+            format!(
+                "RETURN ORDER BY, SKIP, or LIMIT inside {feature_name} requires scoped row-source planning and is not supported yet"
+            ),
+        ));
+    }
+    if return_clause.star && return_clause.items.is_empty() {
+        return Ok(());
+    }
+    if return_clause.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.return.items"),
+            format!("RETURN inside {feature_name} must include RETURN * or literal projections"),
+        ));
+    }
+    for (index, item) in return_clause.items.iter().enumerate() {
+        if !scoped_subquery_return_item_is_noop_literal(item) {
+            return Err(unsupported(
+                format!("{path}.return.items[{index}]"),
+                format!(
+                    "RETURN inside {feature_name} currently supports only row-preserving literal projections or RETURN *"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scoped_subquery_return_item_is_noop_literal(item: &ProjectionItem) -> bool {
+    matches!(
+        item.expression,
+        Expression::Literal(
+            CypherLiteral::Number(_)
+                | CypherLiteral::String(_)
+                | CypherLiteral::Boolean(_)
+                | CypherLiteral::Null
+        )
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35496,6 +35551,58 @@ relationships:
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn compiles_noop_returns_inside_scoped_exists_and_count_subqueries() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN 1 } \
+             RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN * } AS dependencies",
+        )
+        .expect("row-preserving scoped subquery RETURN clauses should compile");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::ExistsPattern(_))
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::CountSubquery { .. },
+                alias,
+            }] if alias == "dependencies"
+        ));
+    }
+
+    #[test]
+    fn rejects_cardinality_changing_or_graph_expression_scoped_subquery_returns() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) \
+                 WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN DISTINCT 1 } \
+                 RETURN service.name AS service",
+                "RETURN DISTINCT inside EXISTS subqueries requires scoped projection planning",
+            ),
+            (
+                "MATCH (service:Service) \
+                 WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name } \
+                 RETURN service.name AS service",
+                "RETURN inside EXISTS subqueries currently supports only row-preserving literal projections or RETURN *",
+            ),
+            (
+                "MATCH (service:Service) \
+                 RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN 1 LIMIT 1 } AS dependencies",
+                "RETURN ORDER BY, SKIP, or LIMIT inside COUNT subqueries requires scoped row-source planning",
+            ),
+        ] {
+            let error =
+                compile_cypher(cypher).expect_err("unsupported scoped subquery RETURN should fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
     }
 
     #[test]

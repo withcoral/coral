@@ -432,8 +432,11 @@ The supported foundation subset is intentionally narrow:
   predicates therefore avoid DataFusion's nested
   correlated scalar-subquery limits. Other nested count comparisons continue
   through the scalar count renderer and will require staged aggregate planning
-  for broader parent-property support. `OPTIONAL MATCH`,
-  `WITH`, `RETURN`, and `UNION` inside scoped subqueries still require staged
+  for broader parent-property support. Row-preserving scoped returns such as
+  `RETURN *` and `RETURN 1` are accepted as no-op compatibility syntax because
+  `EXISTS` and `COUNT` consume only subquery cardinality. `OPTIONAL MATCH`,
+  `WITH`, `RETURN DISTINCT`, `RETURN` over graph expressions, return
+  ordering/pagination, and `UNION` inside scoped subqueries still require staged
   planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
   `COUNT { MATCH pattern WHERE ... FINISH }`, allowing Coral to support GQL-style
