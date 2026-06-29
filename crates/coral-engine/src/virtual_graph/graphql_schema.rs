@@ -292,13 +292,18 @@ fn push_node_aggregate_field_enum(sdl: &mut String, node: &Node) {
 }
 
 fn push_node_order_input(sdl: &mut String, node: &Node) {
-    write!(
+    writeln!(
         sdl,
-        "input {} {{\n  field: {}!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n}}\n\n",
+        "input {} {{\n  field: {}!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder",
         node_order_by_type(&node.label),
         node_order_field_type(&node.label)
     )
     .expect("writing GraphQL SDL to string should not fail");
+    for field in node_order_by_shorthand_field_names(node) {
+        writeln!(sdl, "  {field}: CoralGraphOrderDirection")
+            .expect("writing GraphQL SDL to string should not fail");
+    }
+    sdl.push_str("}\n\n");
 }
 
 fn push_where_input(
@@ -735,6 +740,20 @@ fn node_property_names(node: &Node) -> BTreeSet<String> {
     let mut properties = node.properties.keys().cloned().collect::<BTreeSet<_>>();
     properties.insert(node.key.clone());
     properties
+}
+
+fn node_order_by_shorthand_field_names(node: &Node) -> BTreeSet<String> {
+    let mut fields = BTreeSet::from(["_id".to_string(), "_elementId".to_string()]);
+    fields.extend(
+        node_property_names(node)
+            .into_iter()
+            .filter(|property| !is_canonical_order_by_key(property)),
+    );
+    fields
+}
+
+fn is_canonical_order_by_key(name: &str) -> bool {
+    matches!(name, "field" | "direction" | "nulls")
 }
 
 fn relationship_property_names(relationship: &Relationship) -> BTreeSet<String> {

@@ -8135,8 +8135,10 @@ relationships:
             "services(where: ServiceWhere, orderBy: [ServiceOrderBy!], limit: Int, first: Int, offset: Int, skip: Int, distinct: Boolean): [Service!]!"
         ));
         assert!(sdl.contains(
-            "input PersonOrderBy {\n  field: PersonOrderField!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n}"
+            "input PersonOrderBy {\n  field: PersonOrderField!\n  direction: CoralGraphOrderDirection = ASC\n  nulls: CoralGraphNullOrder\n  _elementId: CoralGraphOrderDirection\n  _id: CoralGraphOrderDirection\n  id: CoralGraphOrderDirection"
         ));
+        assert!(sdl.contains("  name: CoralGraphOrderDirection"));
+        assert!(sdl.contains("  team: CoralGraphOrderDirection"));
         assert!(sdl.contains("input PersonWhere {"));
         assert!(sdl.contains("  _id: CoralGraphIdentityFilter"));
         assert!(sdl.contains("  _elementId: CoralGraphElementIdFilter"));
@@ -8172,6 +8174,45 @@ relationships:
         assert!(sdl.contains("enum PersonOutOWNSToLabel {\n  Service\n}"));
         assert!(sdl.contains("type OWNS {"));
         assert!(sdl.contains("  source: CoralGraphValue"));
+    }
+
+    #[test]
+    fn graphql_schema_sdl_skips_reserved_shorthand_order_by_fields() {
+        let graph = Declaration::from_yaml(
+            r"
+version: 1
+name: order_reserved
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      field: field_column
+      direction: direction_column
+      nulls: nulls_column
+      name: service_name
+",
+        )
+        .expect("graph should parse");
+
+        let sdl = graphql_schema_sdl_for_graph(&graph).expect("schema SDL should generate");
+        graphql_parser::schema::parse_schema::<String>(&sdl)
+            .expect("generated SDL should parse as GraphQL schema");
+
+        let (_, order_input) = sdl
+            .split_once("input ServiceOrderBy {")
+            .expect("ServiceOrderBy input should exist");
+        let (order_input, _) = order_input
+            .split_once("}\n\n")
+            .expect("ServiceOrderBy input should terminate");
+
+        assert_eq!(order_input.matches("  field:").count(), 1);
+        assert_eq!(order_input.matches("  direction:").count(), 1);
+        assert_eq!(order_input.matches("  nulls:").count(), 1);
+        assert!(order_input.contains("  _id: CoralGraphOrderDirection"));
+        assert!(order_input.contains("  _elementId: CoralGraphOrderDirection"));
+        assert!(order_input.contains("  id: CoralGraphOrderDirection"));
+        assert!(order_input.contains("  name: CoralGraphOrderDirection"));
     }
 
     #[test]
