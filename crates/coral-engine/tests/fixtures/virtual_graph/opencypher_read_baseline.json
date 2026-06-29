@@ -6,8 +6,10 @@
     "CountSubquery": 2,
     "ExistsSubquery": 1,
     "GraphMetadata": 4,
+    "LiteralExpressions": 2,
     "Match": 3,
     "MathematicalFunctions": 4,
+    "NullSemantics": 3,
     "OptionalMatch": 3,
     "PathMetadata": 1,
     "PathValues": 2,
@@ -344,6 +346,63 @@
           { "name": "Bob", "status": "inactive" },
           { "name": "Carol", "status": "active" }
         ]
+      }
+    },
+    {
+      "id": "literal-scalar-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, 'person' AS kind, 42 AS answer, 1.5 AS score, true AS literal_flag, null AS missing ORDER BY name LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "kind": "person", "answer": 42, "score": 1.5, "literal_flag": true }
+        ]
+      }
+    },
+    {
+      "id": "literal-list-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [1, 2, 3] AS ints, ['a', 'b'] AS strings, [true, false] AS flags",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "ints": [1, 2, 3], "strings": ["a", "b"], "flags": [true, false] }
+        ]
+      }
+    },
+    {
+      "id": "literal-only-null-predicate-folding",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE coalesce(null, 'prod') = 'prod' AND null IS NULL AND nullIf('prod', 'prod') IS NULL RETURN count(p) AS people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3 }
+        ]
+      }
+    },
+    {
+      "id": "coalesce-nullif-normalizes-empty-string",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE coalesce(nullIf(p.city, ''), 'missing') = 'missing' RETURN p.name AS name, coalesce(nullIf(p.city, ''), 'missing') AS normalized_city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob", "normalized_city": "missing" }
+        ]
+      }
+    },
+    {
+      "id": "unsafe-literal-null-comparison-rejected",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE null = null RETURN p.name AS name",
+      "expected": {
+        "kind": "error",
+        "contains": "literal-only null comparisons"
       }
     },
     {

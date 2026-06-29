@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-69 scenarios, which is 4.27% of the full upstream scenario-definition inventory
-and 5.33% of the read-candidate inventory.
+74 scenarios, which is 4.58% of the full upstream scenario-definition inventory
+and 5.72% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 69 representative read-only scenarios:
+The baseline currently contains 74 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -164,11 +164,16 @@ The baseline currently contains 69 representative read-only scenarios:
   through terminal `WITH`.
 - `CountSubquery`: 2 scenarios for `COUNT { ... }` projections and predicates.
 - `ExistsSubquery`: 1 scenario for `EXISTS { ... }` predicates.
+- `LiteralExpressions`: 2 scenarios for scalar literal projections and
+  homogeneous literal-list projections.
 - `ScalarExpressions`: 21 scenarios for searched `CASE`, scalar-string
   `isEmpty(...)` predicates and projections, string case conversion, trim
   variants, `replace(...)`, `substring(...)`, `size(...)`, `left(...)`,
   `right(...)`, `reverse(...)`, numeric `abs(...)`, `ceil(...)`, `floor(...)`,
   `round(...)`, `sqrt(...)`, `sign(...)`, and adjacent rejection coverage.
+- `NullSemantics`: 3 scenarios for literal-only null predicate folding,
+  `coalesce(...)` / `nullIf(...)` null normalization, and unsafe literal-only
+  null comparison rejection.
 - `MathematicalFunctions`: 4 scenarios for `exp(...)`, `log(...)` /
   `ln(...)`, `log10(...)`, `pi()`, `e()`, trigonometric functions,
   degree/radian conversion, `atan2(...)`, `haversin(...)`, and adjacent
