@@ -10330,6 +10330,17 @@ fn compile_order_expression_fallback(
     )? {
         return Ok(order);
     }
+    if let Some(expression) = compile_optional_path_list_slice_scalar_expression(
+        expression,
+        path.clone(),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
     if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
         expression,
         path.clone(),
@@ -15459,6 +15470,16 @@ fn compile_other_function_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    if let Some(projection) = compile_optional_path_list_reducer_projection(
+        function,
+        item,
+        path.clone(),
+        plan,
+        state,
+        context,
+    )? {
+        return Ok(projection);
+    }
     if let Some(projection) =
         compile_optional_static_list_projection(item, path.clone(), plan, context)?
     {
@@ -15484,6 +15505,51 @@ fn compile_other_function_projection(
             qualified_function_name(function)
         ),
     ))
+}
+
+fn compile_optional_path_list_reducer_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Ok(None);
+    };
+    let mode = PredicateCompileMode::Graph {
+        plan,
+        path_state: Some(state),
+    };
+    let expression = if is_tail_function(function) {
+        compile_optional_path_list_tail_scalar_expression(
+            argument,
+            format!("{path}.expression.arguments[0]"),
+            mode,
+            context,
+        )?
+    } else if is_reverse_function(function) {
+        compile_optional_path_list_reverse_scalar_expression(
+            argument,
+            format!("{path}.expression.arguments[0]"),
+            mode,
+            context,
+        )?
+    } else {
+        None
+    };
+    let Some(expression) = expression else {
+        return Ok(None);
+    };
+    Ok(Some(Projection::Expression {
+        expression,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "list".to_string(), variable_name),
+    }))
 }
 
 fn compile_optional_static_list_projection(
@@ -15545,6 +15611,23 @@ fn compile_optional_graph_scalar_projection(
                 .alias
                 .as_ref()
                 .map_or_else(|| "expression".to_string(), variable_name),
+        }));
+    }
+    if let Some(expression) = compile_optional_path_list_slice_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "list".to_string(), variable_name),
         }));
     }
     if let Some(projection) =
@@ -15959,6 +16042,20 @@ fn compile_path_element_id_list_scalar_expression(
     )
 }
 
+fn path_binding_element_key_list_scalar_expression(
+    binding: &PathBinding,
+    variables: Vec<String>,
+    arguments_path: impl Into<String>,
+    function_name: &str,
+) -> Result<ScalarExpression, CoreError> {
+    path_binding_presence_gated_scalar_expression(
+        binding,
+        ScalarExpression::GraphKeyList { variables },
+        arguments_path,
+        function_name,
+    )
+}
+
 fn path_list_function_expression(
     expression: &Expression,
 ) -> Option<(&FunctionInvocation, PathListSizeTarget)> {
@@ -15975,6 +16072,94 @@ fn path_binding_element_variables(binding: &PathBinding, target: PathListSizeTar
     match target {
         PathListSizeTarget::Nodes => &binding.node_variables,
         PathListSizeTarget::Relationships => &binding.relationship_variables,
+    }
+}
+
+fn compile_path_list_slice_variables(
+    variables: &[String],
+    start: Option<&Expression>,
+    end: Option<&Expression>,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
+    let len = i64::try_from(variables.len()).map_err(|error| {
+        CoreError::internal(format!("path element list length overflow: {error}"))
+    })?;
+    let start = compile_list_slice_bound(
+        start,
+        0,
+        len,
+        format!("{path}.start"),
+        context,
+        "path element list slice bounds require integer literals or scalar integer parameters",
+    )?;
+    let end = compile_list_slice_bound(
+        end,
+        len,
+        len,
+        format!("{path}.end"),
+        context,
+        "path element list slice bounds require integer literals or scalar integer parameters",
+    )?;
+    if start >= end {
+        return Ok(Vec::new());
+    }
+    variables
+        .get(start..end)
+        .map(<[String]>::to_vec)
+        .ok_or_else(|| CoreError::internal("path element list slice bounds were invalid"))
+}
+
+fn compile_optional_path_list_slice_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_path_list_slice_scalar_expression(inner, path, mode, context)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            let Some((function, target)) = path_list_function_expression(list) else {
+                return Ok(None);
+            };
+            let state = mode.path_state().ok_or_else(|| {
+                unsupported(
+                    format!("{path}.list"),
+                    format!(
+                        "{}() path element list slices require path-variable scope",
+                        target.function_name()
+                    ),
+                )
+            })?;
+            let binding = compile_path_function_binding(
+                function,
+                format!("{path}.list.arguments"),
+                target.function_name(),
+                state,
+                context,
+            )?;
+            let variables = compile_path_list_slice_variables(
+                path_binding_element_variables(binding, target),
+                start.as_deref(),
+                end.as_deref(),
+                path.clone(),
+                context,
+            )?;
+            path_binding_element_key_list_scalar_expression(
+                binding,
+                variables,
+                format!("{path}.list.arguments"),
+                target.function_name(),
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -16054,6 +16239,82 @@ fn compile_optional_path_list_index_scalar_expression(
         }
         _ => Ok(None),
     }
+}
+
+fn compile_optional_path_list_tail_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some((function, target)) = path_list_function_expression(argument) else {
+        return Ok(None);
+    };
+    let state = mode.path_state().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "{}() path element list tail access requires path-variable scope",
+                target.function_name()
+            ),
+        )
+    })?;
+    let binding = compile_path_function_binding(
+        function,
+        format!("{path}.arguments"),
+        target.function_name(),
+        state,
+        context,
+    )?;
+    let variables = path_binding_element_variables(binding, target)
+        .get(1..)
+        .unwrap_or_default()
+        .to_vec();
+    path_binding_element_key_list_scalar_expression(
+        binding,
+        variables,
+        format!("{path}.arguments"),
+        target.function_name(),
+    )
+    .map(Some)
+}
+
+fn compile_optional_path_list_reverse_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some((function, target)) = path_list_function_expression(argument) else {
+        return Ok(None);
+    };
+    let state = mode.path_state().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "{}() path element list reverse access requires path-variable scope",
+                target.function_name()
+            ),
+        )
+    })?;
+    let binding = compile_path_function_binding(
+        function,
+        format!("{path}.arguments"),
+        target.function_name(),
+        state,
+        context,
+    )?;
+    let mut variables = path_binding_element_variables(binding, target).to_vec();
+    variables.reverse();
+    path_binding_element_key_list_scalar_expression(
+        binding,
+        variables,
+        format!("{path}.arguments"),
+        target.function_name(),
+    )
+    .map(Some)
 }
 
 fn compile_optional_path_list_endpoint_scalar_expression(
@@ -16918,6 +17179,14 @@ fn compile_reverse_scalar_expression(
             "reverse() requires exactly one argument",
         ));
     };
+    if let Some(expression) = compile_optional_path_list_reverse_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
+        context,
+    )? {
+        return Ok(expression);
+    }
     if let Some(value) =
         compile_optional_static_list_value(argument, format!("{path}.arguments[0]"), plan, context)?
     {
@@ -17451,7 +17720,7 @@ fn compile_core_scalar_function_expression(
             ListEndpoint::Last,
         )?
     } else if is_tail_function(function) {
-        compile_static_list_tail_scalar_expression(function, path, plan, context)?
+        compile_static_list_tail_scalar_expression(function, path, mode, context)?
     } else if is_character_length_function(function) {
         compile_character_length_scalar_expression(function, path, mode, context)?
     } else if is_substring_function(function) {
@@ -17592,16 +17861,25 @@ fn static_list_value_endpoint_scalar_expression(
 fn compile_static_list_tail_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
     let [argument] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
             "tail() requires exactly one list argument",
         ));
     };
+    if let Some(expression) = compile_optional_path_list_tail_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
+        context,
+    )? {
+        return Ok(expression);
+    }
     let Some(value) = compile_optional_static_list_value(
         argument,
         format!("{path}.arguments[0]"),
@@ -17777,6 +18055,9 @@ fn compile_scalar_expression_in_predicate_mode(
         Expression::ListIndex { .. } => {
             compile_list_index_scalar_expression_in_mode(expression, path, mode, context)
         }
+        Expression::ListSlice { .. } => {
+            compile_list_slice_scalar_expression_in_mode(expression, path, mode, context)
+        }
         Expression::Variable(_) => {
             compile_scalar_alias_expression(expression, path, mode.scalar_alias_state())
         }
@@ -17849,6 +18130,29 @@ fn compile_scalar_expression_in_predicate_mode(
             "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
+}
+
+fn compile_list_slice_scalar_expression_in_mode(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let plan = mode.static_metadata_plan();
+    if let Some(expression) =
+        compile_optional_path_list_slice_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        return Ok(expression);
+    }
+    if let Some(expression) =
+        compile_optional_static_list_scalar_expression(expression, path.clone(), plan, context)?
+    {
+        return Ok(expression);
+    }
+    Ok(ScalarExpression::LiteralList {
+        literals: compile_literal_list(expression, path, context)?,
+    })
 }
 
 fn compile_scalar_alias_expression(
@@ -18379,6 +18683,9 @@ fn compile_optional_predicate_scalar_expression(
             }
             None => Ok(None),
         },
+        Expression::ListSlice { .. } => {
+            compile_optional_predicate_list_slice_scalar_expression(expression, path, mode, context)
+        }
         Expression::PropertyLookup { .. } => Ok(
             compile_optional_endpoint_property_scalar_expression(expression, path, plan, context)?
                 .map(|(expression, _)| expression),
@@ -18445,6 +18752,24 @@ fn compile_optional_predicate_scalar_expression(
     }
 }
 
+fn compile_optional_predicate_list_slice_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(plan) = mode.static_metadata_plan() else {
+        return Ok(None);
+    };
+    if let Some(expression) =
+        compile_optional_path_list_slice_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        return Ok(Some(expression));
+    }
+    compile_optional_static_list_scalar_expression(expression, path, Some(plan), context)
+}
+
 fn compile_scalar_predicate_rhs(
     expression: &Expression,
     path: impl Into<String>,
@@ -18468,7 +18793,8 @@ fn compile_scalar_predicate_rhs(
             ..
         }
         | Expression::PropertyLookup { .. }
-        | Expression::ListIndex { .. } => Ok(ScalarPredicateRhs::Expression(
+        | Expression::ListIndex { .. }
+        | Expression::ListSlice { .. } => Ok(ScalarPredicateRhs::Expression(
             compile_scalar_expression_in_predicate_mode(expression, path, mode, context)?,
         )),
         Expression::Variable(_) => {
@@ -30661,6 +30987,84 @@ relationships:
                     nulls: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_path_element_list_slices_and_reducers_as_key_lists() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN nodes(path)[1..] AS node_tail_slice, \
+                    nodes(path)[..1] AS node_prefix_slice, \
+                    relationships(path)[..1] AS relationship_prefix_slice, \
+                    tail(nodes(path)) AS node_tail, \
+                    tail(relationships(path)) AS relationship_tail, \
+                    reverse(nodes(path)) AS reversed_nodes, \
+                    reverse(relationships(path)) AS reversed_relationships \
+             ORDER BY nodes(path)[1..]",
+        )
+        .expect("path element list slices and reducers should compile");
+
+        let person_key = "person".to_string();
+        let service_key = "service".to_string();
+        let owns_key = "owns".to_string();
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![service_key.clone()],
+                    },
+                    alias: "node_tail_slice".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![person_key.clone()],
+                    },
+                    alias: "node_prefix_slice".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![owns_key.clone()],
+                    },
+                    alias: "relationship_prefix_slice".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![service_key.clone()],
+                    },
+                    alias: "node_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: Vec::new(),
+                    },
+                    alias: "relationship_tail".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![service_key.clone(), person_key],
+                    },
+                    alias: "reversed_nodes".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::GraphKeyList {
+                        variables: vec![owns_key],
+                    },
+                    alias: "reversed_relationships".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::GraphKeyList {
+                    variables: vec![service_key],
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         );
     }
 

@@ -13,7 +13,7 @@
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "PathMetadata": 1,
-    "PathValues": 3,
+    "PathValues": 4,
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
@@ -1146,6 +1146,44 @@
             "relationship_id": 101,
             "head_node": 2,
             "last_relationship": 101
+          }
+        ]
+      }
+    },
+    {
+      "id": "path-element-list-slices-and-reducers",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, nodes(path)[1..] AS node_tail, relationships(path)[..1] AS relationship_prefix, tail(nodes(path)) AS tail_nodes, reverse(nodes(path)) AS reversed_nodes, reverse(relationships(path)) AS reversed_relationships ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "node_tail": [2],
+            "relationship_prefix": [100],
+            "tail_nodes": [2],
+            "reversed_nodes": [2, 1],
+            "reversed_relationships": [100]
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "node_tail": [3],
+            "relationship_prefix": [102],
+            "tail_nodes": [3],
+            "reversed_nodes": [3, 1],
+            "reversed_relationships": [102]
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "node_tail": [3],
+            "relationship_prefix": [101],
+            "tail_nodes": [3],
+            "reversed_nodes": [3, 2],
+            "reversed_relationships": [101]
           }
         ]
       }

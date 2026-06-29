@@ -147,9 +147,9 @@ The supported foundation subset is intentionally narrow:
   deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)`, `size(path)`, `size(relationships(path))`, and
-  `size(nodes(path))` over optional relationships, plus static
-  `nodes(path)[i]`, `relationships(path)[i]`, `head(nodes(path))`, and
-  `last(relationships(path))` access as scalar mapped-key expressions, via the
+  `size(nodes(path))` over optional relationships, plus static mapped-key
+  access for `nodes(path)[i]`, `relationships(path)[i]`, path element-list
+  slices, `head(...)`, `last(...)`, `tail(...)`, and `reverse(...)`, via the
   presence-gated scalar expression IR and compiler-generated internal
   relationship bindings when an anonymous optional path needs a presence gate;
 - declaration-aware `RETURN *` expansion in runtime Cypher execution/explain
@@ -553,9 +553,10 @@ The supported foundation subset is intentionally narrow:
   `WITH *` pass-through when the path is later used only for supported metadata
   such as `length(path)`, `size(path)`, `size(relationships(path))`, or
   `size(nodes(path))`, or for static mapped-key access such as
-  `nodes(path)[0]`, `relationships(path)[-1]`, `head(nodes(path))`, and
-  `last(relationships(path))`, including in `WITH * WHERE`, and not as a graph
-  value. Path metadata and path element-key scalars can participate in
+  `nodes(path)[0]`, `relationships(path)[-1]`, `nodes(path)[1..]`,
+  `head(nodes(path))`, `tail(nodes(path))`, and
+  `reverse(relationships(path))`, including in `WITH * WHERE`, and not as a
+  graph value. Path metadata and path element-key scalars can participate in
   supported scalar arithmetic, scalar functions, and `CASE` expressions such as
   `coalesce(length(path), 0)`;
 - non-negative integer `SKIP` and `LIMIT` literals, scalar parameters, and

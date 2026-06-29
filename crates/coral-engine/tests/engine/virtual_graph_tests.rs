@@ -2818,6 +2818,44 @@ async fn cypher_path_element_list_indexes_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_path_element_list_slices_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN nodes(path)[1..] AS node_tail_slice, \
+                nodes(path)[..1] AS node_prefix_slice, \
+                relationships(path)[..1] AS relationship_prefix_slice, \
+                tail(nodes(path)) AS node_tail, \
+                tail(relationships(path)) AS relationship_tail, \
+                reverse(nodes(path)) AS reversed_nodes, \
+                reverse(relationships(path)) AS reversed_relationships",
+    )
+    .await
+    .expect("fixed path element list slices should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "node_tail_slice": [10],
+            "node_prefix_slice": [1],
+            "relationship_prefix_slice": [100],
+            "node_tail": [10],
+            "relationship_tail": [],
+            "reversed_nodes": [10, 1],
+            "reversed_relationships": [100],
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_type_overloads_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
