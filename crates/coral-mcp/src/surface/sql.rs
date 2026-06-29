@@ -30,30 +30,23 @@ pub(crate) enum SqlQueryResultValue {
 }
 
 impl SqlBatchValue {
-    pub(crate) fn from_unordered(
-        mut results: Vec<SqlQueryResultValue>,
-    ) -> Result<Self, tonic::Status> {
+    pub(crate) fn from_unordered(mut results: Vec<SqlQueryResultValue>) -> Self {
         results.sort_by_key(SqlQueryResultValue::index);
 
         for (expected_index, result) in results.iter().enumerate() {
-            let actual_index = result.index();
-            if actual_index != expected_index {
-                return Err(tonic::Status::internal(format!(
-                    "SQL batch result index mismatch: expected {expected_index}, found {actual_index}"
-                )));
-            }
+            debug_assert_eq!(result.index(), expected_index);
         }
 
         let success_count = results
             .iter()
             .filter(|result| matches!(result, SqlQueryResultValue::Success { .. }))
             .count();
-        Ok(Self {
+        Self {
             total_count: results.len(),
             success_count,
             error_count: results.len() - success_count,
             results,
-        })
+        }
     }
 
     pub(crate) fn has_errors(&self) -> bool {

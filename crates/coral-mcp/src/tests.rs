@@ -1484,6 +1484,8 @@ async fn mcp_sql_executes_successful_batch_in_input_order() {
     let mut session = start_session(&temp).await;
     add_demo_source(&mut session.source_client, manifest_yaml).await;
     let client = &session.client;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
 
     let sql = client
         .call_tool(
@@ -1498,6 +1500,7 @@ async fn mcp_sql_executes_successful_batch_in_input_order() {
         .expect("batched sql");
     assert_eq!(sql.is_error, Some(false));
     let sql = sql.structured_content.expect("sql structured");
+    assert_matches_output_schema(sql_tool, &sql);
     assert_eq!(sql["total_count"], 2);
     assert_eq!(sql["success_count"], 2);
     assert_eq!(sql["error_count"], 0);
@@ -1520,6 +1523,8 @@ async fn mcp_tool_error_does_not_end_session() {
     let client = &session.client;
 
     add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
 
     let sql = client
         .call_tool(
@@ -1548,6 +1553,7 @@ async fn mcp_tool_error_does_not_end_session() {
         .expect("mixed sql still returns tool result");
     assert_eq!(mixed_sql.is_error, Some(true));
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
+    assert_matches_output_schema(sql_tool, &mixed_sql);
     assert_eq!(mixed_sql["total_count"], 2);
     assert_eq!(mixed_sql["success_count"], 1);
     assert_eq!(mixed_sql["error_count"], 1);

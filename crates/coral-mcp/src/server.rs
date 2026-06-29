@@ -1,10 +1,5 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
-
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
@@ -358,27 +353,16 @@ impl CoralMcpServer {
         queries: Vec<String>,
     ) -> Result<SqlBatchValue, tonic::Status> {
         let mut tasks = tokio::task::JoinSet::new();
-        let next_to_submit = Arc::new(AtomicUsize::new(0));
-        let submission_notify = Arc::new(tokio::sync::Notify::new());
         for (index, sql) in queries.into_iter().enumerate() {
             let server = self.clone();
-            let next_to_submit = Arc::clone(&next_to_submit);
-            let submission_notify = Arc::clone(&submission_notify);
-            tasks.spawn(async move {
-                while next_to_submit.load(Ordering::Acquire) != index {
-                    submission_notify.notified().await;
-                }
-                next_to_submit.fetch_add(1, Ordering::AcqRel);
-                submission_notify.notify_waiters();
-                server.execute_one_sql_query(index, sql).await
-            });
+            tasks.spawn(async move { server.execute_one_sql_query(index, sql).await });
         }
 
         let mut results = Vec::new();
         while let Some(joined) = tasks.join_next().await {
             results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
         }
-        SqlBatchValue::from_unordered(results)
+        Ok(SqlBatchValue::from_unordered(results))
     }
 
     async fn open_episode(
@@ -809,11 +793,7 @@ fn finish_tool_call(
                 Ok(build_tool_result(payload.value))
             }
             ToolPayloadStatus::Error => {
-                telemetry::record_tool_payload_error(
-                    span,
-                    "sql_batch_partial_failure",
-                    "One or more SQL queries failed",
-                );
+                telemetry::record_sql_batch_partial_failure(span);
                 let mut result = CallToolResult::structured_error(payload.value);
                 result.content = Vec::new();
                 Ok(result)

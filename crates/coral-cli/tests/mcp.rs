@@ -982,7 +982,7 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_stdio_sql_batch_records_execute_sql_requests_in_order()
+async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
