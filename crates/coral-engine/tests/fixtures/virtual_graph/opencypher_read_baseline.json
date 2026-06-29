@@ -1,6 +1,25 @@
 {
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
+  "minimum_feature_counts": {
+    "Aggregation": 3,
+    "CountSubquery": 2,
+    "ExistsSubquery": 1,
+    "GraphMetadata": 2,
+    "Match": 3,
+    "OptionalMatch": 3,
+    "PathMetadata": 1,
+    "PathValues": 1,
+    "RelationshipProperties": 1,
+    "ReturnDistinct": 1,
+    "RowModifiers": 1,
+    "ScalarExpressions": 1,
+    "Union": 2,
+    "Unwind": 1,
+    "VariableLengthPaths": 1,
+    "Where": 6,
+    "With": 2
+  },
   "scenarios": [
     {
       "id": "match-labeled-node-return-property",

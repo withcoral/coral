@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use coral_engine::{CoralQuery, GraphDeclaration};
 use serde::Deserialize;
@@ -10,6 +13,7 @@ use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, wri
 #[derive(Debug, Deserialize)]
 struct TckSuite {
     suite: String,
+    minimum_feature_counts: BTreeMap<String, usize>,
     scenarios: Vec<TckScenario>,
 }
 
@@ -39,6 +43,7 @@ async fn opencypher_tck_read_baseline_gate() {
         suite.scenarios.len() >= 32,
         "baseline should not shrink without an explicit compatibility decision"
     );
+    assert_tck_coverage_contract(&suite);
 
     let temp = TempDir::new().expect("temp dir");
     write_tck_fixture(temp.path());
@@ -84,6 +89,27 @@ async fn opencypher_tck_read_baseline_gate() {
                 );
             }
         }
+    }
+}
+
+fn assert_tck_coverage_contract(suite: &TckSuite) {
+    let mut ids = BTreeSet::new();
+    let mut feature_counts = BTreeMap::<String, usize>::new();
+    for scenario in &suite.scenarios {
+        assert!(
+            ids.insert(scenario.id.as_str()),
+            "duplicate openCypher baseline scenario id: {}",
+            scenario.id
+        );
+        *feature_counts.entry(scenario.feature.clone()).or_default() += 1;
+    }
+
+    for (feature, minimum) in &suite.minimum_feature_counts {
+        let actual = feature_counts.get(feature).copied().unwrap_or_default();
+        assert!(
+            actual >= *minimum,
+            "openCypher baseline feature {feature} shrank below its declared floor: expected at least {minimum}, found {actual}"
+        );
     }
 }
 

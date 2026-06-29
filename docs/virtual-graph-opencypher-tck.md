@@ -78,6 +78,11 @@ Unsupported scenarios are not silently skipped. If a scenario is part of the
 baseline, it must either produce the expected rows or the expected structured
 error substring.
 
+The fixture also declares `minimum_feature_counts`. The test runner verifies
+that every scenario id is unique and that each feature bucket stays at or above
+its declared floor, so coverage cannot silently shrink by moving or deleting a
+scenario.
+
 ## Expansion Policy
 
 When adding Cypher support:
