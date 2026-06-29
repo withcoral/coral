@@ -2,7 +2,7 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 4,
+    "Aggregation": 5,
     "CountSubquery": 2,
     "ExistsSubquery": 1,
     "GraphMetadata": 4,
@@ -281,6 +281,23 @@
         "ordered": true,
         "rows": [
           { "people": 3 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-statistical-functions",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN avg(p.age) AS average_age, median(p.age) AS median_age, stDev(p.age) AS sample_age_stdev, stDevP(p.age) AS population_age_stdev",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "average_age": 34.666666666666664,
+            "median_age": 34,
+            "sample_age_stdev": 6.027713773341709,
+            "population_age_stdev": 4.921607686744467
+          }
         ]
       }
     },
