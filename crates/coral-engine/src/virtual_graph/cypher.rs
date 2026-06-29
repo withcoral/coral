@@ -4456,9 +4456,7 @@ fn validate_return_allows_pattern_alternative_expansion(
 
 fn expression_contains_aggregate(expression: &Expression) -> bool {
     match expression {
-        Expression::CountStar { .. }
-        | Expression::CountSubquery(_)
-        | Expression::CollectSubquery(_) => true,
+        Expression::CountStar { .. } => true,
         Expression::FunctionCall(function) => {
             compile_aggregate_function(function).is_some()
                 || function.arguments.iter().any(expression_contains_aggregate)
@@ -4504,7 +4502,11 @@ fn expression_contains_aggregate(expression: &Expression) -> bool {
         | Expression::Single(filter) => filter_expression_contains_aggregate(filter),
         Expression::Exists(exists) => exists_expression_contains_aggregate(exists),
         Expression::MapProjection(map) => map_projection_contains_aggregate(map),
-        Expression::Variable(_) | Expression::Parameter(_) | Expression::Pattern(_) => false,
+        Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::Pattern(_) => false,
     }
 }
 

@@ -1103,6 +1103,41 @@ async fn cypher_static_node_label_alternatives_rewrite_missing_relationships_in_
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_project_count_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner, \
+                COUNT { \
+                  MATCH (owner)-[ownership:OWNS]->(:Service) \
+                  WHERE coalesce(ownership.since, 'unclassified') = 'unclassified' \
+                } AS unclassified_ownerships \
+         ORDER BY owner_label, owner",
+    )
+    .await
+    .expect("COUNT subquery projections should execute after branch expansion");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace", "unclassified_ownerships": 0}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper", "unclassified_ownerships": 0}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson", "unclassified_ownerships": 0}),
+            json!({"owner_label": "Team", "owner": "analytics", "unclassified_ownerships": 1}),
+            json!({"owner_label": "Team", "owner": "infra", "unclassified_ownerships": 1}),
+            json!({"owner_label": "Team", "owner": "platform", "unclassified_ownerships": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_rewrite_missing_properties_in_optional_match() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
