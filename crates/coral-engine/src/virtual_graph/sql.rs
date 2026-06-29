@@ -159,6 +159,19 @@ struct PrecomputedScalarSubquery {
 }
 
 #[derive(Debug, Clone)]
+struct PrecomputedNodeCountCorrelation {
+    predicate_index: usize,
+    local_expression: String,
+    outer_expression: String,
+}
+
+#[derive(Debug, Clone)]
+enum NodeCountCorrelationOperand {
+    Local(String),
+    Outer(String),
+}
+
+#[derive(Debug, Clone)]
 struct ScalarSubqueryCandidateUse {
     candidate: ScalarSubqueryCandidate,
     required: bool,
@@ -269,7 +282,7 @@ impl<'a> Lowerer<'a> {
             let Some(join_sql) = self.render_precomputed_scalar_subquery_join(&precomputed)? else {
                 if required {
                     return Err(CoreError::InvalidInput(
-                        "hidden ORDER BY over correlated scalar subqueries requires a precomputable single-anchor relationship pattern"
+                        "hidden ORDER BY over correlated scalar subqueries requires a precomputable single-anchor relationship or node pattern"
                             .to_string(),
                     ));
                 }
@@ -283,7 +296,7 @@ impl<'a> Lowerer<'a> {
 
         if unsupported > 1 {
             return Err(CoreError::InvalidInput(
-                "multiple correlated scalar subqueries in one projection require relationship-pattern COUNT { ... } or EXISTS { MATCH ... } subqueries with a single outer node anchor"
+                "multiple correlated scalar subqueries in one projection require relationship-pattern COUNT { ... } / EXISTS { MATCH ... } subqueries with a single outer node anchor or node-count subqueries with one equality correlation"
                     .to_string(),
             ));
         }
@@ -638,7 +651,12 @@ impl<'a> Lowerer<'a> {
             ));
         };
         if pattern.references_outer_variables() {
-            return Ok(None);
+            return self.render_precomputed_correlated_node_count_scalar_subquery_join(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                precomputed,
+            );
         }
         let select_expression = format!("COUNT(*) AS {}", quote_ident(&precomputed.value_alias));
         Ok(Some(format!(
@@ -651,6 +669,280 @@ impl<'a> Lowerer<'a> {
             )?,
             quote_ident(&precomputed.table_alias)
         )))
+    }
+
+    fn render_precomputed_correlated_node_count_scalar_subquery_join(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        precomputed: &PrecomputedScalarSubquery,
+    ) -> Result<Option<String>, CoreError> {
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::count_local_node_aliases(nodes);
+        let Some(correlation) = self.precomputed_node_count_correlation(
+            predicates,
+            predicate,
+            &local_nodes,
+            &local_aliases,
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let relationship_bindings = Vec::new();
+        let mut conditions = Vec::with_capacity(
+            predicates
+                .len()
+                .saturating_sub(1)
+                .saturating_add(usize::from(predicate.is_some())),
+        );
+        for (index, property_predicate) in predicates.iter().enumerate() {
+            if index == correlation.predicate_index {
+                continue;
+            }
+            conditions.push(self.render_exists_property_predicate(
+                property_predicate,
+                &relationship_bindings,
+                &local_nodes,
+                &local_aliases,
+            )?);
+        }
+        if let Some(predicate) = predicate {
+            conditions.push(self.render_scoped_predicate_expression(
+                predicate,
+                &relationship_bindings,
+                &local_nodes,
+                &local_aliases,
+            )?);
+        }
+        let from_clause =
+            Self::render_precomputed_node_count_from_clause(nodes, &local_nodes, &local_aliases)?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let subquery = format!(
+            "SELECT {} AS {}, COUNT(*) AS {} FROM {from_clause}{where_clause} GROUP BY {}",
+            correlation.local_expression,
+            quote_ident(&precomputed.outer_key_alias),
+            quote_ident(&precomputed.value_alias),
+            correlation.local_expression
+        );
+        Ok(Some(format!(
+            "LEFT JOIN ({subquery}) AS {} ON {}.{} = {}",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.outer_key_alias),
+            correlation.outer_expression
+        )))
+    }
+
+    fn precomputed_node_count_correlation<'b>(
+        &self,
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<PrecomputedNodeCountCorrelation>, CoreError> {
+        let relationship_bindings = Vec::new();
+        if predicate.is_some_and(|predicate| {
+            !Self::scoped_predicate_expression_is_inner(
+                predicate,
+                &relationship_bindings,
+                local_nodes,
+            )
+        }) {
+            return Ok(None);
+        }
+
+        let mut correlation = None;
+        for (index, property_predicate) in predicates.iter().enumerate() {
+            if let Some(candidate) = self.precomputed_node_count_property_correlation(
+                index,
+                property_predicate,
+                local_nodes,
+                local_aliases,
+            )? {
+                if correlation.is_some() {
+                    return Ok(None);
+                }
+                correlation = Some(candidate);
+                continue;
+            }
+            if !Self::scoped_property_predicate_is_inner(
+                property_predicate,
+                &relationship_bindings,
+                local_nodes,
+            ) {
+                return Ok(None);
+            }
+        }
+        Ok(correlation)
+    }
+
+    fn precomputed_node_count_property_correlation<'b>(
+        &self,
+        predicate_index: usize,
+        predicate: &PropertyPredicate,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<PrecomputedNodeCountCorrelation>, CoreError> {
+        if predicate.operator != ComparisonOperator::Equal {
+            return Ok(None);
+        }
+        let lhs = self.node_count_property_correlation_operand(
+            &predicate.property,
+            local_nodes,
+            local_aliases,
+        )?;
+        let Some(rhs) =
+            self.node_count_rhs_correlation_operand(&predicate.rhs, local_nodes, local_aliases)?
+        else {
+            return Ok(None);
+        };
+        Ok(match (lhs, rhs) {
+            (
+                NodeCountCorrelationOperand::Local(local_expression),
+                NodeCountCorrelationOperand::Outer(outer_expression),
+            )
+            | (
+                NodeCountCorrelationOperand::Outer(outer_expression),
+                NodeCountCorrelationOperand::Local(local_expression),
+            ) => Some(PrecomputedNodeCountCorrelation {
+                predicate_index,
+                local_expression,
+                outer_expression,
+            }),
+            _ => None,
+        })
+    }
+
+    fn node_count_rhs_correlation_operand<'b>(
+        &self,
+        rhs: &PredicateRhs,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<NodeCountCorrelationOperand>, CoreError> {
+        match rhs {
+            PredicateRhs::Property(property) => self
+                .node_count_property_correlation_operand(property, local_nodes, local_aliases)
+                .map(Some),
+            PredicateRhs::Key { variable } => self
+                .node_count_key_correlation_operand(variable, local_nodes, local_aliases)
+                .map(Some),
+            PredicateRhs::ElementId { variable } => self
+                .node_count_element_id_correlation_operand(variable, local_nodes, local_aliases)
+                .map(Some),
+            PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(None),
+        }
+    }
+
+    fn node_count_property_correlation_operand<'b>(
+        &self,
+        property: &PropertyRef,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<NodeCountCorrelationOperand, CoreError> {
+        if local_nodes.contains_key(property.variable.as_str()) {
+            let relationship_bindings = Vec::new();
+            return Ok(NodeCountCorrelationOperand::Local(
+                self.render_exists_property_ref(
+                    property,
+                    &relationship_bindings,
+                    local_nodes,
+                    local_aliases,
+                )?,
+            ));
+        }
+        let binding = self.validated.binding(&property.variable)?;
+        if !matches!(binding.kind(), ValidatedBindingKind::Node(_)) {
+            return Err(CoreError::InvalidInput(
+                "hidden ORDER BY node-count precompute supports correlations to one outer node binding"
+                    .to_string(),
+            ));
+        }
+        Ok(NodeCountCorrelationOperand::Outer(
+            self.render_property_ref(property)?,
+        ))
+    }
+
+    fn node_count_key_correlation_operand<'b>(
+        &self,
+        variable: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<NodeCountCorrelationOperand, CoreError> {
+        if local_nodes.contains_key(variable) {
+            let relationship_bindings = Vec::new();
+            return Ok(NodeCountCorrelationOperand::Local(
+                self.render_exists_key_ref(
+                    variable,
+                    &relationship_bindings,
+                    local_nodes,
+                    local_aliases,
+                )?,
+            ));
+        }
+        let binding = self.validated.binding(variable)?;
+        if !matches!(binding.kind(), ValidatedBindingKind::Node(_)) {
+            return Err(CoreError::InvalidInput(
+                "hidden ORDER BY node-count precompute supports correlations to one outer node binding"
+                    .to_string(),
+            ));
+        }
+        Ok(NodeCountCorrelationOperand::Outer(
+            self.render_binding_key_ref(variable)?,
+        ))
+    }
+
+    fn node_count_element_id_correlation_operand<'b>(
+        &self,
+        variable: &str,
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<NodeCountCorrelationOperand, CoreError> {
+        let operand =
+            self.node_count_key_correlation_operand(variable, local_nodes, local_aliases)?;
+        Ok(match operand {
+            NodeCountCorrelationOperand::Local(expression) => {
+                NodeCountCorrelationOperand::Local(format!("CAST({expression} AS VARCHAR)"))
+            }
+            NodeCountCorrelationOperand::Outer(expression) => {
+                NodeCountCorrelationOperand::Outer(format!("CAST({expression} AS VARCHAR)"))
+            }
+        })
+    }
+
+    fn render_precomputed_node_count_from_clause<'b>(
+        nodes: &'b [NodePattern],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let mut from_clause = String::new();
+        for (index, node) in nodes.iter().enumerate() {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated precomputed node count local mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated precomputed node count local alias was missing")
+            })?;
+            if index > 0 {
+                from_clause.push_str(" JOIN ");
+            }
+            write!(
+                from_clause,
+                "{} AS {}",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render precomputed node count SQL"))?;
+            if index > 0 {
+                from_clause.push_str(" ON TRUE");
+            }
+        }
+        Ok(from_clause)
     }
 
     fn render_precomputed_relationship_scalar_subquery_join(
@@ -6546,9 +6838,9 @@ fn quote_string_literal(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::virtual_graph::ir::{
-        AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ExistsPatternPredicate,
-        GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection,
-        OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
+        AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
+        ExistsPatternPredicate, GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
+        OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
         ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
         PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate,
         ScalarPredicateRhs,
@@ -9502,6 +9794,124 @@ relationships: []
                 .contains(" ORDER BY \"ownership_count\" DESC"),
             "{}",
             translation.sql()
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The test keeps the correlated node-count plan inline so the SQL shape under test is explicit"
+    )]
+    fn lower_graph_plan_precomputes_hidden_correlated_node_count_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = GraphPlan {
+            nodes: vec![NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            }],
+            relationships: Vec::new(),
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("service".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::CountSubquery {
+                    pattern: Box::new(CountSubqueryPattern::Nodes {
+                        nodes: vec![NodePattern {
+                            variable: "other".to_string(),
+                            label: "Service".to_string(),
+                        }],
+                        predicates: vec![
+                            PropertyPredicate {
+                                property: PropertyRef {
+                                    variable: "other".to_string(),
+                                    property: "tier".to_string(),
+                                },
+                                operator: ComparisonOperator::Equal,
+                                rhs: PredicateRhs::Property(PropertyRef {
+                                    variable: "service".to_string(),
+                                    property: "tier".to_string(),
+                                }),
+                            },
+                            PropertyPredicate {
+                                property: PropertyRef {
+                                    variable: "other".to_string(),
+                                    property: "name".to_string(),
+                                },
+                                operator: ComparisonOperator::NotEqual,
+                                rhs: PredicateRhs::Literal(Literal::String("legacy".to_string())),
+                            },
+                        ],
+                        predicate: None,
+                    }),
+                }),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }],
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("correlated node count ordering should lower");
+
+        assert!(
+            translation.sql().contains(
+                "LEFT JOIN (SELECT \"__coral_count_n0\".\"tier\" AS \"__coral_outer_key\", \
+                 COUNT(*) AS \"__coral_value\" FROM \"ops\".\"services\" AS \"__coral_count_n0\" \
+                 WHERE \"__coral_count_n0\".\"service_name\" <> 'legacy' \
+                 GROUP BY \"__coral_count_n0\".\"tier\") AS \"__coral_scalar_subquery_0\" \
+                 ON \"__coral_scalar_subquery_0\".\"__coral_outer_key\" = \"n0\".\"tier\""
+            ),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation.sql().contains(
+                "ORDER BY COALESCE(\"__coral_scalar_subquery_0\".\"__coral_value\", 0) DESC"
+            ),
+            "{}",
+            translation.sql()
+        );
+
+        let order_expression = &mut plan.order_by.first_mut().expect("order key").expression;
+        let CountSubqueryPattern::Nodes { predicates, .. } = (match order_expression {
+            OrderExpression::Scalar(ScalarExpression::CountSubquery { pattern }) => {
+                pattern.as_mut()
+            }
+            _ => panic!("expected count subquery order expression"),
+        }) else {
+            panic!("expected node count subquery");
+        };
+        predicates.push(PropertyPredicate {
+            property: PropertyRef {
+                variable: "other".to_string(),
+                property: "name".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "name".to_string(),
+            }),
+        });
+        let error = graph
+            .lower_graph_plan(&plan)
+            .expect_err("multiple correlated node-count keys should remain rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("requires a precomputable single-anchor relationship or node pattern"),
+            "{error}"
         );
     }
 

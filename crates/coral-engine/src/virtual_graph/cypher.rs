@@ -10136,8 +10136,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
             hidden_subquery_order_predicate_can_be_precomputed(predicate),
         ),
         ScalarExpression::CountSubquery { pattern } => Some(match pattern.as_ref() {
-            CountSubqueryPattern::Relationships(_) => true,
-            CountSubqueryPattern::Nodes { .. } => !pattern.references_outer_variables(),
+            CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => true,
         }),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -36155,17 +36154,26 @@ relationships:
     }
 
     #[test]
-    fn rejects_non_precomputable_hidden_order_by_correlated_subqueries() {
-        let error = compile_cypher(
+    fn compiles_hidden_order_by_correlated_node_count_subqueries() {
+        for cypher in [
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier } DESC",
             "MATCH (service:Service) \
              RETURN service.name AS service \
              ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier } + 1 DESC",
-        )
-        .expect_err("hidden non-precomputable subquery ordering should still be rejected");
-        assert!(
-            error.to_string().contains("must use a projected alias"),
-            "{error}"
-        );
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("hidden correlated node-count subquery ordering should compile");
+
+            assert!(matches!(
+                plan.order_by.first(),
+                Some(OrderKey {
+                    expression: OrderExpression::Scalar(_),
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

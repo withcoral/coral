@@ -455,11 +455,15 @@ The supported foundation subset is intentionally narrow:
   SQL planning. Outer-independent node-only counts, relationship counts, and
   existential patterns become single-row `CROSS JOIN` precomputes; correlated
   single-anchor relationship-pattern counts and existential predicates become
-  grouped `LEFT JOIN` precomputes keyed by the outer node. The shared IR
+  grouped `LEFT JOIN` precomputes keyed by the outer node. Correlated node-only
+  count subqueries can also precompute when exactly one equality predicate
+  relates a local node property/key expression to an outer node property/key
+  expression and every other scoped predicate is local-only. The shared IR
   correlation helper decides which variables are introduced by a scoped
-  subquery, keeping the parser and lowerer on the same contract. Correlated
-  node-only and multi-anchor hidden sort subqueries still require staged
-  row-source planning and are rejected before lowering;
+  subquery, keeping the parser and lowerer on the same contract. Multi-anchor,
+  multi-key, non-equality, relationship-correlated node-only, and otherwise
+  non-groupable hidden sort subqueries still require staged row-source planning
+  and are rejected before lowering;
 - explicit Cypher `ORDER BY ... NULLS FIRST/LAST` is normalized before typed AST
   construction because the current parser version accepts sort direction but
   does not model null placement. The Cypher frontend records null placement per

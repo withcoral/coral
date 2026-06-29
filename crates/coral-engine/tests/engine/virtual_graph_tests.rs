@@ -4055,6 +4055,45 @@ async fn cypher_hidden_uncorrelated_node_count_subquery_order_expressions_execut
 }
 
 #[tokio::test]
+async fn cypher_hidden_correlated_node_count_subquery_order_expressions_execute() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service \
+         ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier } DESC, service",
+    )
+    .await
+    .expect("hidden correlated node COUNT subquery ORDER BY expression should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "LEFT JOIN (SELECT \"__coral_count_n0\".\"tier\" AS \"__coral_outer_key\", \
+             COUNT(*) AS \"__coral_value\" FROM \"ops\".\"services\" AS \"__coral_count_n0\" \
+             GROUP BY \"__coral_count_n0\".\"tier\") AS \"__coral_scalar_subquery_0\" \
+             ON \"__coral_scalar_subquery_0\".\"__coral_outer_key\" = \"n0\".\"tier\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+            json!({"service": "experiments"}),
+            json!({"service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_hidden_uncorrelated_relationship_subquery_order_expressions_execute() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
