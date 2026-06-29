@@ -953,14 +953,16 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         "tool errors should not include text fallback content"
     );
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
-    assert_eq!(mixed_sql["total_count"], 2);
-    assert_eq!(mixed_sql["success_count"], 1);
-    assert_eq!(mixed_sql["error_count"], 1);
-    assert_eq!(mixed_sql["results"][0]["status"], "success");
-    assert_eq!(mixed_sql["results"][0]["rows"][0]["text"], "hello");
-    assert_eq!(mixed_sql["results"][1]["status"], "error");
+    assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
+    let mixed_sql_batch = &mixed_sql["data"];
+    assert_eq!(mixed_sql_batch["total_count"], 2);
+    assert_eq!(mixed_sql_batch["success_count"], 1);
+    assert_eq!(mixed_sql_batch["error_count"], 1);
+    assert_eq!(mixed_sql_batch["results"][0]["status"], "success");
+    assert_eq!(mixed_sql_batch["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql_batch["results"][1]["status"], "error");
     assert_eq!(
-        mixed_sql["results"][1]["error"]["summary"],
+        mixed_sql_batch["results"][1]["error"]["summary"],
         "Query request is invalid"
     );
 
@@ -1016,6 +1018,40 @@ async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
         requests
             .iter()
             .any(|request| request.sql == "SELECT 'second' AS label")
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_batch_propagates_episode_id_to_each_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [
+                "SELECT 'first' AS label",
+                "SELECT 'second' AS label"
+            ],
+            "episode_id": "ep_batch"
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+
+    let episode_ids = server.execute_sql_episode_ids();
+    assert_eq!(episode_ids.len(), 2);
+    assert!(
+        episode_ids
+            .iter()
+            .all(|episode_id| episode_id.as_deref() == Some("ep_batch")),
+        "expected every batch query to carry coral-episode-id, got {episode_ids:?}"
     );
 
     client.cancel().await?;

@@ -1,6 +1,7 @@
 use coral_client::{DecodedStatusError, decode_status_error};
 use rmcp::{ErrorData, model::CallToolResult};
 use serde::Serialize;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +23,31 @@ pub(crate) fn tool_error_result(error: ToolError) -> CallToolResult {
     let mut result = CallToolResult::structured_error(structured);
     result.content = Vec::new();
     result
+}
+
+pub(crate) fn tool_error_with_data_result(error: ToolError, data: Value) -> CallToolResult {
+    let structured = serde_json::to_value(StructuredToolErrorWithDataValue { error, data })
+        .expect("tool error with data value serializes");
+    let mut result = CallToolResult::structured_error(structured);
+    result.content = Vec::new();
+    result
+}
+
+pub(crate) fn tool_error_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["summary", "detail", "grpc_code", "retryable", "metadata"],
+        "additionalProperties": false,
+        "properties": {
+            "summary": { "type": "string" },
+            "detail": { "type": "string" },
+            "hint": { "type": "string" },
+            "grpc_code": { "type": "string" },
+            "reason": { "type": "string" },
+            "retryable": { "type": "boolean" },
+            "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+    })
 }
 
 pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) -> ToolError {
@@ -115,6 +141,12 @@ struct StructuredToolErrorValue {
 }
 
 #[derive(Serialize)]
+struct StructuredToolErrorWithDataValue {
+    error: ToolError,
+    data: Value,
+}
+
+#[derive(Serialize)]
 struct StatusErrorDataValue<'a> {
     detail: &'a str,
     grpc_code: String,
@@ -141,7 +173,10 @@ mod tests {
 
     use coral_client::CORAL_ERROR_DOMAIN;
 
-    use super::{ToolError, status_to_error_data, tool_error_from_status, tool_error_result};
+    use super::{
+        ToolError, status_to_error_data, tool_error_from_status, tool_error_result,
+        tool_error_with_data_result,
+    };
 
     #[test]
     fn tool_error_result_includes_structured_error_payload() {
@@ -159,6 +194,28 @@ mod tests {
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
         assert_eq!(json["error"]["retryable"], false);
+    }
+
+    #[test]
+    fn tool_error_with_data_result_keeps_canonical_error_envelope() {
+        let result = tool_error_with_data_result(
+            ToolError {
+                summary: "One or more SQL queries failed".to_string(),
+                detail: "Inspect `data.results` for per-query successes and errors.".to_string(),
+                hint: None,
+                grpc_code: "Unknown".to_string(),
+                reason: Some("SQL_BATCH_PARTIAL_FAILURE".to_string()),
+                retryable: false,
+                metadata: HashMap::new(),
+            },
+            serde_json::json!({ "total_count": 2, "results": [] }),
+        );
+
+        assert_eq!(result.is_error, Some(true));
+        assert!(result.content.is_empty());
+        let json = result.structured_content.expect("structured content");
+        assert_eq!(json["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
+        assert_eq!(json["data"]["total_count"], 2);
     }
 
     #[test]
@@ -196,8 +253,9 @@ mod tests {
         })
         .expect("tool error serializes");
 
-        assert!(json["hint"].is_null());
-        assert!(json["reason"].is_null());
+        let object = json.as_object().expect("tool error object");
+        assert!(!object.contains_key("hint"));
+        assert!(!object.contains_key("reason"));
         assert_eq!(
             json["metadata"].as_object().expect("metadata object").len(),
             0

@@ -1552,16 +1552,19 @@ async fn mcp_tool_error_does_not_end_session() {
         .await
         .expect("mixed sql still returns tool result");
     assert_eq!(mixed_sql.is_error, Some(true));
+    assert_structured_content_only(&mixed_sql);
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
     assert_matches_output_schema(sql_tool, &mixed_sql);
-    assert_eq!(mixed_sql["total_count"], 2);
-    assert_eq!(mixed_sql["success_count"], 1);
-    assert_eq!(mixed_sql["error_count"], 1);
-    assert_eq!(mixed_sql["results"][0]["status"], "success");
-    assert_eq!(mixed_sql["results"][0]["rows"][0]["text"], "hello");
-    assert_eq!(mixed_sql["results"][1]["status"], "error");
+    assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
+    let mixed_sql_batch = &mixed_sql["data"];
+    assert_eq!(mixed_sql_batch["total_count"], 2);
+    assert_eq!(mixed_sql_batch["success_count"], 1);
+    assert_eq!(mixed_sql_batch["error_count"], 1);
+    assert_eq!(mixed_sql_batch["results"][0]["status"], "success");
+    assert_eq!(mixed_sql_batch["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql_batch["results"][1]["status"], "error");
     assert_eq!(
-        mixed_sql["results"][1]["error"]["summary"],
+        mixed_sql_batch["results"][1]["error"]["summary"],
         "Query request is invalid"
     );
 

@@ -251,23 +251,21 @@ Each entry must be one independent read-only SQL statement. Coral starts entries
 
 `queries` must contain 1 to 10 non-blank strings. Missing `queries`, an empty array, more than 10 entries, non-string entries, and blank strings are MCP argument errors and do not dispatch any SQL.
 
-
-
 ### Searching a provider's data
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
 
 ## Query result format
 
-MCP tool results use `structured_content` as the only payload channel. The `content` array is empty for successful tool results and structured tool errors, so clients should not parse text content for rows or errors.
+MCP tool results use `structuredContent` for rows and errors. The `content` array is empty for successful tool results and structured tool errors, so clients should not parse text content.
 
-The `sql` tool returns one structured batch envelope:
+When every query succeeds, the `sql` tool returns one structured batch envelope:
 
 ```json
 {
   "total_count": 2,
-  "success_count": 1,
-  "error_count": 1,
+  "success_count": 2,
+  "error_count": 0,
   "results": [
     {
       "index": 0,
@@ -276,20 +274,56 @@ The `sql` tool returns one structured batch envelope:
     },
     {
       "index": 1,
-      "status": "error",
-      "error": {
-        "summary": "Query request is invalid",
-        "detail": "DML not supported: DELETE",
-        "grpc_code": "InvalidArgument",
-        "retryable": false,
-        "metadata": {}
-      }
+      "status": "success",
+      "rows": [{ "column_name": "title", "data_type": "Utf8" }]
     }
   ]
 }
 ```
 
-`results` is ordered to match `queries`, and each item includes its zero-based `index`. Successful items have `status: "success"` and `rows`. Failed items have `status: "error"` and an `error` object. A batch with any failed item sets the MCP tool result error indicator while still returning the full structured batch for partial-success inspection.
+`results` is ordered to match `queries`, and each item includes its zero-based `index`. Successful items have `status: "success"` and `rows`.
+
+A batch with any failed query sets the MCP tool result error indicator, keeps the top-level structured error shape, and returns the ordered batch under `data`:
+
+```json
+{
+  "error": {
+    "summary": "One or more SQL queries failed",
+    "detail": "Inspect `data.results` for per-query successes and errors.",
+    "grpc_code": "Unknown",
+    "reason": "SQL_BATCH_PARTIAL_FAILURE",
+    "retryable": false,
+    "metadata": {
+      "total_count": "2",
+      "success_count": "1",
+      "error_count": "1"
+    }
+  },
+  "data": {
+    "total_count": 2,
+    "success_count": 1,
+    "error_count": 1,
+    "results": [
+      {
+        "index": 0,
+        "status": "success",
+        "rows": [{ "table_name": "pulls" }]
+      },
+      {
+        "index": 1,
+        "status": "error",
+        "error": {
+          "summary": "Query request is invalid",
+          "detail": "DML not supported: DELETE",
+          "grpc_code": "InvalidArgument",
+          "retryable": false,
+          "metadata": {}
+        }
+      }
+    ]
+  }
+}
+```
 
 Successful SQL rows are JSON objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
 

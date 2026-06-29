@@ -10,7 +10,7 @@ use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{
     Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
-    sql_input_schema, sql_output_schema,
+    schema::json_object_schema, sql_input_schema, sql_output_schema,
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
@@ -953,15 +953,6 @@ fn optional_bool_argument(
     value.as_bool().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
     })
-}
-
-fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
-    Arc::new(
-        value
-            .as_object()
-            .cloned()
-            .expect("tool schemas should be JSON objects"),
-    )
 }
 
 #[cfg(test)]
