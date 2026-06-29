@@ -112,6 +112,9 @@ The supported foundation subset is intentionally narrow:
 - read-only single-part queries and transparent multi-part `MATCH` queries;
 - one or more non-optional `MATCH` clauses with connected path parts or
   disconnected mandatory parts lowered as explicit cartesian products;
+- unquantified parenthesized path patterns treated as transparent syntax around
+  ordinary path parts, including named path metadata and branch-expansion
+  preprocessing;
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
   including single-hop directed and undirected optional-local predicates and
   inline property maps placed in the join scope. Optional plans still require a
@@ -536,7 +539,7 @@ This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, unbounded variable-length paths, multi-length
 branch expansion inside `OPTIONAL MATCH`, cross-label optional zero-hop ranges
 that introduce nullable endpoints, relationship-variable list bindings for
-zero-hop or multi-hop ranges,
+zero-hop or multi-hop ranges, quantified parenthesized path patterns,
 ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,
 non-terminal projection boundaries, post-union result processing, scalar

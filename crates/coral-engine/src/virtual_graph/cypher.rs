@@ -1146,6 +1146,26 @@ fn pattern_element_bound_variables(element: &PatternElement, variables: &mut BTr
     }
 }
 
+fn pattern_element_path(
+    element: &PatternElement,
+) -> Option<(&CypherNodePattern, &[PatternElementChain])> {
+    match element {
+        PatternElement::Path { start, chains } => Some((start, chains.as_slice())),
+        PatternElement::Parenthesized(inner) => pattern_element_path(inner),
+        PatternElement::Quantified { .. } => None,
+    }
+}
+
+fn pattern_element_path_mut(
+    element: &mut PatternElement,
+) -> Option<(&mut CypherNodePattern, &mut Vec<PatternElementChain>)> {
+    match element {
+        PatternElement::Path { start, chains } => Some((start, chains)),
+        PatternElement::Parenthesized(inner) => pattern_element_path_mut(inner),
+        PatternElement::Quantified { .. } => None,
+    }
+}
+
 fn node_pattern_bound_variables(pattern: &CypherNodePattern, variables: &mut BTreeSet<String>) {
     if let Some(variable) = pattern.variable.as_ref() {
         variables.insert(variable_name(variable));
@@ -3642,7 +3662,7 @@ fn first_match_static_label_type_alternative_site(
     context: &CypherCompileContext,
 ) -> Result<Option<MatchLabelTypeAlternativeSite>, CoreError> {
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
-        let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
             continue;
         };
         if let Some(alternatives) =
@@ -3977,7 +3997,8 @@ fn apply_reading_clause_static_label_type_alternative(
         .ok_or_else(|| {
             CoreError::internal("label/type alternative pattern part is out of bounds")
         })?;
-    let PatternElement::Path { start, chains } = &mut pattern_part.anonymous.element else {
+    let Some((start, chains)) = pattern_element_path_mut(&mut pattern_part.anonymous.element)
+    else {
         return Err(CoreError::internal(
             "label/type alternative site did not point at a path pattern",
         ));
@@ -4123,7 +4144,7 @@ fn first_match_bounded_relationship_range_site(
     context: &CypherCompileContext,
 ) -> Result<Option<MatchBoundedRelationshipRangeSiteInfo>, CoreError> {
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
-        let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
             continue;
         };
         for (chain_index, chain) in chains.iter().enumerate() {
@@ -4441,7 +4462,7 @@ fn apply_reading_clause_bounded_relationship_range_alternative(
         .parts
         .get_mut(pattern_part_index)
         .ok_or_else(|| CoreError::internal("bounded range pattern part is out of bounds"))?;
-    let PatternElement::Path { chains, .. } = &mut pattern_part.anonymous.element else {
+    let Some((_, chains)) = pattern_element_path_mut(&mut pattern_part.anonymous.element) else {
         return Err(CoreError::internal(
             "bounded range site did not point at a path pattern",
         ));
@@ -7469,10 +7490,10 @@ fn compile_pattern_part_into(
         format!("match.pattern.parts[{part_index}]"),
     )?;
 
-    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+    let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
         return Err(unsupported(
             format!("match.pattern.parts[{part_index}]"),
-            "parenthesized and quantified path patterns are not supported yet",
+            "quantified path patterns are not supported yet",
         ));
     };
 
@@ -8668,7 +8689,7 @@ fn literal_variables(literal: &CypherLiteral, variables: &mut BTreeSet<String>) 
 }
 
 fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, CoreError> {
-    let PatternElement::Path { chains, .. } = &pattern_part.anonymous.element else {
+    let Some((_, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
         return Err(unsupported(
             format!("{path}.anonymous"),
             "path variables require a path pattern",
@@ -8686,7 +8707,7 @@ fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, 
 }
 
 fn anonymous_pattern_variables(pattern_part: &PatternPart) -> BTreeSet<String> {
-    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+    let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
         return BTreeSet::new();
     };
     let mut variables = BTreeSet::new();
@@ -8710,7 +8731,7 @@ fn anonymous_pattern_variables(pattern_part: &PatternPart) -> BTreeSet<String> {
 }
 
 fn pattern_part_uses_bound_node(pattern_part: &PatternPart, bound_nodes: &BTreeSet<&str>) -> bool {
-    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+    let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
         return false;
     };
     node_pattern_uses_bound_variable(start, bound_nodes)
@@ -41448,6 +41469,71 @@ relationships:
                 .relationships
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn compiles_unquantified_parenthesized_path_patterns() {
+        let plan = compile_cypher(
+            "MATCH ((a:Service)-[:DEPENDS_ON]->(b:Service)) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("unquantified parenthesized path pattern should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            }]
+        );
+
+        let path_plan = compile_cypher(
+            "MATCH dependency_path = ((a:Service)-[:DEPENDS_ON]->(b:Service)) \
+             RETURN length(dependency_path) AS hops",
+        )
+        .expect("path variable over parenthesized path pattern should compile");
+        assert_eq!(path_length_projection_literal(&path_plan), Some(1));
+
+        let optional_plan = compile_cypher(
+            "MATCH (a:Service) \
+             OPTIONAL MATCH ((a)-[:DEPENDS_ON]->(b:Service)) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("anchored optional parenthesized path pattern should compile");
+        assert_eq!(optional_plan.optional_relationships, vec![0]);
+
+        let ranged_query = compile_cypher_query(
+            "MATCH ((a:Service)-[:DEPENDS_ON*1..2]->(b:Service)) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("bounded range inside parenthesized path should compile");
+        assert!(matches!(ranged_query, GraphQuery::Union(_)));
+
+        let alternative_query = compile_cypher_query(
+            "MATCH ((a:Service)-[:DEPENDS_ON|CALLS]->(b:Service)) \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("relationship type alternatives inside parenthesized path should compile");
+        assert!(matches!(alternative_query, GraphQuery::Union(_)));
+    }
+
+    #[test]
+    fn rejects_quantified_parenthesized_path_patterns() {
+        let error = compile_cypher(
+            "MATCH ((a:Service)-[:DEPENDS_ON]->(b:Service)){1,2} \
+             RETURN a.name AS source",
+        )
+        .expect_err("quantified parenthesized path patterns should remain rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("quantified path patterns are not supported yet"),
+            "{error}"
         );
     }
 

@@ -123,6 +123,41 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_parenthesized_path_patterns_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH ownership_path = ((person:Person)-[:OWNS]->(service:Service)) \
+         WHERE service.tier = 'prod' \
+         RETURN person.name AS owner, service.name AS service, length(ownership_path) AS hops \
+         ORDER BY owner ASC",
+    )
+    .await
+    .expect("parenthesized Cypher path query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "hops": 1}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "hops": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_order_by_null_placement_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
