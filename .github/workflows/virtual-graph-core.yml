@@ -6,16 +6,24 @@ on:
       - ".github/workflows/virtual-graph-core.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "Makefile"
       - "crates/coral-engine/**"
       - "docs/virtual-graph-*.md"
+      - "xtask/Cargo.toml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tck.rs"
   push:
     branches: [main, prod]
     paths:
       - ".github/workflows/virtual-graph-core.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "Makefile"
       - "crates/coral-engine/**"
       - "docs/virtual-graph-*.md"
+      - "xtask/Cargo.toml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tck.rs"
 
 permissions:
   contents: read
@@ -57,3 +65,17 @@ jobs:
 
       - name: openCypher TCK read baseline
         run: cargo test -p coral-engine opencypher_tck --locked
+
+      - name: openCypher TCK coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p xtask -- virtual-graph-tck-report --json \
+            | tee virtual-graph-tck-report.json
+          {
+            echo "### openCypher TCK coverage"
+            echo
+            echo '```json'
+            cat virtual-graph-tck-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

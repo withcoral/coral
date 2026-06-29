@@ -38,7 +38,8 @@ make virtual-graph-tck-report
 ```
 
 CI runs the gate in the `Virtual Graph Core` workflow for pull requests and for
-pushes to `main` or `prod`.
+pushes to `main` or `prod`. The workflow also runs the JSON coverage report and
+writes it into the GitHub step summary for review.
 
 The baseline data lives at:
 
