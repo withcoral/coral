@@ -129,7 +129,7 @@ fn write_tck_fixture(dir: &Path) {
         "people.jsonl",
         &[
             json!({"id": 1, "name": "Alice", "age": 34, "city": "London", "active": true}),
-            json!({"id": 2, "name": "Bob", "age": 29, "city": "London", "active": false}),
+            json!({"id": 2, "name": "Bob", "age": 29, "city": "", "active": false}),
             json!({"id": 3, "name": "Carol", "age": 41, "city": "Paris", "active": true}),
         ],
     );

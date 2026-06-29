@@ -13,7 +13,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 1,
+    "ScalarExpressions": 4,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -71,7 +71,6 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" },
-          { "name": "Bob" },
           { "name": "Carol" }
         ]
       }
@@ -264,7 +263,7 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city_count": 2 }
+          { "city_count": 3 }
         ]
       }
     },
@@ -343,6 +342,41 @@
           { "name": "Bob", "status": "inactive" },
           { "name": "Carol", "status": "active" }
         ]
+      }
+    },
+    {
+      "id": "is-empty-string-where-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE isEmpty(p.city) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "is-empty-string-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, isEmpty(p.city) AS city_empty ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "city_empty": false },
+          { "name": "Bob", "city_empty": true },
+          { "name": "Carol", "city_empty": false }
+        ]
+      }
+    },
+    {
+      "id": "is-empty-string-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
+      "expected": {
+        "kind": "error",
+        "contains": "isEmpty() supports exactly one scalar string argument"
       }
     },
     {
@@ -435,7 +469,7 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "people": 2 },
+          { "city": "London", "people": 1 },
           { "city": "Paris", "people": 1 }
         ]
       }
@@ -448,6 +482,7 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
+          { "city": "" },
           { "city": "London" },
           { "city": "Paris" }
         ]

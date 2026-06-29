@@ -142,7 +142,7 @@ Live-source tests are intentionally excluded from product validation.
 The `Virtual Graph Core` workflow currently enforces two executable
 compatibility baseline gates:
 
-- `coral-opencypher-read-baseline`: 42 openCypher-style read scenarios with
+- `coral-opencypher-read-baseline`: 45 openCypher-style read scenarios with
   declared feature floors.
 - `coral-graphql-read-baseline`: 12 GraphQL read-adapter scenarios with declared
   feature floors.

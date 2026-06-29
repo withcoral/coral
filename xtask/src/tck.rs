@@ -491,8 +491,9 @@ mod tests {
             .expect("baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-opencypher-read-baseline");
-        assert_eq!(report.scenario_count, 42);
-        assert_eq!(report.expected_error_count, 1);
+        assert_eq!(report.scenario_count, 45);
+        assert_eq!(report.expected_error_count, 2);
+        assert_eq!(report.feature_counts.get("ScalarExpressions"), Some(&4));
         assert_eq!(report.feature_counts.get("Where"), Some(&9));
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());

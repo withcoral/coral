@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 42 representative read-only scenarios:
+The baseline currently contains 45 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -164,7 +164,8 @@ The baseline currently contains 42 representative read-only scenarios:
   through terminal `WITH`.
 - `CountSubquery`: 2 scenarios for `COUNT { ... }` projections and predicates.
 - `ExistsSubquery`: 1 scenario for `EXISTS { ... }` predicates.
-- `ScalarExpressions`: 1 scenario for searched `CASE`.
+- `ScalarExpressions`: 4 scenarios for searched `CASE`, scalar-string
+  `isEmpty(...)` predicates and projections, and adjacent rejection coverage.
 - `GraphMetadata`: 4 scenarios for `id(...)`, `elementId(...)`, `type(...)`,
   `labels(...)`, and `keys(...)`.
 - `RowModifiers`: 2 scenarios for `ORDER BY`, `NULLS FIRST` / `NULLS LAST`,
