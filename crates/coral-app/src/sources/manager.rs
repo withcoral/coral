@@ -32,7 +32,6 @@ use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthC
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -506,14 +505,10 @@ impl SourceManager {
             );
             return Err(error);
         }
-        let source_dir_backup =
-            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_source_dir = source_dir.exists();
-        if had_source_dir {
-            if source_dir_backup.exists() {
-                std::fs::remove_dir_all(&source_dir_backup)?;
-            }
-            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
+        let source_dir_backup = match fs::DirectoryBackup::move_for_delete(&source_dir, source_name)
+        {
+            Ok(backup) => backup,
+            Err(error) => {
                 self.restore_source_rollback_state(
                     workspace_name,
                     source_name,
@@ -523,17 +518,9 @@ impl SourceManager {
                 );
                 return Err(error.into());
             }
-        }
+        };
         if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
-                )));
-            }
+            let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state(
                 workspace_name,
                 source_name,
@@ -541,11 +528,15 @@ impl SourceManager {
                 None,
                 &credential_guard,
             );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
+            }
             return Err(error);
         }
-        if source_dir_backup.exists() {
-            std::fs::remove_dir_all(&source_dir_backup)?;
-        }
+        source_dir_backup.commit()?;
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
             &self.layout.workspaces_root(),

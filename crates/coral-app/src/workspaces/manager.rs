@@ -1,14 +1,13 @@
 #![expect(dead_code, reason = "used in next stack PR")]
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialMaterialSnapshot, CredentialSetId};
 use crate::state::AppStateLayout;
+use crate::storage::fs::DirectoryBackup;
 use crate::workspaces::{DEFAULT_WORKSPACE_ID, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
 /// App-owned workspace lifecycle behavior.
@@ -55,37 +54,25 @@ impl WorkspaceManager {
 
         let credential_snapshots = self.remove_workspace_credentials(workspace_name)?;
         let workspace_dir = self.layout.workspace_dir(workspace_name);
-        let backup = workspace_delete_backup_path(&workspace_dir, workspace_name);
-        let had_workspace_dir = workspace_dir.exists();
-        if had_workspace_dir {
-            if backup.exists()
-                && let Err(error) = std::fs::remove_dir_all(&backup)
-            {
+        let backup = match DirectoryBackup::move_for_delete(&workspace_dir, workspace_name) {
+            Ok(backup) => backup,
+            Err(error) => {
                 self.restore_workspace_credentials(workspace_name, &credential_snapshots);
                 return Err(error.into());
             }
-            if let Err(error) = std::fs::rename(&workspace_dir, &backup) {
-                self.restore_workspace_credentials(workspace_name, &credential_snapshots);
-                return Err(error.into());
-            }
-        }
+        };
 
         match self.store.delete_workspace(workspace_name) {
             Ok(Some(record)) => {
-                if backup.exists() {
-                    std::fs::remove_dir_all(&backup)?;
-                }
+                backup.commit()?;
                 Ok(record)
             }
             Ok(None) => {
-                if backup.exists() {
-                    std::fs::remove_dir_all(&backup)?;
-                }
+                backup.commit()?;
                 Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
             }
             Err(error) => {
-                let restore_dir_result =
-                    restore_workspace_dir(&workspace_dir, &backup, had_workspace_dir);
+                let restore_dir_result = backup.restore();
                 self.restore_workspace_credentials(workspace_name, &credential_snapshots);
                 restore_dir_result?;
                 Err(error)
@@ -109,24 +96,33 @@ impl WorkspaceManager {
             {
                 Ok(guard) => guard,
                 Err(error) => {
-                    self.restore_workspace_credentials(workspace_name, &snapshots);
-                    return Err(error);
+                    return self.rollback_removed_workspace_credentials(
+                        workspace_name,
+                        &snapshots,
+                        error,
+                    );
                 }
             };
             let snapshot = match guard.snapshot_material(storage) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    self.restore_workspace_credentials(workspace_name, &snapshots);
-                    return Err(error);
+                    return self.rollback_removed_workspace_credentials(
+                        workspace_name,
+                        &snapshots,
+                        error,
+                    );
                 }
             };
             if let Err(error) = guard.remove_material(storage) {
-                snapshots.push(WorkspaceCredentialSnapshot {
-                    credential_set_id,
-                    snapshot,
-                });
-                self.restore_workspace_credentials(workspace_name, &snapshots);
-                return Err(error);
+                return self.rollback_removed_workspace_credentials_with_snapshot(
+                    workspace_name,
+                    &mut snapshots,
+                    WorkspaceCredentialSnapshot {
+                        credential_set_id,
+                        snapshot,
+                    },
+                    error,
+                );
             }
             snapshots.push(WorkspaceCredentialSnapshot {
                 credential_set_id,
@@ -134,6 +130,27 @@ impl WorkspaceManager {
             });
         }
         Ok(snapshots)
+    }
+
+    fn rollback_removed_workspace_credentials<T>(
+        &self,
+        workspace_name: &WorkspaceName,
+        snapshots: &[WorkspaceCredentialSnapshot],
+        error: AppError,
+    ) -> Result<T, AppError> {
+        self.restore_workspace_credentials(workspace_name, snapshots);
+        Err(error)
+    }
+
+    fn rollback_removed_workspace_credentials_with_snapshot<T>(
+        &self,
+        workspace_name: &WorkspaceName,
+        snapshots: &mut Vec<WorkspaceCredentialSnapshot>,
+        snapshot: WorkspaceCredentialSnapshot,
+        error: AppError,
+    ) -> Result<T, AppError> {
+        snapshots.push(snapshot);
+        self.rollback_removed_workspace_credentials(workspace_name, snapshots, error)
     }
 
     fn restore_workspace_credentials(
@@ -168,26 +185,4 @@ impl WorkspaceManager {
 struct WorkspaceCredentialSnapshot {
     credential_set_id: CredentialSetId,
     snapshot: CredentialMaterialSnapshot,
-}
-
-fn workspace_delete_backup_path(workspace_dir: &Path, workspace_name: &WorkspaceName) -> PathBuf {
-    workspace_dir.with_file_name(format!(
-        "{}.delete.rollback.{}",
-        workspace_name,
-        Uuid::new_v4()
-    ))
-}
-
-fn restore_workspace_dir(
-    workspace_dir: &Path,
-    backup: &Path,
-    had_workspace_dir: bool,
-) -> Result<(), AppError> {
-    if had_workspace_dir && backup.exists() {
-        if workspace_dir.exists() {
-            std::fs::remove_dir_all(workspace_dir)?;
-        }
-        std::fs::rename(backup, workspace_dir)?;
-    }
-    Ok(())
 }

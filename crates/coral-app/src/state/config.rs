@@ -1,7 +1,5 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
-#![expect(dead_code, reason = "used in next stack PR")]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
@@ -15,8 +13,7 @@ use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
-use crate::workspaces::WorkspaceName;
-use crate::workspaces::{WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
@@ -44,6 +41,14 @@ impl AppConfig {
 
     pub(crate) fn has_workspace(&self, workspace_name: &WorkspaceName) -> bool {
         self.workspaces.contains(workspace_name)
+    }
+
+    pub(crate) fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
+        if self.has_workspace(workspace_name) {
+            Ok(())
+        } else {
+            Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
+        }
     }
 
     pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
@@ -533,9 +538,7 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         let config = self.load_config()?;
-        if !config.has_workspace(workspace_name) {
-            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-        }
+        config.require_workspace(workspace_name)?;
         Ok(config.workspace_sources(workspace_name))
     }
 
@@ -544,9 +547,7 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<String>, AppError> {
         let config = self.load_config()?;
-        if !config.has_workspace(workspace_name) {
-            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-        }
+        config.require_workspace(workspace_name)?;
         Ok(config.catalog.workspace_source_names(workspace_name))
     }
 
@@ -556,9 +557,7 @@ impl ConfigStore {
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
         let config = self.load_config()?;
-        if !config.has_workspace(workspace_name) {
-            return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-        }
+        config.require_workspace(workspace_name)?;
         config
             .catalog
             .get_source(workspace_name, source_name)
@@ -571,9 +570,7 @@ impl ConfigStore {
         source: InstalledSource,
     ) -> Result<(), AppError> {
         self.update_config(|config| {
-            if !config.has_workspace(workspace_name) {
-                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-            }
+            config.require_workspace(workspace_name)?;
             config.catalog.upsert_source(workspace_name, source);
             Ok(())
         })
@@ -585,50 +582,37 @@ impl ConfigStore {
         source_name: &SourceName,
     ) -> Result<(), AppError> {
         self.update_config(|config| {
-            if !config.has_workspace(workspace_name) {
-                return Err(AppError::WorkspaceNotFound(workspace_name.to_string()));
-            }
+            config.require_workspace(workspace_name)?;
             config.catalog.remove_source(workspace_name, source_name);
             Ok(())
         })
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ConfigWorkspaceStore {
-    config_store: ConfigStore,
-}
-
-impl ConfigWorkspaceStore {
-    pub(crate) fn new(config_store: ConfigStore) -> Self {
-        Self { config_store }
-    }
-}
-
-impl WorkspaceStore for ConfigWorkspaceStore {
+impl WorkspaceStore for ConfigStore {
     fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
-        self.config_store.list_workspaces()
+        ConfigStore::list_workspaces(self)
     }
 
     fn create_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
-        self.config_store.create_workspace(workspace_name)
+        ConfigStore::create_workspace(self, workspace_name)
     }
 
     fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        self.config_store.list_workspace_sources(workspace_name)
+        ConfigStore::list_workspace_sources(self, workspace_name)
     }
 
     fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<WorkspaceRecord>, AppError> {
-        self.config_store.delete_workspace(workspace_name)
+        ConfigStore::delete_workspace(self, workspace_name)
     }
 }
 
@@ -979,9 +963,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, PersistedAppConfig, PersistedEngineConfig, PersistedMemoryConfig,
-        RawFeatureContainerState, RawFeatureValue, SourceCatalog, WorkspaceCatalog,
-        load_raw_feature_overrides, render_config, set_raw_feature_override,
+        AppConfig, AppError, ConfigStore, PersistedAppConfig, PersistedEngineConfig,
+        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
+        WorkspaceCatalog, load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -1040,9 +1024,33 @@ mod tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
+    fn assert_workspace_not_found<T>(result: Result<T, AppError>, workspace_name: &WorkspaceName) {
+        match result {
+            Err(AppError::WorkspaceNotFound(actual)) => {
+                assert_eq!(actual, workspace_name.as_str());
+            }
+            Ok(_) => panic!("expected WorkspaceNotFound for '{workspace_name}'"),
+            Err(error) => panic!("expected WorkspaceNotFound for '{workspace_name}', got {error}"),
+        }
+    }
+
     #[test]
     fn default_config_uses_canonical_version() {
         assert_eq!(AppConfig::default().version, 1);
+    }
+
+    #[test]
+    fn require_workspace_rejects_missing_workspace() {
+        let config = AppConfig::default();
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+
+        config
+            .require_workspace(&default_workspace())
+            .expect("default workspace should exist");
+        assert_workspace_not_found(
+            config.require_workspace(&missing_workspace),
+            &missing_workspace,
+        );
     }
 
     #[test]
@@ -1174,6 +1182,35 @@ origin = "bundled"
                 "linear".to_string(),
                 "slack".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn scoped_config_store_methods_reject_missing_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+
+        assert_workspace_not_found(
+            store.list_workspace_sources(&missing_workspace),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.list_workspace_source_names(&missing_workspace),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.get_source(&missing_workspace, &source_name),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.upsert_source(&missing_workspace, installed_source("github")),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.remove_source(&missing_workspace, &source_name),
+            &missing_workspace,
         );
     }
 
