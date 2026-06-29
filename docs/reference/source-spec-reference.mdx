@@ -1305,6 +1305,10 @@ sent only to the token endpoint and are never included in the authorization URL.
 They may be stored as internal credential metadata so Coral can refresh the
 access token without prompting the user again.
 
+Choose client settings from the provider's OAuth app and token endpoint
+requirements. Use `pkce: required` for public clients when the provider
+supports it. Use `pkce: disabled` only for providers that do not support PKCE.
+
 OAuth endpoint URLs may include `{{input.KEY}}` templates for declared
 `kind: variable` inputs, which Coral renders during OAuth credential setup. Use
 this for non-secret endpoint components such as a Microsoft tenant ID or site
@@ -1347,6 +1351,10 @@ need to reconnect the source after the access token expires.
 The CLI also accepts the final loopback redirect URL in the terminal while it
 waits, which lets users complete OAuth when their browser cannot reach the
 machine running Coral directly.
+
+When the provider requires pre-registered redirect URIs with exact ports, use
+`redirect_uri_port_mode: fixed` with a non-zero port and tell users to register
+that exact URI in the OAuth app.
 
 ### Inspecting configured inputs
 
