@@ -51,7 +51,12 @@ export function catalogEntries(discovered: SourceInfo[], installed: Source[]): C
     const existing = entries.get(source.name)
     if (existing) {
       existing.installed = true
-      existing.version ||= source.version
+      // The installed source is the ground truth for how it was actually configured,
+      // so its origin and version win over the discovered manifest entry. Keep the
+      // discovered origin only when the installed source reports no usable origin.
+      const installedOrigin = originLabel(source.origin)
+      if (installedOrigin !== 'unknown') existing.origin = installedOrigin
+      existing.version = source.version || existing.version
       continue
     }
     entries.set(source.name, {

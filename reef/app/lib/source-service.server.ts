@@ -40,10 +40,15 @@ export function coralEndpointForRequest(request: Request): string {
   const configured = process.env.CORAL_ENDPOINT?.trim()
   if (configured) return trimTrailingSlash(configured)
 
-  const url = new URL(request.url)
-  if (process.env.NODE_ENV !== 'production' && isLocalDevOrigin(url)) {
-    return DEFAULT_DEV_CORAL_ENDPOINT
+  // In production the backend endpoint must be configured explicitly. Deriving it
+  // from the request origin would let an attacker-controlled Host header redirect
+  // RPCs to a server they control, so refuse instead of falling back to the origin.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('CORAL_ENDPOINT must be set in production')
   }
+
+  const url = new URL(request.url)
+  if (isLocalDevOrigin(url)) return DEFAULT_DEV_CORAL_ENDPOINT
   return url.origin
 }
 

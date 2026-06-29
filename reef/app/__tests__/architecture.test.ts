@@ -37,6 +37,8 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
+import routeConfig from '../routes'
+
 const testsDir = path.dirname(fileURLToPath(import.meta.url))
 
 const APP_SRC = path.resolve(testsDir, '..')
@@ -334,12 +336,25 @@ describe('Architectural Tests', () => {
   })
 
   describe('2. Route Dependency Direction', () => {
-    it('app shell should wrap only the root index', () => {
-      const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
+    it('app shell layout wraps the index and sources routes', () => {
+      // The route config string is still read so we keep the file reachable from the
+      // test, but the invariant is asserted against the resolved tree: independent
+      // `toContain` checks would pass even if /sources were a sibling of the layout
+      // rather than one of its children.
+      expect(fs.existsSync(ROUTE_CONFIG_FILE)).toBe(true)
 
-      expect(routeConfig).toContain("layout('routes/app-shell.tsx'")
-      expect(routeConfig).toContain("index('routes/index.tsx')")
-      expect(routeConfig).toContain("route('sources', 'routes/sources.tsx')")
+      expect(routeConfig).toHaveLength(1)
+      const shell = routeConfig[0]
+      expect(shell.file).toBe('routes/app-shell.tsx')
+
+      const children = shell.children ?? []
+      expect(children).toHaveLength(2)
+      expect(children).toContainEqual(
+        expect.objectContaining({ file: 'routes/index.tsx', index: true }),
+      )
+      expect(children).toContainEqual(
+        expect.objectContaining({ file: 'routes/sources.tsx', path: 'sources' }),
+      )
     })
 
     it('route files should not have circular dependencies', () => {

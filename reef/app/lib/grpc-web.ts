@@ -32,15 +32,9 @@ export async function grpcWebUnary<Input extends DescMessage, Output extends Des
   })
   const bytes = new Uint8Array(await response.arrayBuffer())
   const frames = parseFrames(bytes)
-  const status = grpcStatus(response, frames.trailers)
-  if (!response.ok || status.code !== '0') {
-    throw new GrpcWebError(
-      status.message || response.statusText || 'Coral request failed',
-      status.code,
-    )
-  }
+  assertGrpcSuccess(response, frames.trailers, 'Coral request failed')
   const data = frames.data.at(0)
-  if (!data) throw new GrpcWebError('Coral response did not include a data frame', status.code)
+  if (!data) throw new GrpcWebError('Coral response did not include a data frame', '0')
   return fromBinary(outputSchema, data)
 }
 
@@ -90,13 +84,7 @@ export async function grpcWebServerStream<Input extends DescMessage, Output exte
     trailers = parsed.trailers
   }
 
-  const status = grpcStatus(response, trailers)
-  if (!response.ok || status.code !== '0') {
-    throw new GrpcWebError(
-      status.message || response.statusText || 'Coral stream failed',
-      status.code,
-    )
-  }
+  assertGrpcSuccess(response, trailers, 'Coral stream failed')
 }
 
 function grpcWebHeaders(): HeadersInit {
@@ -129,13 +117,7 @@ function parseStreamingBytes<Output extends DescMessage>(
 ): void {
   const frames = parseFrames(bytes)
   for (const data of frames.data) onMessage(fromBinary(outputSchema, data))
-  const status = grpcStatus(response, frames.trailers)
-  if (!response.ok || status.code !== '0') {
-    throw new GrpcWebError(
-      status.message || response.statusText || 'Coral stream failed',
-      status.code,
-    )
-  }
+  assertGrpcSuccess(response, frames.trailers, 'Coral stream failed')
 }
 
 function parseFrames(bytes: Uint8Array, allowPartial = false) {
@@ -174,11 +156,41 @@ function parseTrailers(bytes: Uint8Array): Headers {
   return headers
 }
 
-function grpcStatus(response: Response, trailers: Headers) {
-  return {
-    code: trailers.get('grpc-status') ?? response.headers.get('grpc-status') ?? '0',
-    message: decodeURIComponent(
-      trailers.get('grpc-message') ?? response.headers.get('grpc-message') ?? '',
-    ),
+function assertGrpcSuccess(response: Response, trailers: Headers, fallbackMessage: string): void {
+  const { code, message } = grpcStatus(response, trailers)
+
+  // A non-2xx HTTP response is a transport failure; surface the most useful message
+  // we have, falling back to the HTTP status text.
+  if (!response.ok) {
+    throw new GrpcWebError(message || response.statusText || fallbackMessage, code ?? undefined)
+  }
+
+  // A 2xx response with no grpc-status is a protocol violation, not implicit success:
+  // a well-formed gRPC-Web response always reports a status in headers or trailers.
+  if (code === null) {
+    throw new GrpcWebError('Coral response did not include a gRPC status')
+  }
+
+  if (code !== '0') {
+    throw new GrpcWebError(message || response.statusText || fallbackMessage, code)
+  }
+}
+
+function grpcStatus(
+  response: Response,
+  trailers: Headers,
+): { code: string | null; message: string } {
+  const code = trailers.get('grpc-status') ?? response.headers.get('grpc-status')
+  const rawMessage = trailers.get('grpc-message') ?? response.headers.get('grpc-message') ?? ''
+  return { code: code ?? null, message: safeDecodeMessage(rawMessage) }
+}
+
+// grpc-message is percent-encoded by the server, but a malformed value must not crash
+// error handling with a URIError. Fall back to the raw value when decoding fails.
+function safeDecodeMessage(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
   }
 }

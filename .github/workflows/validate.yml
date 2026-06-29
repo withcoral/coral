@@ -73,6 +73,7 @@ jobs:
               - 'ui/**'
             reef-checks:
               - '.github/workflows/validate.yml'
+              - 'crates/coral-api/proto/**'
               - 'reef/**'
             proto-lint:
               - '.github/workflows/validate.yml'

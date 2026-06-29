@@ -26,6 +26,12 @@ export async function action({ request }: Route.ActionArgs): Promise<SourcesActi
   try {
     if (intent === 'install') {
       const { info } = await sources.getSourceInfo(name)
+      if (info.installed && originLabel(info.origin) !== 'bundled') {
+        return actionError('install', name, "Imported sources can't be installed here yet")
+      }
+      if (firstOAuthMethodInput(info, formData)) {
+        return actionError('install', name, 'OAuth install is not available in this shell yet')
+      }
       const missing = firstMissingRequiredInput(info, formData)
       if (missing) return actionError('install', name, `${missing} is required`)
       await sources.createBundledSource(name, installBindingsFromForm(info, formData))
@@ -111,6 +117,16 @@ export function firstMissingRequiredInput(info: SourceInfo, formData: FormData):
     if (!method || method.method.case === 'sourceConfig') {
       if (formValue(formData, `sec:${input.key}`).length === 0) return input.key
     }
+  }
+  return null
+}
+
+export function firstOAuthMethodInput(info: SourceInfo, formData: FormData): string | null {
+  for (const input of info.inputs) {
+    if (input.input.case !== 'secret') continue
+    const methodIndex = Number(formValue(formData, `method:${input.key}`, '0'))
+    const method = input.input.value.credential?.methods[methodIndex]
+    if (method?.method.case === 'oauth') return input.key
   }
   return null
 }
