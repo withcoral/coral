@@ -31,6 +31,12 @@ The broader focused engine gate also runs it:
 make virtual-graph-checks
 ```
 
+Generate a machine-readable coverage summary with:
+
+```sh
+make virtual-graph-tck-report
+```
+
 CI runs the gate in the `Virtual Graph Core` workflow for pull requests and for
 pushes to `main` or `prod`.
 
@@ -44,6 +50,12 @@ The runner lives at:
 
 ```text
 crates/coral-engine/tests/engine/opencypher_tck_tests.rs
+```
+
+The report command lives in:
+
+```text
+xtask/src/tck.rs
 ```
 
 ## Scope

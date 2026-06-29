@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -22,6 +22,9 @@ virtual-graph-checks:
 
 virtual-graph-tck:
 	cargo test -p coral-engine opencypher_tck --locked
+
+virtual-graph-tck-report:
+	cargo run --locked -p xtask -- virtual-graph-tck-report --json
 
 perf-check:
 	cargo build --locked -p coral-cli --release
