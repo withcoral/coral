@@ -123,7 +123,6 @@ fn trace_store_status(error: TraceStoreError) -> Status {
         | TraceStoreError::WriterPoisoned
         | TraceStoreError::CloseActiveWriter { .. }
         | TraceStoreError::ReadFile { .. }
-        | TraceStoreError::DecodeLine { .. }
         | TraceStoreError::PruneExpired { .. }
         | TraceStoreError::Worker { .. } => Status::new(Code::Internal, error.to_string()),
     }

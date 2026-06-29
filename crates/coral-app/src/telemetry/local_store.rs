@@ -411,12 +411,6 @@ pub(crate) enum TraceStoreError {
     WriterPoisoned,
     #[error("failed to close active local trace store writer before cleanup: {source}")]
     CloseActiveWriter { source: LocalTraceStoreError },
-    #[error("failed to decode local trace store file {path} line {line}: {source}")]
-    DecodeLine {
-        path: PathBuf,
-        line: usize,
-        source: serde_json::Error,
-    },
     #[error("failed to prune expired local trace store files: {source}")]
     PruneExpired { source: LocalTraceStoreError },
     #[error("local trace store worker failed before returning a response: {source}")]
@@ -1105,7 +1099,6 @@ fn read_list_spans_file_filtered(
     let mut reader = BufReader::new(file);
     let mut spans_by_id = HashMap::new();
     let mut line = String::new();
-    let mut line_number = 0;
 
     loop {
         line.clear();
@@ -1120,7 +1113,6 @@ fn read_list_spans_file_filtered(
             break;
         }
 
-        line_number += 1;
         let complete_line = line.ends_with('\n');
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.trim().is_empty() {
@@ -1138,13 +1130,7 @@ fn read_list_spans_file_filtered(
             }
             Ok(_span) => {}
             Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
+            Err(_source) => {}
         }
     }
 
@@ -1162,7 +1148,6 @@ fn read_trace_spans_file(
     let mut reader = BufReader::new(file);
     let mut spans_by_id = HashMap::new();
     let mut line = String::new();
-    let mut line_number = 0;
 
     loop {
         line.clear();
@@ -1177,7 +1162,6 @@ fn read_trace_spans_file(
             break;
         }
 
-        line_number += 1;
         let complete_line = line.ends_with('\n');
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.trim().is_empty() {
@@ -1194,24 +1178,12 @@ fn read_trace_spans_file(
                         spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
                     }
                     Err(_) if !complete_line => break,
-                    Err(source) => {
-                        return Err(TraceStoreError::DecodeLine {
-                            path: path.to_path_buf(),
-                            line: line_number,
-                            source,
-                        });
-                    }
+                    Err(_source) => {}
                 }
             }
             Ok(_identity) => {}
             Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
+            Err(_source) => {}
         }
     }
 
