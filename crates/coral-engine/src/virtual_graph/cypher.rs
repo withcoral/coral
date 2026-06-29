@@ -1482,6 +1482,15 @@ fn rewrite_missing_branch_property_predicate_expression(
                 relationships,
             )),
         },
+        PredicateExpression::ExistsPattern(mut predicate) => {
+            rewrite_missing_branch_exists_pattern_as_null(
+                &mut predicate,
+                graph,
+                nodes,
+                relationships,
+            );
+            PredicateExpression::ExistsPattern(predicate)
+        }
         _ => expression,
     }
 }
@@ -1604,8 +1613,11 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
         | ScalarExpression::GraphPresence { .. }
         | ScalarExpression::NodeLabels { .. }
         | ScalarExpression::PropertyKeys { .. }
-        | ScalarExpression::RelationshipType { .. }
-        | ScalarExpression::CountSubquery { .. } => true,
+        | ScalarExpression::RelationshipType { .. } => true,
+        ScalarExpression::CountSubquery { pattern } => {
+            rewrite_missing_branch_count_subquery_as_null(pattern, graph, nodes, relationships);
+            true
+        }
         ScalarExpression::Predicate(predicate) => {
             **predicate = rewrite_missing_branch_property_predicate_expression(
                 (**predicate).clone(),
@@ -1775,6 +1787,122 @@ fn rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
         ),
         _ => unreachable!("scalar leaves and unary expressions handled before compound rewrite"),
     }
+}
+
+fn rewrite_missing_branch_count_subquery_as_null(
+    pattern: &mut CountSubqueryPattern,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+    relationships: &[RelationshipPattern],
+) {
+    match pattern {
+        CountSubqueryPattern::Relationships(pattern) => {
+            rewrite_missing_branch_exists_pattern_as_null(pattern, graph, nodes, relationships);
+        }
+        CountSubqueryPattern::Nodes {
+            nodes: local_nodes,
+            predicates,
+            predicate,
+        } => {
+            let scoped_nodes = scoped_branch_nodes(nodes, local_nodes);
+            let scoped_relationships = relationships.to_vec();
+            rewrite_missing_branch_property_predicate_list_as_null(
+                predicates,
+                predicate,
+                graph,
+                &scoped_nodes,
+                &scoped_relationships,
+            );
+        }
+    }
+}
+
+fn rewrite_missing_branch_exists_pattern_as_null(
+    pattern: &mut ExistsPatternPredicate,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+    relationships: &[RelationshipPattern],
+) {
+    let scoped_nodes = scoped_branch_nodes(nodes, &pattern.nodes);
+    let scoped_relationships = scoped_branch_relationships(relationships, &pattern.relationships);
+    rewrite_missing_branch_property_predicate_list_as_null(
+        &mut pattern.predicates,
+        &mut pattern.predicate,
+        graph,
+        &scoped_nodes,
+        &scoped_relationships,
+    );
+}
+
+fn scoped_branch_nodes(
+    nodes: &BTreeMap<String, String>,
+    local_nodes: &[NodePattern],
+) -> BTreeMap<String, String> {
+    let mut scoped_nodes = nodes.clone();
+    for node in local_nodes {
+        scoped_nodes.insert(node.variable.clone(), node.label.clone());
+    }
+    scoped_nodes
+}
+
+fn scoped_branch_relationships(
+    relationships: &[RelationshipPattern],
+    local_relationships: &[RelationshipPattern],
+) -> Vec<RelationshipPattern> {
+    let mut scoped_relationships = local_relationships.to_vec();
+    scoped_relationships.extend_from_slice(relationships);
+    scoped_relationships
+}
+
+fn rewrite_missing_branch_property_predicate_list_as_null(
+    predicates: &mut Vec<PropertyPredicate>,
+    predicate: &mut Option<Box<PredicateExpression>>,
+    graph: &Declaration,
+    nodes: &BTreeMap<String, String>,
+    relationships: &[RelationshipPattern],
+) {
+    let mut retained = Vec::with_capacity(predicates.len());
+    for property_predicate in std::mem::take(predicates) {
+        match rewrite_missing_branch_property_predicate(
+            property_predicate,
+            graph,
+            nodes,
+            relationships,
+        ) {
+            BranchPropertyPredicateRewrite::Keep(property_predicate) => {
+                retained.push(property_predicate);
+            }
+            BranchPropertyPredicateRewrite::Rewrite(expression) => {
+                append_scoped_predicate_expression(expression, predicate);
+            }
+        }
+    }
+    *predicates = retained;
+
+    if let Some(existing) = predicate.take() {
+        *predicate = Some(Box::new(
+            rewrite_missing_branch_property_predicate_expression(
+                *existing,
+                graph,
+                nodes,
+                relationships,
+            ),
+        ));
+    }
+}
+
+fn append_scoped_predicate_expression(
+    expression: PredicateExpression,
+    predicate: &mut Option<Box<PredicateExpression>>,
+) {
+    let combined = match predicate.take() {
+        Some(existing) => PredicateExpression::And {
+            left: existing,
+            right: Box::new(expression),
+        },
+        None => expression,
+    };
+    *predicate = Some(Box::new(combined));
 }
 
 fn rewrite_missing_branch_scalar_expression_list_as_null(

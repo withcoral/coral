@@ -167,10 +167,14 @@ The supported foundation subset is intentionally narrow:
   normalization lowers direct missing-property comparisons into scalar `NULL`
   comparisons so SQL three-valued logic preserves Cypher unknown behavior under
   `AND` / `OR` / `XOR` / `NOT`, while `IS NULL` / `IS NOT NULL` keep their
-  expected null-check semantics. Declaration-free compilation keeps rejecting
-  first-bound named variables and anonymous nodes without labels. Bounded
-  relationship-range pruning resolves the same compile-time dynamic endpoint
-  labels before it consults graph declaration topology;
+  expected null-check semantics. The same branch-local rewrite recurses into
+  scoped `EXISTS { MATCH ... WHERE ... }` and existence-style
+  `COUNT { MATCH ... WHERE ... }` predicates, combining outer branch bindings
+  with subquery-local nodes and relationships before validation. Declaration-free
+  compilation keeps rejecting first-bound named variables and anonymous nodes
+  without labels. Bounded relationship-range pruning resolves the same
+  compile-time dynamic endpoint labels before it consults graph declaration
+  topology;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
@@ -396,12 +400,16 @@ The supported foundation subset is intentionally narrow:
   node-only patterns, with endpoint correlations resolved through child-local
   aliases, parent scoped aliases, or outer `MATCH` bindings. Nested `EXISTS`
   scoped boolean/scalar predicates can also reference parent scoped properties
-  through the same alias renderer. `COUNT` predicates whose comparison is
-  equivalent to existence, such as `COUNT { ... } > 0`, `0 < COUNT { ... }`, or
-  `COUNT { ... } = 0`, lower to `EXISTS` / `NOT EXISTS` at top level and inside
-  scoped subqueries, while tautological or impossible integer thresholds such
-  as `COUNT { ... } >= 0` and `COUNT { ... } < 0` fold to boolean literals.
-  Scoped parent-property predicates therefore avoid DataFusion's nested
+  through the same alias renderer. When these scoped predicates live under a
+  branch-expanded pattern, property references missing from the selected branch
+  are normalized to branch-local `NULL` before scoped validation, including
+  subquery-local relationship properties. `COUNT` predicates whose comparison
+  is equivalent to existence, such as `COUNT { ... } > 0`,
+  `0 < COUNT { ... }`, or `COUNT { ... } = 0`, lower to `EXISTS` /
+  `NOT EXISTS` at top level and inside scoped subqueries, while tautological or
+  impossible integer thresholds such as `COUNT { ... } >= 0` and
+  `COUNT { ... } < 0` fold to boolean literals. Scoped parent-property
+  predicates therefore avoid DataFusion's nested
   correlated scalar-subquery limits. Other nested count comparisons continue
   through the scalar count renderer and will require staged aggregate planning
   for broader parent-property support. `OPTIONAL MATCH`,

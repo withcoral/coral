@@ -984,6 +984,125 @@ async fn cypher_static_node_label_alternatives_rewrite_missing_relationship_scal
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_properties_in_exists_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         WHERE EXISTS { MATCH (owner)-[:OWNS]->(:Service) WHERE owner.cost_center IS NULL } \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner \
+         ORDER BY owner_label, owner",
+    )
+    .await
+    .expect("missing outer branch properties inside EXISTS subqueries should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_relationships_in_exists() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         WHERE EXISTS { MATCH (owner)-[ownership:OWNS]->(:Service) WHERE ownership.since IS NULL } \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner \
+         ORDER BY owner",
+    )
+    .await
+    .expect("missing scoped relationship properties inside EXISTS subqueries should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Team", "owner": "analytics"}),
+            json!({"owner_label": "Team", "owner": "infra"}),
+            json!({"owner_label": "Team", "owner": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_properties_in_count_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         WHERE COUNT { MATCH (owner)-[:OWNS]->(:Service) WHERE owner.cost_center IS NULL } > 0 \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner \
+         ORDER BY owner_label, owner",
+    )
+    .await
+    .expect("missing outer branch properties inside COUNT subqueries should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_relationships_in_count() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         WHERE COUNT { \
+           MATCH (owner)-[ownership:OWNS]->(:Service) \
+           WHERE coalesce(ownership.since, 'unclassified') = 'unclassified' \
+         } > 0 \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner \
+         ORDER BY owner",
+    )
+    .await
+    .expect("missing scoped relationship properties inside COUNT subqueries should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Team", "owner": "analytics"}),
+            json!({"owner_label": "Team", "owner": "infra"}),
+            json!({"owner_label": "Team", "owner": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -6904,6 +7023,120 @@ async fn cypher_parameterized_dynamic_label_alternatives_execute_against_synthet
             json!({"item": "infra"}),
             json!({"item": "legacy-sync"}),
             json!({"item": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_relationship_type_alternatives_project_missing_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph =
+        GraphDeclaration::from_yaml(SERVICE_TYPE_ALTERNATIVE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[edge:DEPENDS_ON|ALERTS]->(target:Service) \
+         RETURN type(edge) AS relationship_type, source.name AS source, target.name AS target, edge.criticality AS criticality \
+         ORDER BY source, target, relationship_type",
+    )
+    .await
+    .expect("relationship type alternatives with heterogeneous properties should execute");
+
+    let schema = execution
+        .execution()
+        .batches()
+        .first()
+        .expect("execution should produce a batch")
+        .schema();
+    let field_names = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        field_names,
+        vec!["relationship_type", "source", "target", "criticality"]
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "deployments"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "billing-api", "target": "deployments", "criticality": "runtime"}),
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "experiments"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "billing-api", "target": "experiments", "criticality": "optional"}),
+            json!({"relationship_type": "ALERTS", "source": "deployments", "target": "experiments"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "deployments", "target": "experiments", "criticality": "dev"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_relationship_type_alternatives_filter_missing_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph =
+        GraphDeclaration::from_yaml(SERVICE_TYPE_ALTERNATIVE_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[edge:DEPENDS_ON|ALERTS]->(target:Service) \
+         WHERE edge.criticality IS NULL \
+         RETURN type(edge) AS relationship_type, source.name AS source, target.name AS target \
+         ORDER BY source, target",
+    )
+    .await
+    .expect("relationship type alternatives should filter missing properties as null");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "deployments"}),
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "experiments"}),
+            json!({"relationship_type": "ALERTS", "source": "deployments", "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_dynamic_relationship_type_alternatives_rewrite_missing_scalar_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph =
+        GraphDeclaration::from_yaml(SERVICE_TYPE_ALTERNATIVE_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([(
+        "relationship_type".to_string(),
+        GraphCypherParameterValue::Literal(GraphLiteral::String("ALERTS".to_string())),
+    )]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service)-[edge:DEPENDS_ON|$($relationship_type)]->(target:Service) \
+         RETURN type(edge) AS relationship_type, source.name AS source, target.name AS target, coalesce(edge.criticality, 'unclassified') AS criticality \
+         ORDER BY source, target, relationship_type",
+        &parameters,
+    )
+    .await
+    .expect("dynamic relationship type alternatives should rewrite missing scalar properties");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "deployments", "criticality": "unclassified"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "billing-api", "target": "deployments", "criticality": "runtime"}),
+            json!({"relationship_type": "ALERTS", "source": "billing-api", "target": "experiments", "criticality": "unclassified"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "billing-api", "target": "experiments", "criticality": "optional"}),
+            json!({"relationship_type": "ALERTS", "source": "deployments", "target": "experiments", "criticality": "unclassified"}),
+            json!({"relationship_type": "DEPENDS_ON", "source": "deployments", "target": "experiments", "criticality": "dev"}),
         ]
     );
 }
@@ -15296,4 +15529,30 @@ relationships:
     table: { schema: ops, name: service_incident_routes }
     from: { label: Service, key: service_id }
     to: { label: Incident, key: incident_id }
+";
+
+const SERVICE_TYPE_ALTERNATIVE_GRAPH: &str = r"
+version: 1
+name: service-type-alternatives
+description: Synthetic graph for same-endpoint relationship type alternatives
+nodes:
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: DEPENDS_ON
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+    properties:
+      criticality: criticality
+      source: source
+  - type: ALERTS
+    table: { schema: ops, name: service_dependencies }
+    from: { label: Service, key: from_service_id }
+    to: { label: Service, key: to_service_id }
+    properties:
+      source: source
 ";
