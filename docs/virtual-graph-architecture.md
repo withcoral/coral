@@ -349,7 +349,8 @@ The supported foundation subset is intentionally narrow:
   regex), `IN` static lists, `IS NULL`, and `AND`/`OR`/`XOR`/`NOT` are evaluated
   before SQL lowering. Static map expressions over folded items support
   identity, scalar literals and parameters, numeric arithmetic, predicate-valued
-  maps, `toString`, string case conversion, trim variants, and `replace`.
+  maps, numeric functions such as `abs`, `round`, `sqrt`, `sign`, `pow`, and
+  `power`, `toString`, string case conversion, trim variants, and `replace`.
   Conditional sources with slices remain a parser-front-end gap rather than a
   dynamic-list runtime feature;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar

@@ -7,7 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 4,
+    "ListExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -510,6 +510,18 @@
         "ordered": true,
         "rows": [
           { "incremented": [3, 4], "city_codes": ["LONDON", "PARIS"] }
+        ]
+      }
+    },
+    {
+      "id": "static-list-comprehension-power-map",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN [1, 2, null] | pow(x, 2)] AS powers, [x IN [2, 3] | power(x, 2)] AS squares",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "powers": [1.0, 4.0, null], "squares": [4.0, 9.0] }
         ]
       }
     },

@@ -12225,7 +12225,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), pow()/power(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -12514,6 +12514,9 @@ fn evaluate_static_map_numeric_function(
     }
     if is_sign_function(function) {
         return evaluate_static_map_sign(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_power_function(function) {
+        return evaluate_static_map_power(function, path.to_string(), evaluation).map(Some);
     }
     Ok(None)
 }
@@ -12904,6 +12907,26 @@ fn evaluate_static_map_sign(
         }
     };
     Ok(Literal::Integer(sign))
+}
+
+fn evaluate_static_map_power(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let arguments =
+        evaluate_static_map_function_arguments(function, &path, evaluation, &function_name)?;
+    let [base, exponent] = arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!(
+                "{function_name}() in static list comprehension maps requires exactly two arguments"
+            ),
+        ));
+    };
+    evaluate_static_literal_arithmetic(base, ArithmeticOperator::Power, exponent, path)
 }
 
 fn evaluate_static_map_to_string(
@@ -36133,7 +36156,9 @@ relationships:
              RETURN [x IN [1, 3, 6] | abs(x - 3)] AS absolute_ints, \
                     [x IN [1.5, null, 5.5] | abs(x - 3.0)] AS absolute_floats, \
                     [x IN [4, 9] | sqrt(x)] AS roots, \
-                    [x IN [1.0, 3.0, 6.5, null] | sign(x - 3.0)] AS signs",
+                    [x IN [1.0, 3.0, 6.5, null] | sign(x - 3.0)] AS signs, \
+                    [x IN [2, 3, null] | pow(x, 3)] AS powers, \
+                    [x IN [2, 3] | power(x, 2)] AS squares",
         )
         .expect("static list comprehension numeric function maps should compile");
 
@@ -36183,6 +36208,27 @@ relationships:
                         element_type: LiteralListElementType::Integer,
                     },
                     alias: "signs".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(8.0)),
+                            Literal::Float(OrderedFloat(27.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "powers".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(4.0)),
+                            Literal::Float(OrderedFloat(9.0))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "squares".to_string(),
                 },
             ]
         );
@@ -36332,6 +36378,19 @@ relationships:
             error.to_string().contains(
                 "round() in static list comprehension maps requires integer precision arguments"
             ),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN [2] | pow(x)] AS values",
+        )
+        .expect_err("pow() should require two static map arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pow() in static list comprehension maps requires exactly two arguments"),
             "{error}"
         );
     }
