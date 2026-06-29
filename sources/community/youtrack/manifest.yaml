@@ -1,0 +1,630 @@
+name: youtrack
+version: 0.2.0
+dsl_version: 3
+backend: http
+description: >-
+  Query users, projects, issues, comments, agile boards, and more from YouTrack REST API.
+inputs:
+  YOUTRACK_BASE_URL:
+    kind: variable
+    required: true
+    hint: |
+      YouTrack instance URL (e.g. `https://example.myjetbrains.com/youtrack`).
+      Do not include `/api` suffix. No trailing slash.
+  YOUTRACK_TOKEN:
+    kind: secret
+    required: true
+    hint: >
+      Permanent token generated from your YouTrack Profile -> Account Security. Select scopes
+      (YouTrack and/or YouTrack Administration) matching the tables you plan to query.
+base_url: "{{input.YOUTRACK_BASE_URL}}/api"
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.YOUTRACK_TOKEN}}"
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+
+test_queries:
+  - SELECT id, summary FROM youtrack.issues LIMIT 5
+  - SELECT id, name FROM youtrack.agile_boards LIMIT 5
+  - SELECT id, name FROM youtrack.tags LIMIT 5
+  - SELECT id, name, query FROM youtrack.saved_searches LIMIT 5
+
+tables:
+  # ──────────────────────────────────────────────────────────────────────────
+  # users
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: users
+    description: Users in the YouTrack instance.
+    request:
+      method: GET
+      path: /users
+      query:
+        - name: fields
+          from: literal
+          value: "id,login,fullName,email"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: login
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - login
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - fullName
+      - name: email
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - email
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # projects
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: projects
+    description: Projects in the YouTrack instance.
+    request:
+      method: GET
+      path: /admin/projects
+      query:
+        - name: fields
+          from: literal
+          value: "id,shortName,name,description"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: short_name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - shortName
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: description
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - description
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # issues
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: issues
+    description: Issues in the YouTrack instance.
+    guide: |
+      By default, querying issues without a filter fetches a large, unconstrained list.
+      To avoid exhausting API limits and pulling excessive data, strongly prefer using the
+      `query` filter with YouTrack's native search syntax (e.g., `WHERE query = '#Unresolved'`).
+    filters:
+      - name: query
+        required: false
+    request:
+      method: GET
+      path: /issues
+      query:
+        - name: fields
+          from: literal
+          value: "id,idReadable,summary,description,created,updated"
+        - name: query
+          from: filter
+          key: query
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    fetch_limit_default: 1000
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: readable_id
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - idReadable
+      - name: summary
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - summary
+      - name: description
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - description
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        description: Unix timestamp in milliseconds.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        description: Unix timestamp in milliseconds.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated
+      - name: query
+        type: Utf8
+        nullable: true
+        virtual: true
+        description: The search query passed to YouTrack.
+        expr:
+          kind: from_filter
+          key: query
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # comments
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: comments
+    description: Comments on a specific issue.
+    guide: |
+      Requires an `issue_id` filter (either the database ID or the project-readable issue ID) to retrieve comments.
+    filters:
+      - name: issue_id
+        required: true
+    request:
+      method: GET
+      path: /issues/{{filter.issue_id}}/comments
+      query:
+        - name: fields
+          from: literal
+          value: "id,text,created,updated"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: issue_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: issue_id
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: text
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - text
+      - name: created_at
+        type: Timestamp
+        nullable: true
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - created
+      - name: updated_at
+        type: Timestamp
+        nullable: true
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - updated
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # tags
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: tags
+    description: Issue tags defined in the YouTrack instance.
+    request:
+      method: GET
+      path: /tags
+      query:
+        - name: fields
+          from: literal
+          value: "id,name,untagOnResolve,owner(id)"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: untag_on_resolve
+        type: Boolean
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - untagOnResolve
+      - name: owner_id
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - owner
+            - id
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # agile_boards
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: agile_boards
+    description: Agile boards in the YouTrack instance.
+    request:
+      method: GET
+      path: /agiles
+      query:
+        - name: fields
+          from: literal
+          value: "id,name"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # sprints
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: sprints
+    description: Sprints within a specific agile board.
+    guide: |
+      Requires an `agile_id` filter to retrieve sprints for a given board.
+    filters:
+      - name: agile_id
+        required: true
+    request:
+      method: GET
+      path: /agiles/{{filter.agile_id}}/sprints
+      query:
+        - name: fields
+          from: literal
+          value: "id,name,start,finish"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: agile_id
+        type: Utf8
+        nullable: false
+        virtual: true
+        expr:
+          kind: from_filter
+          key: agile_id
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: start_date
+        type: Timestamp
+        nullable: true
+        description: Unix timestamp in milliseconds.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - start
+      - name: finish_date
+        type: Timestamp
+        nullable: true
+        description: Unix timestamp in milliseconds.
+        expr:
+          kind: format_timestamp
+          input: milliseconds
+          expr:
+            kind: path
+            path:
+              - finish
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # groups
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: groups
+    description: User groups in the YouTrack instance.
+    request:
+      method: GET
+      path: /groups
+      query:
+        - name: fields
+          from: literal
+          value: "id,name,usersCount"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: users_count
+        type: Int64
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - usersCount
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # roles
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: roles
+    description: User roles defined in the YouTrack instance.
+    request:
+      method: GET
+      path: /roles
+      query:
+        - name: fields
+          from: literal
+          value: "id,name"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # saved_searches
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: saved_searches
+    description: Saved search queries in the YouTrack instance.
+    request:
+      method: GET
+      path: /savedQueries
+      query:
+        - name: fields
+          from: literal
+          value: "id,name,query"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: query
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - query
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # custom_fields
+  # ──────────────────────────────────────────────────────────────────────────
+  - name: custom_fields
+    description: Custom field settings defined globally in the instance.
+    request:
+      method: GET
+      path: /admin/customFieldSettings/customFields
+      query:
+        - name: fields
+          from: literal
+          value: "id,name,fieldDefaults(emptyFieldText)"
+    response:
+      row_strategy: direct
+    pagination:
+      mode: offset
+      offset_param: $skip
+      page_size:
+        default: 50
+        max: 100
+        query_param: $top
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+        expr:
+          kind: path
+          path:
+            - id
+      - name: name
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - name
+      - name: empty_field_text
+        type: Utf8
+        nullable: true
+        expr:
+          kind: path
+          path:
+            - fieldDefaults
+            - emptyFieldText

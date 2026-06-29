@@ -1,0 +1,593 @@
+name: gcp_billing_budgets
+version: 0.1.0
+dsl_version: 3
+backend: http
+description: >-
+  Query GCP Cloud Billing budgets from the Billing Budgets API (v1). List budgets
+  for a billing account or fetch one budget by resource name, inspect fixed or
+  last-period amounts, threshold alert rules, and project or service filters on
+  each budget.
+inputs:
+  GCP_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      GCP OAuth 2.0 access token. Accepted scopes for list/get:
+      https://www.googleapis.com/auth/cloud-billing or
+      https://www.googleapis.com/auth/cloud-platform.
+
+      The Budgets API does not accept https://www.googleapis.com/auth/cloud-billing.readonly.
+      If another installed source gave you a readonly billing token, obtain a new
+      token with the full scope before adding this source.
+
+      Option 1 — OAuth setup (recommended): run `coral source add --interactive`
+      and follow the Connect with Google prompt. You need a Desktop-type OAuth 2.0
+      client ID and secret created in Google Cloud Console
+      (APIs & Services -> Credentials -> Create credentials -> OAuth client ID ->
+      Desktop app). Enable the Cloud Billing Budget API on the same project first:
+        gcloud services enable billingbudgets.googleapis.com --project=my-project-id
+      For Desktop (installed) OAuth clients, Google's token exchange always includes
+      a refresh_token. Coral refreshes stored OAuth credentials automatically when a
+      refresh token is available. The authorization URL uses prompt=consent so Google
+      always shows the consent screen and issues a fresh refresh token on reconnect. Testing-mode
+      consent screens issue refresh tokens that expire after 7 days; publish the app
+      for longer-lived tokens. If no refresh token is stored, re-run
+      `coral source add --interactive`.
+
+      Option 2 — Paste token: generate a short-lived token with gcloud (use
+      cloud-platform; gcloud's --scopes allowlist does not include cloud-billing):
+        gcloud auth print-access-token \
+          --scopes=https://www.googleapis.com/auth/cloud-platform
+      then export GCP_ACCESS_TOKEN="<token>" and run
+      `coral source add --file manifest.yaml`.
+
+      OAuth scope: https://www.googleapis.com/auth/cloud-billing (or cloud-platform).
+
+      Billing-account IAM: billing.budgets.list (budgets) and billing.budgets.get
+      (get_budget) on each billing account you query (roles/billing.viewer).
+
+      Single-project budgets: billing.resourcebudgets.read and
+      resourcemanager.projects.get on the project instead (included in
+      roles/viewer, roles/editor, or roles/owner on the project). You still pass
+      billing_account in API calls; if billing-account IAM fails, check project
+      IAM, OAuth scope, GCP_USER_PROJECT / serviceusage.services.use, and
+      billingAccounts/{id} argument format before changing roles.
+
+      See https://cloud.google.com/billing/docs/how-to/budget-api-access-control
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with Google
+          description: >-
+            Open a browser and authorize Coral to read GCP billing budget data.
+            Enable the Cloud Billing Budget API on a Google Cloud project and
+            create an OAuth 2.0 client of type Desktop app (APIs & Services ->
+            Credentials). Enter its Client ID and Client secret when prompted.
+            Coral requests https://www.googleapis.com/auth/cloud-billing.
+            Desktop clients may use loopback redirects; paste the final
+            http://127.0.0.1:... URL if your browser cannot reach the OAuth
+            listener (SSH, VM, split browser). The authorization URL uses
+            prompt=consent so Google always shows the consent screen and returns
+            a fresh refresh token. Desktop clients always receive a refresh token.
+            See https://cloud.google.com/billing/docs/how-to/budget-api-access-control
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://accounts.google.com/o/oauth2/v2/auth?prompt=consent
+              token_url: https://oauth2.googleapis.com/token
+            client:
+              id:
+                input: GCP_OAUTH_CLIENT_ID
+              secret:
+                input: GCP_OAUTH_CLIENT_SECRET
+                transport: request_body
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - https://www.googleapis.com/auth/cloud-billing
+        - type: source_config
+          label: Paste access token
+          description: >-
+            Paste an existing GCP OAuth access token with
+            https://www.googleapis.com/auth/cloud-billing or
+            https://www.googleapis.com/auth/cloud-platform (not
+            cloud-billing.readonly). With gcloud, use cloud-platform:
+            gcloud auth print-access-token
+            --scopes=https://www.googleapis.com/auth/cloud-platform
+            Tokens expire after ~1 hour; re-export and re-add when they expire.
+  GCP_USER_PROJECT:
+    kind: variable
+    hint: |
+      Required. GCP project ID sent as the x-goog-user-project header on every
+      Budgets API request for quota and billing attribution.
+
+      This project does not need to be linked to the billing account you are
+      querying. Enable the Cloud Billing Budget API on it:
+        gcloud services enable billingbudgets.googleapis.com --project=my-project-id
+
+      The authenticated principal also needs serviceusage.services.use on this
+      project (included in roles/serviceusage.serviceUsageConsumer). Without
+      it, requests may fail with PERMISSION_DENIED even when billing IAM is
+      correct. See https://cloud.google.com/apis/docs/system-parameters
+
+      Example: my-project-id
+base_url: https://billingbudgets.googleapis.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: Bearer {{input.GCP_ACCESS_TOKEN}}
+request_headers:
+  - name: Accept
+    from: literal
+    value: application/json
+  - name: x-goog-user-project
+    from: input
+    key: GCP_USER_PROJECT
+test_queries:
+  - >-
+    SELECT function_name FROM coral.table_functions
+    WHERE schema_name = 'gcp_billing_budgets' ORDER BY function_name
+  - >-
+    SELECT key, kind FROM coral.inputs
+    WHERE schema_name = 'gcp_billing_budgets' ORDER BY key
+functions:
+  - name: budgets
+    kind: table
+    description: |
+      Lists Cloud Billing budgets for one billing account (ListBudgets). Each row
+      is one budget.
+
+      Required argument billing_account must be the full resource name
+      billingAccounts/{id} (for example billingAccounts/012345-567890-ABCDEF).
+      The short ID alone returns HTTP 400. Find the ID in the GCP Console billing
+      account list or from any other Coral source that exposes billing account
+      resource names.
+
+      Optional scope limits results to budgets tracking one project. Pass a
+      project resource name such as projects/my-project-id or projects/123456789.
+      See https://cloud.google.com/billing/docs/reference/budget/rest/v1/billingAccounts.budgets/list
+
+      IAM: billing.budgets.list on the billing account (roles/billing.viewer), or
+      for single-project budgets only, billing.resourcebudgets.read plus
+      resourcemanager.projects.get on the project (roles/viewer, roles/editor,
+      or roles/owner).
+      See https://cloud.google.com/billing/docs/how-to/budget-api-access-control
+
+      Set GCP_USER_PROJECT to a project with billingbudgets.googleapis.com enabled
+      and grant the caller serviceusage.services.use on that project.
+
+      Pagination fetches up to 100 budgets per page (API maximum) and follows
+      nextPageToken for up to 50 pages (5,000 budgets per invocation). Billing
+      accounts with more budgets return a truncated list.
+
+      OAuth: https://www.googleapis.com/auth/cloud-billing or cloud-platform.
+      The readonly billing scope is rejected by the Budgets API.
+
+      amount_type is SPECIFIED when amount.specifiedAmount is present, otherwise
+      LAST_PERIOD (including when amount is missing). lastPeriodAmount budgets
+      cannot use filter_custom_period. Cast specified_amount_units with
+      CAST(... AS BIGINT) before arithmetic.
+
+      thresholdPercent in threshold_rules is 0.0-1.0 (0.9 means 90%). Multiply by
+      100 for display. spendBasis FORECASTED_SPEND applies only when
+      calendar_period is set, not with filter_custom_period.
+
+      filter_projects is a JSON array of project resource name strings. Use
+      unnest(json_get_array(filter_projects)) to expand, or pass scope on this
+      function to filter at the API.
+
+      Table function arguments must be string literals (for example
+      billing_account => 'billingAccounts/012345-567890-ABCDEF'). Column values
+      and subquery results are not accepted as table-function arguments.
+
+      Use get_budget(name => ...) to fetch one budget by full resource name.
+      List and get return the same Budget columns for a given budget (plus virtual
+      billing_account here). Some Console-only alert fields are not returned by
+      the API.
+    args:
+      - name: billing_account
+        required: true
+        bind:
+          arg: billing_account
+      - name: scope
+        required: false
+        bind:
+          arg: scope
+    request:
+      method: GET
+      path: /v1/{{arg.billing_account}}/budgets
+      query:
+        - name: pageSize
+          from: literal
+          value: 100
+        - name: scope
+          from: arg
+          key: scope
+    response:
+      rows_path:
+        - budgets
+    pagination:
+      mode: cursor_query
+      cursor_param: pageToken
+      response_cursor_path:
+        - nextPageToken
+      max_pages: 50
+    columns:
+      - name: billing_account
+        type: Utf8
+        nullable: false
+        virtual: true
+        description: >-
+          Billing account argument passed to this function call. Format:
+          billingAccounts/{id}. Virtual — not returned by the API.
+        expr: {kind: from_arg, key: billing_account}
+      - name: name
+        type: Utf8
+        nullable: false
+        description: >-
+          Resource name of the budget. Format:
+          billingAccounts/{billingAccountId}/budgets/{budgetId}. Output-only.
+        expr: {kind: path, path: [name]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: >-
+          User-defined display name shown in the GCP Console. Maximum 60
+          characters. Set at creation time.
+        expr: {kind: path, path: [displayName]}
+      - name: etag
+        type: Utf8
+        nullable: true
+        description: >-
+          Opaque identifier used for optimistic concurrency control on write
+          operations. Not required for read queries.
+        expr: {kind: path, path: [etag]}
+      - name: ownership_scope
+        type: Utf8
+        nullable: true
+        description: >-
+          Controls who can view the budget. Enum: OWNERSHIP_SCOPE_UNSPECIFIED,
+          ALL_USERS, BILLING_ACCOUNT. May be absent for older budgets.
+        expr: {kind: path, path: [ownershipScope]}
+      - name: amount
+        type: Json
+        nullable: false
+        description: >-
+          Full budget amount object as JSON (required on the Budget resource).
+          Contains either specifiedAmount (fixed-value budget) or
+          lastPeriodAmount (equals last calendar period spend; cannot be combined
+          with filter_custom_period). See amount_type, specified_amount_units,
+          and specified_amount_currency_code.
+        expr: {kind: path, path: [amount]}
+      - name: amount_type
+        type: Utf8
+        nullable: false
+        description: >-
+          Derived budget amount variant: SPECIFIED for fixed amounts, LAST_PERIOD
+          when amount.lastPeriodAmount is used or amount is missing. Prefer
+          WHERE specified_amount_units IS NOT NULL for fixed-amount budgets.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: if_present
+              check: {kind: path, path: [amount, specifiedAmount]}
+              then_value: SPECIFIED
+            - kind: literal
+              value: LAST_PERIOD
+      - name: specified_amount_units
+        type: Utf8
+        nullable: true
+        description: >-
+          Integer budget amount in account currency as a string (int64). Cast with
+          CAST(specified_amount_units AS BIGINT) before arithmetic. NULL for
+          last-period budgets.
+        expr: {kind: path, path: [amount, specifiedAmount, units]}
+      - name: specified_amount_currency_code
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 4217 currency code for the specified amount, e.g. USD. NULL for
+          last-period budgets.
+        expr: {kind: path, path: [amount, specifiedAmount, currencyCode]}
+      - name: filter_projects
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of project resource name strings, e.g.
+          ["projects/123456789"]. NULL or empty means all projects on the account.
+          Use unnest(json_get_array(filter_projects)) to expand to one row per
+          project, or pass the scope argument to filter at the API.
+        expr: {kind: path, path: [budgetFilter, projects]}
+      - name: filter_resource_ancestors
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of folder or organization resource names, e.g.
+          ["folders/123", "organizations/456"]. NULL or empty means all usage
+          the billing account pays for.
+        expr: {kind: path, path: [budgetFilter, resourceAncestors]}
+      - name: filter_services
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of GCP service resource names, e.g. ["services/A1E8-BE35-7EBC"].
+          NULL or empty means all services.
+        expr: {kind: path, path: [budgetFilter, services]}
+      - name: filter_credit_types
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of credit type strings. Populated only when
+          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise NULL or empty.
+        expr: {kind: path, path: [budgetFilter, creditTypes]}
+      - name: credit_types_treatment
+        type: Utf8
+        nullable: true
+        description: >-
+          How credits factor into spend. Enum: CREDIT_TYPES_TREATMENT_UNSPECIFIED,
+          INCLUDE_ALL_CREDITS, EXCLUDE_ALL_CREDITS, INCLUDE_SPECIFIED_CREDITS.
+          Defaults to INCLUDE_ALL_CREDITS when unset.
+        expr: {kind: path, path: [budgetFilter, creditTypesTreatment]}
+      - name: filter_subaccounts
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of subaccount resource names, e.g.
+          billingAccounts/{account_id}. NULL or empty includes the parent account
+          and all subaccounts.
+        expr: {kind: path, path: [budgetFilter, subaccounts]}
+      - name: filter_labels
+        type: Json
+        nullable: true
+        description: >-
+          JSON object with one label key mapped to an array of values, e.g.
+          {"environment": ["prod"]}. The API supports only one key with one value
+          per budget.
+        expr: {kind: path, path: [budgetFilter, labels]}
+      - name: calendar_period
+        type: Utf8
+        nullable: true
+        description: >-
+          Recurring budget reset period. Enum: CALENDAR_PERIOD_UNSPECIFIED, MONTH,
+          QUARTER, YEAR. NULL when filter_custom_period is set. Defaults to MONTH
+          when neither calendar nor custom period is set.
+        expr: {kind: path, path: [budgetFilter, calendarPeriod]}
+      - name: filter_custom_period
+        type: Json
+        nullable: true
+        description: >-
+          JSON custom usage period with startDate and optional endDate (Date
+          objects). Present for fixed non-recurring budgets. NULL for recurring
+          calendar budgets. Mutually exclusive with calendar_period; cannot be
+          used with lastPeriodAmount budgets.
+        expr: {kind: path, path: [budgetFilter, customPeriod]}
+      - name: threshold_rules
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of threshold rules with thresholdPercent (0.0-1.0, not an
+          integer percent) and spendBasis (CURRENT_SPEND or FORECASTED_SPEND).
+          FORECASTED_SPEND applies only when calendar_period is set, not with
+          filter_custom_period. Optional for Pub/Sub notifications; required for
+          email notifications. Use unnest(json_get_array(threshold_rules)) to expand.
+        expr: {kind: path, path: [thresholdRules]}
+      - name: notifications_rule
+        type: Json
+        nullable: true
+        description: >-
+          JSON notification delivery settings (pubsubTopic,
+          monitoringNotificationChannels, disableDefaultIamRecipients,
+          enableProjectLevelRecipients, schemaVersion). GCP returns only
+          configured fields — unset keys are omitted and {} is valid.
+          enableProjectLevelRecipients applies only when filter_projects
+          contains exactly one project. Some Console-only alert fields are not
+          returned by the API.
+        expr: {kind: path, path: [notificationsRule]}
+
+  - name: get_budget
+    kind: table
+    description: |
+      Returns one Cloud Billing budget by resource name (GetBudget). Each
+      invocation returns exactly one row when the budget exists.
+
+      Required argument name must be the full budget resource name
+      billingAccounts/{billingAccountId}/budgets/{budgetId}. Obtain names from
+      budgets(billing_account => ...) or the GCP Console.
+
+      See https://cloud.google.com/billing/docs/reference/budget/rest/v1/billingAccounts.budgets/get
+
+      IAM: billing.budgets.get on the billing account (roles/billing.viewer), or for
+      single-project budgets, billing.resourcebudgets.read plus
+      resourcemanager.projects.get on the project (roles/viewer, roles/editor,
+      or roles/owner).
+
+      Set GCP_USER_PROJECT to a project with billingbudgets.googleapis.com enabled
+      and grant the caller serviceusage.services.use on that project.
+
+      HTTP 404 for an unknown or deleted budget name returns zero rows
+      (allow_404_empty), not an error.
+
+      Column semantics match budgets(billing_account => ...) for the same budget
+      (without virtual billing_account). amount_type, threshold_rules, and
+      filter_custom_period constraints are identical to the list function. Some
+      Console-only alert fields are not returned by the API.
+    args:
+      - name: name
+        required: true
+        bind:
+          arg: name
+    request:
+      method: GET
+      path: /v1/{{arg.name}}
+    response:
+      rows_path: []
+      row_strategy: direct
+      allow_404_empty: true
+    columns:
+      - name: name
+        type: Utf8
+        nullable: false
+        description: >-
+          Resource name of the budget. Format:
+          billingAccounts/{billingAccountId}/budgets/{budgetId}. Output-only.
+        expr: {kind: path, path: [name]}
+      - name: display_name
+        type: Utf8
+        nullable: true
+        description: >-
+          User-defined display name shown in the GCP Console. Maximum 60
+          characters. Set at creation time.
+        expr: {kind: path, path: [displayName]}
+      - name: etag
+        type: Utf8
+        nullable: true
+        description: >-
+          Opaque identifier used for optimistic concurrency control on write
+          operations. Not required for read queries.
+        expr: {kind: path, path: [etag]}
+      - name: ownership_scope
+        type: Utf8
+        nullable: true
+        description: >-
+          Controls who can view the budget. Enum: OWNERSHIP_SCOPE_UNSPECIFIED,
+          ALL_USERS, BILLING_ACCOUNT. May be absent for older budgets.
+        expr: {kind: path, path: [ownershipScope]}
+      - name: amount
+        type: Json
+        nullable: false
+        description: >-
+          Full budget amount object as JSON (required on the Budget resource).
+          Contains either specifiedAmount (fixed-value budget) or
+          lastPeriodAmount (equals last calendar period spend; cannot be combined
+          with filter_custom_period). See amount_type, specified_amount_units,
+          and specified_amount_currency_code.
+        expr: {kind: path, path: [amount]}
+      - name: amount_type
+        type: Utf8
+        nullable: false
+        description: >-
+          Derived budget amount variant: SPECIFIED for fixed amounts, LAST_PERIOD
+          when amount.lastPeriodAmount is used or amount is missing. Prefer
+          WHERE specified_amount_units IS NOT NULL for fixed-amount budgets.
+        expr:
+          kind: coalesce
+          exprs:
+            - kind: if_present
+              check: {kind: path, path: [amount, specifiedAmount]}
+              then_value: SPECIFIED
+            - kind: literal
+              value: LAST_PERIOD
+      - name: specified_amount_units
+        type: Utf8
+        nullable: true
+        description: >-
+          Integer budget amount in account currency as a string (int64). Cast with
+          CAST(specified_amount_units AS BIGINT) before arithmetic. NULL for
+          last-period budgets.
+        expr: {kind: path, path: [amount, specifiedAmount, units]}
+      - name: specified_amount_currency_code
+        type: Utf8
+        nullable: true
+        description: >-
+          ISO 4217 currency code for the specified amount, e.g. USD. NULL for
+          last-period budgets.
+        expr: {kind: path, path: [amount, specifiedAmount, currencyCode]}
+      - name: filter_projects
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of project resource name strings, e.g.
+          ["projects/123456789"]. NULL or empty means all projects on the account.
+          Use unnest(json_get_array(filter_projects)) to expand.
+        expr: {kind: path, path: [budgetFilter, projects]}
+      - name: filter_resource_ancestors
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of folder or organization resource names, e.g.
+          ["folders/123", "organizations/456"]. NULL or empty means all usage
+          the billing account pays for.
+        expr: {kind: path, path: [budgetFilter, resourceAncestors]}
+      - name: filter_services
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of GCP service resource names, e.g. ["services/A1E8-BE35-7EBC"].
+          NULL or empty means all services.
+        expr: {kind: path, path: [budgetFilter, services]}
+      - name: filter_credit_types
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of credit type strings. Populated only when
+          credit_types_treatment is INCLUDE_SPECIFIED_CREDITS; otherwise NULL or empty.
+        expr: {kind: path, path: [budgetFilter, creditTypes]}
+      - name: credit_types_treatment
+        type: Utf8
+        nullable: true
+        description: >-
+          How credits factor into spend. Enum: CREDIT_TYPES_TREATMENT_UNSPECIFIED,
+          INCLUDE_ALL_CREDITS, EXCLUDE_ALL_CREDITS, INCLUDE_SPECIFIED_CREDITS.
+          Defaults to INCLUDE_ALL_CREDITS when unset.
+        expr: {kind: path, path: [budgetFilter, creditTypesTreatment]}
+      - name: filter_subaccounts
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of subaccount resource names, e.g.
+          billingAccounts/{account_id}. NULL or empty includes the parent account
+          and all subaccounts.
+        expr: {kind: path, path: [budgetFilter, subaccounts]}
+      - name: filter_labels
+        type: Json
+        nullable: true
+        description: >-
+          JSON object with one label key mapped to an array of values, e.g.
+          {"environment": ["prod"]}. The API supports only one key with one value
+          per budget.
+        expr: {kind: path, path: [budgetFilter, labels]}
+      - name: calendar_period
+        type: Utf8
+        nullable: true
+        description: >-
+          Recurring budget reset period. Enum: CALENDAR_PERIOD_UNSPECIFIED, MONTH,
+          QUARTER, YEAR. NULL when filter_custom_period is set. Defaults to MONTH
+          when neither calendar nor custom period is set.
+        expr: {kind: path, path: [budgetFilter, calendarPeriod]}
+      - name: filter_custom_period
+        type: Json
+        nullable: true
+        description: >-
+          JSON custom usage period with startDate and optional endDate (Date
+          objects). Present for fixed non-recurring budgets. NULL for recurring
+          calendar budgets. Mutually exclusive with calendar_period; cannot be
+          used with lastPeriodAmount budgets.
+        expr: {kind: path, path: [budgetFilter, customPeriod]}
+      - name: threshold_rules
+        type: Json
+        nullable: true
+        description: >-
+          JSON array of threshold rules with thresholdPercent (0.0-1.0, not an
+          integer percent) and spendBasis (CURRENT_SPEND or FORECASTED_SPEND).
+          FORECASTED_SPEND applies only when calendar_period is set, not with
+          filter_custom_period. Optional for Pub/Sub notifications; required for
+          email notifications. Use unnest(json_get_array(threshold_rules)) to expand.
+        expr: {kind: path, path: [thresholdRules]}
+      - name: notifications_rule
+        type: Json
+        nullable: true
+        description: >-
+          JSON notification delivery settings (pubsubTopic,
+          monitoringNotificationChannels, disableDefaultIamRecipients,
+          enableProjectLevelRecipients, schemaVersion). GCP returns only
+          configured fields — unset keys are omitted and {} is valid.
+          enableProjectLevelRecipients applies only when filter_projects
+          contains exactly one project. Some Console-only alert fields are not
+          returned by the API.
+        expr: {kind: path, path: [notificationsRule]}

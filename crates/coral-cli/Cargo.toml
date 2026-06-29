@@ -25,6 +25,8 @@ clap_complete.workspace = true
 crossterm.workspace = true
 dialoguer.workspace = true
 rust-embed = { workspace = true, optional = true }
+serde_json.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true

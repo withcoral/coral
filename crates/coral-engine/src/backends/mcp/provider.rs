@@ -148,6 +148,7 @@ impl TableProvider for McpTableProvider {
             source_tool_args: Arc::new(self.table.tool_args.clone()),
             response: self.table.response.clone(),
             pagination: self.table.pagination.clone(),
+            offset_pagination: self.table.offset_pagination.clone(),
             limit: limits.truncate,
         });
         let columns: Arc<[coral_spec::ColumnSpec]> = Arc::from(self.table.columns().to_vec());

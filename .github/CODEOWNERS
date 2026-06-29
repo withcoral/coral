@@ -1,40 +1,22 @@
-# Default: no new path should silently bypass review.
-* @withcoral/core-maintainers
-
 # Ownership policy, CI, release, build, and repo automation.
-/.github/ @withcoral/repo-ops
+/.github/ @withcoral/core-maintainers
 /.github/CODEOWNERS @withcoral/core-maintainers
-/release-please-config.json @withcoral/repo-ops
-/.release-please-manifest.json @withcoral/repo-ops
-/Makefile @withcoral/repo-ops
-/rust-toolchain.toml @withcoral/repo-ops
+/release-please-config.json @withcoral/core-maintainers
+/.release-please-manifest.json @withcoral/core-maintainers
+/Makefile @withcoral/core-maintainers
+/rust-toolchain.toml @withcoral/core-maintainers
 /Cargo.toml @withcoral/core-maintainers
 /Cargo.lock @withcoral/core-maintainers
-/scripts/ @withcoral/repo-ops
-/xtask/ @withcoral/repo-ops @withcoral/docs
 
 # Project docs.
-AGENTS.md @withcoral/core-maintainers
 /CONTRIBUTING.md @withcoral/core-maintainers
-/SECURITY.md @withcoral/core-maintainers
+/LICENSE @withcoral/core-maintainers
 /README.md @withcoral/core-maintainers
+/SECURITY.md @withcoral/core-maintainers
+AGENTS.md @withcoral/core-maintainers
 
-# Docs.
+# User docs.
 /docs/ @withcoral/docs
 
-# Crates.
-/crates/auth/aws/ @withcoral/sources
-/crates/coral-api/ @withcoral/runtime
-/crates/coral-app/ @withcoral/runtime
-/crates/coral-client/ @withcoral/runtime
-/crates/coral-cli/ @withcoral/cli
-/crates/coral-engine/ @withcoral/engine
-/crates/coral-mcp/ @withcoral/mcp
-/crates/coral-spec/ @withcoral/sources
-
 # Sources
-/sources/ @withcoral/sources
 /sources/community/ @jsummerfield
-
-# UI
-/ui/ @withcoral/ui

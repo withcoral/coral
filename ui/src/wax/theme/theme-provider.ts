@@ -6,7 +6,7 @@ import { lightTheme } from '@/wax/theme/theme-light.css'
 type Theme = 'dark' | 'light'
 type ThemePreference = 'dark' | 'light' | 'system'
 
-const STORAGE_KEY = 'phoebe:theme'
+const STORAGE_KEY = 'coral:theme'
 
 export function getThemeClass(theme: Theme) {
   return theme === 'light' ? lightTheme : darkTheme

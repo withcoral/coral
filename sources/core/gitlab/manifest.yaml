@@ -17,14 +17,17 @@ inputs:
   GITLAB_TOKEN:
     kind: secret
     hint: |
-      Use GitLab OAuth or create a personal access token (PAT) with
-      the `read_api` scope; some admin tables require elevated scopes.
-      See [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
+      Connect with GitLab OAuth or paste a personal access token. Both
+      need the `read_api` scope; some admin tables require elevated scopes.
     credential:
       methods:
         - type: oauth
           label: Connect with GitLab.com OAuth
           description: Use GitLab.com OAuth authorization code with PKCE.
+          hint: |
+            Sign in to GitLab.com in your browser. Requests the `read_api`
+            scope. To use your own GitLab OAuth application, set
+            GITLAB_OAUTH_CLIENT_ID to its Application ID.
           oauth:
             flow:
               type: authorization_code
@@ -45,6 +48,10 @@ inputs:
                   - read_api
         - type: source_config
           label: Paste token
+          hint: |
+            Create a personal access token with the `read_api` scope; some
+            admin tables need elevated scopes. See
+            [GitLab PAT docs](https://docs.gitlab.com/user/profile/personal_access_tokens/).
 base_url: '{{input.GITLAB_API_BASE}}'
 auth:
   type: HeaderAuth

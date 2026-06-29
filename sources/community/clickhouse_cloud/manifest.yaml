@@ -1,0 +1,612 @@
+dsl_version: 3
+name: clickhouse_cloud
+version: 0.2.0
+description: ClickHouse Cloud remote MCP server (mcp.clickhouse.cloud).
+backend: mcp
+
+inputs:
+  CLICKHOUSE_ACCESS_TOKEN:
+    kind: secret
+    hint: |
+      ClickHouse Cloud OAuth access token. Click "Connect with ClickHouse
+      Cloud" during `coral source add` to authorize through the browser —
+      Coral drives the OAuth flow and stores the resulting access token.
+
+      Tokens last 1 hour. Until automatic refresh ships, re-run
+      `coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive`
+      to mint a fresh one when queries start failing with MCP_AUTH_REQUIRED.
+      The `--interactive` flag is what triggers the browser-driven OAuth
+      method; without it Coral falls back to reading the token from a
+      `CLICKHOUSE_ACCESS_TOKEN` environment variable.
+    credential:
+      methods:
+        - type: oauth
+          label: Connect with ClickHouse Cloud
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53683/oauth/callback
+            endpoints:
+              authorization_url: https://mcp.clickhouse.cloud/authorize
+              token_url: https://mcp.clickhouse.cloud/token
+            client:
+              id:
+                # Public client registered via Dynamic Client Registration
+                # against https://mcp.clickhouse.cloud/register. PKCE-only,
+                # no client secret. Shared across Coral installs is safe
+                # because each user's tokens are user-bound and PKCE
+                # protects the per-session code exchange.
+                default: c9249c91-5f7c-44ed-8e9f-cd328782dc03
+            scopes:
+              scope:
+                delimiter: space
+                values:
+                  - openid
+                  - profile
+                  - email
+
+server:
+  transport: streamable_http
+  url: https://mcp.clickhouse.cloud/mcp
+  auth:
+    type: bearer
+    from: input
+    key: CLICKHOUSE_ACCESS_TOKEN
+
+tables:
+  # ----- Cloud management surface -----
+
+  - name: organizations
+    description: All ClickHouse Cloud organizations accessible to the authenticated user.
+    tool: get_organizations
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: createdAt
+        type: Utf8
+        nullable: false
+      - name: privateEndpoints
+        type: Json
+      - name: byocConfig
+        type: Json
+
+  - name: services
+    description: All services in a ClickHouse Cloud organization.
+    tool: get_services_list
+    filters:
+      - name: organization_id
+        required: true
+        tool_arg: organizationId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: organization_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: provider
+        type: Utf8
+      - name: region
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: clickhouseVersion
+        type: Utf8
+      - name: tier
+        type: Utf8
+      - name: numReplicas
+        type: Int64
+      - name: minReplicaMemoryGb
+        type: Float64
+      - name: maxReplicaMemoryGb
+        type: Float64
+      - name: idleScaling
+        type: Boolean
+      - name: idleTimeoutMinutes
+        type: Int64
+      - name: createdAt
+        type: Utf8
+      - name: endpoints
+        type: Json
+      - name: ipAccessList
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+  - name: clickpipes
+    description: All ClickPipes configured for a specific service.
+    tool: list_clickpipes
+    filters:
+      - name: organization_id
+        required: true
+        tool_arg: organizationId
+      - name: service_id
+        required: true
+        tool_arg: serviceId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: organization_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: service_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: serviceId
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: description
+        type: Utf8
+      - name: state
+        type: Utf8
+        nullable: false
+      - name: createdAt
+        type: Utf8
+      - name: updatedAt
+        type: Utf8
+      - name: scaling
+        type: Json
+      - name: source
+        type: Json
+      - name: destination
+        type: Json
+      - name: fieldMappings
+        type: Json
+
+  - name: service_backups
+    description: Backups for a service, most recent first.
+    tool: list_service_backups
+    filters:
+      - name: organization_id
+        required: true
+        tool_arg: organizationId
+      - name: service_id
+        required: true
+        tool_arg: serviceId
+    response:
+      rows_path: [result, backups]
+      error_path: [result, message]
+    columns:
+      - name: organization_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: service_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: status
+        type: Utf8
+        nullable: false
+      - name: serviceId
+        type: Utf8
+        nullable: false
+      - name: type
+        type: Utf8
+      - name: backupName
+        type: Utf8
+      - name: startedAt
+        type: Utf8
+        nullable: false
+      - name: finishedAt
+        type: Utf8
+      - name: sizeInBytes
+        type: Float64
+      - name: durationInSeconds
+        type: Float64
+      - name: bucket
+        type: Json
+
+  - name: organization_costs
+    description: >-
+      Daily, per-entity organization usage cost records. Returns the per-day
+      cost rows; the grand total is omitted (use SUM in SQL).
+    tool: get_organization_cost
+    filters:
+      - name: organization_id
+        required: true
+        tool_arg: organizationId
+      - name: from_date
+        required: false
+        tool_arg: from_date
+      - name: to_date
+        required: false
+        tool_arg: to_date
+    response:
+      rows_path: [result, costs]
+      error_path: [result, message]
+    columns:
+      - name: organization_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: organization_id
+      - name: from_date
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: from_date
+      - name: to_date
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: to_date
+      - name: row
+        type: Json
+        expr:
+          kind: current_row
+
+  # ----- ClickHouse data surface -----
+
+  - name: databases
+    description: All databases in a ClickHouse service. Each row is the database name string.
+    tool: list_databases
+    filters:
+      - name: service_id
+        required: true
+        tool_arg: serviceId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: service_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: name
+        type: Utf8
+        nullable: false
+        expr:
+          kind: current_row
+
+  - name: tables
+    description: Comprehensive table listing for a ClickHouse database, including columns and metadata.
+    tool: list_tables
+    filters:
+      - name: service_id
+        required: true
+        tool_arg: serviceId
+      - name: database_filter
+        required: true
+        tool_arg: database
+      - name: like
+        required: false
+        tool_arg: like
+      - name: not_like
+        required: false
+        tool_arg: notLike
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: service_id
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: service_id
+      - name: database_filter
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: database_filter
+      - name: like
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: like
+      - name: not_like
+        type: Utf8
+        virtual: true
+        expr:
+          kind: from_filter
+          key: not_like
+      - name: database
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: engine
+        type: Utf8
+      - name: engine_full
+        type: Utf8
+      - name: sorting_key
+        type: Utf8
+      - name: primary_key
+        type: Utf8
+      - name: total_rows
+        type: Json
+      - name: total_bytes
+        type: Json
+      - name: total_bytes_uncompressed
+        type: Json
+      - name: parts
+        type: Json
+      - name: active_parts
+        type: Json
+      - name: create_table_query
+        type: Utf8
+      - name: dependencies_database
+        type: Json
+      - name: dependencies_table
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+functions:
+  # ----- Single-record getters (one tool call → one row of Json) -----
+
+  - name: get_organization_details
+    tool: get_organization_details
+    description: Details of a single organization.
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organizationId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+        nullable: false
+      - name: createdAt
+        type: Utf8
+      - name: privateEndpoints
+        type: Json
+      - name: byocConfig
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+  - name: get_service_details
+    tool: get_service_details
+    description: Details of a single service.
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organizationId
+      - name: service_id
+        required: true
+        bind:
+          arg: serviceId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: name
+        type: Utf8
+      - name: provider
+        type: Utf8
+      - name: region
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: clickhouseVersion
+        type: Utf8
+      - name: tier
+        type: Utf8
+      - name: numReplicas
+        type: Int64
+      - name: minReplicaMemoryGb
+        type: Float64
+      - name: maxReplicaMemoryGb
+        type: Float64
+      - name: idleScaling
+        type: Boolean
+      - name: idleTimeoutMinutes
+        type: Int64
+      - name: createdAt
+        type: Utf8
+      - name: updatedAt
+        type: Utf8
+      - name: endpoints
+        type: Json
+      - name: ipAccessList
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+  - name: get_clickpipe
+    tool: get_clickpipe
+    description: Details of a single ClickPipe.
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organizationId
+      - name: service_id
+        required: true
+        bind:
+          arg: serviceId
+      - name: clickpipe_id
+        required: true
+        bind:
+          arg: clickPipeId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: serviceId
+        type: Utf8
+      - name: name
+        type: Utf8
+      - name: description
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: createdAt
+        type: Utf8
+      - name: updatedAt
+        type: Utf8
+      - name: scaling
+        type: Json
+      - name: source
+        type: Json
+      - name: destination
+        type: Json
+      - name: fieldMappings
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+  - name: get_service_backup_details
+    tool: get_service_backup_details
+    description: Details of a single service backup.
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organizationId
+      - name: service_id
+        required: true
+        bind:
+          arg: serviceId
+      - name: backup_id
+        required: true
+        bind:
+          arg: backupId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: id
+        type: Utf8
+        nullable: false
+      - name: status
+        type: Utf8
+      - name: serviceId
+        type: Utf8
+      - name: type
+        type: Utf8
+      - name: backupName
+        type: Utf8
+      - name: startedAt
+        type: Utf8
+      - name: finishedAt
+        type: Utf8
+      - name: sizeInBytes
+        type: Float64
+      - name: durationInSeconds
+        type: Float64
+      - name: bucket
+        type: Json
+      - name: raw
+        type: Json
+        expr:
+          kind: current_row
+
+  - name: get_service_backup_configuration
+    tool: get_service_backup_configuration
+    description: Backup configuration for a service.
+    args:
+      - name: organization_id
+        required: true
+        bind:
+          arg: organizationId
+      - name: service_id
+        required: true
+        bind:
+          arg: serviceId
+    response:
+      rows_path: [result]
+      error_path: [result, message]
+    columns:
+      - name: backupPeriodInHours
+        type: Float64
+      - name: backupRetentionPeriodInHours
+        type: Float64
+      - name: backupStartTime
+        type: Utf8
+
+  # ----- ClickHouse SQL passthrough -----
+
+  - name: run_select_query
+    tool: run_select_query
+    description: >-
+      Execute a read-only SELECT query against a ClickHouse Cloud service.
+      The `row` column is the raw row object — shape varies by query, so use
+      JSON accessors to project fields.
+    args:
+      - name: query
+        required: true
+        bind:
+          arg: query
+      - name: service_id
+        required: true
+        bind:
+          arg: serviceId
+    response:
+      rows_path: [result, data]
+      error_path: [result, message]
+    columns:
+      - name: row
+        type: Json
+        expr:
+          kind: current_row

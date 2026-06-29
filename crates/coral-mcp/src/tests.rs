@@ -7,7 +7,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use coral_api::v1::{ImportSourceRequest, import_source_response};
+use coral_api::{
+    CORAL_EPISODE_ID_MAX_LEN,
+    v1::{ImportSourceRequest, import_source_response},
+};
 use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
@@ -258,6 +261,48 @@ fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
         .expect("tool should be listed")
 }
 
+fn tool_input_properties(tool: &Tool) -> &Map<String, Value> {
+    tool.input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or_else(|| panic!("tool '{}' should advertise input properties", tool.name))
+}
+
+fn assert_tool_advertises_episode_id(tool: &Tool) {
+    let episode_id_schema = tool_input_properties(tool)
+        .get("episode_id")
+        .unwrap_or_else(|| panic!("tool '{}' should advertise optional episode_id", tool.name));
+    assert_nullable_episode_id_schema(episode_id_schema, tool.name.as_ref());
+}
+
+fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
+    let any_of = schema
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label} episode id schema should use anyOf"));
+    let string_schema = any_of
+        .iter()
+        .find(|schema| schema.get("type") == Some(&json!("string")))
+        .unwrap_or_else(|| panic!("{label} episode id schema should accept strings"));
+    assert!(
+        any_of
+            .iter()
+            .any(|schema| schema.get("type") == Some(&json!("null"))),
+        "{label} episode id schema should accept null"
+    );
+    assert_eq!(string_schema["minLength"], json!(1));
+    assert_eq!(string_schema["maxLength"], json!(CORAL_EPISODE_ID_MAX_LEN));
+    assert_eq!(string_schema["pattern"], json!("^[!-~]+$"));
+}
+
+fn assert_tool_omits_episode_id(tool: &Tool) {
+    assert!(
+        !tool_input_properties(tool).contains_key("episode_id"),
+        "tool '{}' should not advertise episode_id by default",
+        tool.name
+    );
+}
+
 fn assert_matches_output_schema(tool: &Tool, value: &Value) {
     let schema = Value::Object(
         tool.output_schema
@@ -277,6 +322,314 @@ fn assert_matches_output_schema(tool: &Tool, value: &Value) {
             tool.name
         );
     }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "This end-to-end MCP session test verifies feature-gated tool advertisement, persistence, child lineage, tagged follow-up calls, and validation together."
+)]
+async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            episodes_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "sql",
+            "list_catalog",
+            "search_catalog",
+            "describe_table",
+            "list_columns",
+            "open_episode"
+        ]
+    );
+    for name in [
+        "sql",
+        "list_catalog",
+        "search_catalog",
+        "describe_table",
+        "list_columns",
+    ] {
+        assert_tool_advertises_episode_id(tool_by_name(&tools, name));
+    }
+    let open_episode_tool = tool_by_name(&tools, "open_episode");
+    assert!(!tool_input_properties(open_episode_tool).contains_key("episode_id"));
+    let parent_episode_id_schema = tool_input_properties(open_episode_tool)
+        .get("parent_episode_id")
+        .expect("open_episode should accept an optional parent_episode_id");
+    assert_nullable_episode_id_schema(parent_episode_id_schema, "open_episode parent_episode_id");
+    let open_annotations = open_episode_tool
+        .annotations
+        .as_ref()
+        .expect("open episode annotations");
+    assert_eq!(open_annotations.read_only_hint, Some(false));
+    assert_eq!(open_annotations.destructive_hint, Some(false));
+    assert_eq!(open_annotations.idempotent_hint, Some(false));
+    assert_eq!(open_annotations.open_world_hint, Some(false));
+
+    let root = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect("open root episode");
+    assert_eq!(root.is_error, Some(false));
+    let root = root.structured_content.expect("root structured content");
+    assert_matches_output_schema(open_episode_tool, &root);
+    let root_episode_id = root["episode_id"]
+        .as_str()
+        .expect("root episode id")
+        .to_string();
+    assert!(root_episode_id.starts_with("ep_"));
+    assert_eq!(root["parent_episode_id"], Value::Null);
+    assert_eq!(root["message"], "Episode opened.");
+    assert!(
+        root["instructions"]
+            .as_str()
+            .expect("instructions")
+            .contains("subsequent Coral MCP tool calls")
+    );
+
+    let child = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Check renewal table columns",
+                "parent_episode_id": root_episode_id
+            }))),
+        )
+        .await
+        .expect("open child episode");
+    assert_eq!(child.is_error, Some(false));
+    let child = child.structured_content.expect("child structured content");
+    assert_matches_output_schema(open_episode_tool, &child);
+    let child_episode_id = child["episode_id"]
+        .as_str()
+        .expect("child episode id")
+        .to_string();
+    assert!(child_episode_id.starts_with("ep_"));
+    assert_eq!(child["parent_episode_id"], root_episode_id.as_str());
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1 AS ok",
+                "episode_id": child_episode_id
+            }))),
+        )
+        .await
+        .expect("tagged sql");
+    assert_eq!(sql.is_error, Some(false));
+    assert_eq!(
+        sql.structured_content.expect("sql structured")["rows"][0]["ok"],
+        "1"
+    );
+
+    let invalid_episode_id = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT 1",
+                "episode_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid episode_id should fail before query dispatch");
+    assert!(
+        invalid_episode_id
+            .to_string()
+            .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
+    let invalid_open_episode_id = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Open a child task",
+                "episode_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid stray episode_id should fail before opening an episode");
+    assert!(
+        invalid_open_episode_id
+            .to_string()
+            .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
+    let episodes_path = temp
+        .path()
+        .join("coral-config/workspaces/default/episodes/episodes.jsonl");
+    let raw = fs::read_to_string(&episodes_path).expect("episode file should exist");
+    let records = raw
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("episode JSONL should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 2);
+    let root_record = records
+        .iter()
+        .find(|record| record["id"] == root_episode_id.as_str())
+        .expect("root episode record");
+    assert_eq!(root_record["workspace"], "default");
+    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
+    assert_eq!(root_record["parent_episode_id"], Value::Null);
+    let child_record = records
+        .iter()
+        .find(|record| record["id"] == child_episode_id.as_str())
+        .expect("child episode record");
+    assert_eq!(child_record["workspace"], "default");
+    assert_eq!(child_record["intent"], "Check renewal table columns");
+    assert_eq!(child_record["parent_episode_id"], root_episode_id.as_str());
+
+    let blank_intent = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": " "
+            }))),
+        )
+        .await
+        .expect_err("blank intent should fail before persistence");
+    assert!(
+        blank_intent
+            .to_string()
+            .contains("missing string argument 'intent'")
+    );
+    let raw_after_error = fs::read_to_string(&episodes_path).expect("episode file should exist");
+    assert_eq!(raw_after_error.lines().count(), 2);
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_episode_tool_is_disabled_by_default() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "open_episode"),
+        "open_episode should not be listed by default"
+    );
+    for tool in &tools {
+        assert_tool_omits_episode_id(tool);
+    }
+
+    let open_episode = client
+        .call_tool(
+            CallToolRequestParams::new("open_episode").with_arguments(json_object(&json!({
+                "intent": "Investigate customer renewal risk"
+            }))),
+        )
+        .await
+        .expect_err("open_episode should not be exposed by default");
+    assert!(
+        open_episode
+            .to_string()
+            .contains("tool 'open_episode' not found")
+    );
+    assert!(
+        !temp
+            .path()
+            .join("coral-config/workspaces/default/episodes/episodes.jsonl")
+            .exists()
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+    let expected_tables = ["columns", "filters", "inputs", "table_functions", "tables"];
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"
+            }))),
+        )
+        .await
+        .expect("sql system catalog");
+    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["rows"]
+        .as_array()
+        .expect("sql rows");
+    assert_eq!(
+        sql_rows
+            .iter()
+            .map(|row| row["table_name"].as_str().expect("table_name"))
+            .collect::<Vec<_>>(),
+        expected_tables
+    );
+
+    let catalog = client
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "kind": "table"
+            }))),
+        )
+        .await
+        .expect("list system catalog")
+        .structured_content
+        .expect("structured catalog");
+    assert_eq!(catalog["total"], expected_tables.len());
+    assert_eq!(
+        catalog["items"]
+            .as_array()
+            .expect("catalog items")
+            .iter()
+            .map(|item| item["table"]["table_name"].as_str().expect("table name"))
+            .collect::<Vec<_>>(),
+        expected_tables
+    );
+
+    let described = client
+        .call_tool(
+            CallToolRequestParams::new("describe_table").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "table": "columns"
+            }))),
+        )
+        .await
+        .expect("describe system table")
+        .structured_content
+        .expect("structured describe");
+    assert_eq!(described["found"], true);
+    assert_eq!(described["name"], "coral.columns");
+    assert_eq!(described["column_count"], 10);
+
+    let columns = client
+        .call_tool(
+            CallToolRequestParams::new("list_columns").with_arguments(json_object(&json!({
+                "schema": "coral",
+                "table": "tables"
+            }))),
+        )
+        .await
+        .expect("list system columns")
+        .structured_content
+        .expect("structured columns");
+    assert_eq!(columns["total"], 6);
+    assert_eq!(columns["columns"][0]["column_name"], "schema_name");
+
+    session.shutdown().await;
 }
 
 #[tokio::test]
@@ -310,7 +663,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("No user tables are currently visible")
+            .contains("5 table(s) are currently visible")
+    );
+    assert!(
+        initial_tools[0]
+            .description
+            .as_deref()
+            .expect("sql description")
+            .contains("No connected user sources are currently configured")
     );
     for tool in &initial_tools {
         let Some(output_schema) = &tool.output_schema else {
@@ -339,7 +699,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("guide description")
-            .contains("0 visible table")
+            .contains("5 visible table")
     );
 
     let initial_guide = client
@@ -365,21 +725,42 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
             .description
             .as_deref()
             .expect("sql description")
-            .contains("3 table(s) are currently visible")
+            .contains("8 table(s) are currently visible")
+    );
+    assert!(
+        updated_tools[0]
+            .description
+            .as_deref()
+            .expect("sql description")
+            .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
         updated_tools[1]
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
+    );
+    assert!(
+        updated_tools[1]
+            .description
+            .as_deref()
+            .expect("catalog description")
+            .contains("Connected sources/schemas include: local_messages")
     );
     assert!(
         updated_tools[2]
             .description
             .as_deref()
             .expect("catalog search description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .contains("8 table(s) and 0 table function(s) are currently visible")
+    );
+    assert!(
+        updated_tools[2]
+            .description
+            .as_deref()
+            .expect("catalog search description")
+            .contains("Connected sources/schemas include: local_messages")
     );
 
     let updated_resources = client
@@ -401,10 +782,14 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let tables_text = text_content(&tables_resource);
     let tables_json =
         serde_json::from_str::<serde_json::Value>(tables_text).expect("parse tables resource");
-    assert_eq!(tables_json["tables"][0]["name"], "local_messages.events");
-    assert_eq!(
-        tables_json["tables"][0]["sql_reference"],
-        "local_messages.events"
+    assert_eq!(tables_json["tables"][0]["name"], "coral.columns");
+    assert_eq!(tables_json["tables"][0]["sql_reference"], "coral.columns");
+    assert!(
+        tables_json["tables"]
+            .as_array()
+            .expect("tables")
+            .iter()
+            .any(|table| table["name"] == "local_messages.events")
     );
 
     let updated_guide = client
@@ -426,14 +811,11 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
         .await
         .expect("list catalog");
     let catalog = catalog.structured_content.expect("structured catalog");
-    assert_eq!(catalog["total"], 3);
+    assert_eq!(catalog["total"], 8);
     assert_eq!(catalog["items"][0]["kind"], "table");
-    assert_eq!(catalog["items"][0]["name"], "local_messages.events");
-    assert_eq!(
-        catalog["items"][0]["sql_reference"],
-        "local_messages.events"
-    );
-    assert_eq!(catalog["items"][0]["table"]["table_name"], "events");
+    assert_eq!(catalog["items"][0]["name"], "coral.columns");
+    assert_eq!(catalog["items"][0]["sql_reference"], "coral.columns");
+    assert_eq!(catalog["items"][0]["table"]["table_name"], "columns");
     assert_matches_output_schema(list_catalog_tool, &catalog);
 
     let catalog_page = client
@@ -800,7 +1182,14 @@ async fn list_catalog_surfaces_table_functions() {
             .description
             .as_deref()
             .expect("catalog description")
-            .contains("1 table(s) and 2 table function(s) are currently visible")
+            .contains("6 table(s) and 2 table function(s) are currently visible")
+    );
+    assert!(
+        tool_by_name(&tools, "search_catalog")
+            .description
+            .as_deref()
+            .expect("catalog search description")
+            .contains("Connected sources/schemas include: searchy")
     );
     assert!(tools.iter().all(|tool| tool.name != "list_tables"));
     assert!(tools.iter().all(|tool| tool.name != "search_tables"));
@@ -808,7 +1197,11 @@ async fn list_catalog_surfaces_table_functions() {
     let catalog_tool = tool_by_name(&tools, "list_catalog");
     let search_tool = tool_by_name(&tools, "search_catalog");
     let catalog = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "searchy"
+            }))),
+        )
         .await
         .expect("list catalog")
         .structured_content
@@ -988,6 +1381,60 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
 }
 
 #[tokio::test]
+async fn mcp_feedback_tool_accepts_episode_id_when_episodes_enabled() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            episodes_enabled: true,
+            feedback_enabled: true,
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    assert_tool_advertises_episode_id(tool_by_name(&tools, "feedback"));
+
+    let feedback = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish an episode-scoped task",
+                "tried": "Opened an episode and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "episode_id": "ep_failed_followup"
+            }))),
+        )
+        .await
+        .expect("episode-tagged feedback");
+    assert_eq!(feedback.is_error, Some(false));
+    assert_eq!(
+        feedback.structured_content.expect("structured content")["message"],
+        "Feedback report stored."
+    );
+
+    let invalid_episode_id = client
+        .call_tool(
+            CallToolRequestParams::new("feedback").with_arguments(json_object(&json!({
+                "trying_to_do": "Finish an episode-scoped task",
+                "tried": "Opened an episode and inspected failing output",
+                "stuck": "The final step still needs user judgment",
+                "episode_id": "has space"
+            }))),
+        )
+        .await
+        .expect_err("invalid episode_id should fail before feedback dispatch");
+    assert!(
+        invalid_episode_id
+            .to_string()
+            .contains("argument 'episode_id' must be graphic ASCII")
+    );
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_feedback_tool_is_disabled_by_default() {
     let temp = TempDir::new().expect("temp dir");
     let session = start_session(&temp).await;
@@ -1060,7 +1507,11 @@ async fn mcp_tool_error_does_not_end_session() {
     );
 
     let catalog_after_error = client
-        .call_tool(CallToolRequestParams::new("list_catalog"))
+        .call_tool(
+            CallToolRequestParams::new("list_catalog").with_arguments(json_object(&json!({
+                "schema": "local_messages"
+            }))),
+        )
         .await
         .expect("list catalog after error");
     let structured_catalog_after_error = catalog_after_error
@@ -1075,6 +1526,34 @@ async fn mcp_tool_error_does_not_end_session() {
         "local_messages.events"
     );
     assert_eq!(catalog_after_error.is_error, Some(false));
+
+    session.shutdown().await;
+}
+
+/// End-to-end guard for the MCP JSON contract: a large `Int64` result must
+/// arrive in `structured_content` as a JSON string, not a JSON number, so
+/// clients that parse JSON via IEEE-754 doubles preserve the exact value.
+#[tokio::test]
+async fn mcp_sql_returns_large_int64_as_string() {
+    let temp = TempDir::new().expect("temp dir");
+    let session = start_session(&temp).await;
+    let client = &session.client;
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "sql": "SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"
+            }))),
+        )
+        .await
+        .expect("sql");
+    assert_eq!(sql.is_error, Some(false));
+
+    let rows = &sql.structured_content.expect("structured content")["rows"];
+    assert_eq!(
+        rows[0]["user_id"],
+        Value::String("-8504475857937456387".to_string()),
+    );
 
     session.shutdown().await;
 }

@@ -6,7 +6,44 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{Pagination, parse_pagination, parse_pagination_with_limits};
+use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
+
+use super::{
+    Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
+};
+
+const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
+const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolDescriptionContext {
+    pub(crate) visible_table_count: usize,
+    pub(crate) visible_function_count: usize,
+    connected_source_names: Vec<String>,
+}
+
+impl ToolDescriptionContext {
+    pub(crate) fn new(
+        visible_table_count: usize,
+        visible_function_count: usize,
+        mut connected_source_names: Vec<String>,
+    ) -> Self {
+        connected_source_names.sort();
+        connected_source_names.dedup();
+        Self {
+            visible_table_count,
+            visible_function_count,
+            connected_source_names,
+        }
+    }
+
+    fn connected_sources_sentence(&self) -> String {
+        connected_source_names_text(&self.connected_source_names).map_or_else(
+            || "No connected user sources are currently configured.".to_string(),
+            |names| format!("Connected sources/schemas include: {names}."),
+        )
+    }
+}
 
 pub(crate) struct ListCatalogArguments {
     pub(crate) schema: Option<String>,
@@ -42,17 +79,22 @@ pub(crate) struct ListColumnsArguments {
     pub(crate) pagination: Pagination,
 }
 
-pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
+pub(crate) struct OpenEpisodeArguments {
+    pub(crate) intent: String,
+    pub(crate) parent_episode_id: Option<String>,
+}
+
+pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "sql",
-        sql_tool_description(visible_table_count),
+        sql_tool_description(context),
         json_object_schema(&json!({
             "type": "object",
             "required": ["sql"],
             "properties": {
                 "sql": {
                     "type": "string",
-                    "description": "One read-only SQL statement to execute against the Coral database."
+                    "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
                 }
             }
         })),
@@ -66,11 +108,14 @@ pub(crate) fn sql_tool(visible_table_count: usize) -> Tool {
     )
 }
 
-pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_count: usize) -> Tool {
+pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "list_catalog",
         format!(
-            "List database catalog items. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+            "List database catalog items for Coral sources. {} {} table(s) and {} table function(s) are currently visible.",
+            context.connected_sources_sentence(),
+            context.visible_table_count,
+            context.visible_function_count
         ),
         json_object_schema(&json!({
             "type": "object",
@@ -118,13 +163,10 @@ pub(crate) fn list_catalog_tool(visible_table_count: usize, visible_function_cou
     )
 }
 
-pub(crate) fn search_catalog_tool(
-    visible_table_count: usize,
-    visible_function_count: usize,
-) -> Tool {
+pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search_catalog",
-        search_catalog_description(visible_table_count, visible_function_count),
+        search_catalog_description(context),
         json_object_schema(&json!({
             "type": "object",
             "required": ["pattern"],
@@ -295,6 +337,36 @@ pub(crate) fn feedback_tool() -> Tool {
     )
 }
 
+pub(crate) fn open_episode_tool() -> Tool {
+    Tool::new(
+        "open_episode",
+        "Open a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
+        json_object_schema(&json!({
+            "type": "object",
+            "required": ["intent"],
+            "properties": {
+                "intent": {
+                    "type": "string",
+                    "description": "Natural-language description of the task this episode should group.",
+                    "minLength": 1,
+                    "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
+                },
+                "parent_episode_id": nullable_episode_id_schema(Some(
+                    "Optional parent episode id when this task is a child of an existing episode."
+                ))
+            }
+        })),
+    )
+    .with_raw_output_schema(open_episode_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Open Episode")
+            .read_only(false)
+            .destructive(false)
+            .idempotent(false)
+            .open_world(false),
+    )
+}
+
 pub(crate) fn required_string_argument(
     arguments: Option<&Map<String, Value>>,
     key: &str,
@@ -308,6 +380,15 @@ pub(crate) fn required_string_argument(
             ErrorData::invalid_params(format!("missing string argument '{key}'"), None)
         })?;
     Ok(value.to_string())
+}
+
+pub(crate) fn open_episode_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<OpenEpisodeArguments, ErrorData> {
+    Ok(OpenEpisodeArguments {
+        intent: required_string_argument(arguments, "intent")?,
+        parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
+    })
 }
 
 pub(crate) fn list_catalog_arguments(
@@ -370,29 +451,128 @@ pub(crate) fn list_columns_arguments(
     })
 }
 
+pub(crate) fn optional_episode_id_argument(
+    arguments: Option<&Map<String, Value>>,
+    key: &str,
+) -> Result<Option<String>, ErrorData> {
+    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value.as_str().ok_or_else(|| {
+        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
+    })?;
+    if value.is_empty() {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must not be empty"),
+            None,
+        ));
+    }
+    if value.len() > CORAL_EPISODE_ID_MAX_LEN {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be at most {CORAL_EPISODE_ID_MAX_LEN} bytes"),
+            None,
+        ));
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ErrorData::invalid_params(
+            format!("argument '{key}' must be graphic ASCII with no spaces or control bytes"),
+            None,
+        ));
+    }
+    Ok(Some(value.to_string()))
+}
+
 pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let pretty = serde_json::to_string_pretty(&value)
+    let compact = serde_json::to_string(&value)
         .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(pretty)];
+    result.content = vec![Content::text(compact)];
     Ok(result)
 }
 
-fn sql_tool_description(visible_table_count: usize) -> String {
-    if visible_table_count == 0 {
-        "Execute read-only SQL against the Coral database. No user tables are currently visible."
-            .to_string()
+fn sql_tool_description(context: &ToolDescriptionContext) -> String {
+    if context.visible_table_count == 0 {
+        format!(
+            "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            context.connected_sources_sentence()
+        )
     } else {
         format!(
-            "Execute read-only SQL against the Coral database. {visible_table_count} table(s) are currently visible. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement."
+            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+            context.connected_sources_sentence(),
+            context.visible_table_count
         )
     }
 }
 
-fn search_catalog_description(visible_table_count: usize, visible_function_count: usize) -> String {
+fn search_catalog_description(context: &ToolDescriptionContext) -> String {
     format!(
-        "Search database catalog metadata with a Rust regex. {visible_table_count} table(s) and {visible_function_count} table function(s) are currently visible."
+        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
+        context.connected_sources_sentence(),
+        context.visible_table_count,
+        context.visible_function_count
     )
+}
+
+pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
+    add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
+    tool
+}
+
+fn add_episode_id_property(schema: &mut Map<String, Value>) {
+    schema
+        .entry("properties")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("tool input properties are an object")
+        .insert(
+            "episode_id".to_string(),
+            nullable_episode_id_schema(Some(EPISODE_ID_ARGUMENT_DESCRIPTION)),
+        );
+}
+
+fn nullable_episode_id_schema(description: Option<&str>) -> Value {
+    let mut schema = json!({
+        "anyOf": [
+            episode_id_string_schema(),
+            {
+                "type": "null"
+            }
+        ]
+    });
+    if let Some(description) = description {
+        schema
+            .as_object_mut()
+            .expect("nullable episode id schema is an object")
+            .insert("description".to_string(), json!(description));
+    }
+    schema
+}
+
+fn episode_id_string_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": CORAL_EPISODE_ID_MAX_LEN,
+        "pattern": EPISODE_ID_JSON_SCHEMA_PATTERN
+    })
+}
+
+fn open_episode_output_schema() -> Arc<Map<String, Value>> {
+    json_object_schema(&json!({
+        "type": "object",
+        "required": ["episode_id", "parent_episode_id", "message", "instructions"],
+        "additionalProperties": false,
+        "properties": {
+            "episode_id": episode_id_string_schema(),
+            "parent_episode_id": nullable_episode_id_schema(None),
+            "message": { "type": "string" },
+            "instructions": { "type": "string" }
+        }
+    }))
 }
 
 fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
@@ -799,9 +979,45 @@ fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value};
+    use serde_json::{Map, Value, json};
 
-    use super::{list_catalog_arguments, search_catalog_arguments};
+    use super::{
+        EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
+        connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
+        search_catalog_tool, sql_tool, with_episode_id_argument,
+    };
+
+    #[test]
+    fn success_tool_result_text_uses_compact_json() {
+        let value = json!({
+            "rows": [
+                {
+                    "id": 1,
+                    "text": "hello"
+                },
+                {
+                    "id": 2,
+                    "text": "world"
+                }
+            ]
+        });
+
+        let result = build_tool_result(value.clone()).expect("tool result");
+
+        let text = result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("text content");
+        assert_eq!(
+            text.text,
+            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
+        );
+        assert_eq!(
+            result.structured_content.expect("structured content"),
+            value
+        );
+    }
 
     #[test]
     fn catalog_kind_argument_accepts_null_as_all_kinds() {
@@ -813,5 +1029,72 @@ mod tests {
         arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
         let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
         assert_eq!(search.kind, None);
+    }
+
+    #[test]
+    fn tool_descriptions_include_connected_sources() {
+        let context =
+            ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
+
+        let sql_tool = sql_tool(&context);
+        let sql_description = sql_tool.description.as_deref().expect("sql description");
+        assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
+        assert!(sql_description.contains("42 table(s) are currently visible"));
+        assert!(sql_description.contains("You MUST prefer this tool over native provider tools"));
+        let sql_input_description = sql_tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("sql"))
+            .and_then(Value::as_object)
+            .and_then(|sql| sql.get("description"))
+            .and_then(Value::as_str)
+            .expect("sql input description");
+        assert!(sql_input_description.contains("connected source schemas"));
+
+        let search_description = search_catalog_tool(&context)
+            .description
+            .expect("search description");
+        assert!(search_description.contains("Connected sources/schemas include: github, linear"));
+        assert!(search_description.contains("42 table(s) and 3 table function(s)"));
+    }
+
+    #[test]
+    fn with_episode_id_argument_decorates_tool_schema() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tool = sql_tool(&context);
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("input properties");
+        assert!(!properties.contains_key("episode_id"));
+
+        let tool = with_episode_id_argument(tool);
+        let episode_id_schema = tool
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("episode_id"))
+            .expect("episode_id schema");
+
+        assert_eq!(
+            episode_id_schema.get("description").and_then(Value::as_str),
+            Some(EPISODE_ID_ARGUMENT_DESCRIPTION)
+        );
+    }
+
+    #[test]
+    fn connected_source_names_are_not_capped_in_descriptions() {
+        let names = (0..14)
+            .map(|index| format!("source_{index:02}"))
+            .collect::<Vec<_>>();
+
+        let text = connected_source_names_text(&names).expect("source names text");
+
+        assert!(text.contains("source_00"));
+        assert!(text.contains("source_12"));
+        assert!(text.contains("source_13"));
+        assert!(!text.contains("and 2 more"));
     }
 }

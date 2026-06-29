@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use datafusion::common::utils::quote_identifier;
 
-use super::catalog::TableInfo;
+use super::catalog::{TableFunctionInfo, TableInfo};
 use super::error::StatusCode;
 
 /// Wire-stable `reason` code for unknown-column errors.
@@ -12,6 +12,9 @@ pub(crate) const UNKNOWN_COLUMN_REASON: &str = "UNKNOWN_COLUMN";
 
 /// Wire-stable `reason` code for table-not-found errors.
 pub(crate) const TABLE_NOT_FOUND_REASON: &str = "TABLE_NOT_FOUND";
+
+/// Wire-stable `reason` code for table functions used where a table is needed.
+pub(crate) const TABLE_FUNCTION_NOT_TABLE_REASON: &str = "TABLE_FUNCTION_NOT_TABLE";
 
 /// Minimum `strsim::normalized_levenshtein` score for a "did you mean?"
 /// suggestion to surface.
@@ -205,6 +208,32 @@ impl StructuredQueryError {
             hint,
             false,
             StatusCode::NotFound,
+            metadata,
+        )
+    }
+
+    /// Builds a structured error for a table function used where SQL expects a table.
+    pub(crate) fn table_function_not_table(function: &TableFunctionInfo) -> Self {
+        let display_ref = format_schema_function(function);
+        let mut metadata = HashMap::new();
+        metadata.insert("object_kind".to_string(), "table_function".to_string());
+        metadata.insert("schema".to_string(), function.schema_name.clone());
+        metadata.insert("function".to_string(), function.function_name.clone());
+
+        let schema_sql = sql_string_literal(&function.schema_name);
+        let function_sql = sql_string_literal(&function.function_name);
+
+        Self::new(
+            TABLE_FUNCTION_NOT_TABLE_REASON,
+            format!("`{display_ref}` is a table function, not a table"),
+            format!(
+                "`{display_ref}` is registered as a table function. Query it as `FROM {display_ref}(...)`; inspect arguments and result columns in `coral.table_functions`, or run `DESCRIBE SELECT * FROM {display_ref}(...)` after filling any required arguments."
+            ),
+            Some(format!(
+                "Inspect table functions with `SELECT schema_name, function_name, arguments_json, result_columns_json FROM coral.table_functions WHERE schema_name = {schema_sql} AND function_name = {function_sql}`."
+            )),
+            false,
+            StatusCode::InvalidArgument,
             metadata,
         )
     }
@@ -480,6 +509,18 @@ fn format_schema_table_fully_quoted(info: &TableInfo) -> String {
     )
 }
 
+fn format_schema_function(info: &TableFunctionInfo) -> String {
+    format!(
+        "{}.{}",
+        quote_dotted_identifier(&info.schema_name),
+        quote_identifier(&info.function_name)
+    )
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 // ---------------------------------------------------------------------------
 // Table-ref parsing
 // ---------------------------------------------------------------------------
@@ -625,6 +666,16 @@ mod tests {
         }
     }
 
+    fn table_function(schema: &str, name: &str) -> TableFunctionInfo {
+        TableFunctionInfo {
+            schema_name: schema.to_string(),
+            function_name: name.to_string(),
+            description: String::new(),
+            arguments: vec![],
+            result_columns: vec![],
+        }
+    }
+
     fn cp(relation: &[&str], name: &str) -> ColumnParts {
         ColumnParts {
             relation: relation.iter().map(ToString::to_string).collect(),
@@ -643,6 +694,7 @@ mod tests {
         // that pattern-matches on reason codes.
         assert_eq!(UNKNOWN_COLUMN_REASON, "UNKNOWN_COLUMN");
         assert_eq!(TABLE_NOT_FOUND_REASON, "TABLE_NOT_FOUND");
+        assert_eq!(TABLE_FUNCTION_NOT_TABLE_REASON, "TABLE_FUNCTION_NOT_TABLE");
     }
 
     #[test]
@@ -732,6 +784,39 @@ mod tests {
         assert!(
             !hint.contains("coral source"),
             "hint must stay transport-neutral (no CLI-specific commands), got: {hint}"
+        );
+    }
+
+    #[test]
+    fn table_function_not_table_points_at_table_functions_catalog() {
+        let err =
+            StructuredQueryError::table_function_not_table(&table_function("datadog", "metrics"));
+
+        assert_eq!(err.reason(), TABLE_FUNCTION_NOT_TABLE_REASON);
+        assert_eq!(err.status(), StatusCode::InvalidArgument);
+        assert_eq!(
+            err.summary(),
+            "`datadog.metrics` is a table function, not a table"
+        );
+        let hint = err.hint().expect("hint should be present");
+        assert!(hint.contains("coral.table_functions"), "got: {hint}");
+        assert!(hint.contains("schema_name = 'datadog'"), "got: {hint}");
+        assert!(hint.contains("function_name = 'metrics'"), "got: {hint}");
+        assert_eq!(
+            err.metadata().get("object_kind").map(String::as_str),
+            Some("table_function")
+        );
+        assert!(
+            err.detail()
+                .contains("Query it as `FROM datadog.metrics(...)`"),
+            "got: {}",
+            err.detail()
+        );
+        assert!(
+            err.detail()
+                .contains("DESCRIBE SELECT * FROM datadog.metrics(...)"),
+            "got: {}",
+            err.detail()
         );
     }
 

@@ -562,11 +562,22 @@ async fn run_app_command(
             let features = coral_app::features::FeatureStore::discover(None)
                 .and_then(|store| store.load_with_overrides(feature_overrides))
                 .map_err(anyhow::Error::from)?;
+            let source_names = match coral_app::bootstrap::default_workspace_source_names() {
+                Ok(source_names) => source_names,
+                Err(error) => {
+                    eprintln!(
+                        "warning: failed to load source names for MCP initialize instructions: {error}"
+                    );
+                    Vec::new()
+                }
+            };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
                     feedback_enabled: features.enabled(coral_app::features::Feature::Feedback),
+                    episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
+                    source_names,
                 },
             ))
             .await
@@ -632,7 +643,11 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                     } else {
                         "available".to_string()
                     };
-                    [source.name, source.version, status]
+                    [
+                        source.name,
+                        source_ops::display_version(&source.version),
+                        status,
+                    ]
                 });
                 print_text_table(["Source", "Version", "Status"], rows);
             }
@@ -645,7 +660,7 @@ async fn run_source(app: &AppClient, args: SourceArgs) -> Result<(), CliError> {
                 let rows = sources.into_iter().map(|source| {
                     [
                         source.name,
-                        source.version,
+                        source_ops::display_version(&source.version),
                         source_ops::source_origin_label(source.origin).to_string(),
                         source_ops::source_credential_storage_label(source.credential_storage)
                             .to_string(),
