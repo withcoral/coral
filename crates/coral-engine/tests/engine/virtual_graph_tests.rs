@@ -2758,6 +2758,66 @@ async fn cypher_path_element_id_lists_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_path_element_list_indexes_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
+         WHERE person.name = 'Ada Lovelace' AND nodes(path)[0] = id(person) \
+         RETURN nodes(path)[0] AS first_node, \
+                nodes(path)[-1] AS last_node, \
+                nodes(path)[2] AS missing_node, \
+                relationships(path)[0] AS first_relationship, \
+                relationships(path)[-1] AS last_relationship, \
+                relationships(path)[1] AS missing_relationship, \
+                head(nodes(path)) AS head_node, \
+                last(relationships(path)) AS last_relationship_endpoint \
+         ORDER BY nodes(path)[0], relationships(path)[-1]",
+    )
+    .await
+    .expect("fixed path element list indexes should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"n0\".\"id\" AS \"first_node\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("NULL AS \"missing_node\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("NULL AS \"missing_relationship\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "first_node": 1,
+            "last_node": 10,
+            "first_relationship": 100,
+            "last_relationship": 100,
+            "head_node": 1,
+            "last_relationship_endpoint": 100,
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_type_overloads_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -10371,64 +10371,107 @@ fn compile_order_expression(
             path,
         ),
         expression => {
-            if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
-                expression,
-                path.clone(),
-                plan,
-                context,
-            )? {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            if let Some(expression) =
-                compile_optional_non_literal_static_list_index_scalar_expression(
-                    expression,
-                    path.clone(),
-                    Some(plan),
-                    context,
-                )?
-            {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            if is_list_slice_expression(expression)
-                && let Some(value) =
-                    compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
-            {
-                return compile_scalar_order_expression(
-                    metadata_list_value_scalar_expression(value, plan),
-                    projections,
-                    path,
-                );
-            }
-            if is_non_literal_static_list_slice_expression(expression)
-                && let Some(expression) = compile_optional_static_list_scalar_expression(
-                    expression,
-                    path.clone(),
-                    Some(plan),
-                    context,
-                )?
-            {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            if matches!(expression, Expression::ListComprehension(_))
-                && let Some(expression) = compile_optional_static_list_scalar_expression(
-                    expression,
-                    path.clone(),
-                    Some(plan),
-                    context,
-                )?
-            {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            compile_order_expression_after_metadata_list_index(
-                expression,
-                projections,
-                plan,
-                state,
-                context,
-                path,
-            )
+            compile_order_expression_fallback(expression, projections, plan, state, context, path)
         }
     }
+}
+
+fn compile_order_expression_fallback(
+    expression: &Expression,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: String,
+) -> Result<OrderExpression, CoreError> {
+    if let Some(order) = compile_optional_path_list_index_order_expression(
+        expression,
+        projections,
+        plan,
+        state,
+        context,
+        path.clone(),
+    )? {
+        return Ok(order);
+    }
+    if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        plan,
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    if let Some(expression) = compile_optional_non_literal_static_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        Some(plan),
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    if is_list_slice_expression(expression)
+        && let Some(value) =
+            compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
+    {
+        return compile_scalar_order_expression(
+            metadata_list_value_scalar_expression(value, plan),
+            projections,
+            path,
+        );
+    }
+    if is_non_literal_static_list_slice_expression(expression)
+        && let Some(expression) = compile_optional_static_list_scalar_expression(
+            expression,
+            path.clone(),
+            Some(plan),
+            context,
+        )?
+    {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    if matches!(expression, Expression::ListComprehension(_))
+        && let Some(expression) = compile_optional_static_list_scalar_expression(
+            expression,
+            path.clone(),
+            Some(plan),
+            context,
+        )?
+    {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    compile_order_expression_after_metadata_list_index(
+        expression,
+        projections,
+        plan,
+        state,
+        context,
+        path,
+    )
+}
+
+fn compile_optional_path_list_index_order_expression(
+    expression: &Expression,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<Option<OrderExpression>, CoreError> {
+    let path = path.into();
+    let Some(expression) = compile_optional_path_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    compile_scalar_order_expression(expression, projections, path).map(Some)
 }
 
 fn compile_order_expression_after_metadata_list_index(
@@ -15412,7 +15455,7 @@ fn compile_projection(
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     if let Some(projection) =
-        compile_optional_graph_scalar_projection(item, path.clone(), context, plan)?
+        compile_optional_graph_scalar_projection(item, path.clone(), context, plan, state)?
     {
         return Ok(projection);
     }
@@ -15573,6 +15616,7 @@ fn compile_optional_graph_scalar_projection(
     path: impl Into<String>,
     context: &CypherCompileContext,
     plan: &GraphPlan,
+    state: &CypherCompileState,
 ) -> Result<Option<Projection>, CoreError> {
     let path = path.into();
     if let Some((expression, output_name)) = compile_optional_endpoint_property_scalar_expression(
@@ -15584,6 +15628,23 @@ fn compile_optional_graph_scalar_projection(
         return Ok(Some(Projection::Expression {
             expression,
             alias: item.alias.as_ref().map_or(output_name, variable_name),
+        }));
+    }
+    if let Some(expression) = compile_optional_path_list_index_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "expression".to_string(), variable_name),
         }));
     }
     if let Some(projection) =
@@ -15996,6 +16057,149 @@ fn compile_path_element_id_list_scalar_expression(
         format!("{path}.arguments"),
         target.function_name(),
     )
+}
+
+fn path_list_function_expression(
+    expression: &Expression,
+) -> Option<(&FunctionInvocation, PathListSizeTarget)> {
+    match expression {
+        Expression::Parenthesized(inner) => path_list_function_expression(inner),
+        Expression::FunctionCall(function) => {
+            path_list_size_target(function).map(|target| (function, target))
+        }
+        _ => None,
+    }
+}
+
+fn path_binding_element_variables(binding: &PathBinding, target: PathListSizeTarget) -> &[String] {
+    match target {
+        PathListSizeTarget::Nodes => &binding.node_variables,
+        PathListSizeTarget::Relationships => &binding.relationship_variables,
+    }
+}
+
+fn compile_path_list_static_index(
+    index: &Expression,
+    length: usize,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<usize>, CoreError> {
+    let path = path.into();
+    let index = compile_literal(index, format!("{path}.index"), context)?;
+    let Literal::Integer(index) = index else {
+        return Err(unsupported(
+            format!("{path}.index"),
+            "path element list indexes require an integer literal or scalar integer parameter",
+        ));
+    };
+    let length = i64::try_from(length).map_err(|error| {
+        CoreError::internal(format!("path element list length overflow: {error}"))
+    })?;
+    let normalized = if index < 0 { length + index } else { index };
+    if normalized < 0 || normalized >= length {
+        return Ok(None);
+    }
+    usize::try_from(normalized)
+        .map(Some)
+        .map_err(|error| CoreError::internal(format!("path element list index overflow: {error}")))
+}
+
+fn compile_optional_path_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_path_list_index_scalar_expression(inner, path, mode, context)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            let Some((function, target)) = path_list_function_expression(list) else {
+                return Ok(None);
+            };
+            let state = mode.path_state().ok_or_else(|| {
+                unsupported(
+                    format!("{path}.list"),
+                    format!(
+                        "{}() path element list indexes require path-variable scope",
+                        target.function_name()
+                    ),
+                )
+            })?;
+            let binding = compile_path_function_binding(
+                function,
+                format!("{path}.list.arguments"),
+                target.function_name(),
+                state,
+                context,
+            )?;
+            let variables = path_binding_element_variables(binding, target);
+            let expression =
+                compile_path_list_static_index(index, variables.len(), path.clone(), context)?
+                    .and_then(|index| variables.get(index))
+                    .map_or(ScalarExpression::Literal(Literal::Null), |variable| {
+                        ScalarExpression::Key {
+                            variable: variable.clone(),
+                        }
+                    });
+            path_binding_presence_gated_scalar_expression(
+                binding,
+                expression,
+                format!("{path}.list.arguments"),
+                target.function_name(),
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn compile_optional_path_list_endpoint_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+    endpoint: ListEndpoint,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some((function, target)) = path_list_function_expression(argument) else {
+        return Ok(None);
+    };
+    let state = mode.path_state().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "{}() path element list endpoint access requires path-variable scope",
+                target.function_name()
+            ),
+        )
+    })?;
+    let binding = compile_path_function_binding(
+        function,
+        format!("{path}.arguments"),
+        target.function_name(),
+        state,
+        context,
+    )?;
+    let variables = path_binding_element_variables(binding, target);
+    let variable = match endpoint {
+        ListEndpoint::Head => variables.first(),
+        ListEndpoint::Last => variables.last(),
+    };
+    let expression = variable.map_or(ScalarExpression::Literal(Literal::Null), |variable| {
+        ScalarExpression::Key {
+            variable: variable.clone(),
+        }
+    });
+    path_binding_presence_gated_scalar_expression(
+        binding,
+        expression,
+        format!("{path}.arguments"),
+        target.function_name(),
+    )
+    .map(Some)
 }
 
 fn path_binding_presence_gated_scalar_expression(
@@ -17446,6 +17650,15 @@ fn compile_static_list_endpoint_scalar_expression(
             format!("{function_name}() requires exactly one list argument"),
         ));
     };
+    if let Some(expression) = compile_optional_path_list_endpoint_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
+        context,
+        endpoint,
+    )? {
+        return Ok(expression);
+    }
     if let Expression::ListSlice {
         list, start, end, ..
     } = argument
@@ -17646,10 +17859,16 @@ fn compile_scalar_expression_with_path_state(
 fn compile_list_index_scalar_expression_in_mode(
     expression: &Expression,
     path: impl Into<String>,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
+    let plan = mode.static_metadata_plan();
+    if let Some(expression) =
+        compile_optional_path_list_index_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        return Ok(expression);
+    }
     if let Some(plan) = plan
         && let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
             expression,
@@ -17713,7 +17932,7 @@ fn compile_scalar_expression_in_predicate_mode(
             )?))
         }
         Expression::ListIndex { .. } => {
-            compile_list_index_scalar_expression_in_mode(expression, path, plan, context)
+            compile_list_index_scalar_expression_in_mode(expression, path, mode, context)
         }
         Expression::Variable(_) => {
             compile_scalar_alias_expression(expression, path, mode.scalar_alias_state())
@@ -18292,6 +18511,14 @@ fn compile_optional_predicate_scalar_expression(
         }
         Expression::ListIndex { .. } => match plan {
             Some(plan) => {
+                if let Some(expression) = compile_optional_path_list_index_scalar_expression(
+                    expression,
+                    path.clone(),
+                    mode,
+                    context,
+                )? {
+                    return Ok(Some(expression));
+                }
                 if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
                     expression,
                     path.clone(),
@@ -30639,6 +30866,95 @@ relationships:
         assert_eq!(
             plan.projection_output_names(),
             vec!["nodes", "relationships"]
+        );
+    }
+
+    #[test]
+    fn compiles_path_element_list_indexes_and_endpoints_as_keys() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE nodes(path)[0] = id(person) \
+             RETURN nodes(path)[0] AS first_node, \
+                    nodes(path)[-1] AS last_node, \
+                    nodes(path)[2] AS missing_node, \
+                    relationships(path)[0] AS first_relationship, \
+                    relationships(path)[-1] AS last_relationship, \
+                    relationships(path)[1] AS missing_relationship, \
+                    head(nodes(path)) AS head_node, \
+                    last(relationships(path)) AS last_relationship_endpoint \
+             ORDER BY nodes(path)[0], relationships(path)[-1]",
+        )
+        .expect("path element list scalar access should compile");
+
+        let person_key = ScalarExpression::Key {
+            variable: "person".to_string(),
+        };
+        let service_key = ScalarExpression::Key {
+            variable: "service".to_string(),
+        };
+        let owns_key = ScalarExpression::Key {
+            variable: "owns".to_string(),
+        };
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: person_key.clone(),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(person_key.clone()),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: person_key.clone(),
+                    alias: "first_node".to_string(),
+                },
+                Projection::Expression {
+                    expression: service_key,
+                    alias: "last_node".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Null),
+                    alias: "missing_node".to_string(),
+                },
+                Projection::Expression {
+                    expression: owns_key.clone(),
+                    alias: "first_relationship".to_string(),
+                },
+                Projection::Expression {
+                    expression: owns_key.clone(),
+                    alias: "last_relationship".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Null),
+                    alias: "missing_relationship".to_string(),
+                },
+                Projection::Expression {
+                    expression: person_key.clone(),
+                    alias: "head_node".to_string(),
+                },
+                Projection::Expression {
+                    expression: owns_key.clone(),
+                    alias: "last_relationship_endpoint".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Scalar(person_key),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(owns_key),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
         );
     }
 
