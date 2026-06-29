@@ -11,6 +11,8 @@
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
 //!   - `virtual-graph-tck-report` summarizes the openCypher compatibility gate.
+//!   - `virtual-graph-upstream-tck-report` inventories the upstream openCypher
+//!     TCK feature tree against Coral's read-only product scope.
 //!   - `virtual-graph-baseline-report` summarizes virtual graph compatibility
 //!     fixtures.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
@@ -62,6 +64,8 @@ enum Command {
     GenerateSchemas(schemas::Args),
     /// Summarize a virtual graph compatibility baseline fixture.
     VirtualGraphTckReport(tck::Args),
+    /// Inventory the upstream openCypher TCK feature tree.
+    VirtualGraphUpstreamTckReport(tck::UpstreamArgs),
     /// Summarize a virtual graph compatibility baseline fixture.
     VirtualGraphBaselineReport(tck::Args),
     /// Sign, package, and notarize one macOS release binary.
@@ -117,6 +121,7 @@ fn run(command: &Command) -> Result<bool> {
         Command::VirtualGraphTckReport(args) | Command::VirtualGraphBaselineReport(args) => {
             tck::run(args)
         }
+        Command::VirtualGraphUpstreamTckReport(args) => tck::run_upstream(args),
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
     }
 }

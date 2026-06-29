@@ -1,4 +1,7 @@
-.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report virtual-graph-graphql virtual-graph-graphql-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report virtual-graph-upstream-tck-report virtual-graph-graphql virtual-graph-graphql-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+
+OPENCYPHER_TCK_TAG ?= 2024.3
+OPENCYPHER_TCK_REVISION ?= 677cbafabb8c3c5eed458fd3b1ec0daec8d67d23
 
 install: ui-build
 	cargo install --path crates/coral-cli --locked
@@ -26,6 +29,16 @@ virtual-graph-tck:
 
 virtual-graph-tck-report:
 	cargo run --locked -p xtask -- virtual-graph-tck-report --json
+
+virtual-graph-upstream-tck-report:
+	tmp_dir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$(OPENCYPHER_TCK_TAG)" \
+	  https://github.com/opencypher/openCypher.git "$$tmp_dir/openCypher"; \
+	test "$$(git -C "$$tmp_dir/openCypher" rev-parse HEAD)" = "$(OPENCYPHER_TCK_REVISION)"; \
+	cargo run --locked -p xtask -- virtual-graph-upstream-tck-report \
+	  --features-dir "$$tmp_dir/openCypher/tck/features" \
+	  --json
 
 virtual-graph-graphql:
 	cargo test -p coral-engine graphql_read_baseline --locked

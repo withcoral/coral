@@ -66,6 +66,47 @@ The report command lives in:
 xtask/src/tck.rs
 ```
 
+## Upstream openCypher Inventory
+
+Coral also maintains an upstream openCypher TCK inventory gate. This gate does
+not claim that Coral executes the upstream suite. Instead, it parses the
+upstream `tck/features` tree, classifies every feature group into Coral's
+read-only product scope, and compares the curated Coral baseline against the
+upstream scenario-definition count.
+
+Run it locally with:
+
+```sh
+make virtual-graph-upstream-tck-report
+```
+
+The target clones the Apache-2.0 openCypher repository at tag `2024.3`, verifies
+the pinned revision `677cbafabb8c3c5eed458fd3b1ec0daec8d67d23`, and runs:
+
+```sh
+cargo run --locked -p xtask -- virtual-graph-upstream-tck-report \
+  --features-dir <openCypher checkout>/tck/features \
+  --json
+```
+
+For the pinned upstream tree, the inventory currently reports 1,615 scenario
+definitions across 220 feature files. Of those, 1,294 are read-candidate
+scenario definitions after excluding mutation clauses and procedure calls that
+are outside Coral virtual graph's read-only scope. Coral's curated baseline has
+42 scenarios, which is 2.60% of the full upstream scenario-definition inventory
+and 3.25% of the read-candidate inventory.
+
+The inventory gate fails if:
+
+- the pinned upstream scenario count drops below the recorded floor;
+- the read-candidate scenario count drops below the recorded floor;
+- upstream adds a new top-level feature group that Coral has not classified.
+
+This gives us a scored backlog target without overstating conformance. A future
+runner can promote specific upstream scenarios from inventory into executable
+Coral fixtures as graph declarations, source tables, and expected tabular
+results are translated.
+
 ## Current GraphQL Gate
 
 Run the GraphQL gate locally with:
@@ -180,6 +221,6 @@ When adding Cypher or GraphQL support:
 5. Only promote scenarios into the gate when Coral intentionally claims that
    behavior.
 
-Future work should add an importer/reporting tool for the upstream openCypher
-TCK so we can publish a scored matrix such as applicable, passing, unsupported
-by product design, and known gap counts.
+Future work should extend the upstream inventory into a scenario-level importer
+that publishes a scored matrix such as executable, passing, unsupported by
+product design, and known gap counts.

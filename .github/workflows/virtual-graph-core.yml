@@ -83,6 +83,28 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Upstream openCypher TCK inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          git clone --quiet --depth 1 --branch "2024.3" \
+            https://github.com/opencypher/openCypher.git "$tmp_dir/openCypher"
+          test "$(git -C "$tmp_dir/openCypher" rev-parse HEAD)" = \
+            "677cbafabb8c3c5eed458fd3b1ec0daec8d67d23"
+          cargo run --locked -p xtask -- virtual-graph-upstream-tck-report \
+            --features-dir "$tmp_dir/openCypher/tck/features" \
+            --json \
+            | tee virtual-graph-upstream-tck-report.json
+          {
+            echo "### Upstream openCypher TCK inventory"
+            echo
+            echo '```json'
+            cat virtual-graph-upstream-tck-report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: GraphQL coverage report
         shell: bash
         run: |
