@@ -21,7 +21,7 @@
     "TypeConversion": 3,
     "Union": 2,
     "Unwind": 1,
-    "VariableLengthPaths": 3,
+    "VariableLengthPaths": 4,
     "Where": 9,
     "With": 4
   },
@@ -983,6 +983,23 @@
           { "source": "Alice", "target": "Carol", "hops": 1 },
           { "source": "Alice", "target": "Carol", "hops": 2 },
           { "source": "Bob", "target": "Carol", "hops": 1 }
+        ]
+      }
+    },
+    {
+      "id": "zero-hop-bounded-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*0..1]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Alice", "hops": 0 },
+          { "source": "Alice", "target": "Bob", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 1 },
+          { "source": "Bob", "target": "Bob", "hops": 0 },
+          { "source": "Bob", "target": "Carol", "hops": 1 },
+          { "source": "Carol", "target": "Carol", "hops": 0 }
         ]
       }
     },
