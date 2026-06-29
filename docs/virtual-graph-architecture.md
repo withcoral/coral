@@ -601,6 +601,12 @@ execution path.
 
 Conflicting response aliases are rejected before SQL lowering; exact duplicate
 projections, such as repeated `__typename` through fragments, are suppressed.
+Exact duplicate nested relationship fields with the same response name,
+relationship field, and normalized arguments share one graph traversal and merge
+their child selections, which avoids accidental row multiplication when
+generated clients repeat a traversal through fragments. Same-response
+relationship fields with different traversal arguments are rejected rather than
+lowered as separate joins.
 Fragment definition directives, operation directives, unknown directives,
 mutations, subscriptions, nested row modifiers, and optional GraphQL traversals
 are rejected with GraphQL-specific diagnostics until their IR contracts are

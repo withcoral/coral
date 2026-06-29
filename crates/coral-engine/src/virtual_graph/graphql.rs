@@ -682,6 +682,64 @@ struct NodeContext {
     edge_relationship_type: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct GraphqlSelectionScope {
+    relationship_fields:
+        BTreeMap<GraphqlRelationshipResponseKey, GraphqlRelationshipSelectionBinding>,
+}
+
+struct GraphqlSelectionCompileContext<'a, 'variables, 'query> {
+    graph: Option<&'a Declaration>,
+    compile_context: &'a GraphqlCompileContext<'variables, 'query>,
+    fragment_stack: &'a mut Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct GraphqlRelationshipResponseKey {
+    source_variable: String,
+    response_name: String,
+}
+
+#[derive(Debug)]
+struct GraphqlRelationshipSelectionBinding {
+    signature: GraphqlRelationshipSelectionSignature,
+    relationship_index: usize,
+    target_variable: String,
+    target_label: String,
+    relationship_variable: Option<String>,
+    edge_relationship_type: String,
+    nested_scope: GraphqlSelectionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphqlRelationshipSelectionSignature {
+    field_name: String,
+    arguments: Vec<(String, GraphqlValueSignature)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum GraphqlValueSignature {
+    Variable(String),
+    Integer(i64),
+    Float(OrderedFloat<f64>),
+    String(String),
+    Boolean(bool),
+    Null,
+    Enum(String),
+    List(Vec<GraphqlValueSignature>),
+    Object(Vec<(String, GraphqlValueSignature)>),
+}
+
+struct GraphqlRelationshipFieldSpec {
+    direction: Direction,
+    relationship_type: String,
+    endpoint_argument: &'static str,
+    target_label: String,
+    needs_relationship_variable: bool,
+    response_key: GraphqlRelationshipResponseKey,
+    signature: GraphqlRelationshipSelectionSignature,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GraphqlWhereScope<'a> {
     graph: Option<&'a Declaration>,
@@ -716,6 +774,30 @@ fn compile_selection_set_into_plan(
     compile_context: &GraphqlCompileContext<'_, '_>,
     fragment_stack: &mut Vec<String>,
 ) -> Result<(), CoreError> {
+    let mut scope = GraphqlSelectionScope::default();
+    let mut selection_context = GraphqlSelectionCompileContext {
+        graph,
+        compile_context,
+        fragment_stack,
+    };
+    compile_selection_set_items_into_plan(
+        plan,
+        selection_set,
+        context,
+        path,
+        &mut selection_context,
+        &mut scope,
+    )
+}
+
+fn compile_selection_set_items_into_plan(
+    plan: &mut GraphPlan,
+    selection_set: &SelectionSet<'_, String>,
+    context: &NodeContext,
+    path: impl Into<String>,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    scope: &mut GraphqlSelectionScope,
+) -> Result<(), CoreError> {
     let path = path.into();
     for (index, selection) in selection_set.items.iter().enumerate() {
         let item_path = format!("{path}.items[{index}]");
@@ -724,7 +806,7 @@ fn compile_selection_set_into_plan(
                 if !selection_is_included(
                     &field.directives,
                     format!("{item_path}.directives"),
-                    compile_context,
+                    selection_context.compile_context,
                 )? {
                     continue;
                 }
@@ -734,15 +816,21 @@ fn compile_selection_set_into_plan(
                         field,
                         context,
                         &item_path,
-                        compile_context,
-                        fragment_stack,
+                        selection_context.compile_context,
+                        selection_context.fragment_stack,
                     )?;
                 } else if is_node_aggregate_field(&field.name)
                     || field.selection_set.items.is_empty()
                 {
-                    compile_property_field(plan, field, context, &item_path, compile_context)?;
+                    compile_property_field(
+                        plan,
+                        field,
+                        context,
+                        &item_path,
+                        selection_context.compile_context,
+                    )?;
                 } else {
-                    let graph = graph.ok_or_else(|| {
+                    selection_context.graph.ok_or_else(|| {
                         unsupported(
                             format!("{item_path}.selectionSet"),
                             "GraphQL relationship nesting requires a graph declaration",
@@ -750,32 +838,29 @@ fn compile_selection_set_into_plan(
                     })?;
                     compile_relationship_field(
                         plan,
-                        graph,
                         context,
                         field,
                         &item_path,
-                        compile_context,
-                        fragment_stack,
+                        selection_context,
+                        scope,
                     )?;
                 }
             }
             Selection::FragmentSpread(spread) => compile_fragment_spread(
                 plan,
-                graph,
                 context,
                 spread,
                 &item_path,
-                compile_context,
-                fragment_stack,
+                selection_context,
+                scope,
             )?,
             Selection::InlineFragment(fragment) => compile_inline_fragment(
                 plan,
-                graph,
                 context,
                 fragment,
                 &item_path,
-                compile_context,
-                fragment_stack,
+                selection_context,
+                scope,
             )?,
         }
     }
@@ -955,21 +1040,21 @@ fn compile_single_aggregate_field_argument(
 
 fn compile_fragment_spread(
     plan: &mut GraphPlan,
-    graph: Option<&Declaration>,
     context: &NodeContext,
     spread: &FragmentSpread<'_, String>,
     path: &str,
-    compile_context: &GraphqlCompileContext<'_, '_>,
-    fragment_stack: &mut Vec<String>,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    scope: &mut GraphqlSelectionScope,
 ) -> Result<(), CoreError> {
     if !selection_is_included(
         &spread.directives,
         format!("{path}.directives"),
-        compile_context,
+        selection_context.compile_context,
     )? {
         return Ok(());
     }
-    let fragment = compile_context
+    let fragment = selection_context
+        .compile_context
         .fragments
         .get(&spread.fragment_name)
         .ok_or_else(|| {
@@ -983,39 +1068,42 @@ fn compile_fragment_spread(
         context,
         format!("{path}.typeCondition"),
     )?;
-    if fragment_stack.contains(&spread.fragment_name) {
+    if selection_context
+        .fragment_stack
+        .contains(&spread.fragment_name)
+    {
         return Err(unsupported(
             format!("{path}.name"),
             format!("GraphQL fragment '{}' forms a cycle", spread.fragment_name),
         ));
     }
-    fragment_stack.push(spread.fragment_name.clone());
-    let result = compile_selection_set_into_plan(
+    selection_context
+        .fragment_stack
+        .push(spread.fragment_name.clone());
+    let result = compile_selection_set_items_into_plan(
         plan,
-        graph,
         &fragment.selection_set,
         context,
         format!("fragment.{}.selectionSet", fragment.name),
-        compile_context,
-        fragment_stack,
+        selection_context,
+        scope,
     );
-    fragment_stack.pop();
+    selection_context.fragment_stack.pop();
     result
 }
 
 fn compile_inline_fragment(
     plan: &mut GraphPlan,
-    graph: Option<&Declaration>,
     context: &NodeContext,
     fragment: &InlineFragment<'_, String>,
     path: &str,
-    compile_context: &GraphqlCompileContext<'_, '_>,
-    fragment_stack: &mut Vec<String>,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    scope: &mut GraphqlSelectionScope,
 ) -> Result<(), CoreError> {
     if !selection_is_included(
         &fragment.directives,
         format!("{path}.directives"),
-        compile_context,
+        selection_context.compile_context,
     )? {
         return Ok(());
     }
@@ -1024,14 +1112,13 @@ fn compile_inline_fragment(
         context,
         format!("{path}.typeCondition"),
     )?;
-    compile_selection_set_into_plan(
+    compile_selection_set_items_into_plan(
         plan,
-        graph,
         &fragment.selection_set,
         context,
         format!("{path}.selectionSet"),
-        compile_context,
-        fragment_stack,
+        selection_context,
+        scope,
     )
 }
 
@@ -1057,14 +1144,19 @@ fn ensure_fragment_type_condition(
 
 fn compile_relationship_field(
     plan: &mut GraphPlan,
-    graph: &Declaration,
     source: &NodeContext,
     field: &Field<'_, String>,
     path: impl Into<String>,
-    compile_context: &GraphqlCompileContext<'_, '_>,
-    fragment_stack: &mut Vec<String>,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    scope: &mut GraphqlSelectionScope,
 ) -> Result<(), CoreError> {
     let path = path.into();
+    let graph = selection_context.graph.ok_or_else(|| {
+        unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL relationship nesting requires a graph declaration",
+        )
+    })?;
     let (direction, relationship_type, endpoint_argument) =
         compile_relationship_field_name(&field.name, format!("{path}.name"))?;
     let endpoint = RelationshipEndpointContext {
@@ -1079,7 +1171,7 @@ fn compile_relationship_field(
         &endpoint,
         field,
         format!("{path}.arguments"),
-        compile_context,
+        selection_context.compile_context,
     )?;
 
     ensure_node_label(
@@ -1096,7 +1188,6 @@ fn compile_relationship_field(
         &path,
     )?;
 
-    let relationship_index = plan.relationships.len();
     let needs_relationship_variable = field
         .arguments
         .iter()
@@ -1104,52 +1195,154 @@ fn compile_relationship_field(
         || relationship_selection_needs_edge_variable(
             &field.selection_set,
             &target_label,
-            compile_context,
+            selection_context.compile_context,
             format!("{path}.selectionSet"),
             &mut Vec::new(),
         )?;
-    let relationship_variable = needs_relationship_variable
+
+    let spec = GraphqlRelationshipFieldSpec {
+        direction,
+        relationship_type,
+        endpoint_argument,
+        target_label,
+        needs_relationship_variable,
+        response_key: GraphqlRelationshipResponseKey {
+            source_variable: source.variable.clone(),
+            response_name: graphql_response_name(field),
+        },
+        signature: graphql_relationship_selection_signature(field),
+    };
+    if let Some(binding) = scope.relationship_fields.get_mut(&spec.response_key) {
+        if binding.signature != spec.signature {
+            return Err(unsupported(
+                format!("{path}.alias"),
+                format!(
+                    "GraphQL relationship response field '{}' selects conflicting traversals",
+                    spec.response_key.response_name
+                ),
+            ));
+        }
+        return compile_existing_relationship_field(
+            plan,
+            field,
+            &path,
+            selection_context,
+            binding,
+            spec.needs_relationship_variable,
+        );
+    }
+
+    compile_new_relationship_field(plan, source, field, &path, selection_context, scope, spec)
+}
+
+fn compile_existing_relationship_field(
+    plan: &mut GraphPlan,
+    field: &Field<'_, String>,
+    path: &str,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    binding: &mut GraphqlRelationshipSelectionBinding,
+    needs_relationship_variable: bool,
+) -> Result<(), CoreError> {
+    if needs_relationship_variable && binding.relationship_variable.is_none() {
+        let relationship_variable =
+            relationship_variable_for_field(field, binding.relationship_index);
+        plan.relationships
+            .get_mut(binding.relationship_index)
+            .ok_or_else(|| CoreError::internal("merged GraphQL relationship index missing"))?
+            .variable = Some(relationship_variable.clone());
+        binding.relationship_variable = Some(relationship_variable);
+    }
+    compile_selection_set_items_into_plan(
+        plan,
+        &field.selection_set,
+        &NodeContext {
+            variable: binding.target_variable.clone(),
+            label: binding.target_label.clone(),
+            is_root: false,
+            edge_variable: binding.relationship_variable.clone(),
+            edge_relationship_type: Some(binding.edge_relationship_type.clone()),
+        },
+        format!("{path}.selectionSet"),
+        selection_context,
+        &mut binding.nested_scope,
+    )
+}
+
+fn compile_new_relationship_field(
+    plan: &mut GraphPlan,
+    source: &NodeContext,
+    field: &Field<'_, String>,
+    path: &str,
+    selection_context: &mut GraphqlSelectionCompileContext<'_, '_, '_>,
+    scope: &mut GraphqlSelectionScope,
+    spec: GraphqlRelationshipFieldSpec,
+) -> Result<(), CoreError> {
+    let graph = selection_context.graph.ok_or_else(|| {
+        unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL relationship nesting requires a graph declaration",
+        )
+    })?;
+    let relationship_index = plan.relationships.len();
+    let relationship_variable = spec
+        .needs_relationship_variable
         .then(|| relationship_variable_for_field(field, relationship_index));
-    let target_variable = nested_variable_for_field(field, &target_label, plan.nodes.len());
-    let edge_relationship_type = relationship_type.clone();
+    let target_variable = nested_variable_for_field(field, &spec.target_label, plan.nodes.len());
+    let edge_relationship_type = spec.relationship_type.clone();
 
     let relationship_argument_context = RelationshipFieldArgumentContext {
         graph,
-        endpoint_argument,
+        endpoint_argument: spec.endpoint_argument,
         target_variable: &target_variable,
-        target_label: &target_label,
+        target_label: &spec.target_label,
         relationship_variable: relationship_variable.as_deref(),
-        path: &path,
-        compile_context,
+        path,
+        compile_context: selection_context.compile_context,
     };
     compile_relationship_field_arguments(plan, field, &relationship_argument_context)?;
 
     plan.nodes.push(NodePattern {
         variable: target_variable.clone(),
-        label: target_label.clone(),
+        label: spec.target_label.clone(),
     });
     plan.relationships.push(RelationshipPattern {
         variable: relationship_variable.clone(),
-        relationship_type,
+        relationship_type: spec.relationship_type,
         left: source.variable.clone(),
-        direction,
+        direction: spec.direction,
         right: target_variable.clone(),
     });
 
-    compile_selection_set_into_plan(
+    scope.relationship_fields.insert(
+        spec.response_key.clone(),
+        GraphqlRelationshipSelectionBinding {
+            signature: spec.signature,
+            relationship_index,
+            target_variable: target_variable.clone(),
+            target_label: spec.target_label.clone(),
+            relationship_variable: relationship_variable.clone(),
+            edge_relationship_type: edge_relationship_type.clone(),
+            nested_scope: GraphqlSelectionScope::default(),
+        },
+    );
+    let binding = scope
+        .relationship_fields
+        .get_mut(&spec.response_key)
+        .ok_or_else(|| CoreError::internal("GraphQL relationship merge binding missing"))?;
+
+    compile_selection_set_items_into_plan(
         plan,
-        Some(graph),
         &field.selection_set,
         &NodeContext {
             variable: target_variable,
-            label: target_label,
+            label: spec.target_label,
             is_root: false,
             edge_variable: relationship_variable,
             edge_relationship_type: Some(edge_relationship_type),
         },
         format!("{path}.selectionSet"),
-        compile_context,
-        fragment_stack,
+        selection_context,
+        &mut binding.nested_scope,
     )
 }
 
@@ -1758,6 +1951,51 @@ fn projection_alias(field: &Field<'_, String>, context: &NodeContext) -> String 
             format!("{}_{}", context.variable, field.name)
         }
     })
+}
+
+fn graphql_response_name(field: &Field<'_, String>) -> String {
+    field.alias.clone().unwrap_or_else(|| field.name.clone())
+}
+
+fn graphql_relationship_selection_signature(
+    field: &Field<'_, String>,
+) -> GraphqlRelationshipSelectionSignature {
+    let mut arguments = field
+        .arguments
+        .iter()
+        .map(|(name, value)| (name.clone(), graphql_value_signature(value)))
+        .collect::<Vec<_>>();
+    arguments.sort_by(|(left, _), (right, _)| left.cmp(right));
+    GraphqlRelationshipSelectionSignature {
+        field_name: field.name.clone(),
+        arguments,
+    }
+}
+
+fn graphql_value_signature(value: &Value<'_, String>) -> GraphqlValueSignature {
+    match value {
+        Value::Variable(variable) => GraphqlValueSignature::Variable(variable.clone()),
+        Value::Int(number) => GraphqlValueSignature::Integer(
+            number.as_i64().expect("GraphQL parser stores Int as i64"),
+        ),
+        Value::Float(value) => GraphqlValueSignature::Float(OrderedFloat(*value)),
+        Value::String(value) => GraphqlValueSignature::String(value.clone()),
+        Value::Boolean(value) => GraphqlValueSignature::Boolean(*value),
+        Value::Null => GraphqlValueSignature::Null,
+        Value::Enum(value) => GraphqlValueSignature::Enum(value.clone()),
+        Value::List(values) => GraphqlValueSignature::List(
+            values
+                .iter()
+                .map(graphql_value_signature)
+                .collect::<Vec<_>>(),
+        ),
+        Value::Object(values) => GraphqlValueSignature::Object(
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), graphql_value_signature(value)))
+                .collect::<Vec<_>>(),
+        ),
+    }
 }
 
 fn edge_projection_alias(field: &Field<'_, String>, edge_variable: &str) -> String {
@@ -5847,6 +6085,109 @@ mod tests {
                     alias: Some("serviceTier".to_string()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn merges_duplicate_graphql_relationship_fields_across_fragments() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let plan = compile_graphql_for_graph(
+            &graph,
+            r"
+            query {
+              Person {
+                owner: name
+                out_OWNS(to: Service) {
+                  service: name
+                  ...OwnedServiceFields
+                }
+                ...PersonRelationshipFields
+              }
+            }
+
+            fragment PersonRelationshipFields on Person {
+              out_OWNS(to: Service) {
+                tier
+              }
+            }
+
+            fragment OwnedServiceFields on Service {
+              service: name
+              risk
+            }
+            ",
+        )
+        .expect("duplicate GraphQL relationship fields should merge");
+
+        assert_eq!(plan.nodes.len(), 2, "{plan:?}");
+        assert_eq!(plan.relationships.len(), 1, "{plan:?}");
+        let service_variable = plan
+            .relationships
+            .first()
+            .expect("relationship should exist")
+            .right
+            .clone();
+        assert_eq!(
+            plan.projections
+                .iter()
+                .filter(|projection| {
+                    matches!(
+                        projection,
+                        Projection::Property {
+                            property: PropertyRef { variable, property },
+                            alias: Some(alias),
+                        } if variable == &service_variable
+                            && property == "name"
+                            && alias == "service"
+                    )
+                })
+                .count(),
+            1,
+            "{:?}",
+            plan.projections
+        );
+        for property in ["tier", "risk"] {
+            assert!(
+                plan.projections.iter().any(|projection| {
+                    matches!(
+                        projection,
+                        Projection::Property {
+                            property: PropertyRef { variable, property: projected_property },
+                            ..
+                        } if variable == &service_variable && projected_property == property
+                    )
+                }),
+                "missing merged service property {property}: {:?}",
+                plan.projections
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_duplicate_graphql_relationship_fields() {
+        let graph = Declaration::from_yaml(TEST_GRAPH).expect("graph should parse");
+        let error = compile_graphql_for_graph(
+            &graph,
+            r#"
+            query {
+              Person {
+                out_OWNS(to: Service, where: { tier: { eq: "prod" } }) {
+                  name
+                }
+                out_OWNS(to: Service, where: { tier: { eq: "dev" } }) {
+                  name
+                }
+              }
+            }
+            "#,
+        )
+        .expect_err("conflicting duplicate GraphQL relationship fields should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("relationship response field 'out_OWNS' selects conflicting traversals"),
+            "{error}"
         );
     }
 

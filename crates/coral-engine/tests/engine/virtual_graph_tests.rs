@@ -6476,6 +6476,58 @@ async fn graphql_nested_relationship_query_executes_against_synthetic_file_sourc
 }
 
 #[tokio::test]
+async fn graphql_duplicate_nested_relationship_fields_merge_without_row_multiplication() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r#"
+        query {
+          Service(where: { name: { eq: "billing-api" } }) {
+            service: name
+            out_DEPENDS_ON(to: Service) {
+              dependency: name
+            }
+            ...DependencyDetails
+          }
+        }
+
+        fragment DependencyDetails on Service {
+          out_DEPENDS_ON(to: Service) {
+            tier
+          }
+        }
+        "#,
+    )
+    .await
+    .expect("duplicate GraphQL relationship fields should merge");
+
+    assert_eq!(
+        execution
+            .translated_sql()
+            .matches("JOIN \"ops\".\"service_dependencies\"")
+            .count(),
+        1,
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(|row| row["dependency"].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({"service": "billing-api", "dependency": "deployments", "service1_tier": "prod"}),
+            json!({"service": "billing-api", "dependency": "experiments", "service1_tier": "dev"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn graphql_duplicate_nested_relationship_arguments_are_rejected() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
