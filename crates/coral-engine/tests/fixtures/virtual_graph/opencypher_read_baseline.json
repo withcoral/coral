@@ -17,7 +17,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 22,
+    "ScalarExpressions": 23,
     "TypeConversion": 3,
     "Union": 2,
     "Unwind": 1,
@@ -590,6 +590,19 @@
           { "person": "Alice", "has_ar": false, "starts_l": true, "ends_n": true },
           { "person": "Bob", "has_ar": false, "starts_l": false, "ends_n": false },
           { "person": "Carol", "has_ar": true, "starts_l": false, "ends_n": false }
+        ]
+      }
+    },
+    {
+      "id": "string-predicate-function-where-and-case",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE contains(p.name, 'ar') OR startsWith(p.city, 'L') OR endsWith(p.city, 'n') RETURN p.name AS person, CASE WHEN startsWith(p.city, 'L') THEN 'london' WHEN contains(p.name, 'ar') THEN 'name-match' ELSE 'suffix-match' END AS bucket ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "bucket": "london" },
+          { "person": "Carol", "bucket": "name-match" }
         ]
       }
     },

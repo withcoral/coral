@@ -502,10 +502,10 @@ impl<'a> PredicateCompileMode<'a> {
     fn unsupported_predicate_message(self) -> &'static str {
         match self {
             Self::Graph { .. } => {
-                "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
+                "WHERE only supports graph property, id(), elementId(), labels(), keys(), exists(property), isEmpty(scalar), contains(scalar, scalar), startsWith(scalar, scalar), endsWith(scalar, scalar), and supported scalar predicates combined with AND, OR, XOR, and NOT"
             }
             Self::CaseWhen { .. } => {
-                "CASE WHEN predicates support property/scalar comparisons, static graph metadata predicates including labels()/keys() list predicates and indexes, IN literal lists, null checks, exists(property), isEmpty(scalar), boolean literals, and AND/OR/XOR/NOT"
+                "CASE WHEN predicates support property/scalar comparisons, static graph metadata predicates including labels()/keys() list predicates and indexes, IN literal lists, null checks, exists(property), isEmpty(scalar), contains(scalar, scalar), startsWith(scalar, scalar), endsWith(scalar, scalar), boolean literals, and AND/OR/XOR/NOT"
             }
         }
     }
@@ -21620,6 +21620,12 @@ fn is_ends_with_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+fn is_string_predicate_function(function: &FunctionInvocation) -> bool {
+    is_contains_function(function)
+        || is_starts_with_function(function)
+        || is_ends_with_function(function)
+}
+
 fn is_reverse_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
@@ -21879,6 +21885,11 @@ fn compile_predicate_expression_in_mode(
         Expression::FunctionCall(function) if is_empty_function(function) => {
             Ok(PredicateExpression::ScalarComparison(
                 compile_is_empty_predicate(function, path, mode, context)?,
+            ))
+        }
+        Expression::FunctionCall(function) if is_string_predicate_function(function) => {
+            Ok(PredicateExpression::ScalarComparison(
+                compile_string_predicate_function_predicate(function, path, mode, context)?,
             ))
         }
         Expression::FunctionCall(function)
@@ -22574,6 +22585,23 @@ fn scalar_is_true_predicate(expression: ScalarExpression) -> ScalarPredicate {
         operator: ComparisonOperator::Equal,
         rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(true))),
     }
+}
+
+fn compile_string_predicate_function_predicate(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarPredicate, CoreError> {
+    let path = path.into();
+    let expression =
+        compile_scalar_function_expression_in_mode(function, path.clone(), mode, context)?
+            .ok_or_else(|| {
+                CoreError::internal(format!(
+                    "string predicate function at {path} did not compile to a scalar expression"
+                ))
+            })?;
+    Ok(scalar_is_true_predicate(expression))
 }
 
 fn compile_optional_static_list_slice_is_empty_scalar_expression(
@@ -39278,6 +39306,68 @@ relationships:
             plan.order_by.as_slice(),
             [OrderKey {
                 expression: OrderExpression::Scalar(ScalarExpression::StringContains { .. }),
+                direction: OrderDirection::Descending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
+    fn compiles_string_predicate_functions_as_boolean_predicates() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE contains(service.name, 'api') \
+             RETURN CASE WHEN startsWith(service.name, 'bill') THEN 'billing' ELSE 'other' END AS bucket \
+             ORDER BY endsWith(service.name, 'api') DESC",
+        )
+        .expect("string predicate functions should compile as boolean predicates");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::StringContains {
+                    expression,
+                    pattern,
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(
+                    true
+                ))),
+            })) if matches!(
+                expression.as_ref(),
+                ScalarExpression::Property(PropertyRef { property, .. }) if property == "name"
+            ) && matches!(
+                pattern.as_ref(),
+                ScalarExpression::Literal(Literal::String(pattern)) if pattern == "api"
+            )
+        ));
+        assert!(matches!(
+            &plan.projections[..],
+            [Projection::Expression {
+                expression: ScalarExpression::Case {
+                    alternatives,
+                    else_expression: Some(_),
+                },
+                alias,
+            }] if alias == "bucket"
+                && matches!(
+                    alternatives.as_slice(),
+                    [ScalarCaseAlternative {
+                        when: PredicateExpression::ScalarComparison(ScalarPredicate {
+                            lhs: ScalarExpression::StringStartsWith { .. },
+                            operator: ComparisonOperator::Equal,
+                            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(
+                                Literal::Boolean(true)
+                            )),
+                        }),
+                        then: ScalarExpression::Literal(Literal::String(bucket)),
+                    }] if bucket == "billing"
+                )
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::StringEndsWith { .. }),
                 direction: OrderDirection::Descending,
                 nulls: None,
             }]
