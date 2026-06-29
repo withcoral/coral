@@ -23,13 +23,20 @@ jobs:
         env:
           STATUSGATOR_API_TOKEN: ${{ secrets.STATUSGATOR_API_TOKEN }}
         run: |
+          set -euo pipefail
           . "$HOME/.cargo/env"
-          # Add the bundled source (idempotent)
-          cargo run -q -p coral-cli -- source add statusgator --file sources/core/statusgator/manifest.yaml || true
+          # Add the bundled source (upserts, safe to re-run)
+          cargo run -q -p coral-cli -- source add statusgator --file sources/core/statusgator/manifest.yaml
           # Test connectivity and save logs
-          cargo run -q -p coral-cli -- source test statusgator | tee statusgator-test.txt || true
-          # Run a representative query (board_id must be supplied via secret or replaced in a follow-up run)
-          cargo run -q -p coral-cli -- sql "SELECT id, display_name, filtered_status FROM statusgator.monitors WHERE board_id='<REDACTED_BOARD_ID>' LIMIT 5" | tee statusgator-query.txt || true
+          cargo run -q -p coral-cli -- source test statusgator | tee statusgator-test.txt
+          # Look up a real board id from this account to drive the representative query
+          board_id=$(cargo run -q -p coral-cli -- sql "SELECT id FROM statusgator.boards LIMIT 1" --format json | jq -r '.[0].id // empty')
+          if [ -z "$board_id" ]; then
+            echo "No StatusGator boards found for this account; cannot run representative monitors query" >&2
+            exit 1
+          fi
+          board_id_escaped=$(printf '%s' "$board_id" | sed "s/'/''/g")
+          cargo run -q -p coral-cli -- sql "SELECT id, display_name, filtered_status FROM statusgator.monitors WHERE board_id='${board_id_escaped}' LIMIT 5" | tee statusgator-query.txt
       - name: Upload logs
         uses: actions/upload-artifact@v4
         with:

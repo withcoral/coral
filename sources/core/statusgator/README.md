@@ -1,50 +1,64 @@
-# StatusGator Source (core)
+# StatusGator source
 
-This is the canonical `statusgator` source shipped in `sources/core`.
+This bundled source queries StatusGator's status board API.
 
-Notes
+## Configure
+
+Create a read-only organization API token from the API menu in your
+StatusGator dashboard (only organization admins can generate tokens), then:
+
+```sh
+export STATUSGATOR_API_TOKEN="..."
+coral source add statusgator
+```
+
 - API version: v3 (base URL: `https://statusgator.com/api/v3`).
-- Authentication: A bearer token is required for all requests. Create a read-only organization API token from the StatusGator dashboard. Set it in the `STATUSGATOR_API_TOKEN` input (required).
-- Coral handles pagination internally for supported endpoints. Use SQL `LIMIT` and table-specific filters such as `board_id`, `monitor_id`, date ranges, `phase`, `severity`, or `status` to keep result sets focused.
+- Authentication: bearer token, required for all requests.
 
-Usage examples
+## Tables
 
-- List boards
+| Table | Description | Required filters |
+|---|---|---|
+| `boards` | Monitoring boards | none |
+| `board_detail` | Detailed info for a single board | `board_id` |
+| `monitors` | Service monitors on a board | `board_id` |
+| `history` | Status history for a board | `board_id` |
+| `incidents` | Incidents for a board | `board_id` |
+| `monitor_components` | Components for a specific monitor | `board_id`, `monitor_id` |
+| `service_search` | Search for services by name | `q` |
+| `service_components` | Components for a service | `service_id` |
+| `status_page_subscribers` | Subscribers to a board's status page | `board_id` |
+| `users` | Users in the StatusGator account | none |
+| `monitoring_regions` | Available monitoring regions | none |
+| `ping` | Health check endpoint | none |
 
-  SELECT id, name, public_token FROM statusgator.boards LIMIT 50
+## Example queries
 
-- List monitors for a board
+```sql
+-- List boards
+SELECT id, name, public_token FROM statusgator.boards LIMIT 50;
 
-  SELECT id, display_name, filtered_status, unfiltered_status, checked_at FROM statusgator.monitors WHERE board_id = 'your-board-id' LIMIT 100
+-- List monitors for a board
+SELECT id, display_name, filtered_status, unfiltered_status, checked_at
+FROM statusgator.monitors
+WHERE board_id = 'your-board-id'
+LIMIT 100;
 
-- List incidents for a board
+-- List incidents for a board
+SELECT id, name, phase, severity, started_at, resolved_at
+FROM statusgator.incidents
+WHERE board_id = 'your-board-id'
+LIMIT 100;
+```
 
-  SELECT id, name, phase, severity, started_at, resolved_at FROM statusgator.incidents WHERE board_id = 'your-board-id' LIMIT 100
+## Caveats
 
-Authentication example (env):
+- Coral handles pagination internally for endpoints that support it. Use
+  `LIMIT` and table-specific filters (`board_id`, `monitor_id`, date ranges,
+  `phase`, `severity`, `status`) to keep result sets focused.
+- `monitors` only supports the documented `status` request filter; it does
+  not support arbitrary page-based pagination beyond what Coral manages.
 
-- Set the token as an input in Coral or via your integration secrets:
-  - `STATUSGATOR_API_TOKEN` — required, bearer token
+## Documentation
 
-Documentation
 - StatusGator API docs: https://statusgator.com/api/v3/docs
-
-If you want additional columns or board-scoped helpers (e.g. mapping monitors to services), tell me which fields you need and I'll add them to the manifest.
-
-Reviewer validation
--------------------
-
-This change set addresses reviewer feedback to avoid shipping a duplicate community source and to keep StatusGator support in `sources/core/statusgator`.
-
-- Removed the parallel `sources/community/statusgator` files and merged useful additions into the core manifest.
-- Removed unsupported page-based pagination from the `statusgator.monitors` table and exposed the documented `status` request filter.
-- Added `raw` JSON columns where helpful to aid exports and debugging.
-- Updated README guidance to reflect Coral's pagination model and best practices for limiting result sets.
-- Added a CI workflow `.github/workflows/statusgator-test.yml` that can run `coral source add` and `coral source test` using a repository secret so live evidence can be captured without pasting tokens locally.
-
-Live evidence
--------------
-
-When a repository secret named `STATUSGATOR_API_TOKEN` is added (Settings → Secrets and variables → Actions) the PR workflow will run and upload artifacts named `statusgator-logs`. Those artifacts include `statusgator-test.txt` (connectivity test) and `statusgator-query.txt` (representative query output). Artifacts should be sanitized (replace tokens and board IDs with placeholders) before publishing in the PR thread.
-
-If you prefer I can paste sanitized mock outputs into the PR while CI is pending; real outputs will replace mocks once CI runs.
