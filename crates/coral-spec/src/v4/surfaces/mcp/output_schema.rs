@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
-
 use serde_json::Value;
 
 use crate::v4::ir::{
     IrField, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
 };
-use crate::v4::surfaces::json_schema::{json_schema_scalar_type, json_schema_type_contains};
+use crate::v4::surfaces::json_schema::{
+    json_schema_required_fields, json_schema_scalar_type, json_schema_type_contains,
+};
 
 use super::import::McpImporter;
 use super::input_schema::schema_description;
@@ -91,14 +91,8 @@ impl McpImporter<'_> {
             return;
         };
         let required = schema
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<BTreeSet<_>>()
-            })
+            .as_object()
+            .map(json_schema_required_fields)
             .unwrap_or_default();
         let mut fields = properties
             .iter()

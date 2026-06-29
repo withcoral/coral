@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 
+import { fontFamily } from '@/wax/theme/font.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const root = style({
@@ -18,7 +19,7 @@ globalStyle(`${root} code`, {
   background: theme.surface.onMainContent,
   borderRadius: 4,
   color: theme.content.primary,
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  fontFamily: fontFamily.dmMono,
   fontSize: 11,
   padding: '1px 4px',
 })
