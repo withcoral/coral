@@ -29,6 +29,14 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// An installed global-origin source references a missing global source spec.
+    #[error(
+        "failed precondition: source '{source_name}' references a global source spec that is not registered. Re-register the source spec or remove and re-add the source."
+    )]
+    MissingGlobalSourceSpec {
+        /// Installed source whose registry entry is missing.
+        source_name: String,
+    },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
         "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
@@ -205,6 +213,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::MissingGlobalSourceSpec { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir

@@ -548,6 +548,7 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     match origin {
         SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
         SourceOrigin::Imported => ProtoSourceOrigin::Imported,
+        SourceOrigin::Global => ProtoSourceOrigin::Global,
     }
 }
 

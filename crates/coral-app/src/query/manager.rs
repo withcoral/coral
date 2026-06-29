@@ -314,6 +314,7 @@ impl QueryManager {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                    | AppError::MissingGlobalSourceSpec { .. }
                     | AppError::MissingOrIncompatibleV4Materialization { .. }),
                 ) => {
                     return Err(error);
@@ -665,6 +666,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::MissingGlobalSourceSpec { .. } => "MISSING_GLOBAL_SOURCE_SPEC",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }

@@ -18,6 +18,11 @@ pub(crate) struct BundledSourceManifest {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct GlobalSourceSpecManifest {
+    pub(crate) manifest_yaml: String,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct InstalledSourceManifest {
     pub(crate) source_spec: ValidatedSourceManifest,
     pub(crate) candidate: CandidateSource,
@@ -58,6 +63,29 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     })
 }
 
+pub(crate) fn is_bundled_source(name: &SourceName) -> bool {
+    BUNDLED_SOURCES
+        .iter()
+        .any(|(candidate, _)| *candidate == name.as_str())
+}
+
+pub(crate) fn load_global_source_spec(
+    name: &SourceName,
+    layout: &AppStateLayout,
+) -> Result<GlobalSourceSpecManifest, AppError> {
+    let manifest_path = layout.source_spec_manifest_file(name);
+    let manifest_yaml = std::fs::read_to_string(&manifest_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MissingGlobalSourceSpec {
+                source_name: name.to_string(),
+            }
+        } else {
+            AppError::Io(error)
+        }
+    })?;
+    Ok(GlobalSourceSpecManifest { manifest_yaml })
+}
+
 /// Resolve the effective installed manifest and verify it still matches the
 /// installed source identity in app state.
 pub(crate) fn resolve_installed_manifest(
@@ -70,6 +98,7 @@ pub(crate) fn resolve_installed_manifest(
         SourceOrigin::Imported => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
+        SourceOrigin::Global => load_global_source_spec(&source.name, layout)?.manifest_yaml,
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;

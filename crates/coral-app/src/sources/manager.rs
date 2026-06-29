@@ -17,7 +17,8 @@ use crate::credentials::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
+    describe_manifest, is_bundled_source, list_bundled_sources, load_bundled_source,
+    load_global_source_spec, resolve_installed_manifest,
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
@@ -25,7 +26,7 @@ use crate::sources::materialization::{
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::{AppStateLayout, ConfigStore};
+use crate::state::{AppStateLayout, ConfigStore, RegisteredSourceSpec};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
@@ -51,6 +52,21 @@ pub(crate) struct CreateBundledSourceWithOAuthCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+}
+
+pub(crate) struct CreateGlobalSourceCommand {
+    pub(crate) name: SourceName,
+    pub(crate) bindings: SourceBindings,
+}
+
+pub(crate) struct CreateGlobalSourceWithOAuthCommand {
+    pub(crate) name: SourceName,
+    pub(crate) bindings: SourceBindings,
+    pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
+}
+
+pub(crate) struct RegisterSourceSpecCommand {
+    pub(crate) manifest_yaml: String,
 }
 
 pub(crate) struct ImportSourceCommand {
@@ -167,6 +183,10 @@ fn materialization_inputs_from_bindings(
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "registry methods are wired by the next stack branch"
+)]
 impl SourceManager {
     #[cfg(test)]
     pub(crate) fn new_for_tests(
@@ -238,7 +258,16 @@ impl SourceManager {
         match load_bundled_source(source_name) {
             Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
             Err(AppError::InvalidInput(_)) => {
-                Err(AppError::SourceNotFound(source_name.to_string()))
+                match self.config_store.get_source_spec(source_name) {
+                    Ok(_) => {
+                        let global = load_global_source_spec(source_name, &self.layout)?;
+                        self.describe_global_source(workspace_name, &global.manifest_yaml)
+                    }
+                    Err(AppError::SourceNotFound(_)) => {
+                        Err(AppError::SourceNotFound(source_name.to_string()))
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Err(error) => Err(error),
         }
@@ -269,6 +298,114 @@ impl SourceManager {
         }
 
         Ok(candidates)
+    }
+
+    pub(crate) fn list_source_specs(&self) -> Result<Vec<CandidateSource>, AppError> {
+        self.config_store
+            .list_source_specs()?
+            .into_iter()
+            .map(|source_spec| {
+                let manifest = load_global_source_spec(&source_spec.name, &self.layout)?;
+                describe_manifest(&manifest.manifest_yaml, SourceOrigin::Global, false)
+            })
+            .collect()
+    }
+
+    pub(crate) fn register_source_spec(
+        &self,
+        command: &RegisterSourceSpecCommand,
+    ) -> Result<CandidateSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+        let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
+        let candidate = describe_manifest(&manifest_yaml, SourceOrigin::Global, false)?;
+        if is_bundled_source(&candidate.name) {
+            return Err(AppError::InvalidInput(format!(
+                "global source spec '{}' conflicts with a bundled source",
+                candidate.name
+            )));
+        }
+
+        let manifest_path = self.layout.source_spec_manifest_file(&candidate.name);
+        let previous_manifest = match std::fs::read_to_string(&manifest_path) {
+            Ok(manifest_yaml) => Some(manifest_yaml),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let previous_spec = match self.config_store.get_source_spec(&candidate.name) {
+            Ok(source_spec) => Some(source_spec),
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        if let Some(parent) = manifest_path.parent() {
+            fs::ensure_dir(parent)?;
+        }
+        fs::write_atomic(&manifest_path, manifest_yaml.as_bytes())?;
+
+        let registered = RegisteredSourceSpec {
+            name: candidate.name.clone(),
+            version: candidate.version.clone(),
+        };
+        if let Err(error) = self.config_store.upsert_source_spec(registered) {
+            self.restore_source_spec_registration(
+                &candidate.name,
+                previous_spec,
+                previous_manifest,
+            );
+            return Err(error);
+        }
+        Ok(candidate)
+    }
+
+    pub(crate) fn delete_source_spec(
+        &self,
+        source_name: &SourceName,
+    ) -> Result<CandidateSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        let registered = self.config_store.get_source_spec(source_name)?;
+        let manifest = match load_global_source_spec(source_name, &self.layout) {
+            Ok(manifest) => Some(manifest.manifest_yaml),
+            Err(AppError::MissingGlobalSourceSpec { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        let removed = if let Some(manifest_yaml) = manifest.as_deref() {
+            let candidate = describe_manifest(manifest_yaml, SourceOrigin::Global, false)?;
+            if candidate.name != *source_name {
+                return Err(AppError::FailedPrecondition(format!(
+                    "registered source spec '{source_name}' does not match manifest name '{}'",
+                    candidate.name
+                )));
+            }
+            candidate
+        } else {
+            CandidateSource {
+                name: registered.name.clone(),
+                description: String::new(),
+                version: registered.version.clone(),
+                inputs: Vec::new(),
+                installed: false,
+                origin: SourceOrigin::Global,
+                credential_storage: None,
+            }
+        };
+
+        let source_spec_dir = self.layout.source_spec_dir(source_name);
+        let backup_dir = fs::DirectoryBackup::move_for_delete(&source_spec_dir, source_name)?;
+
+        if let Err(error) = self.config_store.remove_source_spec(source_name) {
+            if let Err(restore_error) = backup_dir.restore() {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source spec '{source_name}': {error}; failed to restore source-spec directory from '{}': {restore_error}",
+                    backup_dir.backup_path().display()
+                )));
+            }
+            return Err(error);
+        }
+        backup_dir.commit()?;
+        cleanup_empty_parent(&self.layout.source_specs_root(), source_spec_dir.parent());
+        Ok(removed)
     }
 
     pub(crate) fn create_bundled_source(
@@ -305,6 +442,46 @@ impl SourceManager {
             None,
             &bundled.manifest_yaml,
             SourceOrigin::Bundled,
+        )
+        .await
+    }
+
+    pub(crate) fn create_global_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: &CreateGlobalSourceCommand,
+    ) -> Result<InstalledSource, AppError> {
+        self.config_store.get_source_spec(&command.name)?;
+        let global = load_global_source_spec(&command.name, &self.layout)?;
+        let candidate = self.describe_global_source(workspace_name, &global.manifest_yaml)?;
+        self.install_validated_source(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            None,
+            &global.manifest_yaml,
+            SourceOrigin::Global,
+        )
+    }
+
+    pub(crate) async fn create_global_source_with_oauth(
+        &self,
+        workspace_name: &WorkspaceName,
+        command: CreateGlobalSourceWithOAuthCommand,
+        events: ImportSourceEventSender,
+    ) -> Result<InstalledSource, AppError> {
+        self.config_store.get_source_spec(&command.name)?;
+        let global = load_global_source_spec(&command.name, &self.layout)?;
+        let candidate = self.describe_global_source(workspace_name, &global.manifest_yaml)?;
+        self.install_source_with_oauth(
+            workspace_name,
+            &candidate,
+            &command.bindings,
+            command.oauth_credential_retrievals,
+            events,
+            None,
+            &global.manifest_yaml,
+            SourceOrigin::Global,
         )
         .await
     }
@@ -514,10 +691,10 @@ impl SourceManager {
         let previous = SourceRollbackState {
             source: stored,
             manifest_yaml: match removed.origin {
-                SourceOrigin::Bundled => None,
                 SourceOrigin::Imported => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
+                SourceOrigin::Bundled | SourceOrigin::Global => None,
             },
             credential_material,
         };
@@ -577,6 +754,16 @@ impl SourceManager {
         manifest_yaml: &str,
     ) -> Result<CandidateSource, AppError> {
         let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Bundled, false)?;
+        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
+        Ok(candidate)
+    }
+
+    fn describe_global_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        manifest_yaml: &str,
+    ) -> Result<CandidateSource, AppError> {
+        let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Global, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         Ok(candidate)
     }
@@ -701,7 +888,7 @@ impl SourceManager {
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => request.candidate.version.clone(),
+            SourceOrigin::Imported | SourceOrigin::Global => request.candidate.version.clone(),
         };
         let stored = InstalledSource {
             name: source_name.clone(),
@@ -1060,10 +1247,10 @@ impl SourceManager {
             .transpose()?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
-                SourceOrigin::Bundled => None,
                 SourceOrigin::Imported => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
+                SourceOrigin::Bundled | SourceOrigin::Global => None,
             },
             source,
             credential_material,
@@ -1157,6 +1344,45 @@ impl SourceManager {
         }
         cleanup_empty_parent(&self.layout.workspaces_root(), manifest_path.parent());
         Ok(())
+    }
+
+    fn restore_source_spec_registration(
+        &self,
+        source_name: &SourceName,
+        previous_spec: Option<RegisteredSourceSpec>,
+        previous_manifest: Option<String>,
+    ) {
+        let manifest_path = self.layout.source_spec_manifest_file(source_name);
+        if let Some(manifest_yaml) = previous_manifest {
+            if let Some(parent) = manifest_path.parent()
+                && let Err(error) = fs::ensure_dir(parent)
+            {
+                warn!("rollback: failed to create source-spec manifest parent dir: {error}");
+            }
+            if let Err(error) = fs::write_atomic(&manifest_path, manifest_yaml.as_bytes()) {
+                warn!("rollback: failed to restore source-spec manifest: {error}");
+            }
+        } else {
+            let source_spec_dir = self.layout.source_spec_dir(source_name);
+            if source_spec_dir.exists()
+                && let Err(error) = std::fs::remove_dir_all(&source_spec_dir)
+            {
+                warn!("rollback: failed to remove new source-spec directory: {error}");
+            }
+        }
+
+        match previous_spec {
+            Some(source_spec) => {
+                if let Err(error) = self.config_store.upsert_source_spec(source_spec) {
+                    warn!("rollback: failed to restore source-spec config: {error}");
+                }
+            }
+            None => {
+                if let Err(error) = self.config_store.remove_source_spec(source_name) {
+                    warn!("rollback: failed to remove new source-spec config: {error}");
+                }
+            }
+        }
     }
 
     fn populate_source_version(
