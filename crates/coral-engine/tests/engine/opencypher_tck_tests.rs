@@ -111,6 +111,12 @@ fn assert_tck_coverage_contract(suite: &TckSuite) {
             "openCypher baseline feature {feature} shrank below its declared floor: expected at least {minimum}, found {actual}"
         );
     }
+    for feature in feature_counts.keys() {
+        assert!(
+            suite.minimum_feature_counts.contains_key(feature),
+            "openCypher baseline feature {feature} is missing from minimum_feature_counts"
+        );
+    }
 }
 
 fn sort_rows(rows: &mut [Value]) {

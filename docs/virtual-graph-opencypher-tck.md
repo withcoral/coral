@@ -96,9 +96,9 @@ baseline, it must either produce the expected rows or the expected structured
 error substring.
 
 The fixture also declares `minimum_feature_counts`. The test runner verifies
-that every scenario id is unique and that each feature bucket stays at or above
-its declared floor, so coverage cannot silently shrink by moving or deleting a
-scenario.
+that every scenario id is unique, every feature bucket is declared in the floor
+map, and each bucket stays at or above its declared floor, so coverage cannot
+silently shrink or move into an unreported category.
 
 ## Expansion Policy
 

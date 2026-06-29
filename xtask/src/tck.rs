@@ -49,6 +49,7 @@ struct Report {
     feature_counts: BTreeMap<String, usize>,
     minimum_feature_counts: BTreeMap<String, usize>,
     feature_floor_violations: Vec<FeatureFloorViolation>,
+    undeclared_features: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,6 +93,7 @@ fn load_report(path: &Path) -> Result<Report> {
 
     let feature_floor_violations =
         feature_floor_violations(&feature_counts, &suite.minimum_feature_counts);
+    let undeclared_features = undeclared_features(&feature_counts, &suite.minimum_feature_counts);
 
     Ok(Report {
         suite: suite.name,
@@ -100,11 +102,12 @@ fn load_report(path: &Path) -> Result<Report> {
         feature_counts,
         minimum_feature_counts: suite.minimum_feature_counts,
         feature_floor_violations,
+        undeclared_features,
     })
 }
 
 fn feature_floors_satisfied(report: &Report) -> bool {
-    report.feature_floor_violations.is_empty()
+    report.feature_floor_violations.is_empty() && report.undeclared_features.is_empty()
 }
 
 fn feature_floor_violations(
@@ -121,6 +124,17 @@ fn feature_floor_violations(
                 actual,
             })
         })
+        .collect()
+}
+
+fn undeclared_features(
+    feature_counts: &BTreeMap<String, usize>,
+    minimum_feature_counts: &BTreeMap<String, usize>,
+) -> Vec<String> {
+    feature_counts
+        .keys()
+        .filter(|feature| !minimum_feature_counts.contains_key(*feature))
+        .cloned()
         .collect()
 }
 
@@ -146,6 +160,12 @@ fn print_text_report(report: &Report) {
             );
         }
     }
+    if !report.undeclared_features.is_empty() {
+        println!("undeclared features:");
+        for feature in &report.undeclared_features {
+            println!("  {feature}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +182,7 @@ mod tests {
         assert_eq!(report.expected_error_count, 1);
         assert_eq!(report.feature_counts.get("Where"), Some(&9));
         assert!(report.feature_floor_violations.is_empty());
+        assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
     }
 
