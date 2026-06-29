@@ -13,7 +13,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 7,
+    "ScalarExpressions": 10,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -397,6 +397,34 @@
       }
     },
     {
+      "id": "left-string-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, left(p.name, 3) AS name_prefix ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "name_prefix": "Ali" },
+          { "name": "Bob", "name_prefix": "Bob" },
+          { "name": "Carol", "name_prefix": "Car" }
+        ]
+      }
+    },
+    {
+      "id": "right-string-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, right(p.city, 2) AS city_suffix ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "city_suffix": "on" },
+          { "name": "Bob", "city_suffix": "" },
+          { "name": "Carol", "city_suffix": "is" }
+        ]
+      }
+    },
+    {
       "id": "is-empty-string-wrong-arity-rejected",
       "feature": "ScalarExpressions",
       "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
@@ -412,6 +440,15 @@
       "expected": {
         "kind": "error",
         "contains": "toUpper() requires exactly one argument"
+      }
+    },
+    {
+      "id": "left-string-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN left(p.name) AS name_prefix",
+      "expected": {
+        "kind": "error",
+        "contains": "left() requires exactly two arguments"
       }
     },
     {
