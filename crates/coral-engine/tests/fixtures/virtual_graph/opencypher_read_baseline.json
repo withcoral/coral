@@ -13,7 +13,7 @@
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "PathMetadata": 1,
-    "PathValues": 2,
+    "PathValues": 3,
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
@@ -1108,6 +1108,44 @@
             "target": "Carol",
             "nodes": [2, 3],
             "relationships": [101]
+          }
+        ]
+      }
+    },
+    {
+      "id": "path-element-list-indexes-and-endpoints",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) WHERE nodes(path)[0] = id(a) RETURN a.name AS source, b.name AS target, nodes(path)[0] AS source_id, nodes(path)[-1] AS target_id, relationships(path)[0] AS relationship_id, head(nodes(path)) AS head_node, last(relationships(path)) AS last_relationship ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "source_id": 1,
+            "target_id": 2,
+            "relationship_id": 100,
+            "head_node": 1,
+            "last_relationship": 100
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "source_id": 1,
+            "target_id": 3,
+            "relationship_id": 102,
+            "head_node": 1,
+            "last_relationship": 102
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "source_id": 2,
+            "target_id": 3,
+            "relationship_id": 101,
+            "head_node": 2,
+            "last_relationship": 101
           }
         ]
       }

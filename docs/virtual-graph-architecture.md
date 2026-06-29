@@ -147,9 +147,11 @@ The supported foundation subset is intentionally narrow:
   deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)`, `size(path)`, `size(relationships(path))`, and
-  `size(nodes(path))` over optional relationships via the presence-gated scalar
-  expression IR and compiler-generated internal relationship bindings when an
-  anonymous optional path needs a presence gate;
+  `size(nodes(path))` over optional relationships, plus static
+  `nodes(path)[i]`, `relationships(path)[i]`, `head(nodes(path))`, and
+  `last(relationships(path))` access as scalar mapped-key expressions, via the
+  presence-gated scalar expression IR and compiler-generated internal
+  relationship bindings when an anonymous optional path needs a presence gate;
 - declaration-aware `RETURN *` expansion in runtime Cypher execution/explain
   paths and `compile_cypher*_for_graph` helpers. Because Coral does not
   materialize graph objects, star expansion lowers visible graph variables to
@@ -550,9 +552,12 @@ The supported foundation subset is intentionally narrow:
 - non-materialized path variable bindings in `MATCH p = (...)`, including
   `WITH *` pass-through when the path is later used only for supported metadata
   such as `length(path)`, `size(path)`, `size(relationships(path))`, or
-  `size(nodes(path))`, including in `WITH * WHERE`, and not as a graph value.
-  Path metadata scalars can participate in supported scalar arithmetic, scalar
-  functions, and `CASE` expressions such as `coalesce(length(path), 0)`;
+  `size(nodes(path))`, or for static mapped-key access such as
+  `nodes(path)[0]`, `relationships(path)[-1]`, `head(nodes(path))`, and
+  `last(relationships(path))`, including in `WITH * WHERE`, and not as a graph
+  value. Path metadata and path element-key scalars can participate in
+  supported scalar arithmetic, scalar functions, and `CASE` expressions such as
+  `coalesce(length(path), 0)`;
 - non-negative integer `SKIP` and `LIMIT` literals, scalar parameters, and
   static scalar expressions such as `(1 + 1)` and `coalesce($limit, 10)`.
 
