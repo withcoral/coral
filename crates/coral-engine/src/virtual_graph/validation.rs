@@ -2628,16 +2628,72 @@ impl<'a> GraphPlanValidator<'a> {
                     scope.local_nodes,
                 )
             }
-            ScalarExpression::UndirectedEndpointProperty { .. }
-            | ScalarExpression::UndirectedEndpointKey { .. }
-            | ScalarExpression::UndirectedEndpointElementId { .. }
-            | ScalarExpression::UndirectedEndpointLabels { .. }
-            | ScalarExpression::UndirectedEndpointPropertyKeys { .. } => Err(Diagnostic::new(
-                "UNSUPPORTED_GRAPH_QUERY",
-                path,
-                "same-label undirected relationship endpoint values inside scoped subqueries require local endpoint rendering and are not supported yet",
-            )
-            .into_core_error()),
+            ScalarExpression::UndirectedEndpointProperty {
+                relationship,
+                endpoint,
+                property,
+            } => {
+                if let Some(expression_type) = self
+                    .scoped_undirected_endpoint_property_scalar_type(
+                        relationship,
+                        *endpoint,
+                        property,
+                        scope,
+                        &path,
+                    )?
+                {
+                    Ok(expression_type)
+                } else {
+                    self.infer_atomic_scalar_type(expression, &path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointKey { relationship, .. } => {
+                if let Some((left_node, _)) =
+                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
+                {
+                    Ok(self.column_scalar_type(&left_node.table, &left_node.key))
+                } else {
+                    self.infer_atomic_scalar_type(expression, &path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointElementId { relationship, .. } => {
+                if self
+                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
+                    .is_some()
+                {
+                    Ok(ScalarType::String)
+                } else {
+                    self.infer_atomic_scalar_type(expression, &path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointLabels {
+                relationship,
+                label,
+                ..
+            } => {
+                if let Some((left_node, _)) =
+                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
+                {
+                    if left_node.label != *label {
+                        return Err(CoreError::internal(
+                            "validated scoped same-label undirected endpoint labels did not match node label",
+                        ));
+                    }
+                    Ok(ScalarType::Other)
+                } else {
+                    self.infer_atomic_scalar_type(expression, &path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
+                if self
+                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
+                    .is_some()
+                {
+                    Ok(ScalarType::Other)
+                } else {
+                    self.infer_atomic_scalar_type(expression, &path)
+                }
+            }
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
             ScalarExpression::LiteralList { literals } => {
                 Self::validate_literal_list_projection(literals, path)?;
@@ -4808,6 +4864,109 @@ impl<'a> GraphPlanValidator<'a> {
             ));
         }
         Ok((left_node, right_node))
+    }
+
+    fn scoped_same_label_undirected_endpoint_nodes<'b>(
+        &self,
+        relationship_variable: &str,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<Option<(&'a Node, &'a Node)>, CoreError> {
+        let Some(scoped_relationship) = scope.relationships.iter().find(|relationship| {
+            relationship.pattern.variable.as_deref() == Some(relationship_variable)
+        }) else {
+            return Ok(None);
+        };
+        if scoped_relationship.pattern.direction != Direction::Undirected {
+            return Err(CoreError::internal(
+                "scoped undirected endpoint scalar referenced a directed relationship",
+            ));
+        }
+        let left_node = self.scoped_node_binding_for_path(
+            scope,
+            &scoped_relationship.pattern.left,
+            format!("{path}.left"),
+        )?;
+        let right_node = self.scoped_node_binding_for_path(
+            scope,
+            &scoped_relationship.pattern.right,
+            format!("{path}.right"),
+        )?;
+        if left_node.label != right_node.label {
+            return Err(CoreError::internal(
+                "scoped undirected endpoint scalar referenced a cross-label relationship",
+            ));
+        }
+        if scoped_relationship.relationship.from.label != left_node.label
+            || scoped_relationship.relationship.to.label != right_node.label
+        {
+            return Err(CoreError::internal(
+                "validated scoped same-label undirected relationship mapping did not match endpoint labels",
+            ));
+        }
+        Ok(Some((left_node, right_node)))
+    }
+
+    fn scoped_node_binding_for_path<'b>(
+        &self,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        variable: &str,
+        path: impl Into<String>,
+    ) -> Result<&'a Node, CoreError> {
+        if let Some(node) = scope.local_nodes.get(variable).copied() {
+            return Ok(node);
+        }
+        let path = path.into();
+        match self.bindings.get(variable).map(ValidatedBinding::kind) {
+            Some(ValidatedBindingKind::Node(node)) => Ok(*node),
+            Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
+                "INVALID_ENDPOINT_VARIABLE",
+                path,
+                format!("relationship endpoint '{variable}' is not a node variable"),
+            )
+            .into_core_error()),
+            None => Err(Diagnostic::new(
+                "UNKNOWN_VARIABLE",
+                path,
+                format!("relationship references unknown node variable '{variable}'"),
+            )
+            .into_core_error()),
+        }
+    }
+
+    fn scoped_undirected_endpoint_property_scalar_type<'b>(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        property: &str,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<Option<ScalarType>, CoreError> {
+        let Some((left_node, right_node)) =
+            self.scoped_same_label_undirected_endpoint_nodes(relationship_variable, scope, path)?
+        else {
+            return Ok(None);
+        };
+        let Some(left_column) = left_node.column_for_property(property) else {
+            let function = match endpoint {
+                UndirectedRelationshipEndpoint::Start => "startNode",
+                UndirectedRelationshipEndpoint::End => "endNode",
+            };
+            return Err(Diagnostic::new(
+                "UNKNOWN_PROPERTY",
+                path,
+                format!(
+                    "{function}({relationship_variable}) does not expose property '{property}'"
+                ),
+            )
+            .into_core_error());
+        };
+        if right_node.column_for_property(property).is_none() {
+            return Err(CoreError::internal(
+                "scoped same-label undirected relationship endpoints exposed different property sets",
+            ));
+        }
+        Ok(Some(self.column_scalar_type(&left_node.table, left_column)))
     }
 
     fn validate_same_label_undirected_endpoint(

@@ -509,7 +509,7 @@ jobs:
           min-severity: low
 
   gha-security-audit-sarif:
-    name: Github Actions security audit with zizmor (SARIF)
+    name: Github Actions security audit with zizmor (branch)
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.github_actions == 'true' && github.event_name != 'pull_request' }}
@@ -527,7 +527,9 @@ jobs:
         with:
           version: v1.25.2
           annotations: false
-          advanced-security: true
+          # Code scanning SARIF upload is only available on the protected
+          # default branch. Other branch pushes still run the audit as a gate.
+          advanced-security: ${{ github.ref == 'refs/heads/main' }}
           min-severity: low
 
   source-lint:

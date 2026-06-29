@@ -13723,6 +13723,88 @@ async fn cypher_same_label_undirected_endpoint_properties_work_in_predicates_and
 }
 
 #[tokio::test]
+async fn cypher_same_label_undirected_endpoint_properties_work_in_exists_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE EXISTS { \
+           MATCH (service)-[dependency:DEPENDS_ON]-(target:Service) \
+           WHERE startNode(dependency).name = service.name \
+             AND endNode(dependency).tier = 'dev' \
+             AND 'risk' IN keys(endNode(dependency)) \
+         } \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("same-label undirected endpoint properties inside EXISTS should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"__coral_exists_r0\".\"from_service_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_same_label_undirected_endpoint_properties_work_in_count_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE COUNT { \
+           MATCH (service)-[dependency:DEPENDS_ON]-(target:Service) \
+           WHERE startNode(dependency).name = service.name \
+             AND endNode(dependency).tier = 'dev' \
+         } > 0 \
+         RETURN service.name AS service \
+         ORDER BY service",
+    )
+    .await
+    .expect("same-label undirected endpoint properties inside COUNT predicate should execute");
+
+    assert!(
+        execution.translated_sql().contains("EXISTS (SELECT 1 FROM"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"service": "billing-api"}),
+            json!({"service": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_same_label_undirected_endpoint_identity_and_metadata_use_mapping_orientation() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -4777,6 +4777,14 @@ impl<'a> Lowerer<'a> {
         )? {
             return Ok(rendered);
         }
+        if let Some(rendered) = self.render_scoped_undirected_endpoint_scalar_expression(
+            expression,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )? {
+            return Ok(rendered);
+        }
         if let Some(rendered) = self.render_scoped_graph_metadata_scalar_expression(
             expression,
             relationships,
@@ -5263,6 +5271,77 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_scoped_undirected_endpoint_scalar_expression<'b>(
+        &self,
+        expression: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::UndirectedEndpointProperty {
+                relationship,
+                endpoint,
+                property,
+            } => self
+                .render_scoped_undirected_endpoint_property_ref(
+                    relationship,
+                    *endpoint,
+                    property,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::UndirectedEndpointKey {
+                relationship,
+                endpoint,
+            } => self
+                .render_scoped_undirected_endpoint_key_ref(
+                    relationship,
+                    *endpoint,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::UndirectedEndpointElementId {
+                relationship,
+                endpoint,
+            } => self
+                .render_scoped_undirected_endpoint_element_id_ref(
+                    relationship,
+                    *endpoint,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::UndirectedEndpointLabels {
+                relationship,
+                label,
+                ..
+            } => self
+                .render_scoped_undirected_endpoint_labels_ref(
+                    relationship,
+                    label,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => self
+                .render_scoped_undirected_endpoint_property_keys_ref(
+                    relationship,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
+            _ => Ok(None),
+        }
+    }
+
     fn render_scoped_binding_key_ref<'b>(
         &self,
         variable: &str,
@@ -5433,6 +5512,210 @@ impl<'a> Lowerer<'a> {
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({property_names}) END"
         ))
+    }
+
+    fn render_scoped_undirected_endpoint_property_ref<'b>(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        property: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if Self::exists_relationship_for_variable(relationships, relationship_variable).is_none() {
+            return self.render_undirected_endpoint_property_ref(
+                relationship_variable,
+                endpoint,
+                property,
+            );
+        }
+
+        let selection = self.render_scoped_undirected_endpoint_selection(
+            relationship_variable,
+            endpoint,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let left_property = self.render_exists_property_ref(
+            &PropertyRef {
+                variable: selection.left_variable,
+                property: property.to_string(),
+            },
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let right_property = self.render_exists_property_ref(
+            &PropertyRef {
+                variable: selection.right_variable,
+                property: property.to_string(),
+            },
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let presence = selection.presence;
+        let left_matches_endpoint = selection.left_matches_endpoint;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_matches_endpoint} THEN {left_property} ELSE {right_property} END END"
+        ))
+    }
+
+    fn render_scoped_undirected_endpoint_key_ref<'b>(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if Self::exists_relationship_for_variable(relationships, relationship_variable).is_none() {
+            return self.render_undirected_endpoint_key_ref(relationship_variable, endpoint);
+        }
+
+        let selection = self.render_scoped_undirected_endpoint_selection(
+            relationship_variable,
+            endpoint,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let presence = selection.presence;
+        let left_matches_endpoint = selection.left_matches_endpoint;
+        let left_key = selection.left_key;
+        let right_key = selection.right_key;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_matches_endpoint} THEN {left_key} ELSE {right_key} END END"
+        ))
+    }
+
+    fn render_scoped_undirected_endpoint_element_id_ref<'b>(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS VARCHAR)",
+            self.render_scoped_undirected_endpoint_key_ref(
+                relationship_variable,
+                endpoint,
+                relationships,
+                local_nodes,
+                local_aliases,
+            )?
+        ))
+    }
+
+    fn render_scoped_undirected_endpoint_labels_ref<'b>(
+        &self,
+        relationship_variable: &str,
+        label: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if Self::exists_relationship_for_variable(relationships, relationship_variable).is_none() {
+            return self.render_undirected_endpoint_labels_ref(relationship_variable, label);
+        }
+
+        let presence = self.render_scoped_binding_presence_ref(
+            relationship_variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({}) END",
+            quote_string_literal(label)
+        ))
+    }
+
+    fn render_scoped_undirected_endpoint_property_keys_ref<'b>(
+        &self,
+        relationship_variable: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, relationship_variable)
+        else {
+            return self.render_undirected_endpoint_property_keys_ref(relationship_variable);
+        };
+
+        let node = self.exists_node_mapping(local_nodes, &relationship.pattern.left)?;
+        let property_names = node
+            .properties
+            .keys()
+            .map(|property| quote_string_literal(property))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let presence = self.render_scoped_binding_presence_ref(
+            relationship_variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({property_names}) END"
+        ))
+    }
+
+    fn render_scoped_undirected_endpoint_selection<'b>(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<UndirectedEndpointSelection, CoreError> {
+        let relationship =
+            Self::exists_relationship_for_variable(relationships, relationship_variable)
+                .ok_or_else(|| {
+                    CoreError::internal(
+                        "validated scoped undirected endpoint referenced unknown relationship",
+                    )
+                })?;
+        let endpoint_column = match endpoint {
+            UndirectedRelationshipEndpoint::Start => &relationship.relationship.from.key,
+            UndirectedRelationshipEndpoint::End => &relationship.relationship.to.key,
+        };
+        let selector = format!(
+            "{}.{}",
+            quote_ident(&relationship.alias),
+            quote_ident(endpoint_column)
+        );
+        let presence = self.render_scoped_binding_presence_ref(
+            relationship_variable,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let left_key = self.render_scoped_binding_key_ref(
+            &relationship.pattern.left,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        let right_key = self.render_scoped_binding_key_ref(
+            &relationship.pattern.right,
+            relationships,
+            local_nodes,
+            local_aliases,
+        )?;
+        Ok(UndirectedEndpointSelection {
+            presence,
+            left_matches_endpoint: format!("{left_key} = {selector}"),
+            left_key,
+            right_key,
+            left_variable: relationship.pattern.left.clone(),
+            right_variable: relationship.pattern.right.clone(),
+        })
     }
 
     fn render_scoped_property_key_membership_predicate<'b>(
