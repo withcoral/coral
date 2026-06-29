@@ -23,7 +23,7 @@
     "Unwind": 1,
     "VariableLengthPaths": 3,
     "Where": 9,
-    "With": 2
+    "With": 3
   },
   "scenarios": [
     {
@@ -996,6 +996,20 @@
         "rows": [
           { "person": "Alice", "friend": "Carol" },
           { "person": "Bob", "friend": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "terminal-with-distinct-scalar-projection",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH DISTINCT p.city AS city RETURN city ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "" },
+          { "city": "London" },
+          { "city": "Paris" }
         ]
       }
     },
