@@ -642,8 +642,12 @@ impl<'a> Lowerer<'a> {
         } else {
             format!(" WHERE {}", conditions.join(" AND "))
         };
+        let value_expression = match &precomputed.candidate {
+            ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0",
+            ScalarSubqueryCandidate::Count(_) => "COUNT(*)",
+        };
         let subquery = format!(
-            "SELECT {outer_key_ref} AS {}, COUNT(*) AS {} FROM {from_clause}{where_clause} GROUP BY {outer_key_ref}",
+            "SELECT {outer_key_ref} AS {}, {value_expression} AS {} FROM {from_clause}{where_clause} GROUP BY {outer_key_ref}",
             quote_ident(&precomputed.outer_key_alias),
             quote_ident(&precomputed.value_alias)
         );
@@ -2469,12 +2473,20 @@ impl<'a> Lowerer<'a> {
             .find(|precomputed| {
                 precomputed.candidate == ScalarSubqueryCandidate::Exists(predicate.clone())
             })
-            .map(|precomputed| format!("{} > 0", Self::render_precomputed_count_ref(precomputed)))
+            .map(Self::render_precomputed_exists_ref)
     }
 
     fn render_precomputed_count_ref(precomputed: &PrecomputedScalarSubquery) -> String {
         format!(
             "COALESCE({}.{}, 0)",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.value_alias)
+        )
+    }
+
+    fn render_precomputed_exists_ref(precomputed: &PrecomputedScalarSubquery) -> String {
+        format!(
+            "COALESCE({}.{}, FALSE)",
             quote_ident(&precomputed.table_alias),
             quote_ident(&precomputed.value_alias)
         )
@@ -5224,8 +5236,7 @@ impl<'a> Lowerer<'a> {
                         precomputed.candidate == ScalarSubqueryCandidate::Exists(pattern.clone())
                     })
         {
-            let count = Self::render_precomputed_count_ref(precomputed);
-            return Ok(format!("CASE WHEN {count} > 0 THEN 1 ELSE 0 END"));
+            return Ok(Self::render_precomputed_exists_ref(precomputed));
         }
         self.render_scalar_predicate_expression(predicate)
     }

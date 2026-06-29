@@ -403,8 +403,10 @@ The supported foundation subset is intentionally narrow:
   semi-joins in `WHERE`; scalar `EXISTS` projections lower as correlated
   `COUNT(*) > 0` expressions so they are executable by DataFusion in `RETURN`,
   can be sorted through their projected alias or an exact repeated projected
-  expression, and can appear in searched `CASE` expressions when a scalar
-  expression has only one correlated subquery. Compact pattern `WHERE` is
+  expression, hidden direct ordering over precomputable single-anchor
+  relationship patterns uses the same grouped `LEFT JOIN` path as count
+  subqueries, and `EXISTS` can appear in searched `CASE` expressions when a
+  scalar expression has only one correlated subquery. Compact pattern `WHERE` is
   recovered from decypher's lossless CST when the high-level AST classifies the
   `WHERE` as a subquery clause, then rewritten through the same scoped
   `MATCH ... WHERE ... FINISH` planner path as explicit existential subqueries.
