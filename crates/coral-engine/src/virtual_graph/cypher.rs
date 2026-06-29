@@ -6272,13 +6272,16 @@ fn append_zero_length_relationship(
     plan: &mut GraphPlan,
     chain_state: &PathChainCompileState,
 ) -> Result<(), CoreError> {
-    if options.optional && options.force_optional_path_presence {
+    if options.optional && options.force_optional_path_presence && !next_node_introduced {
+        if relationship.pattern.left == relationship.pattern.right {
+            return Ok(());
+        }
         return Err(unsupported(
             format!(
                 "match.pattern.parts[{}].relationships[{}]",
                 options.part_index, options.chain_index
             ),
-            "OPTIONAL MATCH with zero-hop relationship ranges is not supported yet because optional path length requires a relationship presence binding",
+            "OPTIONAL MATCH with named zero-hop paths between distinct already-bound endpoints requires equality-gated nullable path length and is not supported yet",
         ));
     }
     if options.optional && !next_node_introduced {
@@ -12770,6 +12773,9 @@ fn compile_path_length_scalar_expression(
     let expression = ScalarExpression::Literal(Literal::Integer(length));
     if binding.optional {
         let Some(presence_variable) = binding.presence_variable.clone() else {
+            if binding.length == 0 {
+                return Ok(expression);
+            }
             return Err(unsupported(
                 format!("{arguments_path}[0]"),
                 "length() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path length can be gated",
@@ -26400,6 +26406,80 @@ relationships:
     }
 
     #[test]
+    fn compiles_length_over_optional_zero_hop_path_to_new_endpoint() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[:DEPENDS_ON*0]->(self:Service) \
+             RETURN service.name AS service, self.name AS self, length(path) AS path_length \
+             ORDER BY size(path)",
+        )
+        .expect("deterministic optional zero-hop path length should compile");
+
+        assert!(plan.relationships.is_empty());
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::KeyComparison(KeyPredicate {
+                variable: "service".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Key {
+                    variable: "self".to_string(),
+                },
+            }))
+        );
+        assert_eq!(
+            plan.projections.get(2),
+            Some(&Projection::Expression {
+                expression: ScalarExpression::Literal(Literal::Integer(0)),
+                alias: "path_length".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::Integer(0)),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_length_over_optional_zero_hop_path_to_same_bound_endpoint() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH path = (service)-[:DEPENDS_ON*0]->(service) \
+             RETURN service.name AS service, length(path) AS path_length",
+        )
+        .expect("same-bound optional zero-hop path length should compile");
+
+        assert!(plan.relationships.is_empty());
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: ScalarExpression::Literal(Literal::Integer(0)),
+                alias: "path_length".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_optional_zero_hop_path_length_between_distinct_bound_endpoints() {
+        let error = compile_cypher(
+            "MATCH (source:Service), (target:Service) \
+             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target) \
+             RETURN length(path) AS path_length",
+        )
+        .expect_err("distinct bound endpoint zero-hop path length needs nullable path gating");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires equality-gated nullable path length"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn anonymous_optional_path_presence_bindings_stay_hidden_from_with_scope() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -36635,11 +36715,6 @@ relationships:
 
     #[test]
     fn rejects_optional_zero_hop_relationship_ranges_requiring_nullable_bindings() {
-        assert_unsupported(
-            "MATCH (source:Service) \
-             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target:Service) \
-             RETURN length(path)",
-        );
         assert_unsupported(
             "MATCH (person:Person) \
              OPTIONAL MATCH (person)-[:OWNS*0]->(service:Service) \

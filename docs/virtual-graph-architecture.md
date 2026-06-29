@@ -126,9 +126,12 @@ The supported foundation subset is intentionally narrow:
   ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop expansion inside one
   nullable optional scope. Same-label exact zero-hop optional ranges such as
   `*0` lower to an identity predicate for newly introduced endpoints when no
-  named path needs optional presence gating; zero-hop optional ranges over
-  endpoints that were already bound are row-preserving and do not add equality
-  filters. Multi-length optional branch expansion remains deferred;
+  nullable row boundary is needed; deterministic named zero-hop optional paths
+  fold `length(path)` and `size(path)` to `0` when the endpoint is newly
+  introduced or the same already-bound variable. Zero-hop optional ranges over
+  distinct endpoints that were already bound are row-preserving and do not add
+  equality filters unless path metadata would require nullable equality-gated
+  planning. Multi-length optional branch expansion remains deferred;
 - non-materialized fixed-length path-variable bindings, including nullable
   `length(path)` and `size(path)` over optional relationships via the
   presence-gated scalar expression IR and compiler-generated internal
@@ -468,7 +471,8 @@ Unsupported Cypher/GQL features fail with `UNSUPPORTED_CYPHER` diagnostics.
 This includes writes, multi-hop or undirected optional-local predicates, path
 value projection or filtering, unbounded variable-length paths, multi-length
 branch expansion inside `OPTIONAL MATCH`, cross-label optional zero-hop ranges
-that introduce nullable endpoints, relationship-variable list bindings for
+that introduce nullable endpoints, named optional zero-hop paths between
+distinct already-bound endpoints, relationship-variable list bindings for
 zero-hop or multi-hop ranges,
 ambiguous cross-label fixed-hop paths,
 parameterized property maps, keyless relationship identity operations,

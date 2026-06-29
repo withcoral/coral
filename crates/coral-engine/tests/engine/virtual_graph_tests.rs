@@ -2147,6 +2147,47 @@ async fn cypher_anonymous_optional_path_length_preserves_unmatched_nulls() {
 }
 
 #[tokio::test]
+async fn cypher_optional_zero_hop_path_length_executes_as_identity() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service) \
+         OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(self:Service) \
+         RETURN source.name AS source, self.name AS self, length(path) AS hops, size(path) AS path_size \
+         ORDER BY source",
+    )
+    .await
+    .expect("deterministic optional zero-hop path length query should execute");
+
+    assert!(
+        execution.translated_sql().contains("0 AS \"hops\"")
+            && execution.translated_sql().contains("0 AS \"path_size\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"source": "billing-api", "self": "billing-api", "hops": 0, "path_size": 0}),
+            json!({"source": "deployments", "self": "deployments", "hops": 0, "path_size": 0}),
+            json!({"source": "experiments", "self": "experiments", "hops": 0, "path_size": 0}),
+            json!({"source": "legacy-sync", "self": "legacy-sync", "hops": 0, "path_size": 0}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_bounded_gql_relationship_quantifiers_expand_to_union_all() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
