@@ -604,7 +604,8 @@ functions:
     args:
       - name: q
         required: true
-        bind: { arg: q }
+        bind:
+          arg: q
     request:
       method: GET
       path: /works
@@ -664,7 +665,8 @@ functions:
     args:
       - name: q
         required: true
-        bind: { arg: q }
+        bind:
+          arg: q
     request:
       method: GET
       path: /funders
