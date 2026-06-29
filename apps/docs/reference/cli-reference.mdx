@@ -63,7 +63,7 @@ coral sql "DESCRIBE datadog.hosts"
 
 ## `coral source`
 
-Manage configured sources, either the bundled ones, or your custom source specs.
+Manage configured sources, bundled source specs, workspace-local imports, and globally registered source specs.
 
 ### `coral source discover`
 
@@ -88,7 +88,7 @@ The output includes the source's secret storage route: `keychain` or
 
 ### `coral source info <NAME>`
 
-Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources and imported sources installed via `coral source add --file`.
+Show metadata for a source: whether it is installed, its origin, version, description, and inputs. Works for bundled sources, globally registered source specs, and imported sources installed via `coral source add --file`.
 
 ```shellscript
 coral source info datadog
@@ -106,10 +106,11 @@ coral source info datadog --verbose
 
 ### `coral source add <NAME>`
 
-Add a bundled source, update its credentials, or import a custom source spec.
+Add a bundled source, add a globally registered source spec by name, update stored credentials, or import a custom source spec into the current workspace.
 
 ```shellscript
 GITHUB_TOKEN=ghp_... coral source add github
+coral source add internal_crm
 coral source add --file ./local-messages.yaml
 ```
 
@@ -119,6 +120,11 @@ coral source add --file ./local-messages.yaml
 | --------------- | ---- | ------------------------ | ------------------------------------------------------------- |
 | `--file <PATH>` | path | required unless `<NAME>` | Source spec YAML file to import                               |
 | `--interactive` | flag | `false`                  | Prompt for source inputs instead of reading environment variables |
+
+When you pass `<NAME>`, Coral first looks for a bundled source with that name.
+If none exists, it looks in the global source-spec registry created by
+`coral source spec add --file`. When you pass `--file`, the manifest is imported
+only into the selected workspace.
 
 By default, Coral reads each declared input from an environment variable of the
 same name. If a required input is missing, the command exits with an error
@@ -153,6 +159,23 @@ Coral stores the source secrets in plaintext file storage and shows
 `file (plaintext)` in source output. Sources with no stored secret material show
 `none`.
 
+### `coral source spec`
+
+Manage source specs in the global registry. Registered specs are reusable
+install targets for any workspace.
+
+```shellscript
+coral source spec add --file ./internal-crm.yaml
+coral source spec list
+coral source add internal_crm --workspace work
+coral source spec remove internal_crm
+```
+
+`coral source spec remove <NAME>` removes the registry entry and its global
+manifest artifact. Existing workspace sources installed from that spec are not
+removed, but they become orphaned and fail validation or query loading until you
+register the spec again or remove and re-add the source.
+
 ### `coral source lint <FILE>`
 
 Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
@@ -185,9 +208,8 @@ workspace-scoped artifacts such as source manifests, local credential material,
 feedback reports, episode logs, and workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
-installation in that workspace. Reusable global source specs and reusable
-credential references are separate concepts and are not represented by
-`coral workspace` today.
+installation in that workspace. Reusable global source specs are managed with
+`coral source spec` and are not removed when you delete a workspace.
 
 ### `coral workspace list`
 

@@ -17,8 +17,8 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
-    Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourceSpecsResponse, ListSourcesResponse,
+    ListWorkspacesResponse, Source, SourceCredentialStorage, SourceInfo, SourceOrigin, Workspace,
 };
 use tempfile::tempdir;
 use tonic::Code;
@@ -374,6 +374,122 @@ async fn source_discover_renders_empty_state() {
     let requests = server.discover_sources_requests();
     assert_eq!(requests.len(), 1, "expected one discover_sources call");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_spec_list_renders_registered_specs() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "spec", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec![
+            "Source  Version  Origin",
+            "------  -------  -----------",
+            "linear  3.0.0    global-spec",
+        ],
+        "expected source-spec registry list"
+    );
+    assert_eq!(
+        server.list_source_specs_requests().len(),
+        1,
+        "expected one list_source_specs call"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_spec_list_renders_empty_state() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_source_specs(
+        ListSourceSpecsResponse {
+            source_specs: Vec::new(),
+        },
+    ))
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "spec", "list"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "No source specs registered.");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_spec_add_registers_manifest() {
+    let server = MockServer::start().await;
+    let source_dir = tempdir().expect("source dir");
+    let manifest_file = source_dir.path().join("manifest.yaml");
+    std::fs::write(
+        &manifest_file,
+        r"
+name: linear
+version: 3.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: issues
+    description: Linear issues
+    request:
+      method: GET
+      path: /issues
+    columns:
+      - name: id
+        type: Utf8
+",
+    )
+    .expect("write manifest");
+
+    let assert = server
+        .cmd()
+        .args([
+            "source",
+            "spec",
+            "add",
+            "--file",
+            manifest_file.to_str().expect("manifest path utf8"),
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Registered source spec linear");
+    let requests = server.register_source_spec_requests();
+    assert_eq!(requests.len(), 1, "expected one register_source_spec call");
+    assert!(requests[0].manifest_yaml.contains("name: linear"));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_spec_remove_deletes_registered_spec() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "spec", "remove", "linear"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Removed source spec linear");
+    let requests = server.delete_source_spec_requests();
+    assert_eq!(requests.len(), 1, "expected one delete_source_spec call");
+    assert_eq!(requests[0].name, "linear");
 
     server.shutdown().await;
 }
@@ -1001,6 +1117,46 @@ async fn source_remove_rejects_invalid_name() {
 // ---------------------------------------------------------------------------
 // Interactive-mode gating
 // ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_name_installs_global_source_when_not_bundled() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "linear"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Added source linear"),
+        "expected global source add confirmation: {stdout}"
+    );
+    let discover_requests = server.discover_sources_requests();
+    assert_eq!(
+        discover_requests.len(),
+        1,
+        "expected bundled discover before registry lookup"
+    );
+    assert_default_workspace(discover_requests[0].workspace.as_ref());
+    let info_requests = server.get_source_info_requests();
+    assert_eq!(info_requests.len(), 1, "expected one get_source_info call");
+    assert_eq!(info_requests[0].name, "linear");
+    let create_requests = server.create_source_requests();
+    assert_eq!(create_requests.len(), 1, "expected one create_source call");
+    assert_eq!(create_requests[0].name, "linear");
+    assert_default_workspace(create_requests[0].workspace.as_ref());
+    let validate_requests = server.validate_source_requests();
+    assert_eq!(
+        validate_requests.len(),
+        1,
+        "expected one validate_source call"
+    );
+    assert_eq!(validate_requests[0].name, "linear");
+
+    server.shutdown().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn source_add_reports_missing_env_vars_without_interactive() {

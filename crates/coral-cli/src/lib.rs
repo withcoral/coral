@@ -29,7 +29,7 @@ use clap::{
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
     CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest, ListWorkspacesRequest,
-    Workspace,
+    Source, SourceInfo, SourceOrigin, Workspace,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
@@ -299,6 +299,29 @@ struct SourceAddArgs {
     interactive: bool,
 }
 
+#[derive(Debug, Args)]
+struct SourceSpecArgs {
+    #[command(subcommand)]
+    command: SourceSpecCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SourceSpecCommand {
+    /// List globally registered source specs
+    List,
+    /// Register a source spec globally
+    Add {
+        /// Path to a manifest file
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Remove a globally registered source spec
+    Remove {
+        /// Name of the source spec to remove
+        name: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum SourceCommand {
     /// Discover available sources
@@ -315,6 +338,8 @@ enum SourceCommand {
     },
     /// Add a new source
     Add(SourceAddArgs),
+    /// Manage globally registered source specs
+    Spec(SourceSpecArgs),
     /// Lint manifest file
     Lint { file: PathBuf },
     /// Test connectivity for a source
@@ -827,6 +852,7 @@ async fn run_source(
             source_ops::print_source_info(app, workspace, &name, verbose).await?;
         }
         SourceCommand::Add(args) => run_source_add(app, workspace, args).await?,
+        SourceCommand::Spec(args) => run_source_spec(app, args).await?,
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -843,6 +869,36 @@ async fn run_source(
         }
         SourceCommand::Remove { name } => {
             source_ops::remove_and_print(app, workspace, &name).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_source_spec(app: &AppClient, args: SourceSpecArgs) -> Result<(), CliError> {
+    match args.command {
+        SourceSpecCommand::List => {
+            let source_specs = source_ops::list_source_specs(app).await?;
+            if source_specs.is_empty() {
+                println!("No source specs registered.");
+            } else {
+                let rows = source_specs.into_iter().map(|source| {
+                    [
+                        source.name,
+                        source_ops::display_version(&source.version),
+                        source_ops::source_origin_label(source.origin).to_string(),
+                    ]
+                });
+                print_text_table(["Source", "Version", "Origin"], rows);
+            }
+        }
+        SourceSpecCommand::Add { file } => {
+            let (manifest_yaml, _manifest) = source_ops::load_validated_manifest_file(&file)?;
+            let source_spec = source_ops::register_source_spec(app, manifest_yaml).await?;
+            println!("Registered source spec {}", source_spec.name);
+        }
+        SourceSpecCommand::Remove { name } => {
+            let source_spec = source_ops::delete_source_spec(app, &name).await?;
+            println!("Removed source spec {}", source_spec.name);
         }
     }
     Ok(())
@@ -935,6 +991,60 @@ fn pad_cell(value: &str, width: usize, pad: bool) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
+async fn resolve_named_source_candidate(
+    app: &AppClient,
+    workspace: &Workspace,
+    source_name: &str,
+) -> Result<SourceInfo, anyhow::Error> {
+    let discover = source_ops::discover_sources(app, workspace).await?;
+    if let Some(available) = discover
+        .into_iter()
+        .find(|source| source.name == source_name)
+    {
+        return Ok(available);
+    }
+
+    let available = source_ops::get_source_info(app, workspace, source_name).await?;
+    if SourceOrigin::try_from(available.origin) != Ok(SourceOrigin::GlobalSpec) {
+        return Err(anyhow::anyhow!(
+            "unknown bundled or global source spec '{source_name}'"
+        ));
+    }
+    Ok(available)
+}
+
+async fn install_named_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    available: SourceInfo,
+    interactive: bool,
+) -> Result<Source, anyhow::Error> {
+    let inputs = available
+        .inputs
+        .iter()
+        .map(manifest_input_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let origin = SourceOrigin::try_from(available.origin).unwrap_or(SourceOrigin::Unspecified);
+    match origin {
+        SourceOrigin::Bundled | SourceOrigin::GlobalSpec if interactive => {
+            let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
+            source_ops::add_named_source_with_credentials(app, workspace, &available.name, inputs)
+                .await
+        }
+        SourceOrigin::Bundled | SourceOrigin::GlobalSpec => {
+            let (variables, secrets) = source_ops::collect_inputs_from_env(
+                &inputs,
+                format!("coral source add --interactive {}", available.name),
+            )?;
+            source_ops::add_named_source(app, workspace, &available.name, variables, secrets).await
+        }
+        SourceOrigin::Imported | SourceOrigin::Unspecified => Err(anyhow::anyhow!(
+            "source '{}' cannot be added by name; use --file for imported manifests",
+            available.name
+        )),
+    }
+}
+
 async fn run_source_add(
     app: &AppClient,
     workspace: &Workspace,
@@ -950,35 +1060,9 @@ async fn run_source_add(
     }
     let response = match (name, file) {
         (Some(name), None) => {
-            let bundled_name = source_ops::source_name_arg(Some(&name))?;
-            let discover = source_ops::discover_sources(app, workspace).await?;
-            let available = discover
-                .into_iter()
-                .find(|source| source.name == bundled_name)
-                .ok_or_else(|| anyhow::anyhow!("unknown bundled source '{bundled_name}'"))?;
-            let inputs = available
-                .inputs
-                .iter()
-                .map(manifest_input_from_proto)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(anyhow::Error::from)?;
-            if interactive {
-                let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_named_source_with_credentials(
-                    app,
-                    workspace,
-                    &available.name,
-                    inputs,
-                )
-                .await?
-            } else {
-                let (variables, secrets) = source_ops::collect_inputs_from_env(
-                    &inputs,
-                    format!("coral source add --interactive {}", available.name),
-                )?;
-                source_ops::add_named_source(app, workspace, &available.name, variables, secrets)
-                    .await?
-            }
+            let source_name = source_ops::source_name_arg(Some(&name))?;
+            let available = resolve_named_source_candidate(app, workspace, &source_name).await?;
+            install_named_source(app, workspace, available, interactive).await?
         }
         (None, Some(file)) => {
             let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
