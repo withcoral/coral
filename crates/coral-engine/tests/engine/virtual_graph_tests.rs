@@ -2726,6 +2726,38 @@ async fn cypher_ignored_path_variables_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_path_element_id_lists_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN nodes(path) AS path_nodes, relationships(path) AS path_relationships",
+    )
+    .await
+    .expect("fixed path element id lists should execute");
+
+    assert!(
+        execution.translated_sql().contains("make_array("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "path_nodes": [1, 10],
+            "path_relationships": [100],
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_type_overloads_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -232,6 +232,12 @@ pub enum ScalarExpression {
         /// Known non-null element type.
         element_type: LiteralListElementType,
     },
+    /// Ordered mapped keys for graph variables that make up a materialized path
+    /// element list such as `nodes(path)` or `relationships(path)`.
+    GraphKeyList {
+        /// Graph variables in path order.
+        variables: Vec<String>,
+    },
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
     /// Count rows produced by a read-only graph subquery.
@@ -972,6 +978,11 @@ fn scalar_expression_references_outside_scope(
     expression: &ScalarExpression,
     scope: &BTreeSet<String>,
 ) -> bool {
+    if let ScalarExpression::GraphKeyList { variables } = expression {
+        return variables
+            .iter()
+            .any(|variable| variable_references_outside_scope(variable, scope));
+    }
     if let Some(variable) = scalar_expression_variable_reference(expression) {
         return variable_references_outside_scope(variable, scope);
     }
@@ -1007,6 +1018,7 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::UndirectedEndpointElementId { .. }
         | ScalarExpression::UndirectedEndpointLabels { .. }
         | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
+        | ScalarExpression::GraphKeyList { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }

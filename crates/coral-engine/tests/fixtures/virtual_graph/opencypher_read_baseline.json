@@ -9,7 +9,7 @@
     "Match": 3,
     "OptionalMatch": 3,
     "PathMetadata": 1,
-    "PathValues": 1,
+    "PathValues": 2,
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
@@ -544,6 +544,35 @@
         "rows": [
           { "name": "Alice" },
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "path-element-id-lists",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, nodes(path) AS nodes, relationships(path) AS relationships ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "nodes": [1, 2],
+            "relationships": [100]
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "nodes": [1, 3],
+            "relationships": [102]
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "nodes": [2, 3],
+            "relationships": [101]
+          }
         ]
       }
     },

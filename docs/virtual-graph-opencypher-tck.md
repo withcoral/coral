@@ -107,7 +107,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 41 representative read-only scenarios:
+The baseline currently contains 42 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -135,7 +135,8 @@ The baseline currently contains 41 representative read-only scenarios:
 - `PathMetadata`: 1 scenario for `length(path)`.
 - `VariableLengthPaths`: 3 scenarios for exact fixed-length relationship
   ranges, bounded ranges, and bounded GQL relationship quantifiers.
-- `PathValues`: 1 expected rejection for materialized path returns.
+- `PathValues`: 2 scenarios for fixed-path element id-list projections and
+  full materialized path return rejection.
 
 Unsupported scenarios are not silently skipped. If a scenario is part of the
 baseline, it must either produce the expected rows or the expected structured

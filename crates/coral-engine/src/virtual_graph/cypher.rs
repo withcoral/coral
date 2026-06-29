@@ -2,7 +2,9 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use decypher::ast::clause::{Match, ProjectionItem, Return, SortDirection, SortItem, Unwind, With};
+use decypher::ast::clause::{
+    Match, Order, ProjectionItem, Return, SortDirection, SortItem, Unwind, With,
+};
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
@@ -309,6 +311,8 @@ struct StaticListComprehensionEvaluation<'a> {
 #[derive(Debug, Clone)]
 struct PathBinding {
     length: usize,
+    node_variables: Vec<String>,
+    relationship_variables: Vec<String>,
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
     zero_hop_endpoint_introduced: bool,
@@ -337,6 +341,7 @@ struct VariableFunctionArgument {
 #[derive(Debug, Default, Clone)]
 struct CypherCompileState {
     path_variables: BTreeMap<String, PathBinding>,
+    relationship_element_path_variables: BTreeSet<String>,
     hidden_graph_variables: BTreeSet<String>,
     out_of_scope_graph_names: BTreeSet<String>,
     scalar_aliases: Vec<Projection>,
@@ -4905,7 +4910,7 @@ fn compile_single_part(
     let return_clause = return_clause_from_single_part(query, "query")?;
 
     let mut plan = GraphPlan::default();
-    let mut state = CypherCompileState::default();
+    let mut state = compile_state_for_single_part(query, context);
     compile_reading_clauses_into(
         &query.reading_clauses,
         "match",
@@ -4916,6 +4921,322 @@ fn compile_single_part(
     compile_return(return_clause, &mut plan, &state, context)?;
     reject_ignored_path_variable_references(&plan, &state, "return")?;
     Ok(plan)
+}
+
+fn compile_state_for_single_part(
+    query: &SinglePartQuery,
+    context: &CypherCompileContext,
+) -> CypherCompileState {
+    let mut state = CypherCompileState::default();
+    collect_relationship_element_path_variables_in_single_part(
+        query,
+        context,
+        &mut state.relationship_element_path_variables,
+    );
+    state
+}
+
+fn compile_state_for_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> CypherCompileState {
+    let mut state = CypherCompileState::default();
+    for part in &query.parts {
+        collect_relationship_element_path_variables_in_reading_clauses(
+            &part.reading_clauses,
+            context,
+            &mut state.relationship_element_path_variables,
+        );
+        collect_relationship_element_path_variables_in_with(
+            &part.with,
+            context,
+            &mut state.relationship_element_path_variables,
+        );
+    }
+    collect_relationship_element_path_variables_in_single_part(
+        &query.final_part,
+        context,
+        &mut state.relationship_element_path_variables,
+    );
+    state
+}
+
+fn collect_relationship_element_path_variables_in_single_part(
+    query: &SinglePartQuery,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    collect_relationship_element_path_variables_in_reading_clauses(
+        &query.reading_clauses,
+        context,
+        variables,
+    );
+    if let SinglePartBody::Return(return_clause) = &query.body {
+        collect_relationship_element_path_variables_in_return(return_clause, context, variables);
+    }
+}
+
+fn collect_relationship_element_path_variables_in_reading_clauses(
+    clauses: &[ReadingClause],
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    for clause in clauses {
+        if let ReadingClause::Match(match_clause) = clause
+            && let Some(where_clause) = &match_clause.where_clause
+        {
+            collect_relationship_element_path_variables_in_expression(
+                where_clause,
+                context,
+                variables,
+            );
+        }
+    }
+}
+
+fn collect_relationship_element_path_variables_in_with(
+    with: &With,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    for item in &with.items {
+        collect_relationship_element_path_variables_in_expression(
+            &item.expression,
+            context,
+            variables,
+        );
+    }
+    if let Some(where_clause) = &with.where_clause {
+        collect_relationship_element_path_variables_in_expression(where_clause, context, variables);
+    }
+    collect_relationship_element_path_variables_in_order_by(
+        with.order.as_ref(),
+        context,
+        variables,
+    );
+    if let Some(skip) = &with.skip {
+        collect_relationship_element_path_variables_in_expression(skip, context, variables);
+    }
+    if let Some(limit) = &with.limit {
+        collect_relationship_element_path_variables_in_expression(limit, context, variables);
+    }
+}
+
+fn collect_relationship_element_path_variables_in_return(
+    return_clause: &Return,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    for item in &return_clause.items {
+        collect_relationship_element_path_variables_in_expression(
+            &item.expression,
+            context,
+            variables,
+        );
+    }
+    collect_relationship_element_path_variables_in_order_by(
+        return_clause.order.as_ref(),
+        context,
+        variables,
+    );
+    if let Some(skip) = &return_clause.skip {
+        collect_relationship_element_path_variables_in_expression(skip, context, variables);
+    }
+    if let Some(limit) = &return_clause.limit {
+        collect_relationship_element_path_variables_in_expression(limit, context, variables);
+    }
+}
+
+fn collect_relationship_element_path_variables_in_order_by(
+    order: Option<&Order>,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    let Some(order) = order else {
+        return;
+    };
+    for item in &order.items {
+        collect_relationship_element_path_variables_in_expression(
+            &item.expression,
+            context,
+            variables,
+        );
+    }
+}
+
+fn collect_relationship_element_path_variables_in_expression(
+    expression: &Expression,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            collect_relationship_element_path_variables_in_expression(inner, context, variables);
+        }
+        Expression::UnaryOp { operand, .. } | Expression::IsNull { operand, .. } => {
+            collect_relationship_element_path_variables_in_expression(operand, context, variables);
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            collect_relationship_element_path_variables_in_expression(lhs, context, variables);
+            collect_relationship_element_path_variables_in_expression(rhs, context, variables);
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            collect_relationship_element_path_variables_in_expression(lhs, context, variables);
+            for (_, rhs) in operators {
+                collect_relationship_element_path_variables_in_expression(rhs, context, variables);
+            }
+        }
+        Expression::ListIndex { list, index, .. } => {
+            collect_relationship_element_path_variables_in_expression(list, context, variables);
+            collect_relationship_element_path_variables_in_expression(index, context, variables);
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            collect_relationship_element_path_variables_in_expression(list, context, variables);
+            if let Some(start) = start.as_deref() {
+                collect_relationship_element_path_variables_in_expression(
+                    start, context, variables,
+                );
+            }
+            if let Some(end) = end.as_deref() {
+                collect_relationship_element_path_variables_in_expression(end, context, variables);
+            }
+        }
+        Expression::Case(case) => {
+            collect_relationship_element_path_variables_in_case(case, context, variables);
+        }
+        Expression::FunctionCall(function) => {
+            collect_relationship_element_path_variables_in_function(function, context, variables);
+        }
+        Expression::ListComprehension(comprehension) => {
+            if let Some(filter) = comprehension.filter.as_deref() {
+                collect_relationship_element_path_variables_in_expression(
+                    filter, context, variables,
+                );
+            }
+            if let Some(map) = comprehension.map.as_ref() {
+                collect_relationship_element_path_variables_in_expression(map, context, variables);
+            }
+        }
+        Expression::PatternComprehension(comprehension) => {
+            if let Some(where_clause) = comprehension.where_clause.as_ref() {
+                collect_relationship_element_path_variables_in_expression(
+                    where_clause,
+                    context,
+                    variables,
+                );
+            }
+            collect_relationship_element_path_variables_in_expression(
+                &comprehension.map,
+                context,
+                variables,
+            );
+        }
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => {
+            collect_relationship_element_path_variables_in_expression(
+                &filter.collection,
+                context,
+                variables,
+            );
+            if let Some(predicate) = filter.predicate.as_deref() {
+                collect_relationship_element_path_variables_in_expression(
+                    predicate, context, variables,
+                );
+            }
+        }
+        Expression::Literal(_)
+        | Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::CountStar { .. }
+        | Expression::PropertyLookup { .. }
+        | Expression::NodeLabels { .. }
+        | Expression::Pattern(_)
+        | Expression::Exists(_)
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_)
+        | Expression::MapProjection(_) => {}
+    }
+}
+
+fn collect_relationship_element_path_variables_in_case(
+    case: &CaseExpression,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    if let Some(scrutinee) = case.scrutinee.as_deref() {
+        collect_relationship_element_path_variables_in_expression(scrutinee, context, variables);
+    }
+    for alternative in &case.alternatives {
+        collect_relationship_element_path_variables_in_expression(
+            &alternative.when,
+            context,
+            variables,
+        );
+        collect_relationship_element_path_variables_in_expression(
+            &alternative.then,
+            context,
+            variables,
+        );
+    }
+    if let Some(default) = case.default.as_deref() {
+        collect_relationship_element_path_variables_in_expression(default, context, variables);
+    }
+}
+
+fn collect_relationship_element_path_variables_in_function(
+    function: &FunctionInvocation,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+) {
+    if is_size_function(function) {
+        for argument in &function.arguments {
+            if expression_relationships_path_variable(argument, context).is_none() {
+                collect_relationship_element_path_variables_in_expression(
+                    argument, context, variables,
+                );
+            }
+        }
+        return;
+    }
+
+    if is_relationships_function(function)
+        && let Some(variable) = function_relationships_path_variable(function, context)
+    {
+        variables.insert(variable);
+    }
+    for argument in &function.arguments {
+        collect_relationship_element_path_variables_in_expression(argument, context, variables);
+    }
+}
+
+fn expression_relationships_path_variable(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> Option<String> {
+    let Expression::FunctionCall(function) = expression else {
+        return None;
+    };
+    function_relationships_path_variable(function, context)
+}
+
+fn function_relationships_path_variable(
+    function: &FunctionInvocation,
+    context: &CypherCompileContext,
+) -> Option<String> {
+    if !is_relationships_function(function) {
+        return None;
+    }
+    context
+        .variable_function_argument(function)
+        .map(str::to_string)
+        .or_else(|| match function.arguments.as_slice() {
+            [Expression::Variable(variable)] => Some(variable_name(variable)),
+            _ => None,
+        })
 }
 
 fn compile_multi_part(
@@ -4959,7 +5280,7 @@ fn compile_terminal_with_projection(
     }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     let mut plan = GraphPlan::default();
-    let mut state = CypherCompileState::default();
+    let mut state = compile_state_for_multi_part(query, context);
     compile_reading_clauses_into(
         &part.reading_clauses,
         "parts[0].match",
@@ -5033,7 +5354,7 @@ fn compile_terminal_with_graph_modifiers(
     }
 
     let mut plan = GraphPlan::default();
-    let mut state = CypherCompileState::default();
+    let mut state = compile_state_for_multi_part(query, context);
     compile_reading_clauses_into(
         &part.reading_clauses,
         "parts[0].match",
@@ -5560,7 +5881,7 @@ fn compile_transparent_multi_part(
     context: &CypherCompileContext,
 ) -> Result<GraphPlan, CoreError> {
     let mut plan = GraphPlan::default();
-    let mut state = CypherCompileState::default();
+    let mut state = compile_state_for_multi_part(query, context);
     for (index, part) in query.parts.iter().enumerate() {
         compile_transparent_multi_part_part(part, index, &mut plan, &mut state, context)?;
     }
@@ -6943,14 +7264,15 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             path,
         ),
         _ => {
-            reject_ignored_path_variable_references_in_non_structural_scalar_expression(expression)
+            reject_ignored_path_variable_references_in_non_structural_scalar_expression(expression);
+            Ok(())
         }
     }
 }
 
 fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
     expression: &ScalarExpression,
-) -> Result<(), CoreError> {
+) {
     match expression {
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -6973,6 +7295,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
         }
+        ScalarExpression::GraphKeyList { .. } => {}
         ScalarExpression::ToString { .. }
         | ScalarExpression::ToInteger { .. }
         | ScalarExpression::ToFloat { .. }
@@ -7659,7 +7982,14 @@ fn compile_pattern_part_into(
         plan.nodes.push(pattern);
     }
     let force_optional_path_presence = optional && pending_path_binding.is_some();
+    let force_path_relationship_variables = pending_path_binding.as_ref().is_some_and(|pending| {
+        state
+            .relationship_element_path_variables
+            .contains(pending.name.as_str())
+    });
     let mut chain_state = PathChainCompileState {
+        path_node_variables: vec![previous_variable.clone()],
+        path_relationship_variables: Vec::new(),
         previous_variable,
         previous_label: start_node.label,
         path_presence_gate: None,
@@ -7675,6 +8005,7 @@ fn compile_pattern_part_into(
                 chain_index,
                 total_chains: chains.len(),
                 optional,
+                force_path_relationship_variables,
                 force_optional_path_presence,
             },
             &mut chain_state,
@@ -7694,6 +8025,8 @@ fn compile_pattern_part_into(
         bind_path_variable(
             state,
             pending,
+            chain_state.path_node_variables,
+            chain_state.path_relationship_variables,
             optional,
             presence_gate,
             zero_hop_endpoint_introduced,
@@ -7704,6 +8037,8 @@ fn compile_pattern_part_into(
 }
 
 struct PathChainCompileState {
+    path_node_variables: Vec<String>,
+    path_relationship_variables: Vec<String>,
     previous_variable: String,
     previous_label: String,
     path_presence_gate: Option<PathPresenceGate>,
@@ -7717,6 +8052,7 @@ struct PathChainCompileOptions {
     chain_index: usize,
     total_chains: usize,
     optional: bool,
+    force_path_relationship_variables: bool,
     force_optional_path_presence: bool,
 }
 
@@ -8137,8 +8473,9 @@ fn compile_path_chain_into(
         "match.pattern.parts[{}].relationships[{}]",
         options.part_index, options.chain_index
     );
-    let force_relationship_variable =
-        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
+    let force_relationship_variable = options.force_path_relationship_variables
+        || (options.force_optional_path_presence
+            && options.chain_index + 1 == options.total_chains);
     let relationship = compile_relationship(
         &chain.relationship,
         RelationshipCompileEndpoints {
@@ -8268,10 +8605,12 @@ fn append_single_relationship(
     state: &mut CypherCompileState,
     chain_state: &mut PathChainCompileState,
 ) {
-    let force_relationship_variable =
-        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
+    let force_relationship_variable = options.force_path_relationship_variables
+        || (options.force_optional_path_presence
+            && options.chain_index + 1 == options.total_chains);
     plan.predicates.extend(relationship.predicates);
     let relationship_variable = relationship.pattern.variable.clone();
+    let right_variable = relationship.pattern.right.clone();
     if let Some(variable) = relationship.pattern.variable.as_deref() {
         mark_graph_variable_in_scope(state, variable);
     }
@@ -8279,7 +8618,11 @@ fn append_single_relationship(
         plan.optional_relationships.push(relationship_index);
     }
     plan.relationships.push(relationship.pattern);
+    chain_state.path_node_variables.push(right_variable);
     if force_relationship_variable && let Some(variable) = relationship_variable {
+        chain_state
+            .path_relationship_variables
+            .push(variable.clone());
         record_path_presence_variable(chain_state, variable);
     }
 }
@@ -8293,9 +8636,10 @@ fn append_repeated_relationship(
     state: &mut CypherCompileState,
     chain_state: &mut PathChainCompileState,
 ) -> Result<(), CoreError> {
-    let force_relationship_variable =
-        options.force_optional_path_presence && options.chain_index + 1 == options.total_chains;
-    let relationship_variables = append_fixed_length_relationship(
+    let force_relationship_variable = options.force_path_relationship_variables
+        || (options.force_optional_path_presence
+            && options.chain_index + 1 == options.total_chains);
+    let expansion_result = append_fixed_length_relationship(
         plan,
         state,
         &relationship.pattern,
@@ -8310,8 +8654,14 @@ fn append_repeated_relationship(
             optional: options.optional,
         },
     )?;
+    chain_state
+        .path_node_variables
+        .extend(expansion_result.node_variables.iter().cloned());
+    chain_state
+        .path_relationship_variables
+        .extend(expansion_result.relationship_variables.iter().cloned());
     if force_relationship_variable {
-        record_path_presence_variables(chain_state, relationship_variables);
+        record_path_presence_variables(chain_state, expansion_result.relationship_variables);
     }
     Ok(())
 }
@@ -8527,6 +8877,11 @@ struct FixedLengthExpansion<'a> {
     optional: bool,
 }
 
+struct FixedLengthExpansionResult {
+    node_variables: Vec<String>,
+    relationship_variables: Vec<String>,
+}
+
 fn append_fixed_length_relationship(
     plan: &mut GraphPlan,
     state: &mut CypherCompileState,
@@ -8534,8 +8889,9 @@ fn append_fixed_length_relationship(
     predicates: &[PropertyPredicate],
     length: usize,
     expansion: &FixedLengthExpansion<'_>,
-) -> Result<Vec<String>, CoreError> {
+) -> Result<FixedLengthExpansionResult, CoreError> {
     let mut left = expansion.left_variable.to_string();
+    let mut node_variables = Vec::new();
     let mut relationship_variables = Vec::new();
     for hop in 1..=length {
         let right = if hop == length {
@@ -8578,9 +8934,13 @@ fn append_fixed_length_relationship(
             plan.optional_relationships.push(relationship_index);
         }
         plan.relationships.push(pattern);
+        node_variables.push(right.clone());
         left = right;
     }
-    Ok(relationship_variables)
+    Ok(FixedLengthExpansionResult {
+        node_variables,
+        relationship_variables,
+    })
 }
 
 fn rebind_property_predicate_variable(
@@ -8633,6 +8993,8 @@ fn validate_path_variable_binding(
 fn bind_path_variable(
     state: &mut CypherCompileState,
     pending: PendingPathBinding,
+    node_variables: Vec<String>,
+    relationship_variables: Vec<String>,
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
     zero_hop_endpoint_introduced: bool,
@@ -8641,6 +9003,8 @@ fn bind_path_variable(
         pending.name,
         PathBinding {
             length: pending.length,
+            node_variables,
+            relationship_variables,
             optional,
             presence_gate,
             zero_hop_endpoint_introduced,
@@ -10147,6 +10511,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::GraphKeyList { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -10422,6 +10787,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::GraphKeyList { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -15495,6 +15861,79 @@ fn compile_path_list_size_scalar_expression(
     }
 }
 
+fn compile_path_element_id_list_scalar_expression(
+    function: &FunctionInvocation,
+    target: PathListSizeTarget,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let state = mode.path_state().ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "{}() path element list expressions require path-variable scope",
+                target.function_name()
+            ),
+        )
+    })?;
+    let binding = compile_path_function_binding(
+        function,
+        format!("{path}.arguments"),
+        target.function_name(),
+        state,
+        context,
+    )?;
+    let variables = match target {
+        PathListSizeTarget::Nodes => binding.node_variables.clone(),
+        PathListSizeTarget::Relationships => binding.relationship_variables.clone(),
+    };
+    let expression = ScalarExpression::GraphKeyList { variables };
+    path_binding_presence_gated_scalar_expression(
+        binding,
+        expression,
+        format!("{path}.arguments"),
+        target.function_name(),
+    )
+}
+
+fn path_binding_presence_gated_scalar_expression(
+    binding: &PathBinding,
+    expression: ScalarExpression,
+    arguments_path: impl Into<String>,
+    function_name: &str,
+) -> Result<ScalarExpression, CoreError> {
+    let arguments_path = arguments_path.into();
+    if binding.optional {
+        let Some(presence_gate) = binding.presence_gate.clone() else {
+            return if binding.length == 0 {
+                Ok(expression)
+            } else {
+                Err(unsupported(
+                    format!("{arguments_path}[0]"),
+                    format!(
+                        "{function_name}() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path values can be gated"
+                    ),
+                ))
+            };
+        };
+        return Ok(match presence_gate {
+            PathPresenceGate::Variable(presence_variable) => {
+                presence_gate_scalar_expression(Some(presence_variable), expression)
+            }
+            PathPresenceGate::Predicate(predicate) => ScalarExpression::Case {
+                alternatives: vec![ScalarCaseAlternative {
+                    when: predicate,
+                    then: expression,
+                }],
+                else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Null))),
+            },
+        });
+    }
+    Ok(expression)
+}
+
 fn add_one_to_path_length_scalar_expression(
     expression: ScalarExpression,
 ) -> Result<ScalarExpression, CoreError> {
@@ -16738,6 +17177,9 @@ fn compile_scalar_function_expression_in_mode(
                 "type() scalar expressions require graph context",
             )),
         }
+    } else if let Some(target) = path_list_size_target(function) {
+        compile_path_element_id_list_scalar_expression(function, target, path, mode, context)
+            .map(Some)
     } else if let Some(expression) =
         compile_core_scalar_function_expression(function, &path, mode, context)?
     {
@@ -29892,17 +30334,18 @@ relationships:
     }
 
     #[test]
-    fn rejects_path_element_lists_outside_size() {
-        for cypher in [
-            "MATCH path = (person:Person)-[:OWNS]->(service:Service) RETURN nodes(path) AS nodes",
-            "MATCH path = (person:Person)-[:OWNS]->(service:Service) RETURN relationships(path) AS relationships",
-            "MATCH path = (person:Person)-[:OWNS]->(service:Service) WHERE nodes(path) IS NOT NULL RETURN person.name",
-        ] {
-            let error =
-                compile_cypher(cypher).expect_err("path element lists should not be materialized");
+    fn compiles_path_element_id_lists() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WHERE nodes(path) IS NOT NULL \
+             RETURN nodes(path) AS nodes, relationships(path) AS relationships",
+        )
+        .expect("fixed path element id lists should compile");
 
-            assert!(error.to_string().contains("UNSUPPORTED_CYPHER"), "{error}");
-        }
+        assert_eq!(
+            plan.projection_output_names(),
+            vec!["nodes", "relationships"]
+        );
     }
 
     #[test]

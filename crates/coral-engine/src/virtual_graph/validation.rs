@@ -1227,6 +1227,13 @@ impl<'a> GraphPlanValidator<'a> {
         expression: &'b ScalarExpression,
         variables: &mut BTreeSet<&'b str>,
     ) {
+        if let ScalarExpression::GraphKeyList {
+            variables: path_variables,
+        } = expression
+        {
+            variables.extend(path_variables.iter().map(String::as_str));
+            return;
+        }
         if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
             Self::collect_scalar_expression_variables(expression, variables);
             return;
@@ -2704,6 +2711,17 @@ impl<'a> GraphPlanValidator<'a> {
                 element_type,
             } => {
                 Self::validate_typed_literal_list(literals, *element_type, path)?;
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::GraphKeyList { variables } => {
+                for variable in variables {
+                    self.validate_exists_key_ref(
+                        variable,
+                        scope.relationships,
+                        scope.local_nodes,
+                        path.clone(),
+                    )?;
+                }
                 Ok(ScalarType::Other)
             }
             ScalarExpression::Predicate(predicate) => {
@@ -4323,6 +4341,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
+            | ScalarExpression::GraphKeyList { .. }
             | ScalarExpression::Predicate(_)
             | ScalarExpression::CountSubquery { .. }
             | ScalarExpression::Key { .. }
@@ -4402,9 +4421,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::TypedLiteralList {
                 literals,
                 element_type,
-            } => {
-                Self::validate_typed_literal_list(literals, *element_type, path)?;
-                Ok(ScalarType::Other)
+            } => Self::infer_typed_literal_list_scalar_type(literals, *element_type, path),
+            ScalarExpression::GraphKeyList { variables } => {
+                self.infer_graph_key_list_scalar_type(variables, path)
             }
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)?;
@@ -4454,6 +4473,26 @@ impl<'a> GraphPlanValidator<'a> {
             }
             _ => unreachable!("non-atomic scalar expression reached atomic type inference"),
         }
+    }
+
+    fn infer_typed_literal_list_scalar_type(
+        literals: &[Literal],
+        element_type: LiteralListElementType,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        Self::validate_typed_literal_list(literals, element_type, path)?;
+        Ok(ScalarType::Other)
+    }
+
+    fn infer_graph_key_list_scalar_type(
+        &self,
+        variables: &[String],
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for variable in variables {
+            self.validate_key_projection(variable, path)?;
+        }
+        Ok(ScalarType::Other)
     }
 
     fn infer_null_if_scalar_type(

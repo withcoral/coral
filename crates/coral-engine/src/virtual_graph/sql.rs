@@ -373,6 +373,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::GraphKeyList { .. }
             | ScalarExpression::NodeLabels { .. }
             | ScalarExpression::PropertyKeys { .. }
             | ScalarExpression::RelationshipType { .. } => {}
@@ -1398,6 +1399,9 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::RelationshipType { variable, .. } => {
                 Self::scoped_variable_is_inner(variable, relationship_bindings, local_nodes)
             }
+            ScalarExpression::GraphKeyList { variables } => variables.iter().all(|variable| {
+                Self::scoped_variable_is_inner(variable, relationship_bindings, local_nodes)
+            }),
             ScalarExpression::PresenceGated { .. }
             | ScalarExpression::Coalesce { .. }
             | ScalarExpression::NullIf { .. }
@@ -3491,6 +3495,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
+            | ScalarExpression::GraphKeyList { .. }
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
@@ -5064,6 +5069,12 @@ impl<'a> Lowerer<'a> {
                 literals,
                 element_type,
             } => Ok(render_typed_literal_list(literals, *element_type)),
+            ScalarExpression::GraphKeyList { variables } => self.render_scoped_graph_key_list_ref(
+                variables,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
             ScalarExpression::Predicate(predicate) => self.render_scoped_predicate_expression(
                 predicate,
                 relationships,
@@ -5466,6 +5477,14 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Key { variable } => self
                 .render_scoped_binding_key_ref(variable, relationships, local_nodes, local_aliases)
                 .map(Some),
+            ScalarExpression::GraphKeyList { variables } => self
+                .render_scoped_graph_key_list_ref(
+                    variables,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
             ScalarExpression::ElementId { variable } => Ok(Some(format!(
                 "CAST({} AS VARCHAR)",
                 self.render_scoped_binding_key_ref(
@@ -5603,6 +5622,27 @@ impl<'a> Lowerer<'a> {
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
         self.render_exists_key_ref(variable, relationships, local_nodes, local_aliases)
+    }
+
+    fn render_scoped_graph_key_list_ref<'b>(
+        &self,
+        variables: &[String],
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let values = variables
+            .iter()
+            .map(|variable| {
+                self.render_scoped_binding_key_ref(
+                    variable,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(render_sql_array(&values))
     }
 
     fn render_scoped_binding_presence_ref<'b>(
@@ -6399,6 +6439,14 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_graph_key_list_ref(&self, variables: &[String]) -> Result<String, CoreError> {
+        let values = variables
+            .iter()
+            .map(|variable| self.render_binding_key_ref(variable))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(render_sql_array(&values))
+    }
+
     fn render_binding_element_id_ref(&self, variable: &str) -> Result<String, CoreError> {
         Ok(format!(
             "CAST({} AS VARCHAR)",
@@ -6664,6 +6712,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::GraphKeyList { .. }
             | ScalarExpression::NodeLabels { .. }
             | ScalarExpression::PropertyKeys { .. }
             | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -6717,6 +6766,9 @@ impl<'a> Lowerer<'a> {
     ) -> Result<Option<String>, CoreError> {
         match expression {
             ScalarExpression::Key { variable } => self.render_binding_key_ref(variable).map(Some),
+            ScalarExpression::GraphKeyList { variables } => {
+                self.render_graph_key_list_ref(variables).map(Some)
+            }
             ScalarExpression::ElementId { variable } => {
                 self.render_binding_element_id_ref(variable).map(Some)
             }
@@ -7329,11 +7381,12 @@ fn render_order_literal(literal: &Literal) -> String {
 }
 
 fn render_literal_list(literals: &[Literal]) -> String {
-    let values = literals
-        .iter()
-        .map(render_literal)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let values = literals.iter().map(render_literal).collect::<Vec<_>>();
+    render_sql_array(&values)
+}
+
+fn render_sql_array(values: &[String]) -> String {
+    let values = values.join(", ");
     format!("make_array({values})")
 }
 
