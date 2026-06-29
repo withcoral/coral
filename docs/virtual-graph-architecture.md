@@ -114,10 +114,12 @@ The supported foundation subset is intentionally narrow:
   disconnected mandatory parts lowered as explicit cartesian products;
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
   including single-hop directed and undirected optional-local predicates and
-  inline property maps placed in the join scope. Optional plans still require
-  mandatory bindings to stay anchored to the first component, but later
-  mandatory `MATCH` clauses may continue from optional-introduced node
-  bindings. The SQL lowerer keeps ordinary mandatory joins first when possible,
+  inline property maps placed in the join scope. Optional plans still require a
+  connected relationship pattern with at least one already-bound node boundary;
+  they may also connect two already-bound endpoints through newly introduced
+  optional nodes. Later mandatory `MATCH` clauses may continue from
+  optional-introduced node bindings. The SQL lowerer keeps ordinary mandatory
+  joins first when possible,
   then joins optional scopes before a mandatory relationship that is blocked on
   an optional endpoint, so unmatched optional rows are dropped by the following
   inner join. Later global `WHERE` predicates over still-optional bindings

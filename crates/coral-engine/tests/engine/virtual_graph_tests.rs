@@ -8731,6 +8731,42 @@ async fn cypher_multihop_optional_match_preserves_whole_pattern_null_semantics()
 }
 
 #[tokio::test]
+async fn cypher_multihop_optional_match_between_bound_endpoints_preserves_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (target:Service) \
+         OPTIONAL MATCH (source)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target) \
+         RETURN count(*) AS pairs, count(middle.name) AS paths",
+    )
+    .await
+    .expect("bound-endpoint multi-hop OPTIONAL MATCH query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"r1\".\"to_service_id\" = \"n1\".\"id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"pairs": 16, "paths": 1})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_optional_fixed_relationship_ranges_execute_as_repeated_hops() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -8913,6 +8949,41 @@ async fn cypher_multihop_optional_match_where_applies_to_whole_scope() {
             json!({"service": "experiments"}),
             json!({"service": "legacy-sync"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_multihop_optional_match_between_bound_endpoints_keeps_where_local() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (target:Service) \
+         OPTIONAL MATCH (source)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target) \
+         WHERE target.tier = 'prod' \
+         RETURN count(*) AS pairs, count(middle.name) AS prod_paths",
+    )
+    .await
+    .expect("bound-endpoint multi-hop OPTIONAL MATCH WHERE query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN ("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains(" WHERE "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"pairs": 16, "prod_paths": 0})]
     );
 }
 

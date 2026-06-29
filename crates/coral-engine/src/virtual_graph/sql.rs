@@ -1214,13 +1214,30 @@ impl<'a> Lowerer<'a> {
     }
 
     fn cross_join_isolated_nodes(&mut self) -> Result<(), CoreError> {
-        let optional_nodes = self
+        let scoped_relationships = self.optional_match_scope_relationships();
+        let optional_match_nodes =
+            self.validated
+                .plan()
+                .optional_matches
+                .iter()
+                .flat_map(|optional_match| {
+                    optional_match
+                        .node_indices
+                        .iter()
+                        .copied()
+                        .filter_map(|index| self.validated.plan().nodes.get(index))
+                        .map(|node| node.variable.as_str())
+                });
+        let unscoped_optional_relationship_nodes = self
             .validated
             .plan()
             .optional_relationships
             .iter()
+            .filter(|index| !scoped_relationships.contains(index))
             .filter_map(|index| self.validated.plan().relationships.get(*index))
-            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()]);
+        let optional_nodes = optional_match_nodes
+            .chain(unscoped_optional_relationship_nodes)
             .collect::<BTreeSet<_>>();
         for node in &self.validated.plan().nodes {
             if !self.joined_nodes.contains(node.variable.as_str())
@@ -1469,12 +1486,7 @@ impl<'a> Lowerer<'a> {
             let left_joined = self.joined_nodes.contains(pattern.left.as_str());
             let right_joined = self.joined_nodes.contains(pattern.right.as_str());
             if left_joined ^ right_joined {
-                if anchor.is_some() {
-                    return Err(CoreError::internal(
-                        "validated optional match scope had multiple joined boundaries",
-                    ));
-                }
-                anchor = Some(OptionalScopeAnchor {
+                anchor.get_or_insert(OptionalScopeAnchor {
                     relationship_index,
                     anchor_variable: if left_joined {
                         pattern.left.as_str()
@@ -1501,6 +1513,7 @@ impl<'a> Lowerer<'a> {
         let mut inner_joined_nodes = BTreeSet::new();
         let (mut join_group, outer_condition) =
             self.render_optional_match_group_anchor(anchor, &mut inner_joined_nodes)?;
+        let mut outer_conditions = vec![outer_condition];
         remaining_relationships.remove(&anchor.relationship_index);
 
         while !remaining_relationships.is_empty() {
@@ -1520,13 +1533,15 @@ impl<'a> Lowerer<'a> {
                     continue;
                 }
 
-                self.render_optional_match_group_relationship(
+                if let Some(outer_condition) = self.render_optional_match_group_relationship(
                     &mut join_group,
                     &mut inner_joined_nodes,
                     relationship_index,
                     left_joined,
                     right_joined,
-                )?;
+                )? {
+                    outer_conditions.push(outer_condition);
+                }
                 remaining_relationships.remove(&relationship_index);
                 progressed = true;
             }
@@ -1538,6 +1553,19 @@ impl<'a> Lowerer<'a> {
         }
 
         let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        let outer_condition = match outer_conditions.as_slice() {
+            [] => {
+                return Err(CoreError::internal(
+                    "optional match scope had no outer condition",
+                ));
+            }
+            [condition] => condition.clone(),
+            _ => outer_conditions
+                .into_iter()
+                .map(|condition| format!("({condition})"))
+                .collect::<Vec<_>>()
+                .join(" AND "),
+        };
         let outer_condition =
             Self::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
         write!(
@@ -1629,7 +1657,7 @@ impl<'a> Lowerer<'a> {
         relationship_index: usize,
         left_joined: bool,
         right_joined: bool,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<String>, CoreError> {
         let pattern = self
             .validated
             .plan()
@@ -1655,7 +1683,7 @@ impl<'a> Lowerer<'a> {
                 condition
             )
             .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-            return Ok(());
+            return Ok(None);
         }
 
         let (known_variable, unknown_variable, known_is_left) = if left_joined {
@@ -1680,6 +1708,25 @@ impl<'a> Lowerer<'a> {
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
 
+        if self.joined_nodes.contains(unknown_variable) {
+            let outer_join = Self::relationship_known_node_condition(
+                &self.validated,
+                relationship,
+                pattern,
+                &relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?;
+            return Self::relationship_outer_condition_for_known_node(
+                &self.validated,
+                relationship,
+                pattern,
+                &relationship_alias,
+                outer_join,
+            )
+            .map(Some);
+        }
+
         let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
             &self.validated,
             relationship,
@@ -1699,7 +1746,7 @@ impl<'a> Lowerer<'a> {
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         inner_joined_nodes.insert(unknown_variable);
-        Ok(())
+        Ok(None)
     }
 
     fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
@@ -6794,6 +6841,7 @@ relationships:
             ],
             optional_relationships: vec![0, 1],
             optional_matches: vec![OptionalMatchScope {
+                node_indices: vec![1, 2],
                 relationship_indices: vec![0, 1],
                 predicate: None,
             }],
@@ -6846,6 +6894,95 @@ relationships:
     }
 
     #[test]
+    fn lower_graph_plan_renders_multihop_optional_scope_between_bound_endpoints_as_grouped_left_join()
+     {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let plan = GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "source".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "target".to_string(),
+                    label: "Service".to_string(),
+                },
+                NodePattern {
+                    variable: "middle".to_string(),
+                    label: "Service".to_string(),
+                },
+            ],
+            relationships: vec![
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "source".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "middle".to_string(),
+                },
+                RelationshipPattern {
+                    variable: None,
+                    relationship_type: "DEPENDS_ON".to_string(),
+                    left: "middle".to_string(),
+                    direction: Direction::Outgoing,
+                    right: "target".to_string(),
+                },
+            ],
+            optional_relationships: vec![0, 1],
+            optional_matches: vec![OptionalMatchScope {
+                node_indices: vec![2],
+                relationship_indices: vec![0, 1],
+                predicate: None,
+            }],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "middle".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("middle".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        };
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("bound-endpoint multi-hop optional scope should lower");
+
+        assert_eq!(
+            translation.sql(),
+            "SELECT \"n0\".\"service_name\" AS \"source\", \"n1\".\"service_name\" AS \"target\", \"n2\".\"service_name\" AS \"middle\" \
+             FROM \"ops\".\"services\" AS \"n0\" \
+             CROSS JOIN \"ops\".\"services\" AS \"n1\" \
+             LEFT JOIN (\"ops\".\"service_dependencies\" AS \"r0\" \
+             JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"to_service_id\" = \"n2\".\"id\" \
+             JOIN \"ops\".\"service_dependencies\" AS \"r1\" ON \"r1\".\"from_service_id\" = \"n2\".\"id\") \
+             ON (\"r0\".\"from_service_id\" = \"n0\".\"id\") AND (\"r1\".\"to_service_id\" = \"n1\".\"id\")"
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_renders_optional_predicates_inside_join_scope() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let plan = GraphPlan {
@@ -6868,6 +7005,7 @@ relationships:
             }],
             optional_relationships: vec![0],
             optional_matches: vec![OptionalMatchScope {
+                node_indices: vec![1],
                 relationship_indices: vec![0],
                 predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
                     property: PropertyRef {
@@ -6943,6 +7081,7 @@ relationships:
             }],
             optional_relationships: vec![0],
             optional_matches: vec![OptionalMatchScope {
+                node_indices: vec![1],
                 relationship_indices: vec![0],
                 predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
                     property: PropertyRef {

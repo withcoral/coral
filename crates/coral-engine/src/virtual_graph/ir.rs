@@ -828,6 +828,8 @@ pub struct ScalarPredicate {
 /// Scope introduced by one `OPTIONAL MATCH` clause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalMatchScope {
+    /// Node indices introduced by the optional pattern.
+    pub node_indices: Vec<usize>,
     /// Relationship indices introduced by the optional pattern.
     pub relationship_indices: Vec<usize>,
     /// Predicate to apply in the null-preserving optional match scope.

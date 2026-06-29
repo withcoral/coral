@@ -7190,6 +7190,7 @@ fn compile_reading_clauses_into(
                     format!("{path}[{index}].pattern"),
                 )?;
                 let predicate_start = plan.predicates.len();
+                let node_start = plan.nodes.len();
                 let relationship_start = plan.relationships.len();
                 let path_variables_start = state
                     .path_variables
@@ -7219,8 +7220,11 @@ fn compile_reading_clauses_into(
                         .transpose()?;
                     attach_optional_match_scope(
                         plan,
-                        relationship_start,
-                        predicate_start,
+                        OptionalMatchStart {
+                            node: node_start,
+                            relationship: relationship_start,
+                            predicate: predicate_start,
+                        },
                         predicate,
                         state,
                         &introduced_path_variables,
@@ -7272,18 +7276,24 @@ fn reject_match_scalar_alias_conflicts(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct OptionalMatchStart {
+    node: usize,
+    relationship: usize,
+    predicate: usize,
+}
+
 fn attach_optional_match_scope(
     plan: &mut GraphPlan,
-    relationship_start: usize,
-    predicate_start: usize,
+    start: OptionalMatchStart,
     predicate: Option<PredicateExpression>,
     state: &mut CypherCompileState,
     introduced_path_variables: &[String],
     path: impl Into<String>,
 ) -> Result<(), CoreError> {
     let path = path.into();
-    let relationship_indices = (relationship_start..plan.relationships.len()).collect::<Vec<_>>();
-    let inline_predicates = plan.predicates.drain(predicate_start..).collect::<Vec<_>>();
+    let relationship_indices = (start.relationship..plan.relationships.len()).collect::<Vec<_>>();
+    let inline_predicates = plan.predicates.drain(start.predicate..).collect::<Vec<_>>();
     let predicate = combine_optional_predicates(inline_predicates, predicate);
     if relationship_indices.is_empty()
         && let Some(predicate) = &predicate
@@ -7302,6 +7312,7 @@ fn attach_optional_match_scope(
     }
 
     plan.optional_matches.push(OptionalMatchScope {
+        node_indices: (start.node..plan.nodes.len()).collect(),
         relationship_indices,
         predicate,
     });
@@ -30489,6 +30500,34 @@ relationships:
     }
 
     #[test]
+    fn compiles_multihop_optional_match_between_bound_endpoints_scope() {
+        let plan = compile_cypher(
+            "MATCH (source:Service), (target:Service) \
+             OPTIONAL MATCH (source)-[:DEPENDS_ON]->(middle:Service)-[:DEPENDS_ON]->(target) \
+             RETURN source.name AS source, target.name AS target, middle.name AS middle",
+        )
+        .expect("bound-endpoint multi-hop optional match should compile");
+
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .map(|node| node.variable.as_str())
+                .collect::<Vec<_>>(),
+            vec!["source", "target", "middle"]
+        );
+        assert_eq!(plan.relationships.len(), 2);
+        assert_eq!(plan.optional_relationships, vec![0, 1]);
+        assert_eq!(
+            plan.optional_matches,
+            vec![OptionalMatchScope {
+                node_indices: vec![2],
+                relationship_indices: vec![0, 1],
+                predicate: None,
+            }]
+        );
+    }
+
+    #[test]
     fn compiles_multiple_match_clauses() {
         let plan = compile_cypher(
             "MATCH (person:Person) \
@@ -40519,6 +40558,7 @@ relationships:
         assert_eq!(
             plan.optional_matches,
             vec![OptionalMatchScope {
+                node_indices: vec![1],
                 relationship_indices: vec![0],
                 predicate: None,
             }]
@@ -40562,6 +40602,7 @@ relationships:
         assert_eq!(
             plan.optional_matches,
             vec![OptionalMatchScope {
+                node_indices: vec![1],
                 relationship_indices: vec![0],
                 predicate: None,
             }]
@@ -40601,6 +40642,7 @@ relationships:
         assert_eq!(
             dependent_match.optional_matches,
             vec![OptionalMatchScope {
+                node_indices: vec![1],
                 relationship_indices: vec![0],
                 predicate: None,
             }]
@@ -40640,6 +40682,7 @@ relationships:
             assert_eq!(
                 plan.optional_matches,
                 vec![OptionalMatchScope {
+                    node_indices: vec![1, 2],
                     relationship_indices: vec![0, 1],
                     predicate: None,
                 }]
