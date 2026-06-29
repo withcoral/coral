@@ -3,6 +3,7 @@
 use coral_api::v1::Workspace;
 use coral_api::v1::catalog_service_client::CatalogServiceClient;
 use coral_api::v1::feedback_service_client::FeedbackServiceClient;
+use coral_api::v1::function_service_client::FunctionServiceClient;
 use coral_api::v1::query_service_client::QueryServiceClient;
 use coral_api::v1::search_service_client::SearchServiceClient;
 use coral_api::v1::source_service_client::SourceServiceClient;
@@ -54,6 +55,9 @@ pub type QueryClient = QueryServiceClient<GrpcService>;
 /// Public Universal Search gRPC client.
 pub type SearchClient = SearchServiceClient<GrpcService>;
 
+/// Public function management gRPC client.
+pub type FunctionClient = FunctionServiceClient<GrpcService>;
+
 /// Public feedback-submission gRPC client.
 pub type FeedbackClient = FeedbackServiceClient<GrpcService>;
 
@@ -70,6 +74,7 @@ pub struct AppClient {
     catalog: CatalogClient,
     query: QueryClient,
     search: SearchClient,
+    function: FunctionClient,
     feedback: FeedbackClient,
     task: TaskClient,
 }
@@ -97,6 +102,8 @@ impl AppClient {
             .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         let search_client = SearchClient::new(grpc_service(channel.clone(), &grpc_endpoint))
             .max_decoding_message_size(SEARCH_RESPONSE_MAX_MESSAGE_SIZE);
+        let function_client = FunctionClient::new(grpc_service(channel.clone(), &grpc_endpoint))
+            .max_decoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE);
         let feedback_client = FeedbackClient::new(grpc_service(channel.clone(), &grpc_endpoint));
         let task_client = TaskClient::new(grpc_service(channel, &grpc_endpoint));
         Ok(Self {
@@ -105,6 +112,7 @@ impl AppClient {
             catalog: catalog_client,
             query: query_client,
             search: search_client,
+            function: function_client,
             feedback: feedback_client,
             task: task_client,
         })
@@ -138,6 +146,12 @@ impl AppClient {
     /// Returns a cloned Universal Search client.
     pub fn search_client(&self) -> SearchClient {
         self.search.clone()
+    }
+
+    #[must_use]
+    /// Returns a cloned function management client.
+    pub fn function_client(&self) -> FunctionClient {
+        self.function.clone()
     }
 
     #[must_use]
