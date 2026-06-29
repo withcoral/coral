@@ -36177,6 +36177,32 @@ relationships:
     }
 
     #[test]
+    fn compiles_hidden_order_by_correlated_node_exists_subqueries() {
+        for cypher in [
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY EXISTS { MATCH (other:Service) WHERE other.tier = service.tier } DESC",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY CASE \
+               WHEN EXISTS { MATCH (other:Service) WHERE other.tier = service.tier } THEN 0 \
+               ELSE 1 \
+             END ASC",
+        ] {
+            let plan = compile_cypher(cypher)
+                .expect("hidden correlated node-exists subquery ordering should compile");
+
+            assert!(matches!(
+                plan.order_by.first(),
+                Some(OrderKey {
+                    expression: OrderExpression::Scalar(_),
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
     fn compiles_is_empty_metadata_as_boolean_scalar_projections() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
