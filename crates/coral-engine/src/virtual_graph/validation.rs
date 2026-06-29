@@ -1634,55 +1634,34 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn projection_alias_exists(&self, alias: &str) -> bool {
+        self.find_projection_alias(alias).is_some()
+    }
+
+    fn find_projection_alias(&self, alias: &str) -> Option<(usize, &Projection)> {
         self.plan
             .projections
             .iter()
-            .any(|projection| match projection {
-                Projection::Property {
-                    alias: Some(projection_alias),
-                    ..
-                }
-                | Projection::CountAll {
-                    alias: projection_alias,
-                }
-                | Projection::Key {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::ElementId {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::RelationshipType {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::NodeLabels {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::PropertyKeys {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::Literal {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::LiteralList {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::Expression {
-                    alias: projection_alias,
-                    ..
-                }
-                | Projection::Aggregate {
-                    alias: projection_alias,
-                    ..
-                } => projection_alias == alias,
-                Projection::Property { alias: None, .. } => false,
+            .enumerate()
+            .find(|(_, projection)| {
+                projection_alias_name(projection).is_some_and(|name| name == alias)
             })
+    }
+
+    fn projection_alias_scalar_type(
+        &self,
+        alias: &str,
+        path: impl Into<String>,
+    ) -> Result<ScalarType, CoreError> {
+        let path = path.into();
+        let Some((index, projection)) = self.find_projection_alias(alias) else {
+            return Err(Diagnostic::new(
+                "UNKNOWN_PROJECTION_ALIAS",
+                path,
+                format!("unknown projection alias '{alias}'"),
+            )
+            .into_core_error());
+        };
+        self.infer_projection_scalar_type(projection, format!("projections[{index}]"))
     }
 
     fn validate_property_predicate(
@@ -3769,7 +3748,8 @@ impl<'a> GraphPlanValidator<'a> {
         path: impl Into<String>,
     ) -> Result<(), CoreError> {
         let path = path.into();
-        self.validate_projection_alias(&predicate.alias, format!("{path}.alias"))?;
+        let lhs_type =
+            self.projection_alias_scalar_type(&predicate.alias, format!("{path}.alias"))?;
         match &predicate.rhs {
             ProjectionPredicateRhs::Literal(literal) => {
                 if predicate.operator == ComparisonOperator::In {
@@ -3781,7 +3761,13 @@ impl<'a> GraphPlanValidator<'a> {
                     .into_core_error());
                 }
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
-                Self::validate_literal_predicate(path, predicate.operator, literal)
+                Self::validate_literal_predicate(path.clone(), predicate.operator, literal)?;
+                Self::validate_scalar_predicate_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    literal_scalar_type(literal),
+                    &path,
+                )
             }
             ProjectionPredicateRhs::Alias(alias) => {
                 if predicate.operator == ComparisonOperator::In {
@@ -3806,9 +3792,15 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                self.validate_projection_alias(alias, format!("{path}.rhs"))
+                let rhs_type = self.projection_alias_scalar_type(alias, format!("{path}.rhs"))?;
+                Self::validate_scalar_predicate_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    rhs_type,
+                    &path,
+                )
             }
-            ProjectionPredicateRhs::List(_) => {
+            ProjectionPredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         "INVALID_PREDICATE_OPERAND",
@@ -3817,26 +3809,8 @@ impl<'a> GraphPlanValidator<'a> {
                     )
                     .into_core_error());
                 }
-                Ok(())
+                Self::validate_scalar_in_list_operand_types(lhs_type, literals, &path)
             }
-        }
-    }
-
-    fn validate_projection_alias(
-        &self,
-        alias: &str,
-        path: impl Into<String>,
-    ) -> Result<(), CoreError> {
-        let path = path.into();
-        if self.projection_alias_exists(alias) {
-            Ok(())
-        } else {
-            Err(Diagnostic::new(
-                "UNKNOWN_PROJECTION_ALIAS",
-                path,
-                format!("unknown projection alias '{alias}'"),
-            )
-            .into_core_error())
         }
     }
 
@@ -5789,6 +5763,25 @@ impl ScalarType {
     }
 }
 
+fn projection_alias_name(projection: &Projection) -> Option<&str> {
+    match projection {
+        Projection::Property {
+            alias: Some(alias), ..
+        }
+        | Projection::CountAll { alias }
+        | Projection::Key { alias, .. }
+        | Projection::ElementId { alias, .. }
+        | Projection::RelationshipType { alias, .. }
+        | Projection::NodeLabels { alias, .. }
+        | Projection::PropertyKeys { alias, .. }
+        | Projection::Literal { alias, .. }
+        | Projection::LiteralList { alias, .. }
+        | Projection::Expression { alias, .. }
+        | Projection::Aggregate { alias, .. } => Some(alias),
+        Projection::Property { alias: None, .. } => None,
+    }
+}
+
 fn literal_scalar_type(literal: &Literal) -> ScalarType {
     match literal {
         Literal::String(_) => ScalarType::String,
@@ -7317,6 +7310,33 @@ relationships:
             error.to_string().contains("UNKNOWN_PROJECTION_ALIAS"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_non_boolean_bare_post_projection_alias_predicates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Literal {
+            literal: Literal::String("Ada Lovelace".to_string()),
+            alias: "owner".to_string(),
+        }];
+        plan.post_projection_predicate = Some(ProjectionPredicateExpression::Comparison(
+            ProjectionPredicate {
+                alias: "owner".to_string(),
+                operator: ComparisonOperator::Equal,
+                rhs: ProjectionPredicateRhs::Literal(Literal::Boolean(true)),
+            },
+        ));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("non-boolean projected alias should not be usable as a bare predicate");
+
+        assert!(
+            error.to_string().contains("INVALID_SCALAR_TYPE"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("boolean"), "{error:?}");
     }
 
     #[test]

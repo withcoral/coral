@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-89 scenarios, which is 5.51% of the full upstream scenario-definition inventory
-and 6.88% of the read-candidate inventory.
+90 scenarios, which is 5.57% of the full upstream scenario-definition inventory
+and 6.96% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 89 representative read-only scenarios:
+The baseline currently contains 90 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -160,9 +160,10 @@ The baseline currently contains 89 representative read-only scenarios:
   `coalesce(...)`, and connected multi-hop optional chains.
 - `Aggregation`: 5 scenarios for grouped counts, `count(*)`, numeric
   aggregates, statistical aggregates, and `count(DISTINCT ...)`.
-- `With`: 4 scenarios for transparent scope filtering, aggregate filtering
-  through terminal `WITH`, terminal `WITH DISTINCT` scalar projection, and
-  terminal `WITH ORDER BY` / `SKIP` / `LIMIT` row modifiers.
+- `With`: 5 scenarios for transparent scope filtering, bare boolean alias
+  filtering, aggregate filtering through terminal `WITH`, terminal `WITH
+  DISTINCT` scalar projection, and terminal `WITH ORDER BY` / `SKIP` / `LIMIT`
+  row modifiers.
 - `CountSubquery`: 2 scenarios for `COUNT { ... }` projections and predicates.
 - `ExistsSubquery`: 1 scenario for `EXISTS { ... }` predicates.
 - `ListExpressions`: 4 scenarios for static `range(...)`, `split(...)`,

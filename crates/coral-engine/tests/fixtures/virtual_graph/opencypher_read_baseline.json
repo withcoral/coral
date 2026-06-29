@@ -23,7 +23,7 @@
     "Unwind": 1,
     "VariableLengthPaths": 4,
     "Where": 10,
-    "With": 4
+    "With": 5
   },
   "scenarios": [
     {
@@ -1082,6 +1082,18 @@
           { "city": "" },
           { "city": "London" },
           { "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "with-bare-boolean-alias-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS person, contains(p.name, 'ar') AS has_ar WHERE has_ar RETURN person, has_ar",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Carol", "has_ar": true }
         ]
       }
     },

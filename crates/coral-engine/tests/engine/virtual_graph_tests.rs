@@ -12798,6 +12798,64 @@ async fn cypher_terminal_with_scalar_where_executes_against_synthetic_sources() 
 }
 
 #[tokio::test]
+async fn cypher_terminal_with_bare_boolean_alias_where_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH service.name AS service, contains(service.name, 'api') AS has_api \
+         WHERE has_api \
+         RETURN service, has_api",
+    )
+    .await
+    .expect("terminal WITH bare boolean alias WHERE should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("contains(\"n0\".\"service_name\", 'api') = true"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api", "has_api": true})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_terminal_with_bare_non_boolean_alias_where_rejects_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH service.name AS service \
+         WHERE service \
+         RETURN service",
+    )
+    .await
+    .expect_err("terminal WITH bare string alias WHERE should reject before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_SCALAR_TYPE"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("boolean"), "{error:?}");
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_aggregate_where_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
