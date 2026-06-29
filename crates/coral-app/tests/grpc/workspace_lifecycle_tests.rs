@@ -369,10 +369,6 @@ async fn delete_workspace_ignores_malformed_trace_history() {
 }
 
 #[cfg(unix)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "Boundary test keeps the trace cleanup failure fixture and assertions together for readability."
-)]
 #[tokio::test]
 async fn delete_workspace_removes_state_when_trace_cleanup_fails() {
     use std::os::unix::fs::PermissionsExt;
