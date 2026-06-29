@@ -5373,13 +5373,7 @@ fn apply_transparent_with_scope(
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
     if with.star {
-        if !with.items.is_empty() {
-            return Err(unsupported(
-                format!("{path}.items"),
-                "WITH * mixed with explicit projections requires scoped query planning and is not supported yet",
-            ));
-        }
-        return compile_transparent_with_where(with, plan, Some(state), path, context);
+        return apply_transparent_with_star_scope(with, plan, state, path, context);
     }
     if with.items.is_empty() {
         return Err(unsupported(
@@ -5435,6 +5429,18 @@ fn apply_transparent_with_scope(
     Ok(predicate)
 }
 
+fn apply_transparent_with_star_scope(
+    with: &With,
+    plan: &GraphPlan,
+    state: &mut CypherCompileState,
+    path: String,
+    context: &CypherCompileContext,
+) -> Result<Option<PredicateExpression>, CoreError> {
+    let aliases = compile_transparent_with_star_scalar_aliases(with, plan, state, &path, context)?;
+    state.scalar_aliases.extend(aliases);
+    compile_transparent_with_where(with, plan, Some(state), path, context)
+}
+
 #[derive(Default)]
 struct TransparentWithScopePlan {
     carried_inputs: BTreeSet<String>,
@@ -5467,6 +5473,80 @@ fn compile_transparent_with_items(
         push_transparent_with_scalar_alias(&mut scope, projection, path, index)?;
     }
     Ok(scope)
+}
+
+fn compile_transparent_with_star_scalar_aliases(
+    with: &With,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<Vec<Projection>, CoreError> {
+    let visible = visible_graph_variables(plan, state);
+    let mut outputs = transparent_with_star_output_names(plan, state);
+    let mut aliases = Vec::new();
+
+    for (index, item) in with.items.iter().enumerate() {
+        if let Some(variable) = expression_variable_name(&item.expression)
+            && visible.contains(&variable)
+        {
+            return Err(unsupported(
+                format!("{path}.items[{index}].expression"),
+                "WITH * plus explicit graph-variable aliases requires graph-value aliasing and is not supported yet",
+            ));
+        }
+        let projection = compile_transparent_with_star_scalar_alias(
+            item,
+            format!("{path}.items[{index}]"),
+            plan,
+            state,
+            context,
+        )?;
+        let output = projection.output_name();
+        if !outputs.insert(output.clone()) {
+            return Err(unsupported(
+                format!("{path}.items[{index}].alias"),
+                format!("WITH * output variable '{output}' is already in scope"),
+            ));
+        }
+        aliases.push(projection);
+    }
+    Ok(aliases)
+}
+
+fn transparent_with_star_output_names(
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+) -> BTreeSet<String> {
+    let mut outputs = visible_graph_variables(plan, state);
+    outputs.extend(state.path_variables.keys().cloned());
+    outputs.extend(state.scalar_aliases.iter().map(Projection::output_name));
+    outputs
+}
+
+fn compile_transparent_with_star_scalar_alias(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    if let Some(input) = expression_variable_name(&item.expression)
+        && let Some(projection) = scalar_alias_projection(state, &input)
+    {
+        let Some(alias) = item.alias.as_ref().map(validate_variable).transpose()? else {
+            return Err(unsupported(
+                format!("{path}.alias"),
+                "WITH * explicit scalar alias copies require a new alias",
+            ));
+        };
+        let mut projection = projection.clone();
+        set_projection_output_alias(&mut projection, alias);
+        return Ok(projection);
+    }
+
+    compile_transparent_with_scalar_alias(item, path, plan, state, context)
 }
 
 fn reject_explicit_with_where_path_variable_references(
@@ -29585,6 +29665,60 @@ relationships:
     }
 
     #[test]
+    fn compiles_nonterminal_with_star_scalar_aliases() {
+        let plan = compile_cypher(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH *, service.name AS source_name, length(path) AS hops \
+             WHERE source_name STARTS WITH 'billing' AND hops = 1 \
+             MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+             RETURN source_name, hops, target.name AS target \
+             ORDER BY hops, source_name, target",
+        )
+        .expect("WITH * scalar aliases should compile before later MATCH");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source_name".to_string()),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(1)),
+                    alias: "hops".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("target".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by
+                .iter()
+                .map(|key| &key.expression)
+                .collect::<Vec<_>>(),
+            vec![
+                &OrderExpression::ProjectionAlias("hops".to_string()),
+                &OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                &OrderExpression::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                }),
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_transparent_with_relationship_variable_aliases() {
         let plan = compile_cypher(
             "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
@@ -39950,6 +40084,18 @@ relationships:
         );
         assert_unsupported(
             "MATCH (service:Service) WITH service, service.name AS name, service.tier AS name MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN name, target.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH *, service AS copy MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN copy.name",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH *, service.name AS service MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN service",
+        );
+        assert_unsupported(
+            "MATCH (service:Service) WITH *, count(*) AS services MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN services, target.name",
+        );
+        assert_unsupported(
+            "MATCH path = (person:Person)-[:OWNS]->(service:Service) WITH *, path AS p MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN p",
         );
     }
 

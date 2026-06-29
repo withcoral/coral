@@ -7599,6 +7599,41 @@ async fn cypher_nonterminal_with_scalar_aliases_execute_against_synthetic_source
 }
 
 #[tokio::test]
+async fn cypher_nonterminal_with_star_scalar_aliases_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (owner:Person)-[:OWNS]->(service:Service) \
+         WITH *, owner.name AS owner_name, service.name AS service_name, length(path) AS hops \
+         WHERE owner_name = 'Ada Lovelace' AND hops = 1 \
+         MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+         RETURN owner_name AS owner, service_name AS service, hops, target.name AS target \
+         ORDER BY owner, service, target",
+    )
+    .await
+    .expect("non-terminal WITH * scalar alias query should execute");
+
+    assert!(
+        !execution.translated_sql().contains("WITH"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "hops": 1, "target": "deployments"}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "hops": 1, "target": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_transparent_with_where_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
