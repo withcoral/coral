@@ -32,6 +32,7 @@ use crate::sources::materialization::{
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
+use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug)]
@@ -301,9 +302,10 @@ impl QueryManager {
     ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
-            workspace = %workspace_name,
+            workspace = tracing::field::Empty,
             source.count = tracing::field::Empty,
         );
+        span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
         let _guard = span.enter();
         config.require_workspace(workspace_name)?;
         let mut loaded_sources = Vec::new();
@@ -564,7 +566,7 @@ fn create_query_span(
         "coral.query",
         otel.name = "coral.query",
         operation = operation,
-        workspace = %workspace_name.as_str(),
+        workspace = tracing::field::Empty,
         sql = %sql,
         // Trajectory-memory attribution: present only when the caller tagged the
         // call with a valid `coral-episode-id`. Joins to the intent registered by
@@ -582,6 +584,7 @@ fn create_query_span(
     if let Some(episode_id) = episode_id {
         span.record("episode.id", episode_id.as_str());
     }
+    span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
     span
 }
 

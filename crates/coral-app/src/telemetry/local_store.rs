@@ -20,6 +20,7 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json}
 use tokio::task;
 
 use crate::storage::fs as storage_fs;
+use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
@@ -556,7 +557,6 @@ struct TraceListAggregate {
 #[derive(Debug, Deserialize)]
 struct TraceSpanIdentityRecord {
     trace_id: String,
-    span_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -571,15 +571,10 @@ struct TraceQueryHistorySpanRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct TraceWorkspaceSpanRecord {
+struct TraceWorkspaceRecord {
     trace_id: String,
-    span_id: String,
-    #[serde(default)]
-    parent_span_id: Option<String>,
     attributes_json: String,
 }
-
-type TraceSpanKey = (String, String);
 
 impl TraceStore {
     pub(crate) fn new(dir: PathBuf) -> Self {
@@ -763,17 +758,13 @@ impl TraceStore {
 
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;
-        let span_keys = read_workspace_trace_span_keys(&files, workspace_name)?;
-        if span_keys.is_empty() {
+        let trace_ids = read_workspace_trace_ids(&files, workspace_name)?;
+        if trace_ids.is_empty() {
             return Ok(0);
         }
-        let affected_trace_ids = span_keys
-            .iter()
-            .map(|(trace_id, _span_id)| trace_id.clone())
-            .collect::<HashSet<_>>();
 
-        rewrite_trace_files_excluding_span_keys(&files, &span_keys)?;
-        Ok(affected_trace_ids.len())
+        rewrite_trace_files_excluding_trace_ids(&files, &trace_ids)?;
+        Ok(trace_ids.len())
     }
 
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
@@ -1270,20 +1261,20 @@ fn read_query_history_spans_file(
     Ok(spans_by_id.into_values().collect())
 }
 
-fn read_workspace_trace_span_keys(
+fn read_workspace_trace_ids(
     files: &[TraceStoreFile],
     workspace_name: &str,
-) -> Result<HashSet<TraceSpanKey>, TraceStoreError> {
+) -> Result<HashSet<String>, TraceStoreError> {
     let mut spans = Vec::new();
     for file in files {
-        spans.extend(read_workspace_trace_spans_file(&file.path)?);
+        spans.extend(read_workspace_trace_records_file(&file.path)?);
     }
-    Ok(workspace_trace_span_keys(spans, workspace_name))
+    Ok(workspace_trace_ids(spans, workspace_name))
 }
 
-fn read_workspace_trace_spans_file(
+fn read_workspace_trace_records_file(
     path: &Path,
-) -> Result<Vec<TraceWorkspaceSpanRecord>, TraceStoreError> {
+) -> Result<Vec<TraceWorkspaceRecord>, TraceStoreError> {
     let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
         path: path.to_path_buf(),
         source,
@@ -1311,9 +1302,12 @@ fn read_workspace_trace_spans_file(
             continue;
         }
 
-        match serde_json::from_str::<TraceWorkspaceSpanRecord>(trimmed) {
+        match serde_json::from_str::<TraceWorkspaceRecord>(trimmed) {
             Ok(record) => spans.push(record),
             Err(_source) if !complete_line => break,
+            // Workspace trace cleanup is best-effort. A complete malformed line
+            // cannot be attributed to a workspace, so preserve it during rewrite
+            // instead of blocking deletion of config-owned workspace state.
             Err(_source) => {}
         }
     }
@@ -1321,88 +1315,21 @@ fn read_workspace_trace_spans_file(
     Ok(spans)
 }
 
-fn workspace_trace_span_keys(
-    spans: Vec<TraceWorkspaceSpanRecord>,
-    workspace_name: &str,
-) -> HashSet<TraceSpanKey> {
-    let mut spans_by_trace: HashMap<String, HashMap<String, TraceWorkspaceSpanRecord>> =
-        HashMap::new();
-    let mut children_by_trace: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
-
-    for span in spans {
-        if let Some(parent_span_id) = span.parent_span_id.as_ref() {
-            children_by_trace
-                .entry(span.trace_id.clone())
-                .or_default()
-                .entry(parent_span_id.clone())
-                .or_default()
-                .push(span.span_id.clone());
-        }
-        spans_by_trace
-            .entry(span.trace_id.clone())
-            .or_default()
-            .insert(span.span_id.clone(), span);
-    }
-
-    let mut span_keys = HashSet::new();
-    for (trace_id, trace_spans) in &spans_by_trace {
-        for span in trace_spans.values() {
-            if attributes_match_workspace(&span.attributes_json, workspace_name) {
-                collect_workspace_span_tree(
-                    trace_id,
-                    &span.span_id,
-                    workspace_name,
-                    &spans_by_trace,
-                    &children_by_trace,
-                    &mut span_keys,
-                );
-            }
-        }
-    }
-    span_keys
+fn workspace_trace_ids(spans: Vec<TraceWorkspaceRecord>, workspace_name: &str) -> HashSet<String> {
+    spans
+        .into_iter()
+        .filter(|span| attributes_match_workspace(&span.attributes_json, workspace_name))
+        .map(|span| span.trace_id)
+        .collect()
 }
 
-fn collect_workspace_span_tree(
-    trace_id: &str,
-    root_span_id: &str,
-    workspace_name: &str,
-    spans_by_trace: &HashMap<String, HashMap<String, TraceWorkspaceSpanRecord>>,
-    children_by_trace: &HashMap<String, HashMap<String, Vec<String>>>,
-    span_keys: &mut HashSet<TraceSpanKey>,
-) {
-    let mut pending = vec![(root_span_id.to_string(), true)];
-    while let Some((span_id, is_root)) = pending.pop() {
-        let Some(span) = spans_by_trace
-            .get(trace_id)
-            .and_then(|trace_spans| trace_spans.get(&span_id))
-        else {
-            continue;
-        };
-        if !is_root
-            && workspace_attribute(&span.attributes_json)
-                .is_some_and(|workspace| workspace != workspace_name)
-        {
-            continue;
-        }
-        if !span_keys.insert((trace_id.to_string(), span_id.clone())) {
-            continue;
-        }
-        if let Some(children) = children_by_trace
-            .get(trace_id)
-            .and_then(|trace_children| trace_children.get(&span_id))
-        {
-            pending.extend(children.iter().cloned().map(|child| (child, false)));
-        }
-    }
-}
-
-fn rewrite_trace_files_excluding_span_keys(
+fn rewrite_trace_files_excluding_trace_ids(
     files: &[TraceStoreFile],
-    span_keys: &HashSet<TraceSpanKey>,
+    trace_ids: &HashSet<String>,
 ) -> Result<(), TraceStoreError> {
     let mut rewrites = Vec::new();
     for file in files {
-        if let Some(rewrite) = plan_trace_file_rewrite(&file.path, span_keys)? {
+        if let Some(rewrite) = plan_trace_file_rewrite(&file.path, trace_ids)? {
             rewrites.push(rewrite);
         }
     }
@@ -1446,7 +1373,7 @@ struct TraceFileRewrite {
 
 fn plan_trace_file_rewrite(
     path: &Path,
-    span_keys: &HashSet<TraceSpanKey>,
+    trace_ids: &HashSet<String>,
 ) -> Result<Option<TraceFileRewrite>, TraceStoreError> {
     let original = fs::read(path).map_err(|source| TraceStoreError::ReadFile {
         path: path.to_path_buf(),
@@ -1478,13 +1405,14 @@ fn plan_trace_file_rewrite(
         }
 
         match serde_json::from_str::<TraceSpanIdentityRecord>(trimmed) {
-            Ok(identity)
-                if span_keys.contains(&(identity.trace_id.clone(), identity.span_id.clone())) =>
-            {
+            Ok(identity) if trace_ids.contains(&identity.trace_id) => {
                 removed = true;
             }
             Ok(_identity) => kept.extend_from_slice(line.as_bytes()),
             Err(_source) if !complete_line => kept.extend_from_slice(line.as_bytes()),
+            // Preserve malformed complete lines. The discovery pass applies the
+            // same best-effort policy, so these lines are never attributed to a
+            // workspace trace ID.
             Err(_source) => kept.extend_from_slice(line.as_bytes()),
         }
     }
@@ -1712,7 +1640,7 @@ fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bo
 fn workspace_attribute(attributes_json: &str) -> Option<String> {
     parse_attributes(attributes_json)
         .as_ref()
-        .and_then(|attributes| attr_string(attributes, "workspace"))
+        .and_then(|attributes| attr_string(attributes, WORKSPACE_SPAN_ATTRIBUTE))
 }
 
 fn status_from_attributes(attributes: Option<&JsonValue>) -> Option<StoredTraceStatus> {
