@@ -88,7 +88,7 @@ impl WorkspaceManager {
         };
 
         let deleted_workspace_name = deleted.workspace.name.clone();
-        self.commit_deleted_workspace_dir(&deleted_workspace_name, workspace_dir_backup);
+        Self::commit_deleted_workspace_dir(&deleted_workspace_name, workspace_dir_backup);
         self.prune_deleted_workspace_traces(&deleted_workspace_name)
             .await;
         Ok(deleted.workspace)
@@ -147,7 +147,6 @@ impl WorkspaceManager {
     }
 
     fn commit_deleted_workspace_dir(
-        &self,
         workspace_name: &WorkspaceName,
         backup: Option<DirectoryBackup>,
     ) {
