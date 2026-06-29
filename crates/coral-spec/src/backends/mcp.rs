@@ -483,20 +483,8 @@ fn validate_streamable_http_server(
             "source '{source_name}' MCP streamable_http server url is invalid: {error}"
         ))
     })?;
-    match url.scheme() {
-        "https" => {}
-        "http" if is_local_http_url(&url) => {}
-        "http" => {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' MCP streamable_http server url must use https unless it targets localhost"
-            )));
-        }
-        scheme => {
-            return Err(ManifestError::validation(format!(
-                "source '{source_name}' MCP streamable_http server url has unsupported scheme '{scheme}'"
-            )));
-        }
-    }
+    let context = format!("source '{source_name}' MCP streamable_http server url");
+    crate::validate_https_or_loopback_scheme(&context, &url).map_err(ManifestError::validation)?;
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ManifestError::validation(format!(
             "source '{source_name}' MCP streamable_http server url must not embed credentials in userinfo; use the `auth` block with a secret input instead"
@@ -535,19 +523,6 @@ fn validate_streamable_http_auth_token(
         )));
     }
     Ok(())
-}
-
-fn is_local_http_url(url: &url::Url) -> bool {
-    // Use the typed `Host` enum so IPv4/IPv6 literals are matched by their
-    // parsed address (`is_loopback()`) rather than a textual prefix check —
-    // a hostname like `127.example.com` shares the `127.` prefix but is not
-    // loopback, and IPv6 literals in URLs arrive bracketed.
-    match url.host() {
-        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
-        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
-        None => false,
-    }
 }
 
 fn validate_server_env_value_source(source_name: &str, env: &McpEnvSpec) -> Result<()> {

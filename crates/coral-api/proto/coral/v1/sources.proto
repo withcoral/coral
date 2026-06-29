@@ -285,8 +285,10 @@ message ResolveBundledSourceHostsRequest {
 
 // Returns resolved outbound hosts for a bundled source.
 message ResolveBundledSourceHostsResponse {
-  // Network hosts this source will contact after applying supplied variables.
+  // Concrete network hosts this source will contact after applying supplied variables.
   repeated string hosts = 1;
+  // Host values that could not be determined before setup.
+  repeated string unresolved_hosts = 2;
 }
 
 // Installs one bundled source by name.

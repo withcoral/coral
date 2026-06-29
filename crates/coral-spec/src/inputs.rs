@@ -13,7 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 use url::Url;
 
-use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
+use crate::{
+    ManifestError, ParsedTemplate, Result, TemplateNamespace, is_loopback_url,
+    validate_https_or_loopback_scheme_parts,
+};
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
@@ -188,20 +191,24 @@ fn render_oauth_endpoint_url(
 }
 
 fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &str) -> Result<()> {
+    // The prefix may end in the literal scheme delimiter before a required
+    // variable supplies the host, e.g. `http://{{input.HOST}}/oauth/token`.
+    // Validate the known scheme here; the fully rendered URL is validated by
+    // `render_oauth_endpoint_url` before any OAuth request is made.
     let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
     if let Ok(url) = Url::parse(parse_prefix) {
-        return crate::validate_https_or_loopback_scheme(context, &url)
-            .map_err(ManifestError::validation);
+        return validate_https_or_loopback_scheme_parts(
+            context,
+            url.scheme(),
+            Some(is_loopback_url(&url)),
+        )
+        .map_err(ManifestError::validation);
     }
     let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
         return Ok(());
     };
-    match scheme {
-        "https" | "http" => Ok(()),
-        scheme => Err(ManifestError::validation(format!(
-            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
-        ))),
-    }
+    validate_https_or_loopback_scheme_parts(context, scheme, None)
+        .map_err(ManifestError::validation)
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -1117,6 +1124,9 @@ fn redirect_bind_port(
             "{context} must use http"
         )));
     }
+    // Keep redirect hosts narrower than the generic provider-endpoint loopback
+    // policy: the OAuth callback binder must work portably from the authored
+    // host string, and `localhost`/`127.0.0.1` are the supported contract.
     let host = url.host_str().unwrap_or_default();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(ManifestError::validation(format!(
@@ -1932,6 +1942,24 @@ tables: []
     }
 
     #[test]
+    fn rejects_redirect_uri_loopback_hosts_outside_supported_bind_contract() {
+        for redirect_uri in [
+            "http://127.0.0.2:53682/oauth/callback",
+            "http://[::1]:53682/oauth/callback",
+        ] {
+            let error = collect(
+                &oauth_input(DEFAULT_OAUTH_CLIENT)
+                    .replace("http://127.0.0.1:53682/oauth/callback", redirect_uri),
+            )
+            .expect_err("redirect URI should fail the narrow bind contract");
+            assert!(
+                error.to_string().contains("loopback host"),
+                "unexpected error for `{redirect_uri}`: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_malformed_oauth_endpoint_urls() {
         let error = collect(
             &oauth_input(
@@ -2088,6 +2116,65 @@ tables: []
             ),
         )
         .expect("required variable endpoint parsing should be deferred");
+    }
+
+    #[test]
+    fn defers_oauth_endpoint_url_parsing_when_required_variable_supplies_authority() {
+        let inputs = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "\"{{input.OAUTH_HOST}}/oauth/token\"",
+                ),
+        )
+        .expect("leading required variable endpoint parsing should be deferred");
+        let oauth = inputs
+            .iter()
+            .find(|input| input.key == "API_TOKEN")
+            .and_then(|input| input.credential.as_ref())
+            .and_then(|credential| credential.methods[0].oauth.as_ref())
+            .expect("oauth");
+        let source_inputs = BTreeMap::from([(
+            "OAUTH_HOST".to_string(),
+            "http://provider.example.com".to_string(),
+        )]);
+        let error = oauth
+            .endpoint_urls(&source_inputs)
+            .expect_err("rendered remote HTTP endpoint should fail at runtime");
+
+        assert!(
+            error
+                .to_string()
+                .contains("OAuth token URL must use https unless it targets localhost"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_oauth_endpoint_template_scheme_with_unresolved_host() {
+        let error = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "x-coral-unsafe://{{input.OAUTH_HOST}}/oauth/token",
+                ),
+        )
+        .expect_err("unsupported scheme should fail even with unresolved host");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported scheme 'x-coral-unsafe'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

@@ -813,22 +813,16 @@ async fn run_source_add_bundled(
         .collect::<Result<Vec<_>, _>>()
         .map_err(anyhow::Error::from)?;
     if interactive {
-        // Prompt only the host-determining variables first, confirm the hosts,
-        // then collect secrets — so the user reviews where the source connects
-        // before handing over any credentials.
-        let host_variables = source_ops::prompt_variables_for_host_confirmation(&inputs)?;
-        let hosts =
-            source_ops::resolve_bundled_source_hosts(app, &available.name, host_variables.clone())
-                .await?;
-        if !source_ops::confirm_source_hosts(&hosts, true)? {
+        let collected = source_ops::collect_inputs_confirming_hosts(
+            &inputs,
+            source_ops::CredentialPromptMode::EnvFirst,
+            |variables| source_ops::resolve_bundled_source_hosts(app, &available.name, variables),
+        )
+        .await?;
+        let Some(collected) = collected else {
             println!("Cancelled. Source '{}' was not connected.", available.name);
             return Ok(None);
-        }
-        let collected = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
-            &inputs,
-            host_variables,
-            source_ops::CredentialPromptMode::EnvFirst,
-        )?;
+        };
         Ok(Some(
             source_ops::add_bundled_source_with_credentials(app, &available.name, collected)
                 .await?,
@@ -843,9 +837,7 @@ async fn run_source_add_bundled(
         let hosts =
             source_ops::resolve_bundled_source_hosts(app, &available.name, variables.clone())
                 .await?;
-        // Non-interactive setup has no prompt to decline; the host list is
-        // printed for visibility only.
-        source_ops::confirm_source_hosts(&hosts, false)?;
+        source_ops::print_source_hosts(&hosts);
         Ok(Some(
             source_ops::add_bundled_source(app, &available.name, variables, secrets).await?,
         ))
@@ -859,21 +851,22 @@ async fn run_source_add_file(
 ) -> Result<Option<Source>, CliError> {
     let (manifest_yaml, manifest) = source_ops::load_validated_manifest_file(&file)?;
     if interactive {
-        let host_variables =
-            source_ops::prompt_variables_for_host_confirmation(manifest.declared_inputs())?;
-        let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &host_variables);
-        if !source_ops::confirm_source_hosts(&hosts, true)? {
+        let collected = source_ops::collect_inputs_confirming_hosts(
+            manifest.declared_inputs(),
+            source_ops::CredentialPromptMode::EnvFirst,
+            |variables| {
+                let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables);
+                async move { Ok(hosts) }
+            },
+        )
+        .await?;
+        let Some(collected) = collected else {
             println!(
                 "Cancelled. Source '{}' was not connected.",
                 manifest.schema_name()
             );
             return Ok(None);
-        }
-        let collected = source_ops::prompt_for_remaining_inputs_with_credential_methods_in_mode(
-            manifest.declared_inputs(),
-            host_variables,
-            source_ops::CredentialPromptMode::EnvFirst,
-        )?;
+        };
         Ok(Some(
             source_ops::import_source_with_credentials(app, manifest_yaml, collected).await?,
         ))
@@ -885,9 +878,7 @@ async fn run_source_add_file(
         let (variables, secrets) =
             source_ops::collect_inputs_from_env(manifest.declared_inputs(), interactive_command)?;
         let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables);
-        // Non-interactive setup has no prompt to decline; the host list is
-        // printed for visibility only.
-        source_ops::confirm_source_hosts(&hosts, false)?;
+        source_ops::print_source_hosts(&hosts);
         Ok(Some(
             source_ops::import_source(app, manifest_yaml, variables, secrets).await?,
         ))

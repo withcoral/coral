@@ -73,6 +73,7 @@ async fn onboard_update_credentials_confirms_hosts_before_reconfigure() {
             })
             .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
                 hosts: vec!["github.enterprise.example".to_string()],
+                unresolved_hosts: Vec::new(),
             }),
     )
     .await;

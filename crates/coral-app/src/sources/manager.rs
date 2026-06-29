@@ -30,7 +30,7 @@ use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 use coral_spec::{
     ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec,
-    ValidatedSourceManifest, parse_source_manifest_yaml,
+    OutboundHostReview, ValidatedSourceManifest, parse_source_manifest_yaml,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
@@ -249,7 +249,7 @@ impl SourceManager {
     pub(crate) fn resolve_bundled_source_hosts(
         source_name: &SourceName,
         variables: &[SourceBinding],
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<OutboundHostReview, AppError> {
         let bundled = load_bundled_source(source_name)?;
         Self::resolve_manifest_hosts(&bundled.manifest_yaml, variables)
     }
@@ -257,7 +257,7 @@ impl SourceManager {
     pub(crate) fn resolve_manifest_hosts(
         manifest_yaml: &str,
         variables: &[SourceBinding],
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<OutboundHostReview, AppError> {
         let manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let source_variables = variables
@@ -265,7 +265,7 @@ impl SourceManager {
             .filter(|binding| !binding.value.is_empty())
             .map(|binding| (binding.key.clone(), binding.value.clone()))
             .collect::<BTreeMap<_, _>>();
-        Ok(manifest.outbound_hosts_with_input_values(&source_variables))
+        Ok(manifest.outbound_host_review_with_input_values(&source_variables))
     }
 
     pub(crate) fn create_bundled_source(
@@ -1489,7 +1489,10 @@ tables:
         .expect("resolve hosts");
 
         assert!(
-            hosts.iter().any(|host| host == "api.enterprise.example"),
+            hosts
+                .hosts
+                .iter()
+                .any(|host| host == "api.enterprise.example"),
             "expected resolved API host, got {hosts:?}"
         );
     }

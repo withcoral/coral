@@ -13,12 +13,21 @@ use url::Url;
 use crate::{
     ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
     ValidatedSourceManifest,
-    backends::file::FileObjectStoreSpec,
+    backends::file::{FileObjectStoreSpec, s3_endpoint_dns_suffix_for_region},
     v4::{SurfaceDescriptor, openapi_document_metadata},
 };
 
 const UNRESOLVED_OPENAPI_SERVER_HOST: &str =
-    "OpenAPI servers[0].url runtime host (unresolved; declare base_url to review before import)";
+    "OpenAPI servers[0].url runtime host; declare base_url to review before import";
+
+/// Concrete and unresolved outbound-host review data for source setup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundHostReview {
+    /// Concrete network hosts, with ports when non-default ports are authored.
+    pub hosts: Vec<String>,
+    /// Host values that could not be resolved before setup.
+    pub unresolved_hosts: Vec<String>,
+}
 
 impl ValidatedSourceManifest {
     /// Returns every network host this source will contact, de-duplicated and
@@ -26,36 +35,51 @@ impl ValidatedSourceManifest {
     ///
     /// Hosts are collected from the HTTP base URL, OAuth provider
     /// authorization/token endpoints, remote MCP server URLs, and S3 service
-    /// endpoints. A URL whose host depends on a source variable input with no
-    /// manifest default cannot be resolved statically; its unresolved `{{...}}`
-    /// template string is returned verbatim so callers can still show it to the
-    /// user. A DSL v4 `OpenAPI` surface that omits `base_url` derives its
-    /// runtime host from the materialized `OpenAPI` `servers[0].url`; local
-    /// descriptors are read here so that derived host can be shown during
-    /// preflight confirmation. Remote or unreadable descriptors are surfaced as
-    /// unresolved so callers do not silently omit the runtime host.
+    /// endpoints. This compatibility helper returns only concrete hosts; use
+    /// [`ValidatedSourceManifest::outbound_host_review`] when callers also need
+    /// to surface unresolved input-driven endpoints.
     #[must_use]
     pub fn outbound_hosts(&self) -> Vec<String> {
-        self.outbound_hosts_with_input_values(&BTreeMap::new())
+        self.outbound_host_review().hosts
     }
 
     /// Returns every network host this source will contact after substituting
     /// resolved non-secret source input values, de-duplicated and sorted.
     ///
-    /// Input values override manifest defaults. Any input-driven endpoint that
-    /// still cannot be resolved is returned as its unresolved `{{...}}`
-    /// template string so callers can show the pending endpoint to the user.
+    /// Input values override manifest defaults. This compatibility helper
+    /// returns only concrete hosts; use
+    /// [`ValidatedSourceManifest::outbound_host_review_with_input_values`] when
+    /// callers also need to surface unresolved input-driven endpoints.
     #[must_use]
     pub fn outbound_hosts_with_input_values(
         &self,
         source_inputs: &BTreeMap<String, String>,
     ) -> Vec<String> {
+        self.outbound_host_review_with_input_values(source_inputs)
+            .hosts
+    }
+
+    /// Returns concrete and unresolved outbound-host review data.
+    #[must_use]
+    pub fn outbound_host_review(&self) -> OutboundHostReview {
+        self.outbound_host_review_with_input_values(&BTreeMap::new())
+    }
+
+    /// Returns concrete and unresolved outbound-host review data after
+    /// substituting resolved non-secret source input values.
+    #[must_use]
+    pub fn outbound_host_review_with_input_values(
+        &self,
+        source_inputs: &BTreeMap<String, String>,
+    ) -> OutboundHostReview {
         let mut hosts = BTreeSet::new();
+        let mut unresolved_hosts = BTreeSet::new();
         let inputs = self.declared_inputs();
 
         if let Some(http) = self.as_http() {
             collect_host(
                 &mut hosts,
+                &mut unresolved_hosts,
                 &render_with_input_values(&http.base_url, inputs, source_inputs),
             );
         }
@@ -77,6 +101,7 @@ impl ValidatedSourceManifest {
                 for url in endpoint_urls.into_iter().flatten() {
                     collect_host(
                         &mut hosts,
+                        &mut unresolved_hosts,
                         &render_string_template_with_input_values(url, inputs, source_inputs),
                     );
                 }
@@ -87,6 +112,7 @@ impl ValidatedSourceManifest {
             for table in &file.tables {
                 collect_file_source_hosts(
                     &mut hosts,
+                    &mut unresolved_hosts,
                     &render_with_input_values(&table.source.location, inputs, source_inputs),
                     table.source.object_store.as_ref(),
                     inputs,
@@ -100,6 +126,7 @@ impl ValidatedSourceManifest {
         {
             collect_host(
                 &mut hosts,
+                &mut unresolved_hosts,
                 &render_string_template_with_input_values(url, inputs, source_inputs),
             );
         }
@@ -107,14 +134,19 @@ impl ValidatedSourceManifest {
         if let Some(v4) = self.as_v4() {
             for surface in &v4.surfaces {
                 if let SurfaceDescriptor::Url { url } = &surface.descriptor {
-                    collect_host(&mut hosts, url);
+                    collect_host(&mut hosts, &mut unresolved_hosts, url);
                 }
 
                 if surface.openapi_runtime.base_url.raw().trim().is_empty() {
-                    collect_v4_derived_openapi_host(&mut hosts, &surface.descriptor);
+                    collect_v4_derived_openapi_host(
+                        &mut hosts,
+                        &mut unresolved_hosts,
+                        &surface.descriptor,
+                    );
                 } else {
                     collect_host(
                         &mut hosts,
+                        &mut unresolved_hosts,
                         &render_with_input_values(
                             &surface.openapi_runtime.base_url,
                             inputs,
@@ -125,11 +157,18 @@ impl ValidatedSourceManifest {
             }
         }
 
-        hosts.into_iter().collect()
+        OutboundHostReview {
+            hosts: hosts.into_iter().collect(),
+            unresolved_hosts: unresolved_hosts.into_iter().collect(),
+        }
     }
 }
 
-fn collect_v4_derived_openapi_host(hosts: &mut BTreeSet<String>, descriptor: &SurfaceDescriptor) {
+fn collect_v4_derived_openapi_host(
+    hosts: &mut BTreeSet<String>,
+    unresolved_hosts: &mut BTreeSet<String>,
+    descriptor: &SurfaceDescriptor,
+) {
     if let SurfaceDescriptor::File { file } = descriptor
         && let Ok(bytes) = std::fs::read(file)
         && let Ok(metadata) = openapi_document_metadata(&bytes)
@@ -138,7 +177,7 @@ fn collect_v4_derived_openapi_host(hosts: &mut BTreeSet<String>, descriptor: &Su
     {
         return;
     }
-    hosts.insert(UNRESOLVED_OPENAPI_SERVER_HOST.to_string());
+    unresolved_hosts.insert(UNRESOLVED_OPENAPI_SERVER_HOST.to_string());
 }
 
 /// Renders a template, substituting input tokens with their manifest default
@@ -154,27 +193,22 @@ fn render_with_input_values(
         match part {
             TemplatePart::Literal(text) => rendered.push_str(text),
             TemplatePart::Token(token) => {
-                let resolved = if matches!(token.namespace(), TemplateNamespace::Input) {
-                    source_inputs
+                let resolved = match token.namespace() {
+                    TemplateNamespace::Input => source_inputs
                         .get(token.key())
                         .map(|value| value.trim())
                         .filter(|value| !value.is_empty())
                         .map(str::to_string)
-                } else {
-                    None
-                }
-                .or_else(|| token.default_value().map(str::to_string))
-                .or_else(|| {
-                    if matches!(token.namespace(), TemplateNamespace::Input) {
-                        inputs
-                            .iter()
-                            .find(|input| input.key == token.key())
-                            .map(|input| input.default_value.clone())
-                            .filter(|value| !value.is_empty())
-                    } else {
-                        None
-                    }
-                });
+                        .or_else(|| token.default_value().map(str::to_string))
+                        .or_else(|| {
+                            inputs
+                                .iter()
+                                .find(|input| input.key == token.key())
+                                .map(|input| input.default_value.clone())
+                                .filter(|value| !value.is_empty())
+                        }),
+                    _ => token.default_value().map(str::to_string),
+                };
                 if let Some(value) = resolved {
                     rendered.push_str(&value);
                 } else {
@@ -190,6 +224,7 @@ fn render_with_input_values(
 
 fn collect_file_source_hosts(
     hosts: &mut BTreeSet<String>,
+    unresolved_hosts: &mut BTreeSet<String>,
     rendered_location: &str,
     object_store: Option<&FileObjectStoreSpec>,
     inputs: &[ManifestInputSpec],
@@ -200,14 +235,18 @@ fn collect_file_source_hosts(
         return;
     }
     if has_scheme(rendered_location, "s3") {
-        collect_s3_service_host(hosts, object_store, inputs, source_inputs);
+        collect_s3_service_host(hosts, unresolved_hosts, object_store, inputs, source_inputs);
         return;
     }
-    collect_host(hosts, rendered_location);
+    // File-source validation rejects unsupported remote schemes before this
+    // point. Keep a defensive host extraction path so future supported schemes
+    // are still visible during setup.
+    collect_host(hosts, unresolved_hosts, rendered_location);
 }
 
 fn collect_s3_service_host(
     hosts: &mut BTreeSet<String>,
+    unresolved_hosts: &mut BTreeSet<String>,
     object_store: Option<&FileObjectStoreSpec>,
     inputs: &[ManifestInputSpec],
     source_inputs: &BTreeMap<String, String>,
@@ -223,7 +262,12 @@ fn collect_s3_service_host(
     if region.is_empty() {
         return;
     }
-    hosts.insert(format!("s3.{region}.amazonaws.com"));
+    let host = format!("s3.{region}.{}", s3_endpoint_dns_suffix_for_region(region));
+    if is_unresolved_host(&host) {
+        unresolved_hosts.insert(host);
+    } else {
+        hosts.insert(host);
+    }
 }
 
 fn render_string_template_with_input_values(
@@ -237,41 +281,56 @@ fn render_string_template_with_input_values(
     )
 }
 
-/// Extracts a displayable host from a (possibly templated) URL string and adds
-/// it to `hosts`.
-fn collect_host(hosts: &mut BTreeSet<String>, raw: &str) {
+/// Extracts a displayable host from a URL string or records the raw value as
+/// unresolved when no concrete remote host can be derived.
+fn collect_host(hosts: &mut BTreeSet<String>, unresolved_hosts: &mut BTreeSet<String>, raw: &str) {
     let raw = raw.trim();
-    if raw.is_empty() || has_scheme(raw, "file") {
+    if raw.is_empty() {
         return;
     }
-    if insert_parsed_url_host(hosts, raw) {
-        return;
+    match parsed_url_host(raw) {
+        HostExtraction::Host(host) => {
+            hosts.insert(host);
+        }
+        HostExtraction::NoRemoteHost => {}
+        HostExtraction::Unresolved => {
+            // Hostless, templated, or otherwise unparseable: surface the raw
+            // string so callers can show that an input-driven endpoint exists.
+            unresolved_hosts.insert(raw.to_string());
+        }
     }
-    if matches!(Url::parse(raw), Ok(url) if url.scheme() == "file") {
-        return;
-    }
-    // Hostless, templated, or otherwise unparseable: surface the raw string so
-    // the user still sees that an input-driven endpoint exists.
-    hosts.insert(raw.to_string());
 }
 
 fn insert_parsed_url_host(hosts: &mut BTreeSet<String>, raw: &str) -> bool {
+    match parsed_url_host(raw) {
+        HostExtraction::Host(host) => hosts.insert(host),
+        HostExtraction::NoRemoteHost | HostExtraction::Unresolved => false,
+    }
+}
+
+enum HostExtraction {
+    Host(String),
+    NoRemoteHost,
+    Unresolved,
+}
+
+fn parsed_url_host(raw: &str) -> HostExtraction {
     let Ok(url) = Url::parse(raw) else {
-        return false;
+        return HostExtraction::Unresolved;
     };
-    // A `file://` location reads from the local filesystem; there is no remote
-    // host to report.
+    // Both `file://...` and `file:/...` parse as local filesystem URLs with no
+    // remote network host.
     if url.scheme() == "file" {
-        return false;
+        return HostExtraction::NoRemoteHost;
     }
     let Some(host) = url.host_str() else {
-        return false;
+        return HostExtraction::Unresolved;
     };
-    match url.port() {
-        Some(port) => hosts.insert(format!("{host}:{port}")),
-        None => hosts.insert(host.to_string()),
+    let host = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
     };
-    true
+    HostExtraction::Host(host)
 }
 
 fn has_scheme(raw: &str, expected: &str) -> bool {
@@ -279,6 +338,10 @@ fn has_scheme(raw: &str, expected: &str) -> bool {
         return false;
     };
     scheme.eq_ignore_ascii_case(expected)
+}
+
+fn is_unresolved_host(host: &str) -> bool {
+    host.contains("{{") || host.contains("}}")
 }
 
 #[cfg(test)]
@@ -430,7 +493,7 @@ tables:
 
     #[test]
     fn surfaces_unresolved_templated_base_url() {
-        let found = hosts(
+        let manifest = parse_source_manifest_yaml(
             r#"
 name: demo
 version: 1.0.0
@@ -451,8 +514,15 @@ tables:
       - name: id
         type: Utf8
 "#,
+        )
+        .expect("manifest should parse");
+        let review = manifest.outbound_host_review();
+
+        assert!(review.hosts.is_empty());
+        assert_eq!(
+            review.unresolved_hosts,
+            vec!["{{input.API_BASE}}".to_string()]
         );
-        assert_eq!(found, vec!["{{input.API_BASE}}".to_string()]);
     }
 
     #[test]
@@ -538,8 +608,10 @@ surfaces:
         ))
         .expect("manifest should parse");
 
+        let review = manifest.outbound_host_review();
+        assert!(review.hosts.is_empty());
         assert_eq!(
-            manifest.outbound_hosts(),
+            review.unresolved_hosts,
             vec![UNRESOLVED_OPENAPI_SERVER_HOST.to_string()]
         );
         std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
@@ -559,12 +631,11 @@ surfaces:
         )
         .expect("manifest should parse");
 
+        let review = manifest.outbound_host_review();
+        assert_eq!(review.hosts, vec!["specs.example.com".to_string()]);
         assert_eq!(
-            manifest.outbound_hosts(),
-            vec![
-                UNRESOLVED_OPENAPI_SERVER_HOST.to_string(),
-                "specs.example.com".to_string()
-            ]
+            review.unresolved_hosts,
+            vec![UNRESOLVED_OPENAPI_SERVER_HOST.to_string()]
         );
     }
 
@@ -791,9 +862,11 @@ tables:
     #[test]
     fn omits_local_file_urls_without_double_slashes() {
         let mut found = BTreeSet::new();
-        super::collect_host(&mut found, "file:/tmp/demo");
+        let mut unresolved = BTreeSet::new();
+        super::collect_host(&mut found, &mut unresolved, "file:/tmp/demo");
 
         assert!(found.is_empty());
+        assert!(unresolved.is_empty());
     }
 
     #[test]
@@ -853,8 +926,10 @@ tables:
         )
         .expect("manifest should parse");
 
+        let review = manifest.outbound_host_review();
+        assert!(review.hosts.is_empty());
         assert_eq!(
-            manifest.outbound_hosts(),
+            review.unresolved_hosts,
             vec!["s3.{{input.AWS_REGION}}.amazonaws.com".to_string()]
         );
 
@@ -862,6 +937,42 @@ tables:
         assert_eq!(
             manifest.outbound_hosts_with_input_values(&source_inputs),
             vec!["s3.eu-west-1.amazonaws.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn includes_s3_service_host_with_china_region_suffix() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+inputs:
+  AWS_REGION:
+    kind: variable
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+
+        let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "cn-north-1".to_string())]);
+        assert_eq!(
+            manifest.outbound_hosts_with_input_values(&source_inputs),
+            vec!["s3.cn-north-1.amazonaws.com.cn".to_string()]
         );
     }
 

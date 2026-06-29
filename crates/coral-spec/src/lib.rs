@@ -103,6 +103,7 @@ pub use common::{
     SourceTableFunctionKind, SourceTableFunctionSpec, TableCommon, TableFunctionArgSpec,
     TimestampInput, ValidatedPagination, ValidatedPaginationMode, ValueSourceSpec,
 };
+pub use endpoints::OutboundHostReview;
 pub use error::{ManifestError, Result};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -118,7 +119,8 @@ pub use parser::{
 };
 pub use template::{ParsedTemplate, TemplateNamespace, TemplatePart, TemplateToken};
 pub use url_policy::{
-    is_loopback_url, validate_https_or_loopback_scheme, validate_https_or_loopback_url,
+    is_loopback_url, validate_https_or_loopback_scheme, validate_https_or_loopback_scheme_parts,
+    validate_https_or_loopback_url,
 };
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,

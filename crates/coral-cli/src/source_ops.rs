@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{IsTerminal, Read as _, Write, stdin, stdout};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -24,8 +25,8 @@ use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_w
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, ValidatedSourceManifest,
-    parse_source_manifest_yaml,
+    ManifestInputKind, ManifestInputSpec, ManifestOAuthCredentialSpec, OutboundHostReview,
+    ValidatedSourceManifest, parse_source_manifest_yaml,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -86,11 +87,11 @@ pub(crate) async fn resolve_bundled_source_hosts(
     app: &AppClient,
     name: &str,
     variables: Vec<SourceVariable>,
-) -> Result<Vec<String>, anyhow::Error> {
+) -> Result<OutboundHostReview, anyhow::Error> {
     // Bundled sources are resolved by catalog name because their manifest YAML
     // lives in coral-app. File imports already have a parsed local manifest;
     // use `resolve_manifest_source_hosts` for that path instead.
-    Ok(app
+    let response = app
         .source_client()
         .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
             workspace: Some(default_workspace()),
@@ -98,15 +99,18 @@ pub(crate) async fn resolve_bundled_source_hosts(
             variables,
         }))
         .await?
-        .into_inner()
-        .hosts)
+        .into_inner();
+    Ok(OutboundHostReview {
+        hosts: response.hosts,
+        unresolved_hosts: response.unresolved_hosts,
+    })
 }
 
 pub(crate) fn resolve_manifest_source_hosts(
     manifest: &ValidatedSourceManifest,
     variables: &[SourceVariable],
-) -> Vec<String> {
-    manifest.outbound_hosts_with_input_values(&source_variables_map(variables))
+) -> OutboundHostReview {
+    manifest.outbound_host_review_with_input_values(&source_variables_map(variables))
 }
 
 pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
@@ -171,6 +175,32 @@ pub(crate) struct CollectedSourceInputs {
     pub(crate) secrets: Vec<SourceSecret>,
     oauth_credential_retrievals: Vec<OAuthCredentialRetrieval>,
     oauth_labels: BTreeMap<String, String>,
+}
+
+struct HostConfirmationVariables {
+    variables: Vec<SourceVariable>,
+}
+
+impl HostConfirmationVariables {
+    fn variables(&self) -> &[SourceVariable] {
+        &self.variables
+    }
+
+    fn confirmed(self) -> HostConfirmedVariables {
+        HostConfirmedVariables {
+            variables: self.variables,
+        }
+    }
+}
+
+struct HostConfirmedVariables {
+    variables: Vec<SourceVariable>,
+}
+
+impl HostConfirmedVariables {
+    fn into_inner(self) -> Vec<SourceVariable> {
+        self.variables
+    }
 }
 
 impl CollectedSourceInputs {
@@ -630,36 +660,43 @@ pub(crate) fn require_interactive() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Shows the network hosts a source will contact and, in interactive mode,
-/// asks the user to confirm before installation or reconfiguration proceeds.
-///
-/// Returns `true` when installation or reconfiguration should continue. In
-/// non-interactive mode the hosts are printed for visibility and `true` is
-/// returned without prompting, since there is no user available to answer.
-pub(crate) fn confirm_source_hosts(
-    hosts: &[String],
-    interactive: bool,
-) -> Result<bool, anyhow::Error> {
+/// Shows the network hosts a source will contact before installation or
+/// reconfiguration proceeds.
+pub(crate) fn print_source_hosts(review: &OutboundHostReview) {
     println!();
-    if hosts.is_empty() {
+    if review.hosts.is_empty() && review.unresolved_hosts.is_empty() {
         println!(
             "{}",
             style("This source does not declare any outbound network hosts.").dim()
         );
-    } else {
+        return;
+    }
+    if !review.hosts.is_empty() {
         println!(
             "{}",
             style("This source will connect to the following hosts:").bold()
         );
-        for host in hosts {
+        for host in &review.hosts {
             println!("  {} {host}", style("•").dim());
         }
     }
-
-    if !interactive {
-        return Ok(true);
+    if !review.unresolved_hosts.is_empty() {
+        if !review.hosts.is_empty() {
+            println!();
+        }
+        println!(
+            "{}",
+            style("Some outbound hosts could not be determined before setup:").bold()
+        );
+        for host in &review.unresolved_hosts {
+            println!("  {} {host}", style("•").dim());
+        }
     }
+}
 
+/// Prompts the user to confirm the already-displayed outbound hosts.
+pub(crate) fn confirm_source_hosts(review: &OutboundHostReview) -> Result<bool, anyhow::Error> {
+    print_source_hosts(review);
     println!();
     let proceed = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Continue with this source?")
@@ -687,24 +724,42 @@ pub(crate) fn source_name_arg(name: Option<&str>) -> Result<String, anyhow::Erro
     Ok(name.to_string())
 }
 
-pub(crate) fn prompt_for_remaining_inputs_with_credential_methods_in_mode(
+pub(crate) async fn collect_inputs_confirming_hosts<Resolve, ResolveFuture>(
     inputs: &[ManifestInputSpec],
-    variables: Vec<SourceVariable>,
+    mode: CredentialPromptMode,
+    resolve_hosts: Resolve,
+) -> Result<Option<CollectedSourceInputs>, anyhow::Error>
+where
+    Resolve: FnOnce(Vec<SourceVariable>) -> ResolveFuture,
+    ResolveFuture: Future<Output = Result<OutboundHostReview, anyhow::Error>>,
+{
+    let host_variables = prompt_variables_for_host_confirmation(inputs)?;
+    let hosts = resolve_hosts(host_variables.variables().to_vec()).await?;
+    if !confirm_source_hosts(&hosts)? {
+        return Ok(None);
+    }
+    collect_secret_inputs_with_credential_methods_in_mode(inputs, host_variables.confirmed(), mode)
+        .map(Some)
+}
+
+fn collect_secret_inputs_with_credential_methods_in_mode(
+    inputs: &[ManifestInputSpec],
+    variables: HostConfirmedVariables,
     mode: CredentialPromptMode,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
-    collect_remaining_inputs_with_env_lookup(inputs, variables, mode, |key| {
+    collect_secret_inputs_with_env_lookup(inputs, variables, mode, |key| {
         read_source_input_env(key).unwrap_or_default()
     })
 }
 
-fn collect_remaining_inputs_with_env_lookup(
+fn collect_secret_inputs_with_env_lookup(
     inputs: &[ManifestInputSpec],
-    variables: Vec<SourceVariable>,
+    variables: HostConfirmedVariables,
     mode: CredentialPromptMode,
     mut read_env: impl FnMut(&str) -> String,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
     let mut collected = CollectedSourceInputs::new();
-    collected.variables = variables;
+    collected.variables = variables.into_inner();
 
     for input in inputs {
         if input.kind == ManifestInputKind::Variable {
@@ -780,9 +835,9 @@ pub(crate) fn collect_inputs_from_env(
 /// requested. Used by the interactive `source add` and `onboard` flows; the
 /// non-interactive path instead collects every input once via
 /// [`collect_inputs_from_env`] and reuses its variables for host resolution.
-pub(crate) fn prompt_variables_for_host_confirmation(
+fn prompt_variables_for_host_confirmation(
     inputs: &[ManifestInputSpec],
-) -> Result<Vec<SourceVariable>, anyhow::Error> {
+) -> Result<HostConfirmationVariables, anyhow::Error> {
     let mut variables = Vec::new();
     for input in inputs
         .iter()
@@ -800,7 +855,7 @@ pub(crate) fn prompt_variables_for_host_confirmation(
             variables.push(variable);
         }
     }
-    Ok(variables)
+    Ok(HostConfirmationVariables { variables })
 }
 
 pub(crate) fn source_variables_map(variables: &[SourceVariable]) -> BTreeMap<String, String> {

@@ -979,12 +979,12 @@ pub(crate) fn validate_template(
 /// Reject it at validation instead, mirroring the rule already enforced for
 /// OAuth endpoint templates.
 ///
-/// Only tokens in the scheme/authority (host[:port]) region are restricted; a
-/// secret that appears later in the path or query (e.g. a bot token in
+/// Only tokens in the host-determining prefix are restricted. For URLs, that is
+/// the scheme/authority region; for bare host values like an S3 region, that is
+/// the entire value. A secret that appears later in the path or query (e.g. a bot token in
 /// `https://api.telegram.org/bot{{input.TOKEN}}`) does not change which host is
-/// contacted and is allowed. A bare value with no `://` (e.g. an S3 region) is
-/// treated as entirely host-determining. Undeclared references are left to the
-/// field's own reference check.
+/// contacted and is allowed. Undeclared references are left to the field's own
+/// reference check.
 pub(crate) fn validate_host_template_inputs(
     context: &str,
     template: &ParsedTemplate,

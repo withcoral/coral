@@ -92,6 +92,7 @@ fn gitlab_host_confirmation_config() -> MockServerConfig {
         })
         .with_resolve_bundled_source_hosts(ResolveBundledSourceHostsResponse {
             hosts: vec!["gitlab.internal".to_string()],
+            unresolved_hosts: Vec::new(),
         })
 }
 
@@ -1005,6 +1006,46 @@ async fn source_add_confirms_hosts_resolved_from_env_variables() {
         &create_requests[0].variables,
         GITLAB_API_BASE_KEY,
         GITLAB_API_BASE_VALUE,
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_add_prints_unresolved_hosts_separately() {
+    let server = MockServer::start_with_config(
+        gitlab_host_confirmation_config().with_resolve_bundled_source_hosts(
+            ResolveBundledSourceHostsResponse {
+                hosts: vec!["gitlab.internal".to_string()],
+                unresolved_hosts: vec!["{{input.RUNTIME_HOST}}".to_string()],
+            },
+        ),
+    )
+    .await;
+
+    let assert = server
+        .cmd()
+        .args(["source", "add", "gitlab"])
+        .env(GITLAB_API_BASE_KEY, GITLAB_API_BASE_VALUE)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("This source will connect to the following hosts:"),
+        "expected concrete host section in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("gitlab.internal"),
+        "expected concrete host in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Some outbound hosts could not be determined before setup:"),
+        "expected unresolved host section in stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("{{input.RUNTIME_HOST}}"),
+        "expected unresolved host marker in stdout: {stdout}"
     );
 
     server.shutdown().await;

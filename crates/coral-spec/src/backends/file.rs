@@ -314,6 +314,21 @@ fn validate_s3_object_store(
     auth.validate(schema, table)
 }
 
+/// Returns the AWS endpoint DNS suffix implied by an S3 region.
+///
+/// The object-store runtime defaults to the standard AWS partition unless an
+/// endpoint is provided explicitly. China regions use a different DNS suffix, so
+/// callers that display or configure the effective S3 endpoint must account for
+/// that partition.
+#[must_use]
+pub fn s3_endpoint_dns_suffix_for_region(region: &str) -> &'static str {
+    if region.trim().starts_with("cn-") {
+        "amazonaws.com.cn"
+    } else {
+        "amazonaws.com"
+    }
+}
+
 /// Credential mode for an S3 object store.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

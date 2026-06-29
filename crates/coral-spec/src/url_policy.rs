@@ -1,11 +1,11 @@
 //! Shared URL scheme policy for OAuth endpoints and loopback redirects.
 //!
-//! Coral requires OAuth provider endpoints and redirect URLs to use `https`,
-//! permitting plain `http` only when the host is loopback. The same policy is
-//! enforced while validating a manifest (here in `coral-spec`), at OAuth
-//! runtime in `coral-app`, and during the CLI loopback redirect flow. Keeping
-//! the allowed-scheme set, the loopback definition, and the user-facing
-//! messages in one place stops those three copies from drifting apart.
+//! Coral requires OAuth provider endpoints and remote HTTP surfaces to use
+//! `https`, permitting plain `http` only when the host is loopback. The same
+//! policy is enforced while validating a manifest (here in `coral-spec`), at
+//! OAuth runtime in `coral-app`, and during CLI OAuth handling. Keeping the
+//! allowed-scheme set, the loopback definition, and the user-facing messages in
+//! one place stops those copies from drifting apart.
 
 use url::Url;
 
@@ -32,9 +32,23 @@ pub fn validate_https_or_loopback_url(context: &str, raw: &str) -> Result<(), St
 
 /// Enforces the https-or-loopback scheme policy on an already-parsed URL.
 pub fn validate_https_or_loopback_scheme(context: &str, url: &Url) -> Result<(), String> {
-    match url.scheme() {
+    validate_https_or_loopback_scheme_parts(context, url.scheme(), Some(is_loopback_url(url)))
+}
+
+/// Enforces the https-or-loopback scheme policy when a template prefix exposes
+/// the scheme but may not expose the final host yet.
+///
+/// Pass `None` for `host_is_loopback` only when the host is unresolved at
+/// manifest-validation time and the fully rendered URL will be validated before
+/// use.
+pub fn validate_https_or_loopback_scheme_parts(
+    context: &str,
+    scheme: &str,
+    host_is_loopback: Option<bool>,
+) -> Result<(), String> {
+    match scheme {
         "https" => Ok(()),
-        "http" if is_loopback_url(url) => Ok(()),
+        "http" if host_is_loopback.unwrap_or(true) => Ok(()),
         "http" => Err(format!(
             "{context} must use https unless it targets localhost"
         )),

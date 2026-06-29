@@ -454,6 +454,7 @@ impl Default for MockServerConfig {
             discover_sources: MockResult::ok(mock_discover_response()),
             resolve_bundled_source_hosts: MockResult::ok(ResolveBundledSourceHostsResponse {
                 hosts: Vec::new(),
+                unresolved_hosts: Vec::new(),
             }),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![

@@ -103,7 +103,7 @@ impl SourceServiceApi for SourceService {
         let span = grpc_span(&request);
         instrument_grpc(span, async move {
             let request = request.into_inner();
-            let _workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            workspace_name_from_proto(request.workspace.as_ref())?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
             let variables = request
                 .variables
@@ -114,7 +114,10 @@ impl SourceServiceApi for SourceService {
                 SourceManager::resolve_bundled_source_hosts(&bundled_name, &variables)
             })
             .await?;
-            Ok(Response::new(ResolveBundledSourceHostsResponse { hosts }))
+            Ok(Response::new(ResolveBundledSourceHostsResponse {
+                hosts: hosts.hosts,
+                unresolved_hosts: hosts.unresolved_hosts,
+            }))
         })
         .await
     }
