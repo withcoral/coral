@@ -176,22 +176,32 @@ struct GraphValueRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum MetadataListRef {
-    Labels { value: GraphValueRef, label: String },
-    Keys { value: GraphValueRef },
+struct SameLabelUndirectedEndpointRef {
+    relationship: String,
+    endpoint: UndirectedRelationshipEndpoint,
+    label: String,
 }
 
-impl MetadataListRef {
-    fn value(&self) -> &GraphValueRef {
-        match self {
-            Self::Labels { value, .. } | Self::Keys { value } => value,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MetadataListRef {
+    Labels {
+        value: GraphValueRef,
+        label: String,
+    },
+    Keys {
+        value: GraphValueRef,
+    },
+    UndirectedEndpointLabels {
+        value: SameLabelUndirectedEndpointRef,
+    },
+    UndirectedEndpointKeys {
+        value: SameLabelUndirectedEndpointRef,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MetadataListValue {
-    value: GraphValueRef,
+    presence_variable: Option<String>,
     literals: Vec<Literal>,
 }
 
@@ -1616,6 +1626,10 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
     match expression {
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
+        | ScalarExpression::UndirectedEndpointKey { .. }
+        | ScalarExpression::UndirectedEndpointElementId { .. }
+        | ScalarExpression::UndirectedEndpointLabels { .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -5591,7 +5605,11 @@ fn rename_non_unary_scalar_expression_variables(
 ) {
     match expression {
         ScalarExpression::Property(property) => rename_property_ref_variables(property, renames),
-        ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+        ScalarExpression::UndirectedEndpointProperty { relationship, .. }
+        | ScalarExpression::UndirectedEndpointKey { relationship, .. }
+        | ScalarExpression::UndirectedEndpointElementId { relationship, .. }
+        | ScalarExpression::UndirectedEndpointLabels { relationship, .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
             rename_string(relationship, renames);
         }
         ScalarExpression::Literal(_)
@@ -6061,7 +6079,11 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Property(property) => {
             reject_ignored_path_variable_property_ref(property, state, path)
         }
-        ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+        ScalarExpression::UndirectedEndpointProperty { relationship, .. }
+        | ScalarExpression::UndirectedEndpointKey { relationship, .. }
+        | ScalarExpression::UndirectedEndpointElementId { relationship, .. }
+        | ScalarExpression::UndirectedEndpointLabels { relationship, .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
             reject_ignored_path_variable(relationship, state, path)
         }
         ScalarExpression::Literal(_)
@@ -6182,6 +6204,10 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
     match expression {
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
+        | ScalarExpression::UndirectedEndpointKey { .. }
+        | ScalarExpression::UndirectedEndpointElementId { .. }
+        | ScalarExpression::UndirectedEndpointLabels { .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -8833,7 +8859,7 @@ fn compile_order_expression(
                     compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
             {
                 return compile_scalar_order_expression(
-                    metadata_list_value_scalar_expression(value, plan)?,
+                    metadata_list_value_scalar_expression(value, plan),
                     projections,
                     path,
                 );
@@ -9098,6 +9124,10 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
+        | ScalarExpression::UndirectedEndpointKey { .. }
+        | ScalarExpression::UndirectedEndpointElementId { .. }
+        | ScalarExpression::UndirectedEndpointLabels { .. }
+        | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
         | ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -9282,6 +9312,17 @@ fn compile_id_order_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(OrderExpression::Scalar(
+            same_label_undirected_endpoint_key_scalar_expression(value),
+        ));
+    }
     let value = compile_id_graph_value_ref(function, path, plan, context)?;
     Ok(match value.presence_variable {
         Some(_) => OrderExpression::Scalar(graph_value_key_scalar_expression(value)),
@@ -9297,6 +9338,17 @@ fn compile_element_id_order_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
+    let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(OrderExpression::Scalar(
+            same_label_undirected_endpoint_element_id_scalar_expression(value),
+        ));
+    }
     let value = compile_element_id_graph_value_ref(function, path, plan, context)?;
     Ok(match value.presence_variable {
         Some(_) => OrderExpression::Scalar(graph_value_element_id_scalar_expression(value)),
@@ -9312,6 +9364,15 @@ fn compile_key_scalar_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(same_label_undirected_endpoint_key_scalar_expression(value));
+    }
     let value = compile_id_graph_value_ref(function, path, plan, context)?;
     Ok(graph_value_key_scalar_expression(value))
 }
@@ -9322,6 +9383,17 @@ fn compile_element_id_scalar_expression(
     plan: &GraphPlan,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(same_label_undirected_endpoint_element_id_scalar_expression(
+            value,
+        ));
+    }
     let value = compile_element_id_graph_value_ref(function, path, plan, context)?;
     Ok(graph_value_element_id_scalar_expression(value))
 }
@@ -9414,6 +9486,43 @@ fn graph_value_keys_scalar_expression(value: GraphValueRef) -> ScalarExpression 
     presence_gate_scalar_expression(value.presence_variable, expression)
 }
 
+fn same_label_undirected_endpoint_key_scalar_expression(
+    value: SameLabelUndirectedEndpointRef,
+) -> ScalarExpression {
+    ScalarExpression::UndirectedEndpointKey {
+        relationship: value.relationship,
+        endpoint: value.endpoint,
+    }
+}
+
+fn same_label_undirected_endpoint_element_id_scalar_expression(
+    value: SameLabelUndirectedEndpointRef,
+) -> ScalarExpression {
+    ScalarExpression::UndirectedEndpointElementId {
+        relationship: value.relationship,
+        endpoint: value.endpoint,
+    }
+}
+
+fn same_label_undirected_endpoint_labels_scalar_expression(
+    value: SameLabelUndirectedEndpointRef,
+) -> ScalarExpression {
+    ScalarExpression::UndirectedEndpointLabels {
+        relationship: value.relationship,
+        endpoint: value.endpoint,
+        label: value.label,
+    }
+}
+
+fn same_label_undirected_endpoint_keys_scalar_expression(
+    value: SameLabelUndirectedEndpointRef,
+) -> ScalarExpression {
+    ScalarExpression::UndirectedEndpointPropertyKeys {
+        relationship: value.relationship,
+        endpoint: value.endpoint,
+    }
+}
+
 fn presence_gate_scalar_expression(
     presence_variable: Option<String>,
     expression: ScalarExpression,
@@ -9429,22 +9538,18 @@ fn presence_gate_scalar_expression(
 
 fn metadata_list_value_scalar_expression(
     value: MetadataListValue,
-    plan: &GraphPlan,
-) -> Result<ScalarExpression, CoreError> {
-    let presence_variable = match value.value.presence_variable {
-        Some(variable) => Some(variable),
-        None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
-    };
-    Ok(presence_gate_scalar_expression(
-        presence_variable,
+    _plan: &GraphPlan,
+) -> ScalarExpression {
+    presence_gate_scalar_expression(
+        value.presence_variable,
         ScalarExpression::TypedLiteralList {
             literals: value.literals,
             element_type: LiteralListElementType::String,
         },
-    ))
+    )
 }
 
-fn metadata_list_presence_variable(
+fn graph_value_metadata_presence_variable(
     value: &GraphValueRef,
     plan: &GraphPlan,
 ) -> Result<Option<String>, CoreError> {
@@ -9508,7 +9613,7 @@ fn compile_optional_static_list_value(
                     compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
             {
                 return Ok(Some(StaticListValue {
-                    presence_variable: metadata_list_presence_variable(&value.value, plan)?,
+                    presence_variable: value.presence_variable.clone(),
                     literals: value.literals,
                     element_type: Some(LiteralListElementType::String),
                 }));
@@ -13794,17 +13899,14 @@ fn compile_optional_metadata_list_slice_projection(
         .alias
         .as_ref()
         .map_or_else(|| "list".to_string(), variable_name);
-    if value.value.presence_variable.is_none()
-        && optional_graph_variable_presence_variable(plan, &value.value.variable)?.is_none()
-        && !value.literals.is_empty()
-    {
+    if value.presence_variable.is_none() && !value.literals.is_empty() {
         return Ok(Some(Projection::LiteralList {
             literals: value.literals,
             alias,
         }));
     }
     Ok(Some(Projection::Expression {
-        expression: metadata_list_value_scalar_expression(value, plan)?,
+        expression: metadata_list_value_scalar_expression(value, plan),
         alias,
     }))
 }
@@ -14645,12 +14747,8 @@ fn compile_optional_metadata_list_length_scalar_expression(
             else {
                 return Ok(None);
             };
-            let presence_variable = match value.value.presence_variable.clone() {
-                Some(variable) => Some(variable),
-                None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
-            };
             Ok(Some(presence_gate_scalar_expression(
-                presence_variable,
+                value.presence_variable,
                 list_length_scalar_expression(value.literals.len())?,
             )))
         }
@@ -15819,11 +15917,22 @@ fn compile_id_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let value = compile_id_graph_value_ref(function, format!("{path}.expression"), plan, context)?;
     let alias = item
         .alias
         .as_ref()
         .map_or_else(|| "id".to_string(), variable_name);
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(Projection::Expression {
+            expression: same_label_undirected_endpoint_key_scalar_expression(value),
+            alias,
+        });
+    }
+    let value = compile_id_graph_value_ref(function, format!("{path}.expression"), plan, context)?;
     Ok(match value.presence_variable {
         Some(_) => Projection::Expression {
             expression: graph_value_key_scalar_expression(value),
@@ -15844,12 +15953,23 @@ fn compile_element_id_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let value =
-        compile_element_id_graph_value_ref(function, format!("{path}.expression"), plan, context)?;
     let alias = item
         .alias
         .as_ref()
         .map_or_else(|| "elementId".to_string(), variable_name);
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(Projection::Expression {
+            expression: same_label_undirected_endpoint_element_id_scalar_expression(value),
+            alias,
+        });
+    }
+    let value =
+        compile_element_id_graph_value_ref(function, format!("{path}.expression"), plan, context)?;
     Ok(match value.presence_variable {
         Some(_) => Projection::Expression {
             expression: graph_value_element_id_scalar_expression(value),
@@ -15962,6 +16082,20 @@ fn compile_labels_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(Projection::Expression {
+            expression: same_label_undirected_endpoint_labels_scalar_expression(value),
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "labels".to_string(), variable_name),
+        });
+    }
     let (value, label) = compile_node_function_target_ref(
         function,
         format!("{path}.expression.arguments"),
@@ -15995,6 +16129,16 @@ fn compile_labels_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(OrderExpression::Scalar(
+            same_label_undirected_endpoint_labels_scalar_expression(value),
+        ));
+    }
     let (value, label) = compile_node_function_target_ref(
         function,
         format!("{path}.arguments"),
@@ -16020,6 +16164,16 @@ fn compile_keys_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(OrderExpression::Scalar(
+            same_label_undirected_endpoint_keys_scalar_expression(value),
+        ));
+    }
     let value = compile_single_graph_value_function_argument_ref(
         function,
         format!("{path}.arguments"),
@@ -16660,6 +16814,20 @@ fn compile_keys_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+        function,
+        format!("{path}.expression.arguments"),
+        plan,
+        context,
+    )? {
+        return Ok(Projection::Expression {
+            expression: same_label_undirected_endpoint_keys_scalar_expression(value),
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "keys".to_string(), variable_name),
+        });
+    }
     let value = compile_single_graph_value_function_argument_ref(
         function,
         format!("{path}.expression.arguments"),
@@ -18278,6 +18446,16 @@ fn compile_aggregate_target(
                     "relationship endpoint aggregate targets require graph context",
                 ));
             };
+            if let Some(value) = compile_optional_same_label_undirected_relationship_endpoint(
+                expression,
+                path.clone(),
+                plan,
+                context,
+            )? {
+                return Ok(AggregateTarget::Expression(
+                    same_label_undirected_endpoint_key_scalar_expression(value),
+                ));
+            }
             let value = compile_relationship_endpoint_ref(function, path, plan, context)?;
             Ok(match value.presence_variable {
                 Some(presence_variable) => AggregateTarget::PresenceGatedVariableKey {
@@ -19726,25 +19904,19 @@ fn compile_is_empty_metadata_scalar_expression(
         return Ok(None);
     };
     Ok(Some(metadata_is_empty_scalar_expression(
-        value.value,
+        value.presence_variable,
         value.literals.is_empty(),
-        plan,
-    )?))
+    )))
 }
 
 fn metadata_is_empty_scalar_expression(
-    value: GraphValueRef,
+    presence_variable: Option<String>,
     is_empty: bool,
-    plan: &GraphPlan,
-) -> Result<ScalarExpression, CoreError> {
-    let presence_variable = match value.presence_variable {
-        Some(variable) => Some(variable),
-        None => optional_graph_variable_presence_variable(plan, &value.variable)?,
-    };
-    Ok(presence_gate_scalar_expression(
+) -> ScalarExpression {
+    presence_gate_scalar_expression(
         presence_variable,
         ScalarExpression::Literal(Literal::Boolean(is_empty)),
-    ))
+    )
 }
 
 fn declared_graph_value_property_names(
@@ -21162,6 +21334,28 @@ fn compile_optional_metadata_list_ref(
     context: &CypherCompileContext,
 ) -> Result<Option<MetadataListRef>, CoreError> {
     let path = path.into();
+    if let Expression::FunctionCall(function) = expression
+        && is_labels_function(function)
+        && let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+            function,
+            format!("{path}.arguments"),
+            plan,
+            context,
+        )?
+    {
+        return Ok(Some(MetadataListRef::UndirectedEndpointLabels { value }));
+    }
+    if let Expression::FunctionCall(function) = expression
+        && is_keys_function(function)
+        && let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+            function,
+            format!("{path}.arguments"),
+            plan,
+            context,
+        )?
+    {
+        return Ok(Some(MetadataListRef::UndirectedEndpointKeys { value }));
+    }
     if let Some((value, label)) =
         compile_optional_labels_ref(expression, path.clone(), plan, context)?
     {
@@ -21180,6 +21374,9 @@ fn compile_metadata_list_actual_literals(
     let path = path.into();
     match reference {
         MetadataListRef::Labels { label, .. } => Ok(vec![Literal::String(label.clone())]),
+        MetadataListRef::UndirectedEndpointLabels { value } => {
+            Ok(vec![Literal::String(value.label.clone())])
+        }
         MetadataListRef::Keys { value } => {
             let graph = graph.ok_or_else(|| {
                 unsupported(
@@ -21193,6 +21390,29 @@ fn compile_metadata_list_actual_literals(
                     .map(Literal::String)
                     .collect::<Vec<_>>()
             })
+        }
+        MetadataListRef::UndirectedEndpointKeys { value } => {
+            let graph = graph.ok_or_else(|| {
+                unsupported(
+                    path.clone(),
+                    "keys() requires a graph declaration so mapped property keys can be inspected",
+                )
+            })?;
+            let mapping = graph.node(&value.label).ok_or_else(|| {
+                unsupported(
+                    path,
+                    format!(
+                        "keys() metadata expression could not resolve node label '{}'",
+                        value.label
+                    ),
+                )
+            })?;
+            Ok(mapping
+                .properties
+                .keys()
+                .cloned()
+                .map(Literal::String)
+                .collect::<Vec<_>>())
         }
     }
 }
@@ -21236,10 +21456,19 @@ fn compile_optional_metadata_list_value(
                 &reference,
                 context.graph.as_ref(),
                 plan,
-                path,
+                path.clone(),
             )?;
+            let presence_variable = match &reference {
+                MetadataListRef::Labels { value, .. } | MetadataListRef::Keys { value } => {
+                    graph_value_metadata_presence_variable(value, plan)?
+                }
+                MetadataListRef::UndirectedEndpointLabels { value }
+                | MetadataListRef::UndirectedEndpointKeys { value } => {
+                    Some(value.relationship.clone())
+                }
+            };
             Ok(Some(MetadataListValue {
-                value: reference.value().clone(),
+                presence_variable,
                 literals,
             }))
         }
@@ -22681,12 +22910,8 @@ fn compile_optional_metadata_list_index_scalar_expression(
                 context,
                 "metadata list indexes require an integer literal or scalar integer parameter",
             )?;
-            let presence_variable = match value.value.presence_variable.clone() {
-                Some(variable) => Some(variable),
-                None => optional_graph_variable_presence_variable(plan, &value.value.variable)?,
-            };
             Ok(Some(presence_gate_scalar_expression(
-                presence_variable,
+                value.presence_variable,
                 ScalarExpression::Literal(literal),
             )))
         }
@@ -24153,6 +24378,45 @@ fn compile_property_key_membership_predicate(
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
+    if let Expression::FunctionCall(function) = rhs
+        && is_keys_function(function)
+        && let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+            function,
+            format!("{path}.rhs.arguments"),
+            plan,
+            context,
+        )?
+    {
+        if !is_literal_expression(lhs) {
+            return Ok(None);
+        }
+        let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+        let Literal::String(key) = literal else {
+            return Err(unsupported(
+                format!("{path}.lhs"),
+                "keys() membership predicates require a string literal or scalar string parameter",
+            ));
+        };
+        let graph = context.graph.as_ref().ok_or_else(|| {
+            unsupported(
+                format!("{path}.rhs"),
+                "keys() requires a graph declaration so mapped property keys can be inspected",
+            )
+        })?;
+        let mapping = graph.node(&value.label).ok_or_else(|| {
+            unsupported(
+                format!("{path}.rhs"),
+                format!(
+                    "keys() metadata expression could not resolve node label '{}'",
+                    value.label
+                ),
+            )
+        })?;
+        return Ok(Some(presence_gated_boolean_predicate(
+            value.relationship,
+            mapping.properties.contains_key(&key),
+        )));
+    }
     let Some(value) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)? else {
         return Ok(None);
     };
@@ -24183,6 +24447,30 @@ fn compile_label_membership_predicate(
     context: &CypherCompileContext,
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let path = path.into();
+    if let Expression::FunctionCall(function) = rhs
+        && is_labels_function(function)
+        && let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
+            function,
+            format!("{path}.rhs.arguments"),
+            plan,
+            context,
+        )?
+    {
+        if !is_literal_expression(lhs) {
+            return Ok(None);
+        }
+        let literal = compile_predicate_literal(lhs, format!("{path}.lhs"), plan, context)?;
+        let Literal::String(candidate) = literal else {
+            return Err(unsupported(
+                format!("{path}.lhs"),
+                "label membership predicates require a string literal or scalar string parameter",
+            ));
+        };
+        return Ok(Some(presence_gated_boolean_predicate(
+            value.relationship,
+            candidate == value.label,
+        )));
+    }
     let Some((value, label)) =
         compile_optional_labels_ref(rhs, format!("{path}.rhs"), plan, context)?
     else {
@@ -25087,22 +25375,21 @@ fn compile_optional_same_label_undirected_endpoint_property_scalar_expression(
             )
         }
         Expression::PropertyLookup { base, property, .. } => {
-            let Some((relationship, endpoint)) =
-                compile_optional_same_label_undirected_relationship_endpoint(
-                    base,
-                    format!("{path}.base"),
-                    plan,
-                    context,
-                )?
+            let Some(endpoint_ref) = compile_optional_same_label_undirected_relationship_endpoint(
+                base,
+                format!("{path}.base"),
+                plan,
+                context,
+            )?
             else {
                 return Ok(None);
             };
             let property = property.name.name.clone();
-            let output_name = format!("{relationship}_{property}");
+            let output_name = format!("{}_{}", endpoint_ref.relationship, property);
             Ok(Some((
                 ScalarExpression::UndirectedEndpointProperty {
-                    relationship,
-                    endpoint,
+                    relationship: endpoint_ref.relationship,
+                    endpoint: endpoint_ref.endpoint,
                     property,
                 },
                 output_name,
@@ -25117,7 +25404,7 @@ fn compile_optional_same_label_undirected_relationship_endpoint(
     path: impl Into<String>,
     plan: &GraphPlan,
     context: &CypherCompileContext,
-) -> Result<Option<(String, UndirectedRelationshipEndpoint)>, CoreError> {
+) -> Result<Option<SameLabelUndirectedEndpointRef>, CoreError> {
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => {
@@ -25159,9 +25446,31 @@ fn compile_optional_same_label_undirected_relationship_endpoint(
             if left_label != right_label {
                 return Ok(None);
             }
-            Ok(Some((relationship_variable, endpoint)))
+            Ok(Some(SameLabelUndirectedEndpointRef {
+                relationship: relationship_variable,
+                endpoint,
+                label: left_label.to_string(),
+            }))
         }
         _ => Ok(None),
+    }
+}
+
+fn compile_optional_same_label_undirected_endpoint_function_argument(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Option<SameLabelUndirectedEndpointRef>, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [argument] => compile_optional_same_label_undirected_relationship_endpoint(
+            argument,
+            format!("{path}[0]"),
+            plan,
+            context,
+        ),
+        [] | [_, ..] => Ok(None),
     }
 }
 
@@ -30112,6 +30421,77 @@ relationships:
                 distinct: true,
                 alias: "targets".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_same_label_undirected_relationship_endpoint_identity_and_metadata() {
+        let plan = compile_cypher(
+            "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+             RETURN id(startNode(dependency)) AS source_id, \
+                    elementId(endNode(dependency)) AS target_element_id, \
+                    labels(startNode(dependency)) AS source_labels, \
+                    keys(endNode(dependency)) AS target_keys \
+             ORDER BY id(startNode(dependency)), elementId(endNode(dependency))",
+        )
+        .expect("same-label undirected endpoint identity and metadata should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointKey {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::Start,
+                    },
+                    alias: "source_id".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointElementId {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::End,
+                    },
+                    alias: "target_element_id".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointLabels {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::Start,
+                        label: "Service".to_string(),
+                    },
+                    alias: "source_labels".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointPropertyKeys {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::End,
+                    },
+                    alias: "target_keys".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::UndirectedEndpointKey {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::Start,
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(
+                        ScalarExpression::UndirectedEndpointElementId {
+                            relationship: "dependency".to_string(),
+                            endpoint: UndirectedRelationshipEndpoint::End,
+                        },
+                    ),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
         );
     }
 

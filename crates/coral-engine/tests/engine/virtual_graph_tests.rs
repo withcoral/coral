@@ -12685,6 +12685,110 @@ async fn cypher_same_label_undirected_endpoint_properties_work_in_predicates_and
 }
 
 #[tokio::test]
+async fn cypher_same_label_undirected_endpoint_identity_and_metadata_use_mapping_orientation() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+         WHERE 'Service' IN labels(startNode(dependency)) \
+           AND 'risk' IN keys(endNode(dependency)) \
+         RETURN left.name AS matched_left, \
+                right.name AS matched_right, \
+                id(startNode(dependency)) AS source_id, \
+                elementId(endNode(dependency)) AS target_element_id, \
+                labels(startNode(dependency)) AS source_labels, \
+                keys(endNode(dependency)) AS target_keys \
+         ORDER BY source_id, target_element_id, matched_left",
+    )
+    .await
+    .expect("same-label undirected endpoint identity and metadata query should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_string_array_field(row, "target_keys");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "matched_left": "billing-api",
+                "matched_right": "deployments",
+                "source_id": 10,
+                "target_element_id": "20",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+            json!({
+                "matched_left": "deployments",
+                "matched_right": "billing-api",
+                "source_id": 10,
+                "target_element_id": "20",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+            json!({
+                "matched_left": "billing-api",
+                "matched_right": "experiments",
+                "source_id": 10,
+                "target_element_id": "30",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+            json!({
+                "matched_left": "experiments",
+                "matched_right": "billing-api",
+                "source_id": 10,
+                "target_element_id": "30",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+            json!({
+                "matched_left": "deployments",
+                "matched_right": "experiments",
+                "source_id": 20,
+                "target_element_id": "30",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+            json!({
+                "matched_left": "experiments",
+                "matched_right": "deployments",
+                "source_id": 20,
+                "target_element_id": "30",
+                "source_labels": ["Service"],
+                "target_keys": ["active", "id", "name", "risk", "team", "tier"]
+            }),
+        ]
+    );
+
+    let aggregate_execution = CoralQuery::execute_cypher(
+        &[build_source(ops_manifest(temp.path()))],
+        test_runtime(),
+        &graph,
+        "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+         RETURN count(DISTINCT startNode(dependency)) AS distinct_sources",
+    )
+    .await
+    .expect("same-label undirected endpoint identity aggregate query should execute");
+
+    assert_eq!(
+        execution_to_rows(aggregate_execution.execution()),
+        vec![json!({"distinct_sources": 2})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_relationship_endpoint_identity_functions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

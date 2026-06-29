@@ -182,6 +182,39 @@ pub enum ScalarExpression {
         /// Graph property name to read from the selected node endpoint.
         property: String,
     },
+    /// Stable mapped key for a same-label undirected relationship endpoint
+    /// selected by the relationship's declared orientation.
+    UndirectedEndpointKey {
+        /// Relationship variable whose declared orientation controls endpoint selection.
+        relationship: String,
+        /// Declared endpoint side to select.
+        endpoint: UndirectedRelationshipEndpoint,
+    },
+    /// String element id for a same-label undirected relationship endpoint
+    /// selected by the relationship's declared orientation.
+    UndirectedEndpointElementId {
+        /// Relationship variable whose declared orientation controls endpoint selection.
+        relationship: String,
+        /// Declared endpoint side to select.
+        endpoint: UndirectedRelationshipEndpoint,
+    },
+    /// Static labels for a same-label undirected relationship endpoint.
+    UndirectedEndpointLabels {
+        /// Relationship variable whose declared orientation controls endpoint selection.
+        relationship: String,
+        /// Declared endpoint side to select.
+        endpoint: UndirectedRelationshipEndpoint,
+        /// Static graph node label.
+        label: String,
+    },
+    /// Statically declared property keys for a same-label undirected
+    /// relationship endpoint.
+    UndirectedEndpointPropertyKeys {
+        /// Relationship variable whose declared orientation controls endpoint selection.
+        relationship: String,
+        /// Declared endpoint side to select.
+        endpoint: UndirectedRelationshipEndpoint,
+    },
     /// A scalar literal.
     Literal(Literal),
     /// A statically folded literal list value.

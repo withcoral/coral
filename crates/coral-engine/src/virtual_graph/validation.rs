@@ -1169,14 +1169,12 @@ impl<'a> GraphPlanValidator<'a> {
             Self::collect_scalar_expression_variables(expression, variables);
             return;
         }
+        if let Some(variable) = Self::scalar_expression_direct_variable(expression) {
+            variables.insert(variable);
+            return;
+        }
 
         match expression {
-            ScalarExpression::Property(property) => {
-                variables.insert(property.variable.as_str());
-            }
-            ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
-                variables.insert(relationship.as_str());
-            }
             ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. } => {}
@@ -1185,15 +1183,6 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::CountSubquery { pattern } => {
                 Self::collect_count_subquery_outer_variables(pattern, variables);
-            }
-            ScalarExpression::Key { variable }
-            | ScalarExpression::ElementId { variable }
-            | ScalarExpression::GraphIdentity { variable }
-            | ScalarExpression::GraphPresence { variable }
-            | ScalarExpression::PropertyKeys { variable }
-            | ScalarExpression::RelationshipType { variable, .. }
-            | ScalarExpression::NodeLabels { variable, .. } => {
-                variables.insert(variable.as_str());
             }
             ScalarExpression::PresenceGated {
                 presence_variable,
@@ -1265,6 +1254,28 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(else_expression, variables);
                 }
             }
+            _ => unreachable!("direct scalar variables handled above"),
+        }
+    }
+
+    fn scalar_expression_direct_variable(expression: &ScalarExpression) -> Option<&str> {
+        match expression {
+            ScalarExpression::Property(property) => Some(property.variable.as_str()),
+            ScalarExpression::UndirectedEndpointProperty { relationship, .. }
+            | ScalarExpression::UndirectedEndpointKey { relationship, .. }
+            | ScalarExpression::UndirectedEndpointElementId { relationship, .. }
+            | ScalarExpression::UndirectedEndpointLabels { relationship, .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
+                Some(relationship.as_str())
+            }
+            ScalarExpression::Key { variable }
+            | ScalarExpression::ElementId { variable }
+            | ScalarExpression::GraphIdentity { variable }
+            | ScalarExpression::GraphPresence { variable }
+            | ScalarExpression::PropertyKeys { variable }
+            | ScalarExpression::RelationshipType { variable, .. }
+            | ScalarExpression::NodeLabels { variable, .. } => Some(variable.as_str()),
+            _ => None,
         }
     }
 
@@ -2555,10 +2566,14 @@ impl<'a> GraphPlanValidator<'a> {
                     scope.local_nodes,
                 )
             }
-            ScalarExpression::UndirectedEndpointProperty { .. } => Err(Diagnostic::new(
+            ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. } => Err(Diagnostic::new(
                 "UNSUPPORTED_GRAPH_QUERY",
                 path,
-                "same-label undirected relationship endpoint properties inside scoped subqueries require local endpoint rendering and are not supported yet",
+                "same-label undirected relationship endpoint values inside scoped subqueries require local endpoint rendering and are not supported yet",
             )
             .into_core_error()),
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
@@ -4183,6 +4198,10 @@ impl<'a> GraphPlanValidator<'a> {
         match expression {
             ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
@@ -4232,6 +4251,31 @@ impl<'a> GraphPlanValidator<'a> {
                 property,
                 path,
             ),
+            ScalarExpression::UndirectedEndpointKey { relationship, .. } => {
+                self.undirected_endpoint_key_scalar_type(relationship, path)
+            }
+            ScalarExpression::UndirectedEndpointElementId { relationship, .. } => {
+                self.validate_same_label_undirected_endpoint(relationship, path)?;
+                Ok(ScalarType::String)
+            }
+            ScalarExpression::UndirectedEndpointLabels {
+                relationship,
+                label,
+                ..
+            } => {
+                let (left_node, _) =
+                    self.same_label_undirected_endpoint_nodes(relationship, path)?;
+                if left_node.label != *label {
+                    return Err(CoreError::internal(
+                        "validated same-label undirected endpoint labels did not match node label",
+                    ));
+                }
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
+                self.validate_same_label_undirected_endpoint(relationship, path)?;
+                Ok(ScalarType::Other)
+            }
             ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
             ScalarExpression::LiteralList { literals } => {
                 Self::validate_literal_list_projection(literals, path)?;
@@ -4653,13 +4697,11 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(self.column_scalar_type(table, column))
     }
 
-    fn undirected_endpoint_property_scalar_type(
+    fn same_label_undirected_endpoint_nodes(
         &self,
         relationship_variable: &str,
-        endpoint: UndirectedRelationshipEndpoint,
-        property: &str,
         path: &str,
-    ) -> Result<ScalarType, CoreError> {
+    ) -> Result<(&Node, &Node), CoreError> {
         let (relationship_index, relationship_pattern) = self
             .plan
             .relationships
@@ -4678,7 +4720,7 @@ impl<'a> GraphPlanValidator<'a> {
             })?;
         if relationship_pattern.direction != Direction::Undirected {
             return Err(CoreError::internal(
-                "undirected endpoint property scalar referenced a directed relationship",
+                "undirected endpoint scalar referenced a directed relationship",
             ));
         }
         let relationship = self
@@ -4686,7 +4728,7 @@ impl<'a> GraphPlanValidator<'a> {
             .get(relationship_index)
             .ok_or_else(|| {
                 CoreError::internal(
-                    "validated relationship mapping was missing for endpoint property",
+                    "validated relationship mapping was missing for undirected endpoint scalar",
                 )
             })?;
         let left_node =
@@ -4695,7 +4737,7 @@ impl<'a> GraphPlanValidator<'a> {
             self.node_binding_for_path(&relationship_pattern.right, format!("{path}.right"))?;
         if left_node.label != right_node.label {
             return Err(CoreError::internal(
-                "undirected endpoint property scalar referenced a cross-label relationship",
+                "undirected endpoint scalar referenced a cross-label relationship",
             ));
         }
         if relationship.from.label != left_node.label || relationship.to.label != right_node.label {
@@ -4703,6 +4745,37 @@ impl<'a> GraphPlanValidator<'a> {
                 "validated same-label undirected relationship mapping did not match endpoint labels",
             ));
         }
+        Ok((left_node, right_node))
+    }
+
+    fn validate_same_label_undirected_endpoint(
+        &self,
+        relationship_variable: &str,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        self.same_label_undirected_endpoint_nodes(relationship_variable, path)
+            .map(|_| ())
+    }
+
+    fn undirected_endpoint_key_scalar_type(
+        &self,
+        relationship_variable: &str,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let (left_node, _) =
+            self.same_label_undirected_endpoint_nodes(relationship_variable, path)?;
+        Ok(self.column_scalar_type(&left_node.table, &left_node.key))
+    }
+
+    fn undirected_endpoint_property_scalar_type(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+        property: &str,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let (left_node, right_node) =
+            self.same_label_undirected_endpoint_nodes(relationship_variable, path)?;
         let Some(left_column) = left_node.column_for_property(property) else {
             let function = match endpoint {
                 UndirectedRelationshipEndpoint::Start => "startNode",

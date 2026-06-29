@@ -126,6 +126,16 @@ struct RelationshipOrientation {
     right_relationship_key: String,
 }
 
+#[derive(Debug, Clone)]
+struct UndirectedEndpointSelection {
+    presence: String,
+    left_matches_endpoint: String,
+    left_key: String,
+    right_key: String,
+    left_variable: String,
+    right_variable: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarSubqueryCandidate {
     Count(CountSubqueryPattern),
@@ -332,6 +342,10 @@ impl<'a> Lowerer<'a> {
             }
             ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
             | ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
@@ -932,7 +946,11 @@ impl<'a> Lowerer<'a> {
                 relationship_bindings,
                 local_nodes,
             ),
-            ScalarExpression::UndirectedEndpointProperty { relationship, .. } => {
+            ScalarExpression::UndirectedEndpointProperty { relationship, .. }
+            | ScalarExpression::UndirectedEndpointKey { relationship, .. }
+            | ScalarExpression::UndirectedEndpointElementId { relationship, .. }
+            | ScalarExpression::UndirectedEndpointLabels { relationship, .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
                 Self::scoped_variable_is_inner(relationship, relationship_bindings, local_nodes)
             }
             ScalarExpression::Predicate(predicate) => Self::scoped_predicate_expression_is_inner(
@@ -4332,8 +4350,12 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Property(property) => {
                 self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
             }
-            ScalarExpression::UndirectedEndpointProperty { .. } => Err(CoreError::internal(
-                "validated scoped undirected endpoint property reached SQL renderer",
+            ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. } => Err(CoreError::internal(
+                "validated scoped undirected endpoint scalar reached SQL renderer",
             )),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
@@ -5456,8 +5478,91 @@ impl<'a> Lowerer<'a> {
         endpoint: UndirectedRelationshipEndpoint,
         property: &str,
     ) -> Result<String, CoreError> {
-        let (relationship_index, relationship_pattern) = self
-            .validated
+        let selection =
+            self.render_undirected_endpoint_selection(relationship_variable, endpoint)?;
+        let left_property = self.render_property_ref(&PropertyRef {
+            variable: selection.left_variable,
+            property: property.to_string(),
+        })?;
+        let right_property = self.render_property_ref(&PropertyRef {
+            variable: selection.right_variable,
+            property: property.to_string(),
+        })?;
+        let presence = selection.presence;
+        let left_matches_endpoint = selection.left_matches_endpoint;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_matches_endpoint} THEN {left_property} ELSE {right_property} END END"
+        ))
+    }
+
+    fn render_undirected_endpoint_key_ref(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+    ) -> Result<String, CoreError> {
+        let selection =
+            self.render_undirected_endpoint_selection(relationship_variable, endpoint)?;
+        let presence = selection.presence;
+        let left_matches_endpoint = selection.left_matches_endpoint;
+        let left_key = selection.left_key;
+        let right_key = selection.right_key;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_matches_endpoint} THEN {left_key} ELSE {right_key} END END"
+        ))
+    }
+
+    fn render_undirected_endpoint_element_id_ref(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS VARCHAR)",
+            self.render_undirected_endpoint_key_ref(relationship_variable, endpoint)?
+        ))
+    }
+
+    fn render_undirected_endpoint_labels_ref(
+        &self,
+        relationship_variable: &str,
+        label: &str,
+    ) -> Result<String, CoreError> {
+        let presence = self.render_relationship_presence_ref(relationship_variable)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({}) END",
+            quote_string_literal(label)
+        ))
+    }
+
+    fn render_undirected_endpoint_property_keys_ref(
+        &self,
+        relationship_variable: &str,
+    ) -> Result<String, CoreError> {
+        let (_, relationship_pattern) =
+            self.relationship_pattern_for_variable(relationship_variable)?;
+        let binding = self.validated.binding(&relationship_pattern.left)?;
+        let ValidatedBindingKind::Node(node) = binding.kind() else {
+            return Err(CoreError::internal(
+                "validated undirected endpoint keys did not reference a node",
+            ));
+        };
+        let property_names = node
+            .properties
+            .keys()
+            .map(|property| quote_string_literal(property))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let presence = self.render_relationship_presence_ref(relationship_variable)?;
+        Ok(format!(
+            "CASE WHEN {presence} IS NULL THEN NULL ELSE make_array({property_names}) END"
+        ))
+    }
+
+    fn relationship_pattern_for_variable(
+        &self,
+        relationship_variable: &str,
+    ) -> Result<(usize, &RelationshipPattern), CoreError> {
+        self.validated
             .plan()
             .relationships
             .iter()
@@ -5466,10 +5571,17 @@ impl<'a> Lowerer<'a> {
                 relationship.variable.as_deref() == Some(relationship_variable)
             })
             .ok_or_else(|| {
-                CoreError::internal(
-                    "validated undirected endpoint property referenced unknown relationship",
-                )
-            })?;
+                CoreError::internal("validated undirected endpoint referenced unknown relationship")
+            })
+    }
+
+    fn render_undirected_endpoint_selection(
+        &self,
+        relationship_variable: &str,
+        endpoint: UndirectedRelationshipEndpoint,
+    ) -> Result<UndirectedEndpointSelection, CoreError> {
+        let (relationship_index, relationship_pattern) =
+            self.relationship_pattern_for_variable(relationship_variable)?;
         let relationship = self.validated.relationship_mapping(relationship_index)?;
         let relationship_alias = self
             .validated
@@ -5485,17 +5597,15 @@ impl<'a> Lowerer<'a> {
         );
         let presence = self.render_relationship_presence_ref(relationship_variable)?;
         let left_key = self.render_binding_key_ref(&relationship_pattern.left)?;
-        let left_property = self.render_property_ref(&PropertyRef {
-            variable: relationship_pattern.left.clone(),
-            property: property.to_string(),
-        })?;
-        let right_property = self.render_property_ref(&PropertyRef {
-            variable: relationship_pattern.right.clone(),
-            property: property.to_string(),
-        })?;
-        Ok(format!(
-            "CASE WHEN {presence} IS NULL THEN NULL ELSE CASE WHEN {left_key} = {selector} THEN {left_property} ELSE {right_property} END END"
-        ))
+        let right_key = self.render_binding_key_ref(&relationship_pattern.right)?;
+        Ok(UndirectedEndpointSelection {
+            presence,
+            left_matches_endpoint: format!("{left_key} = {selector}"),
+            left_key,
+            right_key,
+            left_variable: relationship_pattern.left.clone(),
+            right_variable: relationship_pattern.right.clone(),
+        })
     }
 
     fn render_scalar_expression(&self, expression: &ScalarExpression) -> Result<String, CoreError> {
@@ -5515,11 +5625,6 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         match expression {
             ScalarExpression::Property(property) => self.render_property_ref(property),
-            ScalarExpression::UndirectedEndpointProperty {
-                relationship,
-                endpoint,
-                property,
-            } => self.render_undirected_endpoint_property_ref(relationship, *endpoint, property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),
             ScalarExpression::TypedLiteralList {
@@ -5586,6 +5691,11 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::GraphPresence { .. }
             | ScalarExpression::NodeLabels { .. }
             | ScalarExpression::PropertyKeys { .. }
+            | ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
             | ScalarExpression::RelationshipType { .. } => {
                 unreachable!("scalar expression handled above")
             }
@@ -5647,6 +5757,35 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::PropertyKeys { variable } => {
                 self.render_property_keys_ref(variable).map(Some)
             }
+            ScalarExpression::UndirectedEndpointProperty {
+                relationship,
+                endpoint,
+                property,
+            } => self
+                .render_undirected_endpoint_property_ref(relationship, *endpoint, property)
+                .map(Some),
+            ScalarExpression::UndirectedEndpointKey {
+                relationship,
+                endpoint,
+            } => self
+                .render_undirected_endpoint_key_ref(relationship, *endpoint)
+                .map(Some),
+            ScalarExpression::UndirectedEndpointElementId {
+                relationship,
+                endpoint,
+            } => self
+                .render_undirected_endpoint_element_id_ref(relationship, *endpoint)
+                .map(Some),
+            ScalarExpression::UndirectedEndpointLabels {
+                relationship,
+                label,
+                ..
+            } => self
+                .render_undirected_endpoint_labels_ref(relationship, label)
+                .map(Some),
+            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => self
+                .render_undirected_endpoint_property_keys_ref(relationship)
+                .map(Some),
             ScalarExpression::RelationshipType {
                 variable,
                 relationship_type,
