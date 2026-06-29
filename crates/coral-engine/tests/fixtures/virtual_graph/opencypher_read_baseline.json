@@ -7,7 +7,7 @@
     "ExistsSubquery": 1,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 5,
+    "ListExpressions": 6,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -522,6 +522,18 @@
         "ordered": true,
         "rows": [
           { "powers": [1.0, 4.0, null], "squares": [4.0, 9.0] }
+        ]
+      }
+    },
+    {
+      "id": "static-list-comprehension-log-exp-map",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN [0, 1, null] | round(exp(x), 0)] AS exponentials, [x IN [1.0, 2.718281828459045, null] | round(ln(x), 0)] AS natural_logs, [x IN [1, 100, null] | log10(x)] AS base10_logs, [x IN [1, 2] | round(pi(), x)] AS rounded_pi, [x IN [1, 2] | round(e(), x)] AS rounded_e",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "exponentials": [1.0, 3.0, null], "natural_logs": [0.0, 1.0, null], "base10_logs": [0.0, 2.0, null], "rounded_pi": [3.1, 3.14], "rounded_e": [2.7, 2.72] }
         ]
       }
     },

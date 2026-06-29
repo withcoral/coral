@@ -12225,7 +12225,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), pow()/power(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -12515,8 +12515,59 @@ fn evaluate_static_map_numeric_function(
     if is_sign_function(function) {
         return evaluate_static_map_sign(function, path.to_string(), evaluation).map(Some);
     }
+    if is_exp_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "exp",
+            f64::exp,
+        )
+        .map(Some);
+    }
+    if is_log_function(function) {
+        let function_name = qualified_function_name(function);
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            &function_name,
+            f64::ln,
+        )
+        .map(Some);
+    }
+    if is_log10_function(function) {
+        return evaluate_static_map_unary_numeric_float_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "log10",
+            f64::log10,
+        )
+        .map(Some);
+    }
     if is_power_function(function) {
         return evaluate_static_map_power(function, path.to_string(), evaluation).map(Some);
+    }
+    if is_pi_function(function) {
+        return evaluate_static_map_constant_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "pi",
+            std::f64::consts::PI,
+        )
+        .map(Some);
+    }
+    if is_e_function(function) {
+        return evaluate_static_map_constant_function(
+            function,
+            path.to_string(),
+            evaluation,
+            "e",
+            std::f64::consts::E,
+        )
+        .map(Some);
     }
     Ok(None)
 }
@@ -12927,6 +12978,30 @@ fn evaluate_static_map_power(
         ));
     };
     evaluate_static_literal_arithmetic(base, ArithmeticOperator::Power, exponent, path)
+}
+
+fn evaluate_static_map_constant_function(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+    function_name: &str,
+    value: f64,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    if function.arguments.is_empty()
+        && evaluation
+            .context
+            .variable_function_argument_info(function)
+            .is_none()
+    {
+        return Ok(Literal::Float(OrderedFloat(value)));
+    }
+    Err(unsupported(
+        format!("{path}.arguments"),
+        format!(
+            "{function_name}() in static list comprehension maps requires exactly zero arguments"
+        ),
+    ))
 }
 
 fn evaluate_static_map_to_string(
@@ -36235,6 +36310,88 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_list_comprehension_log_exp_constant_maps() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN [x IN [0, 1, null] | round(exp(x), 0)] AS exponentials, \
+                    [x IN [1.0, 2.718281828459045, null] | round(log(x), 0)] AS natural_logs, \
+                    [x IN [1, 100, null] | log10(x)] AS base10_logs, \
+                    [x IN [1, 2] | round(pi(), x)] AS rounded_pi, \
+                    [x IN [1, 2] | round(e(), x)] AS rounded_e",
+        )
+        .expect("static list comprehension log/exp/constant maps should compile");
+
+        let rounded_pi_one =
+            round_static_float(std::f64::consts::PI, 1, "test").expect("pi should round");
+        let rounded_pi_two =
+            round_static_float(std::f64::consts::PI, 2, "test").expect("pi should round");
+        let rounded_e_one =
+            round_static_float(std::f64::consts::E, 1, "test").expect("e should round");
+        let rounded_e_two =
+            round_static_float(std::f64::consts::E, 2, "test").expect("e should round");
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(1.0)),
+                            Literal::Float(OrderedFloat(3.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "exponentials".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(0.0)),
+                            Literal::Float(OrderedFloat(1.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "natural_logs".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(0.0)),
+                            Literal::Float(OrderedFloat(2.0)),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "base10_logs".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(rounded_pi_one)),
+                            Literal::Float(OrderedFloat(rounded_pi_two))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "rounded_pi".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Float(OrderedFloat(rounded_e_one)),
+                            Literal::Float(OrderedFloat(rounded_e_two))
+                        ],
+                        element_type: LiteralListElementType::Float,
+                    },
+                    alias: "rounded_e".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_static_list_comprehension_rounding_function_maps() {
         let graph = star_test_graph();
         let plan = compile_cypher_for_graph(
@@ -36391,6 +36548,19 @@ relationships:
             error
                 .to_string()
                 .contains("pow() in static list comprehension maps requires exactly two arguments"),
+            "{error}"
+        );
+
+        let error = compile_cypher_for_graph(
+            &star_test_graph(),
+            "MATCH (service:Service) RETURN [x IN [2] | pi(x)] AS values",
+        )
+        .expect_err("pi() should reject static map arguments");
+
+        assert!(
+            error
+                .to_string()
+                .contains("pi() in static list comprehension maps requires exactly zero arguments"),
             "{error}"
         );
     }
