@@ -13,7 +13,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 15,
+    "ScalarExpressions": 18,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -480,6 +480,30 @@
       }
     },
     {
+      "id": "ceil-floor-round-numeric-where-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE ceil(p.age * 0.1) = 4.0 AND floor(p.age * 0.1) = 3.0 AND round(p.age * 0.1, 1) = 3.4 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "sqrt-sign-numeric-where-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE sqrt(abs(p.age - 25)) > 3.0 AND sign(p.age - 34) > 0 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
       "id": "is-empty-string-wrong-arity-rejected",
       "feature": "ScalarExpressions",
       "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
@@ -513,6 +537,15 @@
       "expected": {
         "kind": "error",
         "contains": "abs() requires exactly one argument"
+      }
+    },
+    {
+      "id": "sqrt-numeric-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN sqrt(p.age, 2) AS root",
+      "expected": {
+        "kind": "error",
+        "contains": "sqrt() requires exactly one argument"
       }
     },
     {
