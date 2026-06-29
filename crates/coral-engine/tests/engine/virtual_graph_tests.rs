@@ -6682,6 +6682,45 @@ async fn graphql_query_operation_directives_execute_against_synthetic_sources() 
 }
 
 #[tokio::test]
+async fn graphql_root_typename_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_graphql(
+        &[source],
+        test_runtime(),
+        &graph,
+        r"
+        query Services {
+          queryType: __typename
+          services(
+            orderBy: [{ field: name, direction: ASC }]
+            limit: 1
+          ) {
+            service: name
+          }
+        }
+        ",
+    )
+    .await
+    .expect("GraphQL root __typename should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("'Query' AS \"queryType\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api", "queryType": "Query"})]
+    );
+}
+
+#[tokio::test]
 async fn graphql_root_fragments_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

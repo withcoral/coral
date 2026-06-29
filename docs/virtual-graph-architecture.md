@@ -557,6 +557,8 @@ remain separate. The supported slice is intentionally graph-query oriented:
   `services` when the alias resolves to exactly one declared label;
 - root field aliases, which are accepted for generated-client compatibility but
   do not change Coral's flat tabular result shape;
+- root-level `__typename`, lowered as the static literal `Query` and subject
+  to the same flattened response-alias conflict checks as other projections;
 - scalar property selections with optional GraphQL aliases;
 - reserved `_id` and `_elementId` selections on nodes, lowered to mapped key
   and string element-id projections without overloading user properties named

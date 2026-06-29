@@ -399,12 +399,14 @@ fn compile_root_selection_set<'query>(
 ) -> Result<GraphPlan, CoreError> {
     let path = path.into();
     let mut root_fields = Vec::new();
+    let mut root_projections = Vec::new();
     collect_root_fields(
         selection_set,
         &path,
         context,
         &mut Vec::new(),
         &mut root_fields,
+        &mut root_projections,
     )?;
     let [root] = root_fields.as_slice() else {
         return Err(unsupported(
@@ -412,7 +414,11 @@ fn compile_root_selection_set<'query>(
             "GraphQL virtual graph queries must select exactly one included root node field",
         ));
     };
-    compile_root_field(&root.field, graph, &root.path, context)
+    let mut plan = compile_root_field(&root.field, graph, &root.path, context)?;
+    for (projection, projection_path) in root_projections {
+        push_graphql_projection(&mut plan, projection, &projection_path)?;
+    }
+    Ok(plan)
 }
 
 fn collect_root_fields<'query>(
@@ -421,16 +427,23 @@ fn collect_root_fields<'query>(
     context: &GraphqlCompileContext<'_, 'query>,
     fragment_stack: &mut Vec<String>,
     root_fields: &mut Vec<GraphqlRootFieldSelection<'query>>,
+    root_projections: &mut Vec<(Projection, String)>,
 ) -> Result<(), CoreError> {
     for (index, selection) in selection_set.items.iter().enumerate() {
         let item_path = format!("{path}.items[{index}]");
         match selection {
             Selection::Field(field) => {
-                if selection_is_included(
+                if !selection_is_included(
                     &field.directives,
                     format!("{item_path}.directives"),
                     context,
                 )? {
+                    continue;
+                }
+                if field.name == "__typename" {
+                    root_projections
+                        .push((compile_root_typename_field(field, &item_path)?, item_path));
+                } else {
                     push_or_merge_root_field(root_fields, item_path, field)?;
                 }
             }
@@ -471,6 +484,7 @@ fn collect_root_fields<'query>(
                     context,
                     fragment_stack,
                     root_fields,
+                    root_projections,
                 );
                 fragment_stack.pop();
                 result?;
@@ -493,11 +507,34 @@ fn collect_root_fields<'query>(
                     context,
                     fragment_stack,
                     root_fields,
+                    root_projections,
                 )?;
             }
         }
     }
     Ok(())
+}
+
+fn compile_root_typename_field(
+    field: &Field<'_, String>,
+    path: &str,
+) -> Result<Projection, CoreError> {
+    if !field.arguments.is_empty() {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "GraphQL root __typename arguments are not supported",
+        ));
+    }
+    if !field.selection_set.items.is_empty() {
+        return Err(unsupported(
+            format!("{path}.selectionSet"),
+            "GraphQL root __typename must be a scalar field",
+        ));
+    }
+    Ok(Projection::Literal {
+        literal: Literal::String("Query".to_string()),
+        alias: graphql_response_name(field),
+    })
 }
 
 fn push_or_merge_root_field<'query>(
@@ -6278,6 +6315,38 @@ mod tests {
     }
 
     #[test]
+    fn compiles_graphql_root_typename_metadata() {
+        let plan = compile_graphql(
+            r"
+            query {
+              queryType: __typename
+              Service {
+                service: name
+              }
+            }
+            ",
+        )
+        .expect("GraphQL root __typename metadata should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("service".to_string()),
+                },
+                Projection::Literal {
+                    literal: Literal::String("Query".to_string()),
+                    alias: "queryType".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_graphql_fragment_definition_directives() {
         let variables = BTreeMap::from([
             (
@@ -7178,6 +7247,29 @@ nodes:
         .expect_err("root fragment type mismatches should fail");
 
         assert!(error.to_string().contains("must be Query"), "{error}");
+    }
+
+    #[test]
+    fn rejects_conflicting_graphql_root_typename_alias() {
+        let error = compile_graphql(
+            r"
+            query {
+              __typename
+              Service {
+                __typename
+                name
+              }
+            }
+            ",
+        )
+        .expect_err("root and node __typename cannot share one flattened alias");
+
+        assert!(
+            error
+                .to_string()
+                .contains("response alias '__typename' selects conflicting fields"),
+            "{error}"
+        );
     }
 
     #[test]
