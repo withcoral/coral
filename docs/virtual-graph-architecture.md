@@ -158,7 +158,12 @@ The supported foundation subset is intentionally narrow:
   compile helpers keep rejecting `RETURN *`;
 - explicit graph-variable `RETURN service` / `RETURN service AS svc` expansion
   through the same declaration-aware tabular contract, with aliases used as
-  output column prefixes;
+  output column prefixes. Relationship endpoint returns such as
+  `RETURN startNode(dependency) AS source` reuse that contract by expanding the
+  resolved endpoint node declaration into `source.__id`, `source.__labels`, and
+  mapped property columns. Optional endpoint returns are rendered as
+  presence-gated scalar projections so unmatched optional relationships produce
+  `NULL` for every expanded endpoint column;
 - named node variables where the first binding has one static or compile-time
   dynamic label, such as `:$($label)` with a scalar string parameter, and
   repeated bindings may omit the label. In declaration-aware compilation,
@@ -193,15 +198,15 @@ The supported foundation subset is intentionally narrow:
   endpoint identity scalars, endpoint metadata lists, and endpoint identity
   aggregate targets lower through dedicated scalar IR nodes that SQL rendering
   resolves with searched `CASE` expressions over the declared relationship
-  `from`/`to` key columns. Materialized same-label endpoint graph values remain
-  unsupported until Coral has a first-class graph value representation for
-  data-dependent endpoints. Declaration-aware compilation may infer the type
-  for an untyped exact single-hop relationship when the endpoint labels and
-  direction select exactly one relationship type. Relationship type atoms may
-  also be compile-time dynamic, such as `:$($type)` with a scalar string
-  parameter, including during bounded relationship-range pruning; untyped
-  ranges, row-dependent dynamic types, and ambiguous endpoint pairs remain
-  rejected;
+  `from`/`to` key columns. Declaration-aware endpoint graph-object returns use
+  those same orientation-aware scalar nodes when the endpoint is data-dependent,
+  expanding to deterministic tabular columns rather than materialized graph
+  values. Declaration-aware compilation may infer the type for an untyped exact
+  single-hop relationship when the endpoint labels and direction select exactly
+  one relationship type. Relationship type atoms may also be compile-time
+  dynamic, such as `:$($type)` with a scalar string parameter, including during
+  bounded relationship-range pruning; untyped ranges, row-dependent dynamic
+  types, and ambiguous endpoint pairs remain rejected;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;

@@ -454,6 +454,68 @@ async fn cypher_return_graph_variable_expands_declaration_properties() {
 }
 
 #[tokio::test]
+async fn cypher_return_relationship_endpoint_graph_values_expand_declaration_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN startNode(ownership) AS owner, endNode(ownership) AS owned",
+    )
+    .await
+    .expect("endpoint graph value return should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "owner.__id": 1,
+            "owner.__labels": ["Person"],
+            "owner.name": "Ada Lovelace",
+            "owner.team": "platform",
+            "owned.__id": 10,
+            "owned.__labels": ["Service"],
+            "owned.active": true,
+            "owned.id": 10,
+            "owned.name": "billing-api",
+            "owned.risk": 0.9,
+            "owned.team": "platform",
+            "owned.tier": "prod"
+        })]
+    );
+
+    let optional_execution = CoralQuery::execute_cypher(
+        &[build_source(ops_manifest(temp.path()))],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name = 'legacy-sync' \
+         OPTIONAL MATCH (person:Person)-[ownership:OWNS]->(service) \
+         RETURN startNode(ownership) AS owner, endNode(ownership) AS owned",
+    )
+    .await
+    .expect("optional endpoint graph value return should execute");
+
+    assert!(
+        optional_execution
+            .translated_sql()
+            .contains("CASE WHEN \"r0\".\"ownership_id\" IS NULL THEN NULL"),
+        "{}",
+        optional_execution.translated_sql()
+    );
+    assert_eq!(optional_execution.execution().row_count(), 1);
+    assert_eq!(
+        execution_to_rows(optional_execution.execution()),
+        vec![json!({})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -13362,6 +13424,55 @@ async fn cypher_same_label_undirected_endpoint_properties_use_mapping_orientatio
                 "target": "experiments"
             }),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_same_label_undirected_endpoint_graph_values_use_mapping_orientation() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+         WHERE startNode(dependency).name = 'billing-api' \
+           AND endNode(dependency).name = 'deployments' \
+         RETURN startNode(dependency) AS source, endNode(dependency) AS target \
+         ORDER BY left.name \
+         LIMIT 1",
+    )
+    .await
+    .expect("same-label undirected endpoint graph value return should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "source.__id": 10,
+            "source.__labels": ["Service"],
+            "source.active": true,
+            "source.id": 10,
+            "source.name": "billing-api",
+            "source.risk": 0.9,
+            "source.team": "platform",
+            "source.tier": "prod",
+            "target.__id": 20,
+            "target.__labels": ["Service"],
+            "target.active": true,
+            "target.id": 20,
+            "target.name": "deployments",
+            "target.risk": 0.5,
+            "target.team": "infra",
+            "target.tier": "prod"
+        })]
     );
 }
 

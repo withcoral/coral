@@ -9329,6 +9329,15 @@ fn compile_return(
             plan.projections.extend(projections);
             continue;
         }
+        if let Some(projections) = compile_graph_endpoint_return_item(
+            item,
+            plan,
+            context,
+            format!("return.items[{index}]"),
+        )? {
+            plan.projections.extend(projections);
+            continue;
+        }
         let projection =
             compile_projection(item, format!("return.items[{index}]"), context, plan, state)?;
         plan.projections.push(projection);
@@ -9476,6 +9485,95 @@ fn append_node_variable_expansion(
     Ok(())
 }
 
+fn append_graph_value_ref_expansion(
+    value: &GraphValueRef,
+    label: &str,
+    graph: &Declaration,
+    output_prefix: &str,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
+    let mapping = graph.node(label).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("could not resolve node label '{label}'"),
+        )
+    })?;
+    push_unique_star_projection(
+        expansion,
+        Projection::Expression {
+            expression: graph_value_key_scalar_expression(value.clone()),
+            alias: format!("{output_prefix}.__id"),
+        },
+        path,
+    )?;
+    push_unique_star_projection(
+        expansion,
+        Projection::Expression {
+            expression: graph_value_labels_scalar_expression(value.clone(), label.to_string()),
+            alias: format!("{output_prefix}.__labels"),
+        },
+        path,
+    )?;
+    for property in mapping.properties.keys() {
+        push_unique_star_projection(
+            expansion,
+            Projection::Expression {
+                expression: graph_value_property_scalar_expression(value.clone(), property.clone()),
+                alias: format!("{output_prefix}.{property}"),
+            },
+            path,
+        )?;
+    }
+    Ok(())
+}
+
+fn append_same_label_undirected_endpoint_expansion(
+    value: &SameLabelUndirectedEndpointRef,
+    graph: &Declaration,
+    output_prefix: &str,
+    expansion: &mut ReturnStarExpansion,
+    path: &str,
+) -> Result<(), CoreError> {
+    let mapping = graph.node(&value.label).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("could not resolve node label '{}'", value.label),
+        )
+    })?;
+    push_unique_star_projection(
+        expansion,
+        Projection::Expression {
+            expression: same_label_undirected_endpoint_key_scalar_expression(value.clone()),
+            alias: format!("{output_prefix}.__id"),
+        },
+        path,
+    )?;
+    push_unique_star_projection(
+        expansion,
+        Projection::Expression {
+            expression: same_label_undirected_endpoint_labels_scalar_expression(value.clone()),
+            alias: format!("{output_prefix}.__labels"),
+        },
+        path,
+    )?;
+    for property in mapping.properties.keys() {
+        push_unique_star_projection(
+            expansion,
+            Projection::Expression {
+                expression: ScalarExpression::UndirectedEndpointProperty {
+                    relationship: value.relationship.clone(),
+                    endpoint: value.endpoint,
+                    property: property.clone(),
+                },
+                alias: format!("{output_prefix}.{property}"),
+            },
+            path,
+        )?;
+    }
+    Ok(())
+}
+
 fn append_return_star_relationship_projections(
     relationship: &RelationshipPattern,
     graph: &Declaration,
@@ -9592,6 +9690,105 @@ fn compile_graph_variable_return_item(
         return Ok(Some(expansion.projections));
     }
     Ok(None)
+}
+
+fn compile_graph_endpoint_return_item(
+    item: &ProjectionItem,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<Option<Vec<Projection>>, CoreError> {
+    let path = path.into();
+    match &item.expression {
+        Expression::Parenthesized(inner) => {
+            let nested = ProjectionItem {
+                expression: inner.as_ref().clone(),
+                alias: item.alias.clone(),
+            };
+            compile_graph_endpoint_return_item(&nested, plan, context, path)
+        }
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            let graph = context.graph_declaration(format!("{path}.expression"))?;
+            let output_prefix = relationship_endpoint_return_output_prefix(
+                function,
+                item.alias.as_ref(),
+                context,
+                format!("{path}.expression"),
+            )?;
+            let mut expansion = ReturnStarExpansion::default();
+            if let Some(value) = compile_optional_same_label_undirected_relationship_endpoint(
+                &item.expression,
+                format!("{path}.expression"),
+                plan,
+                context,
+            )? {
+                append_same_label_undirected_endpoint_expansion(
+                    &value,
+                    graph,
+                    &output_prefix,
+                    &mut expansion,
+                    &path,
+                )?;
+                return Ok(Some(expansion.projections));
+            }
+            let value = compile_relationship_endpoint_ref(
+                function,
+                format!("{path}.expression"),
+                plan,
+                context,
+            )?;
+            let label =
+                node_label_for_variable(plan, &value.variable, format!("{path}.expression"))?;
+            append_graph_value_ref_expansion(
+                &value,
+                label,
+                graph,
+                &output_prefix,
+                &mut expansion,
+                &path,
+            )?;
+            Ok(Some(expansion.projections))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn relationship_endpoint_return_output_prefix(
+    function: &FunctionInvocation,
+    alias: Option<&Variable>,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    if let Some(alias) = alias {
+        return validate_variable(alias);
+    }
+    let path = path.into();
+    let endpoint = relationship_endpoint_function(function).ok_or_else(|| {
+        unsupported(
+            path.clone(),
+            format!(
+                "function '{}' is not a relationship endpoint function",
+                qualified_function_name(function)
+            ),
+        )
+    })?;
+    let function_name = relationship_endpoint_function_name(endpoint);
+    let variable = compile_single_variable_function_argument(
+        function,
+        format!("{path}.arguments"),
+        match endpoint {
+            RelationshipEndpoint::Start => {
+                "startNode() supports exactly one relationship variable argument"
+            }
+            RelationshipEndpoint::End => {
+                "endNode() supports exactly one relationship variable argument"
+            }
+        },
+        context,
+    )?;
+    Ok(format!("{function_name}({variable})"))
 }
 
 fn is_visible_star_variable(variable: &str, visible: &BTreeSet<String>) -> bool {
@@ -10562,6 +10759,17 @@ fn graph_value_keys_scalar_expression(value: GraphValueRef) -> ScalarExpression 
     let expression = ScalarExpression::PropertyKeys {
         variable: value.variable,
     };
+    presence_gate_scalar_expression(value.presence_variable, expression)
+}
+
+fn graph_value_property_scalar_expression(
+    value: GraphValueRef,
+    property: String,
+) -> ScalarExpression {
+    let expression = ScalarExpression::Property(PropertyRef {
+        variable: value.variable,
+        property,
+    });
     presence_gate_scalar_expression(value.presence_variable, expression)
 }
 
@@ -40319,6 +40527,40 @@ relationships:
                 "ownership.since",
                 "ownership.source",
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_return_relationship_endpoint_graph_values_with_graph_declaration() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (person:Person)-[ownership:OWNS]->(service:Service) \
+             RETURN startNode(ownership) AS owner, endNode(ownership) AS owned",
+        )
+        .expect("relationship endpoint graph values should expand using graph metadata");
+
+        assert_eq!(
+            plan.projection_output_names(),
+            vec![
+                "owner.__id",
+                "owner.__labels",
+                "owner.name",
+                "owner.team",
+                "owned.__id",
+                "owned.__labels",
+                "owned.name",
+                "owned.tier",
+            ]
+        );
+        assert_eq!(
+            plan.projections.first(),
+            Some(&Projection::Expression {
+                expression: ScalarExpression::Key {
+                    variable: "person".to_string(),
+                },
+                alias: "owner.__id".to_string(),
+            })
         );
     }
 
