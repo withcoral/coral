@@ -11,7 +11,7 @@
     "Match": 3,
     "MathematicalFunctions": 4,
     "NullSemantics": 3,
-    "OptionalMatch": 3,
+    "OptionalMatch": 4,
     "PathMetadata": 1,
     "PathValues": 2,
     "RelationshipProperties": 1,
@@ -349,6 +349,20 @@
         "rows": [
           { "person": "Alice" },
           { "person": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-multihop-chain",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(:Person)-[:KNOWS]->(foaf:Person) RETURN p.name AS person, coalesce(foaf.name, 'none') AS friend_of_friend ORDER BY person, friend_of_friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend_of_friend": "Carol" },
+          { "person": "Bob", "friend_of_friend": "none" },
+          { "person": "Carol", "friend_of_friend": "none" }
         ]
       }
     },
