@@ -98,6 +98,11 @@ This is limited to static folded collections and exists so collection
 predicates and static comprehensions remain semantically correct without
 introducing SQL-rendering shortcuts in the frontend.
 
+The frontend also folds `keys({ ... })` over literal map syntax as a typed
+static string list before SQL lowering. Only the map key tokens are
+materialized; map values are ignored for key extraction and runtime map values
+remain unsupported until Coral has a dedicated map IR.
+
 Some Cypher constructs are blocked before Coral compilation because the current
 parser dependency does not accept or fully preserve their standard syntax. Coral
 keeps narrow source-compatibility normalizers for parser gaps that can lower
@@ -357,6 +362,10 @@ The supported foundation subset is intentionally narrow:
   Static map function arguments are reparsed from lossless CST argument text
   when the typed AST omits item-variable arguments, so repeated item-variable
   forms such as `atan2(x, x)` remain foldable.
+  Literal map key extraction, such as `keys({name: n.name, tier: n.tier})`, is
+  folded as a source-order typed string list and then routed through the same
+  static-list reducers used for projection, ordering, list endpoint functions,
+  predicates, and comprehensions. This does not materialize a map value.
   Sliced conditional sources over list-valued static `CASE` / `coalesce(...)`
   branches are supported for scalar list-comprehension projections and order
   keys, equality/ordered comparisons, and `IN` predicates by slicing each branch

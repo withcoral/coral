@@ -10548,6 +10548,14 @@ fn compile_order_expression_after_metadata_list_index(
             compile_labels_order_expression(function, path, plan, context)
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
+            if let Some(expression) = compile_optional_static_list_scalar_expression(
+                expression,
+                path.clone(),
+                Some(plan),
+                context,
+            )? {
+                return compile_scalar_order_expression(expression, projections, path);
+            }
             compile_keys_order_expression(function, path, plan, context)
         }
         Expression::FunctionCall(function) if is_length_function(function) => {
@@ -11433,6 +11441,22 @@ fn compile_optional_static_list_value(
         Expression::FunctionCall(function) if is_split_function(function) => {
             compile_static_split_list_value(function, path, context).map(Some)
         }
+        expression @ Expression::FunctionCall(function) if is_keys_function(function) => {
+            if let Some(value) = compile_optional_static_map_keys_list_value(function) {
+                return Ok(Some(value));
+            }
+            if let Some(plan) = plan
+                && let Some(value) =
+                    compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
+            {
+                return Ok(Some(StaticListValue {
+                    presence_variable: value.presence_variable.clone(),
+                    literals: value.literals,
+                    element_type: Some(LiteralListElementType::String),
+                }));
+            }
+            Ok(None)
+        }
         Expression::FunctionCall(function) if is_static_list_cast_function(function) => {
             compile_static_list_cast_value(function, path, plan, context).map(Some)
         }
@@ -12262,6 +12286,26 @@ fn compile_static_split_string_argument(
             "split() arguments must be string literals or scalar string parameters",
         )),
     }
+}
+
+fn compile_optional_static_map_keys_list_value(
+    function: &FunctionInvocation,
+) -> Option<StaticListValue> {
+    let [argument] = function.arguments.as_slice() else {
+        return None;
+    };
+    let Expression::Literal(CypherLiteral::Map(map)) = argument else {
+        return None;
+    };
+    Some(StaticListValue {
+        presence_variable: None,
+        literals: map
+            .entries
+            .iter()
+            .map(|(key, _)| Literal::String(key.name.name.clone()))
+            .collect(),
+        element_type: Some(LiteralListElementType::String),
+    })
 }
 
 fn compile_static_list_cast_value(
@@ -16157,6 +16201,11 @@ fn compile_projection(
             compile_labels_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
+            if let Some(projection) =
+                compile_optional_static_list_projection(item, path.clone(), plan, context)?
+            {
+                return Ok(projection);
+            }
             compile_keys_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_length_function(function) => {
@@ -28176,6 +28225,15 @@ fn compile_property_key_membership_predicate(
             mapping.properties.contains_key(&key),
         )));
     }
+    if let Expression::FunctionCall(function) = rhs
+        && is_keys_function(function)
+        && matches!(
+            function.arguments.as_slice(),
+            [Expression::Literal(CypherLiteral::Map(_))]
+        )
+    {
+        return Ok(None);
+    }
     let Some(value) = compile_optional_keys_ref(rhs, format!("{path}.rhs"), plan, context)? else {
         return Ok(None);
     };
@@ -35071,6 +35129,66 @@ relationships:
                     alias: "ownership_keys".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_map_keys_as_list_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service.name IN keys({name: service.name, tier: service.tier}) \
+             RETURN keys({name: service.name, tier: service.tier}) AS map_keys, \
+                    head(keys({first: 1, second: 2})) AS first_key \
+             ORDER BY keys({zeta: 0, alpha: 1})",
+        )
+        .expect("literal map keys should compile as static list expressions");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::In,
+                rhs: PredicateRhs::List(vec![
+                    Literal::String("name".to_string()),
+                    Literal::String("tier".to_string()),
+                ]),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("name".to_string()),
+                            Literal::String("tier".to_string()),
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "map_keys".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::String("first".to_string())),
+                    alias: "first_key".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::String("zeta".to_string()),
+                        Literal::String("alpha".to_string()),
+                    ],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         );
     }
 

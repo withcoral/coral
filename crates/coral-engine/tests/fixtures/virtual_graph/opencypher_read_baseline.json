@@ -8,6 +8,7 @@
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
     "ListExpressions": 9,
+    "MapExpressions": 1,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -463,6 +464,22 @@
       "expected": {
         "kind": "error",
         "contains": "literal-only null comparisons"
+      }
+    },
+    {
+      "id": "static-map-keys",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN keys({name: p.name, age: p.age}) AS map_keys, head(keys({first: 1, second: 2})) AS first_key, 'city' IN keys({city: p.city, active: p.active}) AS has_city_key",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "map_keys": ["name", "age"],
+            "first_key": "first",
+            "has_city_key": true
+          }
+        ]
       }
     },
     {
