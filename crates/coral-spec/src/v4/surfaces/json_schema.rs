@@ -1,6 +1,312 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::Value;
 
 use crate::v4::ir::IrScalarType;
+
+const ANNOTATION_KEYS: &[&str] = &["$comment", "default", "description", "examples", "title"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefError<'a> {
+    External(&'a str),
+    NotFound(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JsonSchemaWalkError<'a> {
+    ExternalRef(&'a str),
+    RefCycle(&'a str),
+    RefNotFound(&'a str),
+    DepthExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JsonSchemaComparisonError {
+    PropertyConflict(String),
+    DepthExceeded,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct JsonObjectShape {
+    pub(crate) properties: BTreeMap<String, Value>,
+    pub(crate) required: BTreeSet<String>,
+}
+
+pub(crate) fn resolve_local_ref<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+) -> Result<&'a Value, RefError<'a>> {
+    let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+        return Ok(schema);
+    };
+    if !reference.starts_with("#/") {
+        return Err(RefError::External(reference));
+    }
+    let pointer = reference.strip_prefix('#').unwrap_or(reference);
+    root.pointer(pointer).ok_or(RefError::NotFound(reference))
+}
+
+pub(crate) fn with_resolved_json_schema<'a, T>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+    visit: impl FnOnce(&'a Value, &mut BTreeSet<String>, usize) -> Result<T, JsonSchemaWalkError<'a>>,
+) -> Result<T, JsonSchemaWalkError<'a>> {
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+
+    let reference = schema.get("$ref").and_then(Value::as_str);
+    let guarded_reference = match reference {
+        Some(reference) if reference.starts_with("#/") => {
+            if !resolving_refs.insert(reference.to_string()) {
+                return Err(JsonSchemaWalkError::RefCycle(reference));
+            }
+            Some(reference)
+        }
+        _ => None,
+    };
+
+    let resolved = resolve_local_ref(root, schema).map_err(json_schema_walk_error_from_ref);
+    let next_depth = depth + 1;
+    let result = match resolved {
+        Ok(resolved) if resolved.get("$ref").is_some() => {
+            with_resolved_json_schema(root, resolved, resolving_refs, next_depth, max_depth, visit)
+        }
+        Ok(resolved) => visit(resolved, resolving_refs, next_depth),
+        Err(error) => Err(error),
+    };
+
+    if let Some(reference) = guarded_reference {
+        resolving_refs.remove(reference);
+    }
+
+    result
+}
+
+pub(crate) fn resolve_json_schema_ref_with_siblings<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            let mut resolved = resolve_json_schema_child_refs_allow_cycles(
+                root,
+                resolved,
+                resolving_refs,
+                next_depth,
+                max_depth,
+            )?;
+            if let (Some(referrer), Some(resolved)) = (schema.as_object(), resolved.as_object_mut())
+            {
+                for (key, value) in referrer {
+                    if is_ref_site_metadata_key(key) {
+                        resolved.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            Ok(resolved)
+        },
+    )
+}
+
+fn is_ref_site_metadata_key(key: &str) -> bool {
+    ANNOTATION_KEYS.contains(&key)
+}
+
+fn resolve_json_schema_refs_allow_cycles<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    match with_resolved_json_schema(
+        root,
+        schema,
+        resolving_refs,
+        depth,
+        max_depth,
+        |resolved, resolving_refs, next_depth| {
+            resolve_json_schema_child_refs_allow_cycles(
+                root,
+                resolved,
+                resolving_refs,
+                next_depth,
+                max_depth,
+            )
+        },
+    ) {
+        Ok(resolved) => Ok(resolved),
+        Err(JsonSchemaWalkError::RefCycle(_reference)) => Ok(schema.clone()),
+        Err(error) => Err(error),
+    }
+}
+
+fn resolve_json_schema_child_refs_allow_cycles<'a>(
+    root: &'a Value,
+    schema: &'a Value,
+    resolving_refs: &mut BTreeSet<String>,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    let Some(object) = schema.as_object() else {
+        return Ok(schema.clone());
+    };
+
+    let mut resolved = object.clone();
+    for key in ["items", "additionalProperties", "not"] {
+        if let Some(value) = object.get(key).filter(|value| value.is_object()) {
+            resolved.insert(
+                key.to_string(),
+                resolve_json_schema_refs_allow_cycles(
+                    root,
+                    value,
+                    resolving_refs,
+                    depth,
+                    max_depth,
+                )?,
+            );
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(values) = object.get(key).and_then(Value::as_array) {
+            resolved.insert(
+                key.to_string(),
+                Value::Array(
+                    values
+                        .iter()
+                        .map(|value| {
+                            resolve_json_schema_refs_allow_cycles(
+                                root,
+                                value,
+                                resolving_refs,
+                                depth,
+                                max_depth,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            );
+        }
+    }
+    for key in ["$defs", "definitions", "patternProperties", "properties"] {
+        if let Some(schemas) = object.get(key).and_then(Value::as_object) {
+            resolved.insert(
+                key.to_string(),
+                Value::Object(
+                    schemas
+                        .iter()
+                        .map(|(name, schema)| {
+                            resolve_json_schema_refs_allow_cycles(
+                                root,
+                                schema,
+                                resolving_refs,
+                                depth,
+                                max_depth,
+                            )
+                            .map(|schema| (name.clone(), schema))
+                        })
+                        .collect::<Result<serde_json::Map<_, _>, _>>()?,
+                ),
+            );
+        }
+    }
+    Ok(Value::Object(resolved))
+}
+
+fn json_schema_walk_error_from_ref(error: RefError<'_>) -> JsonSchemaWalkError<'_> {
+    match error {
+        RefError::External(reference) => JsonSchemaWalkError::ExternalRef(reference),
+        RefError::NotFound(reference) => JsonSchemaWalkError::RefNotFound(reference),
+    }
+}
+
+pub(crate) fn direct_json_object_shape(schema: &Value) -> JsonObjectShape {
+    let Some(schema) = schema.as_object() else {
+        return JsonObjectShape::default();
+    };
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .map(|(name, property)| (name.clone(), property.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    JsonObjectShape {
+        properties,
+        required: json_schema_required_fields(schema),
+    }
+}
+
+pub(crate) fn json_schema_required_fields(
+    schema: &serde_json::Map<String, Value>,
+) -> BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+pub(crate) fn json_schema_default_to_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
+pub(crate) fn merge_json_schema_properties_exact(
+    target: &mut BTreeMap<String, Value>,
+    source: BTreeMap<String, Value>,
+) -> Result<(), JsonSchemaComparisonError> {
+    for (name, property) in source {
+        if let Some(existing) = target.get(&name) {
+            if existing != &property {
+                return Err(JsonSchemaComparisonError::PropertyConflict(name));
+            }
+        } else {
+            target.insert(name, property);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_json_object_shape_annotation_insensitive(
+    target: &mut JsonObjectShape,
+    source: JsonObjectShape,
+    depth: usize,
+    max_depth: usize,
+) -> Result<(), JsonSchemaComparisonError> {
+    for (name, property) in source.properties {
+        if let Some(existing) = target.properties.get_mut(&name) {
+            if json_schema_property_schemas_conflict(existing, &property, depth, max_depth)? {
+                return Err(JsonSchemaComparisonError::PropertyConflict(name));
+            }
+            merge_json_schema_property_metadata(existing, &property);
+        } else {
+            target.properties.insert(name, property);
+        }
+    }
+    target.required.extend(source.required);
+    Ok(())
+}
 
 pub(crate) fn json_schema_scalar_type(schema: &Value) -> Option<IrScalarType> {
     json_schema_scalar_type_with_default(schema, None)
@@ -102,8 +408,101 @@ fn scalar_for_typeless_schema_format(schema: &Value) -> Option<IrScalarType> {
         })
 }
 
+fn json_schema_property_schemas_conflict(
+    existing: &Value,
+    candidate: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<bool, JsonSchemaComparisonError> {
+    let Ok(left) = schema_without_annotation_metadata(existing, depth, max_depth) else {
+        return Err(JsonSchemaComparisonError::DepthExceeded);
+    };
+    let Ok(right) = schema_without_annotation_metadata(candidate, depth, max_depth) else {
+        return Err(JsonSchemaComparisonError::DepthExceeded);
+    };
+    Ok(left != right)
+}
+
+fn schema_without_annotation_metadata<'a>(
+    schema: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    schema_without_annotation_metadata_at_key(None, schema, depth, max_depth)
+}
+
+fn schema_without_annotation_metadata_at_key<'a>(
+    key: Option<&str>,
+    schema: &Value,
+    depth: usize,
+    max_depth: usize,
+) -> Result<Value, JsonSchemaWalkError<'a>> {
+    // TODO: check depth against max_depth here!
+    if depth > max_depth {
+        return Err(JsonSchemaWalkError::DepthExceeded);
+    }
+    let next_depth = depth + 1;
+
+    match schema {
+        Value::Object(object) => {
+            let is_schema_name_map = matches!(
+                key,
+                Some("$defs" | "definitions" | "patternProperties" | "properties")
+            );
+            let mut out = serde_json::Map::new();
+            for (key, value) in object.iter().filter(|(key, _value)| {
+                is_schema_name_map || !ANNOTATION_KEYS.contains(&key.as_str())
+            }) {
+                match schema_without_annotation_metadata_at_key(
+                    Some(key),
+                    value,
+                    next_depth,
+                    max_depth,
+                ) {
+                    Ok(x) => {
+                        out.insert(key.clone(), x);
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(Value::Object(out))
+        }
+        Value::Array(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                match schema_without_annotation_metadata_at_key(None, value, next_depth, max_depth)
+                {
+                    Ok(x) => out.push(x),
+                    Err(err) => return Err(err),
+                }
+            }
+            if key == Some("type") {
+                out.sort_by_key(Value::to_string);
+            }
+            Ok(Value::Array(out))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+fn merge_json_schema_property_metadata(existing: &mut Value, candidate: &Value) {
+    let (Some(existing), Some(candidate)) = (existing.as_object_mut(), candidate.as_object())
+    else {
+        return;
+    };
+    for key in ANNOTATION_KEYS {
+        if !existing.contains_key(*key)
+            && let Some(value) = candidate.get(*key)
+        {
+            existing.insert((*key).to_string(), value.clone());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
 
     use super::*;
@@ -137,6 +536,211 @@ mod tests {
         assert_eq!(
             json_schema_scalar_type(&json!({"format": "date-time"})),
             Some(IrScalarType::Timestamp)
+        );
+    }
+
+    #[test]
+    fn resolve_local_ref_returns_input_without_ref() {
+        let root = json!({"$defs": {}});
+        let schema = json!({"type": "string"});
+
+        let resolved = resolve_local_ref(&root, &schema).expect("schema");
+
+        assert!(std::ptr::eq(
+            std::ptr::from_ref(resolved),
+            std::ptr::from_ref(&schema)
+        ));
+    }
+
+    #[test]
+    fn resolve_local_ref_returns_local_pointer_target() {
+        let root = json!({
+            "$defs": {
+                "Name": {"type": "string"}
+            }
+        });
+        let schema = json!({"$ref": "#/$defs/Name"});
+
+        let resolved = resolve_local_ref(&root, &schema).expect("schema");
+
+        assert_eq!(resolved, &json!({"type": "string"}));
+    }
+
+    #[test]
+    fn resolve_local_ref_rejects_external_refs() {
+        let root = json!({});
+        let schema = json!({"$ref": "https://example.com/schema.json#/Name"});
+
+        assert_eq!(
+            resolve_local_ref(&root, &schema),
+            Err(RefError::External("https://example.com/schema.json#/Name"))
+        );
+    }
+
+    #[test]
+    fn resolve_local_ref_reports_missing_refs() {
+        let root = json!({});
+        let schema = json!({"$ref": "#/$defs/Missing"});
+
+        assert_eq!(
+            resolve_local_ref(&root, &schema),
+            Err(RefError::NotFound("#/$defs/Missing"))
+        );
+    }
+
+    #[test]
+    fn resolved_schema_walk_keeps_ref_guard_during_visit() {
+        let root = json!({
+            "$defs": {
+                "Name": {"type": "string"}
+            }
+        });
+        let schema = json!({"$ref": "#/$defs/Name"});
+        let mut resolving_refs = BTreeSet::new();
+
+        let guard_was_active = with_resolved_json_schema(
+            &root,
+            &schema,
+            &mut resolving_refs,
+            0,
+            8,
+            |_schema, resolving_refs, _depth| Ok(resolving_refs.contains("#/$defs/Name")),
+        )
+        .expect("walk");
+
+        assert!(guard_was_active);
+        assert!(resolving_refs.is_empty());
+    }
+
+    #[test]
+    fn resolved_schema_ref_with_siblings_resolves_schema_bearing_children() {
+        let root = json!({
+            "$defs": {
+                "Value": {"type": "integer"}
+            },
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"$ref": "#/$defs/Value"}
+                    }
+                }
+            }
+        });
+        let mut resolving_refs = BTreeSet::new();
+        let filter = root.pointer("/properties/filter").expect("filter schema");
+
+        let resolved =
+            resolve_json_schema_ref_with_siblings(&root, filter, &mut resolving_refs, 0, 8)
+                .expect("resolved");
+
+        assert_eq!(
+            resolved
+                .pointer("/properties/value/type")
+                .and_then(Value::as_str),
+            Some("integer")
+        );
+        assert!(resolving_refs.is_empty());
+    }
+
+    #[test]
+    fn exact_property_merge_reports_conflict() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            }
+        }))
+        .properties;
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "integer"}
+            }
+        }))
+        .properties;
+
+        assert_eq!(
+            merge_json_schema_properties_exact(&mut target, source),
+            Err(JsonSchemaComparisonError::PropertyConflict(
+                "query".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_keeps_metadata() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": ["string", "null"],
+                    "title": "Query"
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": ["null", "string"],
+                    "description": "Search query"
+                }
+            }
+        }));
+
+        merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 100).expect("merge");
+
+        let query = target.properties.get("query").expect("query property");
+        assert_eq!(query.get("title").and_then(Value::as_str), Some("Query"));
+        assert_eq!(
+            query.get("description").and_then(Value::as_str),
+            Some("Search query")
+        );
+        assert!(target.required.contains("query"));
+    }
+
+    #[test]
+    fn annotation_insensitive_object_shape_merge_reports_depth_exceeded() {
+        let mut target = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"}
+                    }
+                }
+            }
+        }));
+        let source = direct_json_object_shape(&json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "string"}
+                    }
+                }
+            }
+        }));
+
+        assert_eq!(
+            merge_json_object_shape_annotation_insensitive(&mut target, source, 0, 1),
+            Err(JsonSchemaComparisonError::DepthExceeded)
+        );
+    }
+
+    #[test]
+    fn default_to_string_preserves_string_values_and_serializes_other_json() {
+        assert_eq!(json_schema_default_to_string(&json!("text")), "text");
+        assert_eq!(json_schema_default_to_string(&json!(30)), "30");
+        assert_eq!(json_schema_default_to_string(&json!(true)), "true");
+        assert_eq!(
+            json_schema_default_to_string(&json!({"enabled": true})),
+            r#"{"enabled":true}"#
         );
     }
 }

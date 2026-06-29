@@ -1,5 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
+import { fontFamily } from '@/wax/theme/font.css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const header = style({
@@ -129,7 +130,7 @@ export const oauthBox = style({
 
 export const oauthCode = style({
   color: theme.content.primary,
-  fontFamily: 'monospace',
+  fontFamily: fontFamily.dmMono,
   fontWeight: 700,
 })
 
