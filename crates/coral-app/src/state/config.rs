@@ -13,7 +13,7 @@ use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
-use crate::workspaces::{WorkspaceName, WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AppConfig {
@@ -516,20 +516,29 @@ impl ConfigStore {
     pub(crate) fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<WorkspaceRecord>, AppError> {
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
         self.update_config(|config| {
-            if workspace_name == &WorkspaceName::default() {
+            if workspace_name.is_default() {
                 return Err(AppError::FailedPrecondition(
                     "default workspace cannot be removed".to_string(),
                 ));
             }
             let removed = config.workspaces.remove(workspace_name);
             if removed {
-                config.catalog.remove_workspace(workspace_name);
+                let sources = config
+                    .catalog
+                    .remove_workspace(workspace_name)
+                    .map(BTreeMap::into_values)
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                return Ok(Some(DeletedWorkspace {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources,
+                }));
             }
-            Ok(removed.then(|| WorkspaceRecord {
-                name: workspace_name.clone(),
-            }))
+            Ok(None)
         })
     }
 
@@ -601,17 +610,10 @@ impl WorkspaceStore for ConfigStore {
         ConfigStore::create_workspace(self, workspace_name)
     }
 
-    fn list_workspace_sources(
-        &self,
-        workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledSource>, AppError> {
-        ConfigStore::list_workspace_sources(self, workspace_name)
-    }
-
     fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Option<WorkspaceRecord>, AppError> {
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
         ConfigStore::delete_workspace(self, workspace_name)
     }
 }
@@ -1211,6 +1213,33 @@ origin = "bundled"
         assert_workspace_not_found(
             store.remove_source(&missing_workspace, &source_name),
             &missing_workspace,
+        );
+    }
+
+    #[test]
+    fn delete_workspace_returns_removed_sources() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+
+        store
+            .create_workspace(&workspace_name)
+            .expect("create workspace");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+
+        let deleted = store
+            .delete_workspace(&workspace_name)
+            .expect("delete workspace")
+            .expect("workspace should be deleted");
+
+        assert_eq!(deleted.workspace.name, workspace_name);
+        assert_eq!(deleted.sources.len(), 1);
+        assert_eq!(deleted.sources[0].name.as_str(), "github");
+        assert_workspace_not_found(
+            store.list_workspace_sources(&deleted.workspace.name),
+            &deleted.workspace.name,
         );
     }
 

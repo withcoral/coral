@@ -87,14 +87,14 @@ pub(crate) struct DirectoryBackup {
 impl DirectoryBackup {
     pub(crate) fn move_for_delete(path: &Path, name: impl fmt::Display) -> io::Result<Self> {
         let backup = path.with_file_name(format!("{name}.delete.rollback.{}", Uuid::new_v4()));
-        if !path.exists() {
+        if !path.try_exists()? {
             return Ok(Self {
                 original: path.to_path_buf(),
                 backup,
                 moved: false,
             });
         }
-        if backup.exists() {
+        if backup.try_exists()? {
             fs::remove_dir_all(&backup)?;
         }
         fs::rename(path, &backup)?;
@@ -110,8 +110,8 @@ impl DirectoryBackup {
     }
 
     pub(crate) fn restore(&self) -> io::Result<()> {
-        if self.moved && self.backup.exists() {
-            if self.original.exists() {
+        if self.moved && self.backup.try_exists()? {
+            if self.original.try_exists()? {
                 fs::remove_dir_all(&self.original)?;
             }
             fs::rename(&self.backup, &self.original)?;
@@ -120,7 +120,7 @@ impl DirectoryBackup {
     }
 
     pub(crate) fn commit(&self) -> io::Result<()> {
-        if self.moved && self.backup.exists() {
+        if self.moved && self.backup.try_exists()? {
             fs::remove_dir_all(&self.backup)?;
         }
         Ok(())
