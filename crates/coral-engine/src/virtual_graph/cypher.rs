@@ -1277,6 +1277,11 @@ fn pattern_element_path(
     match element {
         PatternElement::Path { start, chains } => Some((start, chains.as_slice())),
         PatternElement::Parenthesized(inner) => pattern_element_path(inner),
+        PatternElement::Quantified {
+            element,
+            quantifier,
+            ..
+        } if is_exact_one_path_quantifier(quantifier) => pattern_element_path(element),
         PatternElement::Quantified { .. } => None,
     }
 }
@@ -1287,8 +1292,17 @@ fn pattern_element_path_mut(
     match element {
         PatternElement::Path { start, chains } => Some((start, chains)),
         PatternElement::Parenthesized(inner) => pattern_element_path_mut(inner),
+        PatternElement::Quantified {
+            element,
+            quantifier,
+            ..
+        } if is_exact_one_path_quantifier(quantifier) => pattern_element_path_mut(element),
         PatternElement::Quantified { .. } => None,
     }
+}
+
+fn is_exact_one_path_quantifier(quantifier: &Quantifier) -> bool {
+    quantifier.start == Some(1) && quantifier.end == Some(1)
 }
 
 fn node_pattern_bound_variables(pattern: &CypherNodePattern, variables: &mut BTreeSet<String>) {
@@ -41959,6 +41973,41 @@ relationships:
         )
         .expect("relationship type alternatives inside parenthesized path should compile");
         assert!(matches!(alternative_query, GraphQuery::Union(_)));
+    }
+
+    #[test]
+    fn compiles_exact_one_quantified_parenthesized_path_patterns() {
+        let plan = compile_cypher(
+            "MATCH ((a:Service)-[:DEPENDS_ON]->(b:Service)){1} \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("exact-one quantified parenthesized path pattern should compile");
+
+        assert_eq!(
+            plan.relationships,
+            vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            }]
+        );
+
+        let path_plan = compile_cypher(
+            "MATCH dependency_path = ((a:Service)-[:DEPENDS_ON]->(b:Service)){1,1} \
+             RETURN length(dependency_path) AS hops",
+        )
+        .expect("path variable over exact-one quantified parenthesized path should compile");
+        assert_eq!(path_length_projection_literal(&path_plan), Some(1));
+
+        let optional_plan = compile_cypher(
+            "MATCH (a:Service) \
+             OPTIONAL MATCH ((a)-[:DEPENDS_ON]->(b:Service)){1} \
+             RETURN a.name AS source, b.name AS target",
+        )
+        .expect("anchored optional exact-one quantified parenthesized path should compile");
+        assert_eq!(optional_plan.optional_relationships, vec![0]);
     }
 
     #[test]
