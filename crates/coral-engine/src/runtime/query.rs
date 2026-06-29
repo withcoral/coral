@@ -178,8 +178,9 @@ async fn build_registered_runtime(
     );
     if !source_functions.is_empty() {
         source_functions
-            .install(&ctx)
+            .install_relation_planner(&ctx)
             .map_err(|err| datafusion_to_core(&err, &tables))?;
+        SourceFunctionRegistry::install_analyzer(&ctx);
     }
     for failure in &registration.failures {
         tracing::warn!(
