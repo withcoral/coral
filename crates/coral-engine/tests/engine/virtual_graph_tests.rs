@@ -1138,6 +1138,37 @@ async fn cypher_static_node_label_alternatives_project_count_subqueries() {
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_order_by_count_subqueries() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner \
+         ORDER BY COUNT { MATCH (owner)-[:OWNS]->(:Service) } DESC, owner",
+    )
+    .await
+    .expect("COUNT subquery order keys should execute after branch expansion");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Team", "owner": "platform"}),
+            json!({"owner_label": "Person", "owner": "Ada Lovelace"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson"}),
+            json!({"owner_label": "Team", "owner": "analytics"}),
+            json!({"owner_label": "Team", "owner": "infra"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_rewrite_missing_properties_in_optional_match() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
