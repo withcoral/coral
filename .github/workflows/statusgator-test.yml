@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           . "$HOME/.cargo/env"
           # Add the bundled source (upserts, safe to re-run)
-          cargo run -q -p coral-cli -- source add statusgator --file sources/core/statusgator/manifest.yaml
+          cargo run -q -p coral-cli -- source add --file sources/core/statusgator/manifest.yaml
           # Test connectivity and save logs
           cargo run -q -p coral-cli -- source test statusgator | tee statusgator-test.txt
           # Look up a real board id from this account to drive the representative query
