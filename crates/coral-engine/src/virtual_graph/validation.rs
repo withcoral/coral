@@ -1242,6 +1242,11 @@ impl<'a> GraphPlanValidator<'a> {
             variables.insert(variable);
             return;
         }
+        if let Some((left, right)) = Self::scalar_expression_binary_operands(expression) {
+            Self::collect_scalar_expression_variables(left, variables);
+            Self::collect_scalar_expression_variables(right, variables);
+            return;
+        }
 
         match expression {
             ScalarExpression::Literal(_)
@@ -1265,10 +1270,6 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
-            ScalarExpression::NullIf { expression, value } => {
-                Self::collect_scalar_expression_variables(expression, variables);
-                Self::collect_scalar_expression_variables(value, variables);
-            }
             unary_scalar_expression_pattern!() => {
                 unreachable!("unary scalar expressions handled above")
             }
@@ -1277,11 +1278,6 @@ impl<'a> GraphPlanValidator<'a> {
                 if let Some(places) = places {
                     Self::collect_scalar_expression_variables(places, variables);
                 }
-            }
-            ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => {
-                Self::collect_scalar_expression_variables(expression, variables);
-                Self::collect_scalar_expression_variables(count, variables);
             }
             ScalarExpression::Replace {
                 expression,
@@ -1303,14 +1299,6 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(length, variables);
                 }
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                Self::collect_scalar_expression_variables(left, variables);
-                Self::collect_scalar_expression_variables(right, variables);
-            }
-            ScalarExpression::Atan2 { y, x } => {
-                Self::collect_scalar_expression_variables(y, variables);
-                Self::collect_scalar_expression_variables(x, variables);
-            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -1324,6 +1312,31 @@ impl<'a> GraphPlanValidator<'a> {
                 }
             }
             _ => unreachable!("direct scalar variables handled above"),
+        }
+    }
+
+    fn scalar_expression_binary_operands(
+        expression: &ScalarExpression,
+    ) -> Option<(&ScalarExpression, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::NullIf { expression, value } => Some((expression, value)),
+            ScalarExpression::Left { expression, count }
+            | ScalarExpression::Right { expression, count } => Some((expression, count)),
+            ScalarExpression::StringContains {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringStartsWith {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringEndsWith {
+                expression,
+                pattern,
+            } => Some((expression, pattern)),
+            ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
+            ScalarExpression::Atan2 { y, x } => Some((y, x)),
+            _ => None,
         }
     }
 
@@ -3026,6 +3039,35 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::String)
             }
+            ScalarExpression::StringContains {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringStartsWith {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringEndsWith {
+                expression,
+                pattern: operand,
+            } => {
+                for (name, expression) in [
+                    ("expression", expression.as_ref()),
+                    ("pattern", operand.as_ref()),
+                ] {
+                    let expression_type = self.infer_scoped_scalar_expression_type(
+                        expression,
+                        scope,
+                        format!("{path}.{name}"),
+                    )?;
+                    Self::require_string_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "string predicate function",
+                    )?;
+                }
+                Ok(ScalarType::Boolean)
+            }
             ScalarExpression::Replace {
                 expression,
                 search,
@@ -4584,6 +4626,18 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Right { expression, count } => {
                 self.infer_sized_string_scalar_type(expression, count, path)
             }
+            ScalarExpression::StringContains {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringStartsWith {
+                expression,
+                pattern: operand,
+            }
+            | ScalarExpression::StringEndsWith {
+                expression,
+                pattern: operand,
+            } => self.infer_string_predicate_function_scalar_type(expression, operand, path),
             ScalarExpression::Replace {
                 expression,
                 search,
@@ -4772,6 +4826,24 @@ impl<'a> GraphPlanValidator<'a> {
             )?;
         }
         Ok(ScalarType::String)
+    }
+
+    fn infer_string_predicate_function_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        pattern: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("pattern", pattern)] {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "string predicate function",
+            )?;
+        }
+        Ok(ScalarType::Boolean)
     }
 
     fn infer_substring_scalar_type(

@@ -17,7 +17,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 21,
+    "ScalarExpressions": 22,
     "TypeConversion": 3,
     "Union": 2,
     "Unwind": 1,
@@ -576,6 +576,20 @@
           { "name": "Alice", "city_suffix": "on" },
           { "name": "Bob", "city_suffix": "" },
           { "name": "Carol", "city_suffix": "is" }
+        ]
+      }
+    },
+    {
+      "id": "string-predicate-function-return-projections",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS person, contains(p.name, 'ar') AS has_ar, startsWith(p.city, 'L') AS starts_l, endsWith(p.city, 'n') AS ends_n ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "has_ar": false, "starts_l": true, "ends_n": true },
+          { "person": "Bob", "has_ar": false, "starts_l": false, "ends_n": false },
+          { "person": "Carol", "has_ar": true, "starts_l": false, "ends_n": false }
         ]
       }
     },
