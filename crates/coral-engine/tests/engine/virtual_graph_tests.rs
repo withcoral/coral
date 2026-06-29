@@ -1634,7 +1634,7 @@ async fn cypher_static_node_label_alternatives_collect_property_after_union() {
     assert!(
         execution
             .translated_sql()
-            .contains("ARRAY_AGG(DISTINCT \"__coral_agg_1\") AS \"services\""),
+            .contains("COALESCE(ARRAY_AGG(DISTINCT \"__coral_agg_1\") FILTER (WHERE (\"__coral_agg_1\") IS NOT NULL), make_array()) AS \"services\""),
         "{}",
         execution.translated_sql()
     );
@@ -1679,7 +1679,7 @@ async fn cypher_static_node_label_alternatives_collect_graph_variables_after_uni
     assert!(
         execution
             .translated_sql()
-            .contains("ARRAY_AGG(\"__coral_agg_0\") AS \"owners\""),
+            .contains("COALESCE(ARRAY_AGG(\"__coral_agg_0\") FILTER (WHERE (\"__coral_agg_0\") IS NOT NULL), make_array()) AS \"owners\""),
         "{}",
         execution.translated_sql()
     );
@@ -1720,6 +1720,100 @@ async fn cypher_static_node_label_alternatives_collect_graph_variables_after_uni
                 "node:Team:3000"
             ]
         })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_optional_endpoint_identity_aggregates_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         OPTIONAL MATCH (owner)-[ownership:OWNS]->(service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN owner.name AS owner, \
+                count(endNode(ownership)) AS services, \
+                count(DISTINCT endNode(ownership)) AS distinct_services, \
+                collect(endNode(ownership)) AS service_ids \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static alternatives with optional endpoint identity aggregates should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "COALESCE(ARRAY_AGG(\"__coral_agg_3\") FILTER (WHERE (\"__coral_agg_3\") IS NOT NULL), make_array()) AS \"service_ids\""
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_i64_array_field(row, "service_ids");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "services": 1, "distinct_services": 1, "service_ids": [10]}),
+            json!({"owner": "Grace Hopper", "services": 1, "distinct_services": 1, "service_ids": [20]}),
+            json!({"owner": "Katherine Johnson", "services": 0, "distinct_services": 0, "service_ids": []}),
+            json!({"owner": "analytics", "services": 0, "distinct_services": 0, "service_ids": []}),
+            json!({"owner": "infra", "services": 1, "distinct_services": 1, "service_ids": [20]}),
+            json!({"owner": "platform", "services": 1, "distinct_services": 1, "service_ids": [10]}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_optional_endpoint_property_aggregates_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         OPTIONAL MATCH (owner)-[ownership:OWNS]->(service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN owner.name AS owner, \
+                count(endNode(ownership).name) AS named_services, \
+                sum(endNode(ownership).risk) AS total_risk, \
+                collect(endNode(ownership).name) AS service_names \
+         ORDER BY owner",
+    )
+    .await
+    .expect("static alternatives with optional endpoint property aggregates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SUM(\"__coral_agg_2\") AS \"total_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        sort_string_array_field(row, "service_names");
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({"owner": "Ada Lovelace", "named_services": 1, "total_risk": 0.9, "service_names": ["billing-api"]}),
+            json!({"owner": "Grace Hopper", "named_services": 1, "total_risk": 0.5, "service_names": ["deployments"]}),
+            json!({"owner": "Katherine Johnson", "named_services": 0, "service_names": []}),
+            json!({"owner": "analytics", "named_services": 0, "service_names": []}),
+            json!({"owner": "infra", "named_services": 1, "total_risk": 0.5, "service_names": ["deployments"]}),
+            json!({"owner": "platform", "named_services": 1, "total_risk": 0.9, "service_names": ["billing-api"]}),
+        ]
     );
 }
 

@@ -2410,76 +2410,24 @@ fn compile_static_alternative_outer_aggregate_item(
     let Some(function) = aggregate_function_call(&item.expression) else {
         return Ok(None);
     };
+    let item_path = format!("{path}.return.items[{index}]");
     let function_kind = compile_aggregate_function(function).ok_or_else(|| {
         unsupported(
-            format!("{path}.return.items[{index}].expression"),
+            format!("{item_path}.expression"),
             "pattern alternatives only support property aggregates after expansion",
         )
     })?;
     reject_unsupported_distinct_aggregate(
         function_kind,
         function.distinct,
-        format!("{path}.return.items[{index}].expression.distinct"),
+        format!("{item_path}.expression.distinct"),
     )?;
-    let target = compile_function_aggregate_target(
+    let source_expression = compile_static_alternative_outer_aggregate_source_expression(
         function,
         function_kind,
-        &format!("{path}.return.items[{index}]"),
-        None,
+        &item_path,
         context,
-    );
-    let source_expression = match target {
-        Ok(AggregateTarget::Property(_)) => {
-            let [argument] = function.arguments.as_slice() else {
-                return Err(unsupported(
-                    format!("{path}.return.items[{index}].expression.arguments"),
-                    "pattern alternatives with property aggregates require one graph property argument",
-                ));
-            };
-            argument.clone()
-        }
-        Ok(AggregateTarget::PresenceGatedProperty { .. }) => {
-            return Err(unsupported(
-                format!("{path}.return.items[{index}].expression.arguments"),
-                "pattern alternatives do not support optional relationship endpoint property aggregates yet",
-            ));
-        }
-        Ok(AggregateTarget::Expression(_)) => {
-            return Err(unsupported(
-                format!("{path}.return.items[{index}].expression.arguments"),
-                "pattern alternatives do not support aggregate expression targets yet",
-            ));
-        }
-        Ok(AggregateTarget::VariableKey { variable }) => match function_kind {
-            AggregateFunction::Count => {
-                if function.distinct {
-                    graph_identity_function_expression_for_variable(&variable, function)
-                } else {
-                    graph_presence_function_expression_for_variable(&variable, function)
-                }
-            }
-            AggregateFunction::Collect => {
-                graph_identity_function_expression_for_variable(&variable, function)
-            }
-            _ => {
-                return Err(unsupported(
-                    format!("{path}.return.items[{index}].expression.arguments"),
-                    "pattern alternatives only support count(variable) and collect(variable) over graph variables",
-                ));
-            }
-        },
-        Ok(AggregateTarget::PresenceGatedVariableKey { .. }) => {
-            return Err(unsupported(
-                format!("{path}.return.items[{index}].expression.arguments"),
-                "pattern alternatives do not support optional relationship endpoint aggregates yet",
-            ));
-        }
-        Err(error) => compile_static_alternative_outer_aggregate_expression_source(
-            function,
-            &format!("{path}.return.items[{index}]"),
-        )?
-        .ok_or(error)?,
-    };
+    )?;
     Ok(Some(StaticAlternativeOuterProjectionItem::Aggregate {
         function: function_kind,
         source_alias: format!("__coral_agg_{index}"),
@@ -2490,6 +2438,138 @@ fn compile_static_alternative_outer_aggregate_item(
             variable_name,
         ),
     }))
+}
+
+fn compile_static_alternative_outer_aggregate_source_expression(
+    function: &FunctionInvocation,
+    function_kind: AggregateFunction,
+    item_path: &str,
+    context: &CypherCompileContext,
+) -> Result<Expression, CoreError> {
+    let target =
+        compile_function_aggregate_target(function, function_kind, item_path, None, context);
+    match target {
+        Ok(AggregateTarget::Property(_)) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{item_path}.expression.arguments"),
+                    "pattern alternatives with property aggregates require one graph property argument",
+                ));
+            };
+            Ok(argument.clone())
+        }
+        Ok(AggregateTarget::PresenceGatedProperty { .. }) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{item_path}.expression.arguments"),
+                    "pattern alternatives with optional relationship endpoint property aggregates require one graph property argument",
+                ));
+            };
+            Ok(argument.clone())
+        }
+        Ok(AggregateTarget::Expression(_)) => Err(unsupported(
+            format!("{item_path}.expression.arguments"),
+            "pattern alternatives do not support aggregate expression targets yet",
+        )),
+        Ok(AggregateTarget::VariableKey { variable }) => match function_kind {
+            AggregateFunction::Count => {
+                if function.distinct {
+                    Ok(graph_identity_function_expression_for_variable(
+                        &variable, function,
+                    ))
+                } else {
+                    Ok(graph_presence_function_expression_for_variable(
+                        &variable, function,
+                    ))
+                }
+            }
+            AggregateFunction::Collect => Ok(graph_identity_function_expression_for_variable(
+                &variable, function,
+            )),
+            _ => Err(unsupported(
+                format!("{item_path}.expression.arguments"),
+                "pattern alternatives only support count(variable) and collect(variable) over graph variables",
+            )),
+        },
+        Ok(AggregateTarget::PresenceGatedVariableKey { .. }) => {
+            if !matches!(
+                function_kind,
+                AggregateFunction::Count | AggregateFunction::Collect
+            ) {
+                return Err(unsupported(
+                    format!("{item_path}.expression.arguments"),
+                    "pattern alternatives only support count(endpoint) and collect(endpoint) over optional relationship endpoints",
+                ));
+            }
+            let [argument] = function.arguments.as_slice() else {
+                return Err(unsupported(
+                    format!("{item_path}.expression.arguments"),
+                    "pattern alternatives with optional relationship endpoint aggregates require one graph endpoint argument",
+                ));
+            };
+            Ok(id_function_expression_for_expression(argument, function))
+        }
+        Err(error) => {
+            if let Some(source) = compile_static_alternative_outer_endpoint_aggregate_source(
+                function,
+                function_kind,
+                item_path,
+            )? {
+                Ok(source)
+            } else {
+                compile_static_alternative_outer_aggregate_expression_source(function, item_path)?
+                    .ok_or(error)
+            }
+        }
+    }
+}
+
+fn compile_static_alternative_outer_endpoint_aggregate_source(
+    function: &FunctionInvocation,
+    function_kind: AggregateFunction,
+    path: &str,
+) -> Result<Option<Expression>, CoreError> {
+    let [argument] = function.arguments.as_slice() else {
+        return Ok(None);
+    };
+    if is_relationship_endpoint_property_expression(argument) {
+        return Ok(Some(argument.clone()));
+    }
+    if !is_relationship_endpoint_expression(argument) {
+        return Ok(None);
+    }
+    if !matches!(
+        function_kind,
+        AggregateFunction::Count | AggregateFunction::Collect
+    ) {
+        return Err(unsupported(
+            format!("{path}.expression.arguments[0]"),
+            "pattern alternatives only support count(endpoint) and collect(endpoint) over relationship endpoints",
+        ));
+    }
+    Ok(Some(id_function_expression_for_expression(
+        argument, function,
+    )))
+}
+
+fn is_relationship_endpoint_property_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_relationship_endpoint_property_expression(inner),
+        Expression::PropertyLookup { base, .. } => is_relationship_endpoint_expression(base),
+        _ => false,
+    }
+}
+
+fn is_relationship_endpoint_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_relationship_endpoint_expression(inner),
+        Expression::FunctionCall(function)
+            if is_start_node_function(function) || is_end_node_function(function) =>
+        {
+            true
+        }
+        _ => false,
+    }
 }
 
 fn compile_static_alternative_outer_aggregate_expression_source(
@@ -2762,6 +2842,22 @@ fn function_expression_for_variable(
                 span,
             },
         })],
+        span,
+    })
+}
+
+fn id_function_expression_for_expression(
+    argument: &Expression,
+    source_function: &FunctionInvocation,
+) -> Expression {
+    let span = source_function.span;
+    Expression::FunctionCall(FunctionInvocation {
+        name: vec![SymbolicName {
+            name: "id".to_string(),
+            span,
+        }],
+        distinct: false,
+        arguments: vec![argument.clone()],
         span,
     })
 }
@@ -28185,6 +28281,135 @@ relationships:
                     nulls: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_optional_endpoint_property_aggregates() {
+        let query = compile_cypher_query(
+            "MATCH (owner:Person|Team) \
+             OPTIONAL MATCH (owner)-[ownership:OWNS]->(service:Service) \
+             RETURN owner.name AS owner, \
+                    count(endNode(ownership).name) AS named_services, \
+                    sum(endNode(ownership).risk) AS total_risk \
+             ORDER BY owner",
+        )
+        .expect("optional endpoint property aggregates should compile as outer union aggregates");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        assert_eq!(
+            union.first.projection_output_names(),
+            vec![
+                "owner".to_string(),
+                "__coral_agg_1".to_string(),
+                "__coral_agg_2".to_string(),
+            ]
+        );
+        assert!(matches!(
+            union.first.projections.get(1),
+            Some(Projection::Expression {
+                expression: ScalarExpression::PresenceGated {
+                    presence_variable,
+                    expression,
+                },
+                alias,
+            }) if presence_variable == "ownership"
+                && matches!(
+                    expression.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "service" && property == "name"
+                )
+                && alias == "__coral_agg_1"
+        ));
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "owner".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Count,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: false,
+                        alias: "named_services".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Sum,
+                        source: "__coral_agg_2".to_string(),
+                        distinct: false,
+                        alias: "total_risk".to_string(),
+                    },
+                ],
+                group_by: vec!["owner".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_static_label_alternatives_with_optional_endpoint_identity_aggregates() {
+        let query = compile_cypher_query(
+            "MATCH (owner:Person|Team) \
+             OPTIONAL MATCH (owner)-[ownership:OWNS]->(service:Service) \
+             RETURN owner.name AS owner, \
+                    count(endNode(ownership)) AS services, \
+                    count(DISTINCT endNode(ownership)) AS distinct_services, \
+                    collect(endNode(ownership)) AS service_ids \
+             ORDER BY owner",
+        )
+        .expect("optional endpoint identity aggregates should compile as outer union aggregates");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static label alternatives to expand into a union query");
+        };
+        for index in 1..=3 {
+            let expected_alias = format!("__coral_agg_{index}");
+            assert!(matches!(
+                union.first.projections.get(index),
+                Some(Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable,
+                        expression,
+                    },
+                    alias,
+                }) if presence_variable == "ownership"
+                    && matches!(
+                        expression.as_ref(),
+                        ScalarExpression::Key { variable } if variable == "service"
+                    )
+                    && alias == &expected_alias
+            ));
+        }
+        assert_eq!(
+            union.outer_projection,
+            Some(GraphUnionOuterProjection {
+                items: vec![
+                    GraphUnionOuterProjectionItem::Column {
+                        name: "owner".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Count,
+                        source: "__coral_agg_1".to_string(),
+                        distinct: false,
+                        alias: "services".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Count,
+                        source: "__coral_agg_2".to_string(),
+                        distinct: true,
+                        alias: "distinct_services".to_string(),
+                    },
+                    GraphUnionOuterProjectionItem::Aggregate {
+                        function: AggregateFunction::Collect,
+                        source: "__coral_agg_3".to_string(),
+                        distinct: false,
+                        alias: "service_ids".to_string(),
+                    },
+                ],
+                group_by: vec!["owner".to_string()],
+            })
         );
     }
 

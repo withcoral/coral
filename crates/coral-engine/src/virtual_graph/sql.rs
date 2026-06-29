@@ -6230,6 +6230,19 @@ fn render_union_outer_projection_item(item: &GraphUnionOuterProjectionItem) -> S
             source,
             distinct,
             alias,
+        } if *function == AggregateFunction::Collect => {
+            let source = quote_ident(source);
+            format!(
+                "COALESCE(ARRAY_AGG({}{source}) FILTER (WHERE ({source}) IS NOT NULL), make_array()) AS {}",
+                if *distinct { "DISTINCT " } else { "" },
+                quote_ident(alias)
+            )
+        }
+        GraphUnionOuterProjectionItem::Aggregate {
+            function,
+            source,
+            distinct,
+            alias,
         } => format!(
             "{}({}{}) AS {}",
             render_aggregate_function(*function),
