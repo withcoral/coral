@@ -14,6 +14,7 @@
     "ReturnDistinct": 1,
     "RowModifiers": 2,
     "ScalarExpressions": 18,
+    "TypeConversion": 3,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -546,6 +547,42 @@
       "expected": {
         "kind": "error",
         "contains": "sqrt() requires exactly one argument"
+      }
+    },
+    {
+      "id": "strict-type-conversion-predicate-and-projection",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE toFloat(p.age) >= 30.0 AND toInteger(toString(p.age)) >= 30 AND toBoolean(toString(p.active)) = true RETURN p.name AS name, toString(p.age) AS age_text, toBoolean(toString(p.active)) AS active_bool ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age_text": "34", "active_bool": true },
+          { "name": "Carol", "age_text": "41", "active_bool": true }
+        ]
+      }
+    },
+    {
+      "id": "nullable-type-conversion-coalesce-projection",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) RETURN p.name AS name, coalesce(toStringOrNull(CASE WHEN p.name = 'Bob' THEN null ELSE p.age END), 'missing') AS parsed_age_text, coalesce(toIntegerOrNull(CASE WHEN p.name = 'Bob' THEN 'bad' ELSE toString(p.age) END), -1) AS parsed_age, coalesce(toFloatOrNull(CASE WHEN p.name = 'Bob' THEN 'bad' ELSE toString(p.age) END), -1.0) AS parsed_age_float, coalesce(toBooleanOrNull(CASE WHEN p.name = 'Bob' THEN 'maybe' ELSE toString(p.active) END), false) AS parsed_active ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "parsed_age_text": "34", "parsed_age": 34, "parsed_age_float": 34.0, "parsed_active": true },
+          { "name": "Bob", "parsed_age_text": "missing", "parsed_age": -1, "parsed_age_float": -1.0, "parsed_active": false },
+          { "name": "Carol", "parsed_age_text": "41", "parsed_age": 41, "parsed_age_float": 41.0, "parsed_active": true }
+        ]
+      }
+    },
+    {
+      "id": "nullable-type-conversion-wrong-arity-rejected",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) RETURN toIntegerOrNull(p.age, 10) AS age",
+      "expected": {
+        "kind": "error",
+        "contains": "toIntegerOrNull() requires exactly one argument"
       }
     },
     {
