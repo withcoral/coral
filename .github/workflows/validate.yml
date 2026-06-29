@@ -74,6 +74,7 @@ jobs:
               - 'apps/ui/**'
             reef-checks:
               - '.github/workflows/validate.yml'
+              - 'crates/coral-api/proto/**'
               - 'apps/reef/**'
               # Reef re-exports the desktop IPC bridge types, so a change there
               # can break the reef type-check.

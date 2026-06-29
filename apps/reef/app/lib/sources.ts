@@ -13,7 +13,8 @@ import {
   type SourceInfo,
 } from '@/generated/coral/v1/sources_pb'
 
-import { getSourceClient, WORKSPACE } from './coral-clients'
+import { getSourceClient } from './coral-clients'
+import { WORKSPACE } from './constants'
 
 export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
 
@@ -23,6 +24,8 @@ export interface CatalogEntry {
   version: string
   installed: boolean
   origin: SourceOriginLabel
+  info?: SourceInfo
+  source?: Source
 }
 
 export interface ResolvedSourceInfo {
@@ -41,6 +44,32 @@ export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   return 'unknown'
 }
 
+export function catalogEntries(discovered: SourceInfo[], installed: Source[]): CatalogEntry[] {
+  const entries = new Map<string, CatalogEntry>()
+  for (const info of discovered) {
+    entries.set(info.name, toCatalogEntry(info))
+  }
+  for (const source of installed) {
+    const existing = entries.get(source.name)
+    if (existing) {
+      existing.installed = true
+      const installedOrigin = originLabel(source.origin)
+      if (installedOrigin !== 'unknown') existing.origin = installedOrigin
+      existing.version = source.version || existing.version
+      continue
+    }
+    entries.set(source.name, {
+      description:
+        source.origin === SourceOrigin.IMPORTED ? 'Imported source' : 'Configured source',
+      installed: true,
+      name: source.name,
+      origin: originLabel(source.origin),
+      version: source.version,
+    })
+  }
+  return [...entries.values()]
+}
+
 function toCatalogEntry(s: SourceInfo): CatalogEntry {
   return {
     name: s.name,
@@ -48,6 +77,7 @@ function toCatalogEntry(s: SourceInfo): CatalogEntry {
     version: s.version,
     installed: s.installed,
     origin: originLabel(s.origin),
+    info: s,
   }
 }
 
