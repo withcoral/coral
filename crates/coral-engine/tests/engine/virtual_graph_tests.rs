@@ -6240,6 +6240,49 @@ async fn cypher_parameterized_dynamic_label_predicates_execute_against_synthetic
 }
 
 #[tokio::test]
+async fn cypher_parameterized_dynamic_label_patterns_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "owner_label".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("Person".to_string())),
+        ),
+        (
+            "relationship_type".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("OWNS".to_string())),
+        ),
+        (
+            "service_label".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("Service".to_string())),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:$($owner_label))-[owns:$($relationship_type)]->(service:$($service_label)) \
+         RETURN person.name AS owner, service.name AS service \
+         ORDER BY service",
+        &parameters,
+    )
+    .await
+    .expect("parameterized dynamic label/type patterns should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_multihop_paths_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

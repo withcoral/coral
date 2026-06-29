@@ -148,7 +148,8 @@ The supported foundation subset is intentionally narrow:
 - explicit graph-variable `RETURN service` / `RETURN service AS svc` expansion
   through the same declaration-aware tabular contract, with aliases used as
   output column prefixes;
-- named node variables where the first binding has one static label and
+- named node variables where the first binding has one static or compile-time
+  dynamic label, such as `:$($label)` with a scalar string parameter, and
   repeated bindings may omit the label. In declaration-aware compilation,
   fresh named and anonymous endpoints may omit the label when an exact typed
   relationship pattern, or an untyped exact single-hop relationship pattern,
@@ -160,7 +161,9 @@ The supported foundation subset is intentionally narrow:
   undirected relationships when a single graph declaration mapping recovers
   original edge orientation. Declaration-aware compilation may infer the type
   for an untyped exact single-hop relationship when the endpoint labels and
-  direction select exactly one relationship type; untyped ranges and ambiguous
+  direction select exactly one relationship type. Relationship type atoms may
+  also be compile-time dynamic, such as `:$($type)` with a scalar string
+  parameter; untyped ranges, row-dependent dynamic types, and ambiguous
   endpoint pairs remain rejected;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
@@ -316,12 +319,13 @@ The supported foundation subset is intentionally narrow:
 - `id(...)`, `type(relationship)`, static `'<Label>' IN labels(node)`
   membership, and branch-local membership over static-list `CASE` /
   `coalesce(...)` right-hand sides in predicates;
-- static `node:Label` and `relationship:TYPE` predicates, including grouped
-  label-expression conjunction, disjunction, and negation evaluated against
-  mapped labels and relationship types. Dynamic predicate atoms such as
-  `node:$($label)` are folded when the expression is a string literal or
-  scalar string parameter; row-dependent and list-valued dynamic labels remain
-  rejected because Coral does not evaluate graph labels per source row;
+- static and compile-time dynamic `node:Label` / `relationship:TYPE`
+  predicates, including grouped label-expression conjunction, disjunction, and
+  negation evaluated against mapped labels and relationship types. Dynamic
+  predicate atoms such as `node:$($label)` are folded when the expression is a
+  string literal or scalar string parameter; row-dependent and list-valued
+  dynamic labels remain rejected because Coral does not evaluate graph labels
+  per source row;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE` for literal and parameter RHS values, or DataFusion string functions
   for scalar expression RHS values;
