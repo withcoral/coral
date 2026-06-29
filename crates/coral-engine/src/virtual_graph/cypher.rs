@@ -285,7 +285,13 @@ struct StaticListComprehensionEvaluation<'a> {
 struct PathBinding {
     length: usize,
     optional: bool,
-    presence_variable: Option<String>,
+    presence_gate: Option<PathPresenceGate>,
+}
+
+#[derive(Debug, Clone)]
+enum PathPresenceGate {
+    Variable(String),
+    Predicate(PredicateExpression),
 }
 
 #[derive(Debug, Clone)]
@@ -5733,7 +5739,7 @@ fn compile_pattern_part_into(
     let mut chain_state = PathChainCompileState {
         previous_variable,
         previous_label: start_node.label,
-        path_presence_variable: None,
+        path_presence_gate: None,
         hidden_path_presence_variables: Vec::new(),
     };
 
@@ -5763,9 +5769,7 @@ fn compile_pattern_part_into(
             state,
             pending,
             optional,
-            optional
-                .then_some(chain_state.path_presence_variable)
-                .flatten(),
+            optional.then_some(chain_state.path_presence_gate).flatten(),
         );
     }
 
@@ -5775,7 +5779,7 @@ fn compile_pattern_part_into(
 struct PathChainCompileState {
     previous_variable: String,
     previous_label: String,
-    path_presence_variable: Option<String>,
+    path_presence_gate: Option<PathPresenceGate>,
     hidden_path_presence_variables: Vec<String>,
 }
 
@@ -6270,19 +6274,21 @@ fn append_zero_length_relationship(
     next_node_introduced: bool,
     options: PathChainCompileOptions,
     plan: &mut GraphPlan,
-    chain_state: &PathChainCompileState,
+    chain_state: &mut PathChainCompileState,
 ) -> Result<(), CoreError> {
     if options.optional && options.force_optional_path_presence && !next_node_introduced {
         if relationship.pattern.left == relationship.pattern.right {
             return Ok(());
         }
-        return Err(unsupported(
-            format!(
-                "match.pattern.parts[{}].relationships[{}]",
-                options.part_index, options.chain_index
+        record_path_presence_predicate(
+            chain_state,
+            zero_length_relationship_presence_predicate(
+                relationship,
+                &chain_state.previous_label,
+                next_label,
             ),
-            "OPTIONAL MATCH with named zero-hop paths between distinct already-bound endpoints requires equality-gated nullable path length and is not supported yet",
-        ));
+        );
+        return Ok(());
     }
     if options.optional && !next_node_introduced {
         return Ok(());
@@ -6372,7 +6378,7 @@ fn record_path_presence_variables(
     relationship_variables: Vec<String>,
 ) {
     if let Some(variable) = relationship_variables.last() {
-        chain_state.path_presence_variable = Some(variable.clone());
+        chain_state.path_presence_gate = Some(PathPresenceGate::Variable(variable.clone()));
     }
     chain_state.hidden_path_presence_variables.extend(
         relationship_variables
@@ -6382,10 +6388,34 @@ fn record_path_presence_variables(
 }
 
 fn record_path_presence_variable(chain_state: &mut PathChainCompileState, variable: String) {
-    chain_state.path_presence_variable = Some(variable.clone());
+    chain_state.path_presence_gate = Some(PathPresenceGate::Variable(variable.clone()));
     if is_internal_graph_variable(&variable) {
         chain_state.hidden_path_presence_variables.push(variable);
     }
+}
+
+fn record_path_presence_predicate(
+    chain_state: &mut PathChainCompileState,
+    predicate: PredicateExpression,
+) {
+    chain_state.path_presence_gate = Some(PathPresenceGate::Predicate(predicate));
+}
+
+fn zero_length_relationship_presence_predicate(
+    relationship: &CompiledRelationship,
+    left_label: &str,
+    right_label: &str,
+) -> PredicateExpression {
+    if left_label != right_label {
+        return PredicateExpression::Boolean(false);
+    }
+    PredicateExpression::KeyComparison(KeyPredicate {
+        variable: relationship.pattern.left.clone(),
+        operator: ComparisonOperator::Equal,
+        rhs: PredicateRhs::Key {
+            variable: relationship.pattern.right.clone(),
+        },
+    })
 }
 
 fn infer_fixed_length_intermediate_labels(
@@ -6661,14 +6691,14 @@ fn bind_path_variable(
     state: &mut CypherCompileState,
     pending: PendingPathBinding,
     optional: bool,
-    presence_variable: Option<String>,
+    presence_gate: Option<PathPresenceGate>,
 ) {
     state.path_variables.insert(
         pending.name,
         PathBinding {
             length: pending.length,
             optional,
-            presence_variable,
+            presence_gate,
         },
     );
 }
@@ -12772,19 +12802,28 @@ fn compile_path_length_scalar_expression(
         .map_err(|error| CoreError::internal(format!("path length overflow: {error}")))?;
     let expression = ScalarExpression::Literal(Literal::Integer(length));
     if binding.optional {
-        let Some(presence_variable) = binding.presence_variable.clone() else {
-            if binding.length == 0 {
-                return Ok(expression);
-            }
-            return Err(unsupported(
-                format!("{arguments_path}[0]"),
-                "length() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path length can be gated",
-            ));
+        let Some(presence_gate) = binding.presence_gate.clone() else {
+            return if binding.length == 0 {
+                Ok(expression)
+            } else {
+                Err(unsupported(
+                    format!("{arguments_path}[0]"),
+                    "length() over an OPTIONAL MATCH path requires a relationship binding so null-preserving path length can be gated",
+                ))
+            };
         };
-        return Ok(presence_gate_scalar_expression(
-            Some(presence_variable),
-            expression,
-        ));
+        return Ok(match presence_gate {
+            PathPresenceGate::Variable(presence_variable) => {
+                presence_gate_scalar_expression(Some(presence_variable), expression)
+            }
+            PathPresenceGate::Predicate(predicate) => ScalarExpression::Case {
+                alternatives: vec![ScalarCaseAlternative {
+                    when: predicate,
+                    then: expression,
+                }],
+                else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Null))),
+            },
+        });
     }
     Ok(expression)
 }
@@ -26463,19 +26502,73 @@ relationships:
     }
 
     #[test]
-    fn rejects_optional_zero_hop_path_length_between_distinct_bound_endpoints() {
-        let error = compile_cypher(
+    fn compiles_optional_zero_hop_path_length_between_distinct_bound_endpoints() {
+        let plan = compile_cypher(
             "MATCH (source:Service), (target:Service) \
              OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target) \
+             RETURN length(path) AS path_length, size(path) AS path_size \
+             ORDER BY length(path)",
+        )
+        .expect("bound endpoint zero-hop path length should compile as equality-gated metadata");
+
+        let expected = ScalarExpression::Case {
+            alternatives: vec![ScalarCaseAlternative {
+                when: PredicateExpression::KeyComparison(KeyPredicate {
+                    variable: "source".to_string(),
+                    operator: ComparisonOperator::Equal,
+                    rhs: PredicateRhs::Key {
+                        variable: "target".to_string(),
+                    },
+                }),
+                then: ScalarExpression::Literal(Literal::Integer(0)),
+            }],
+            else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Null))),
+        };
+        assert_eq!(
+            plan.projections.first(),
+            Some(&Projection::Expression {
+                expression: expected.clone(),
+                alias: "path_length".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.projections.get(1),
+            Some(&Projection::Expression {
+                expression: expected.clone(),
+                alias: "path_size".to_string(),
+            })
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_zero_hop_path_length_between_bound_cross_label_endpoints() {
+        let plan = compile_cypher(
+            "MATCH (source:Service), (person:Person) \
+             OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(person) \
              RETURN length(path) AS path_length",
         )
-        .expect_err("distinct bound endpoint zero-hop path length needs nullable path gating");
+        .expect("bound cross-label zero-hop path length should compile as null metadata");
 
-        assert!(
-            error
-                .to_string()
-                .contains("requires equality-gated nullable path length"),
-            "{error}"
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: ScalarExpression::Case {
+                    alternatives: vec![ScalarCaseAlternative {
+                        when: PredicateExpression::Boolean(false),
+                        then: ScalarExpression::Literal(Literal::Integer(0)),
+                    }],
+                    else_expression: Some(Box::new(ScalarExpression::Literal(Literal::Null))),
+                },
+                alias: "path_length".to_string(),
+            }]
         );
     }
 

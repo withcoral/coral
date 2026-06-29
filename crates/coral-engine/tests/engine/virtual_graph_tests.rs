@@ -2188,6 +2188,61 @@ async fn cypher_optional_zero_hop_path_length_executes_as_identity() {
 }
 
 #[tokio::test]
+async fn cypher_optional_zero_hop_bound_path_length_uses_endpoint_equality() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let same_label = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (target:Service) \
+         OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(target) \
+         WITH * WHERE length(path) IS NOT NULL \
+         RETURN count(*) AS self_pairs",
+    )
+    .await
+    .expect("bound same-label zero-hop path length query should execute");
+
+    assert!(
+        same_label.translated_sql().contains("CASE WHEN")
+            && same_label.translated_sql().contains("THEN 0 ELSE NULL END"),
+        "{}",
+        same_label.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(same_label.execution()),
+        vec![json!({"self_pairs": 4})]
+    );
+
+    let cross_label = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (source:Service), (person:Person) \
+         OPTIONAL MATCH path = (source)-[:DEPENDS_ON*0]->(person) \
+         WITH * WHERE length(path) IS NULL \
+         RETURN count(*) AS null_paths",
+    )
+    .await
+    .expect("bound cross-label zero-hop path length query should execute");
+
+    assert!(
+        cross_label
+            .translated_sql()
+            .contains("CASE WHEN FALSE THEN 0 ELSE NULL END"),
+        "{}",
+        cross_label.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(cross_label.execution()),
+        vec![json!({"null_paths": 12})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_bounded_gql_relationship_quantifiers_expand_to_union_all() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
