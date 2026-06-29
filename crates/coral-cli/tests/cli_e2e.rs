@@ -1048,6 +1048,14 @@ async fn source_add_prints_unresolved_hosts_separately() {
         "expected unresolved host marker in stdout: {stdout}"
     );
 
+    let create_requests = server.create_bundled_source_requests();
+    assert_eq!(create_requests.len(), 1, "expected one create call");
+    assert_single_source_variable(
+        &create_requests[0].variables,
+        GITLAB_API_BASE_KEY,
+        GITLAB_API_BASE_VALUE,
+    );
+
     server.shutdown().await;
 }
 

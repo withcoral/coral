@@ -311,6 +311,13 @@ fn validate_s3_object_store(
 ) -> Result<()> {
     if let Some(region) = region {
         validate_source_scoped_template(schema, table, "source.object_store.region", region)?;
+        if region.tokens().next().is_none() {
+            validate_s3_region_name(region.raw()).map_err(|error| {
+                ManifestError::validation(format!(
+                    "{schema}.{table} source.object_store.region {error}"
+                ))
+            })?;
+        }
     }
     auth.validate(schema, table)
 }
@@ -328,6 +335,32 @@ pub fn s3_endpoint_dns_suffix_for_region(region: &str) -> &'static str {
     } else {
         "amazonaws.com"
     }
+}
+
+/// Validates a rendered S3 region before it is interpolated into an endpoint URL.
+pub fn validate_s3_region_name(region: &str) -> std::result::Result<(), String> {
+    let region = region.trim();
+    if region.is_empty() {
+        return Err("must not be empty".to_string());
+    }
+    if !region
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("must contain only lowercase ASCII letters, digits, and '-'".to_string());
+    }
+    let starts_alphanumeric = region
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    let ends_alphanumeric = region
+        .bytes()
+        .last()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    if !starts_alphanumeric || !ends_alphanumeric {
+        return Err("must start and end with a lowercase ASCII letter or digit".to_string());
+    }
+    Ok(())
 }
 
 /// Credential mode for an S3 object store.
@@ -1298,6 +1331,38 @@ mod tests {
             }],
         }))
         .expect("typed s3 object-store config should parse");
+    }
+
+    #[test]
+    fn s3_file_manifest_rejects_literal_region_with_url_syntax() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "warehouse",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "events",
+                "description": "Warehouse events",
+                "format": "jsonl",
+                "source": {
+                    "location": "s3://example/warehouse/",
+                    "object_store": {
+                        "type": "s3",
+                        "region": "cn-north-1.evil.example/path",
+                        "auth": { "type": "instance_profile" }
+                    }
+                },
+                "columns": [{ "name": "id", "type": "Int64" }],
+            }],
+        }))
+        .expect_err("literal S3 region with URL syntax should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source.object_store.region must contain only lowercase ASCII letters"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

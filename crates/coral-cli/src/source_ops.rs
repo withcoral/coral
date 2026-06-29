@@ -177,32 +177,6 @@ pub(crate) struct CollectedSourceInputs {
     oauth_labels: BTreeMap<String, String>,
 }
 
-struct HostConfirmationVariables {
-    variables: Vec<SourceVariable>,
-}
-
-impl HostConfirmationVariables {
-    fn variables(&self) -> &[SourceVariable] {
-        &self.variables
-    }
-
-    fn confirmed(self) -> HostConfirmedVariables {
-        HostConfirmedVariables {
-            variables: self.variables,
-        }
-    }
-}
-
-struct HostConfirmedVariables {
-    variables: Vec<SourceVariable>,
-}
-
-impl HostConfirmedVariables {
-    fn into_inner(self) -> Vec<SourceVariable> {
-        self.variables
-    }
-}
-
 impl CollectedSourceInputs {
     fn new() -> Self {
         Self {
@@ -733,18 +707,17 @@ where
     Resolve: FnOnce(Vec<SourceVariable>) -> ResolveFuture,
     ResolveFuture: Future<Output = Result<OutboundHostReview, anyhow::Error>>,
 {
-    let host_variables = prompt_variables_for_host_confirmation(inputs)?;
-    let hosts = resolve_hosts(host_variables.variables().to_vec()).await?;
+    let variables = prompt_variables_for_host_confirmation(inputs)?;
+    let hosts = resolve_hosts(variables.clone()).await?;
     if !confirm_source_hosts(&hosts)? {
         return Ok(None);
     }
-    collect_secret_inputs_with_credential_methods_in_mode(inputs, host_variables.confirmed(), mode)
-        .map(Some)
+    collect_secret_inputs_with_credential_methods_in_mode(inputs, variables, mode).map(Some)
 }
 
 fn collect_secret_inputs_with_credential_methods_in_mode(
     inputs: &[ManifestInputSpec],
-    variables: HostConfirmedVariables,
+    variables: Vec<SourceVariable>,
     mode: CredentialPromptMode,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
     collect_secret_inputs_with_env_lookup(inputs, variables, mode, |key| {
@@ -754,12 +727,12 @@ fn collect_secret_inputs_with_credential_methods_in_mode(
 
 fn collect_secret_inputs_with_env_lookup(
     inputs: &[ManifestInputSpec],
-    variables: HostConfirmedVariables,
+    variables: Vec<SourceVariable>,
     mode: CredentialPromptMode,
     mut read_env: impl FnMut(&str) -> String,
 ) -> Result<CollectedSourceInputs, anyhow::Error> {
     let mut collected = CollectedSourceInputs::new();
-    collected.variables = variables.into_inner();
+    collected.variables = variables;
 
     for input in inputs {
         if input.kind == ManifestInputKind::Variable {
@@ -837,7 +810,7 @@ pub(crate) fn collect_inputs_from_env(
 /// [`collect_inputs_from_env`] and reuses its variables for host resolution.
 fn prompt_variables_for_host_confirmation(
     inputs: &[ManifestInputSpec],
-) -> Result<HostConfirmationVariables, anyhow::Error> {
+) -> Result<Vec<SourceVariable>, anyhow::Error> {
     let mut variables = Vec::new();
     for input in inputs
         .iter()
@@ -855,7 +828,7 @@ fn prompt_variables_for_host_confirmation(
             variables.push(variable);
         }
     }
-    Ok(HostConfirmationVariables { variables })
+    Ok(variables)
 }
 
 pub(crate) fn source_variables_map(variables: &[SourceVariable]) -> BTreeMap<String, String> {

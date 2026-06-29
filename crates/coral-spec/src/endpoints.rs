@@ -19,6 +19,7 @@ use crate::{
 
 const UNRESOLVED_OPENAPI_SERVER_HOST: &str =
     "OpenAPI servers[0].url runtime host; declare base_url to review before import";
+const UNRESOLVED_S3_REGION_HOST_PREFIX: &str = "S3 service endpoint for unresolved region ";
 
 /// Concrete and unresolved outbound-host review data for source setup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +287,10 @@ fn collect_s3_service_host(
     if region.is_empty() {
         return;
     }
+    if is_unresolved_host(region) {
+        unresolved_hosts.insert(format!("{UNRESOLVED_S3_REGION_HOST_PREFIX}{region}"));
+        return;
+    }
     let host = format!("s3.{region}.{}", s3_endpoint_dns_suffix_for_region(region));
     if is_unresolved_host(&host) {
         unresolved_hosts.insert(host);
@@ -327,7 +332,10 @@ fn collect_host(hosts: &mut BTreeSet<String>, unresolved_hosts: &mut BTreeSet<St
 
 fn insert_parsed_url_host(hosts: &mut BTreeSet<String>, raw: &str) -> bool {
     match parsed_url_host(raw) {
-        HostExtraction::Host(host) => hosts.insert(host),
+        HostExtraction::Host(host) => {
+            hosts.insert(host);
+            true
+        }
         HostExtraction::NoRemoteHost | HostExtraction::Unresolved => false,
     }
 }
@@ -603,6 +611,44 @@ surfaces:
             manifest.outbound_hosts(),
             vec!["api.example.com".to_string()]
         );
+        std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
+    }
+
+    #[test]
+    fn deduplicates_v4_file_descriptor_runtime_hosts_without_unresolved_marker() {
+        let openapi_file = write_openapi_fixture(
+            r"
+openapi: 3.0.3
+info:
+  title: Demo
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+paths: {}
+",
+        );
+        let manifest = parse_source_manifest_yaml(&format!(
+            r#"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest_a
+    type: openapi
+    namespace_suffix: rest_a
+    file: "{}"
+  - id: rest_b
+    type: openapi
+    namespace_suffix: rest_b
+    file: "{}"
+"#,
+            openapi_file.display(),
+            openapi_file.display()
+        ))
+        .expect("manifest should parse");
+
+        let review = manifest.outbound_host_review();
+        assert_eq!(review.hosts, vec!["api.example.com".to_string()]);
+        assert!(review.unresolved_hosts.is_empty());
         std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
     }
 
@@ -996,7 +1042,7 @@ tables:
         assert!(review.hosts.is_empty());
         assert_eq!(
             review.unresolved_hosts,
-            vec!["s3.{{input.AWS_REGION}}.amazonaws.com".to_string()]
+            vec!["S3 service endpoint for unresolved region {{input.AWS_REGION}}".to_string()]
         );
 
         let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "eu-west-1".to_string())]);

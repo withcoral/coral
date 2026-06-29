@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::{
     ManifestError, ParsedTemplate, Result, TemplateNamespace, is_loopback_url,
-    validate_https_or_loopback_scheme_parts,
+    validate_https_or_loopback_scheme_name, validate_https_or_loopback_unresolved_host_scheme,
 };
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
@@ -197,17 +197,17 @@ fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &
     // `render_oauth_endpoint_url` before any OAuth request is made.
     let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
     if let Ok(url) = Url::parse(parse_prefix) {
-        return validate_https_or_loopback_scheme_parts(
+        return validate_https_or_loopback_scheme_name(
             context,
             url.scheme(),
-            Some(is_loopback_url(&url)),
+            is_loopback_url(&url),
         )
         .map_err(ManifestError::validation);
     }
     let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
         return Ok(());
     };
-    validate_https_or_loopback_scheme_parts(context, scheme, None)
+    validate_https_or_loopback_unresolved_host_scheme(context, scheme)
         .map_err(ManifestError::validation)
 }
 
@@ -620,6 +620,10 @@ fn validate_oauth_endpoint_template(
         crate::validate_https_or_loopback_url(&context, &rendered)
             .map_err(ManifestError::validation)?;
     } else if let Some(prefix) = rendered_before_first_required_variable.as_deref() {
+        // A required variable may supply the whole URL authority, leaving only
+        // an empty prefix or a scheme prefix such as `https://` here. Validate
+        // any known prefix now; `render_oauth_endpoint_url` validates the
+        // fully rendered URL before use.
         let context = format!("manifest input '{input_key}' oauth.endpoints.{field}");
         validate_oauth_provider_endpoint_template_prefix(&context, prefix)?;
     }
@@ -2173,6 +2177,29 @@ tables: []
             error
                 .to_string()
                 .contains("unsupported scheme 'x-coral-unsafe'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_plain_http_oauth_endpoint_templates_with_unresolved_host() {
+        let error = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "http://{{input.OAUTH_HOST}}/oauth/token",
+                ),
+        )
+        .expect_err("plain HTTP scheme should fail when host is unresolved");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https when the host is supplied by a required input"),
             "unexpected error: {error}"
         );
     }

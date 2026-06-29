@@ -26,7 +26,7 @@ use crate::backends::shared::template::{RenderContext, render_template};
 use coral_spec::ParsedTemplate;
 use coral_spec::backends::file::{
     FileFormat, FileObjectStoreSpec, FileSourceSpec, FileTableSpec, S3AuthSpec,
-    s3_endpoint_dns_suffix_for_region,
+    s3_endpoint_dns_suffix_for_region, validate_s3_region_name,
 };
 
 use super::error::FileBackendError;
@@ -284,10 +284,14 @@ fn build_object_store(
             if let Some(region) = region {
                 let region = render_template(region, &context)?;
                 let region = region.trim();
+                validate_s3_region_name(region).map_err(|error| {
+                    DataFusionError::Plan(format!(
+                        "{source_schema} source.object_store.region {error}"
+                    ))
+                })?;
                 builder = builder.with_region(region);
-                let dns_suffix = s3_endpoint_dns_suffix_for_region(region);
-                if dns_suffix != "amazonaws.com" {
-                    builder = builder.with_endpoint(format!("https://s3.{region}.{dns_suffix}"));
+                if let Some(endpoint) = s3_endpoint_for_region(region) {
+                    builder = builder.with_endpoint(endpoint);
                 }
             }
 
@@ -333,6 +337,11 @@ pub(super) fn parse_bool(value: &str) -> Result<bool> {
             "invalid boolean value '{other}'"
         ))),
     }
+}
+
+fn s3_endpoint_for_region(region: &str) -> Option<String> {
+    let dns_suffix = s3_endpoint_dns_suffix_for_region(region);
+    (dns_suffix != "amazonaws.com").then(|| format!("https://s3.{region}.{dns_suffix}"))
 }
 
 #[cfg(test)]
@@ -457,6 +466,40 @@ mod tests {
     }
 
     #[test]
+    fn s3_object_store_rejects_rendered_region_with_url_syntax() {
+        let table_path = ListingTableUrl::parse("s3://example-bucket/events/")
+            .expect("s3 table path should parse");
+        let source = FileSourceSpec {
+            location: ParsedTemplate::parse("s3://example-bucket/events/")
+                .expect("location template should parse"),
+            glob: None,
+            partitions: vec![],
+            metadata: vec![],
+            object_store: Some(FileObjectStoreSpec::S3 {
+                region: Some(
+                    ParsedTemplate::parse("{{input.AWS_REGION}}")
+                        .expect("region template should parse"),
+                ),
+                auth: S3AuthSpec::InstanceProfile,
+            }),
+        };
+        let resolved_inputs = BTreeMap::from([(
+            "AWS_REGION".to_string(),
+            "cn-north-1.evil.example/path".to_string(),
+        )]);
+
+        let error = build_object_store("codex", &table_path, &source, &resolved_inputs)
+            .expect_err("invalid rendered region should fail before endpoint construction");
+
+        assert!(
+            error
+                .to_string()
+                .contains("source.object_store.region must contain only lowercase ASCII letters"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn s3_object_store_accepts_china_region_endpoint() {
         let table_path = ListingTableUrl::parse("s3://example-bucket/events/")
             .expect("s3 table path should parse");
@@ -474,6 +517,10 @@ mod tests {
 
         build_object_store("codex", &table_path, &source, &BTreeMap::new())
             .expect("S3 object store should accept China-region endpoint settings");
+        assert_eq!(
+            s3_endpoint_for_region("cn-north-1").as_deref(),
+            Some("https://s3.cn-north-1.amazonaws.com.cn")
+        );
     }
 
     #[test]

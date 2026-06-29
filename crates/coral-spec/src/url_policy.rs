@@ -32,25 +32,41 @@ pub fn validate_https_or_loopback_url(context: &str, raw: &str) -> Result<(), St
 
 /// Enforces the https-or-loopback scheme policy on an already-parsed URL.
 pub fn validate_https_or_loopback_scheme(context: &str, url: &Url) -> Result<(), String> {
-    validate_https_or_loopback_scheme_parts(context, url.scheme(), Some(is_loopback_url(url)))
+    validate_https_or_loopback_scheme_name(context, url.scheme(), is_loopback_url(url))
 }
 
-/// Enforces the https-or-loopback scheme policy when a template prefix exposes
-/// the scheme but may not expose the final host yet.
-///
-/// Pass `None` for `host_is_loopback` only when the host is unresolved at
-/// manifest-validation time and the fully rendered URL will be validated before
-/// use.
-pub fn validate_https_or_loopback_scheme_parts(
+/// Enforces the https-or-loopback scheme policy for a known URL scheme and host.
+pub fn validate_https_or_loopback_scheme_name(
     context: &str,
     scheme: &str,
-    host_is_loopback: Option<bool>,
+    host_is_loopback: bool,
 ) -> Result<(), String> {
     match scheme {
         "https" => Ok(()),
-        "http" if host_is_loopback.unwrap_or(true) => Ok(()),
+        "http" if host_is_loopback => Ok(()),
         "http" => Err(format!(
             "{context} must use https unless it targets localhost"
+        )),
+        scheme => Err(format!(
+            "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
+        )),
+    }
+}
+
+/// Enforces the provider-endpoint scheme policy when a template prefix exposes
+/// only the scheme and the host will come from a required input later.
+///
+/// The loopback exception cannot be proven until runtime in this shape, so the
+/// manifest-time prefix check accepts only `https`. The fully rendered URL is
+/// still validated before any request is made.
+pub fn validate_https_or_loopback_unresolved_host_scheme(
+    context: &str,
+    scheme: &str,
+) -> Result<(), String> {
+    match scheme {
+        "https" => Ok(()),
+        "http" => Err(format!(
+            "{context} must use https when the host is supplied by a required input"
         )),
         scheme => Err(format!(
             "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
