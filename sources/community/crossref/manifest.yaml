@@ -37,7 +37,8 @@ test_queries:
   - SELECT url, work_count FROM crossref.licenses LIMIT 1
   - SELECT doi, given, family, sequence FROM crossref.authors WHERE query = 'machine learning' LIMIT 5
   - SELECT source_doi, article_title, unstructured FROM crossref.references WHERE query = 'machine learning' LIMIT 5
-
+  - SELECT doi, title, score FROM crossref.search_works(q => 'climate change') LIMIT 5
+  - SELECT id, name, location FROM crossref.search_funders(q => 'National Science Foundation') LIMIT 5
 tables:
   # ---------------------------------------------------------------------------
   # crossref.works
@@ -603,7 +604,8 @@ functions:
     args:
       - name: q
         required: true
-        bind: { arg: q }
+        bind:
+          arg: q
     request:
       method: GET
       path: /works
@@ -663,7 +665,8 @@ functions:
     args:
       - name: q
         required: true
-        bind: { arg: q }
+        bind:
+          arg: q
     request:
       method: GET
       path: /funders
