@@ -40,7 +40,7 @@ async fn opencypher_tck_read_baseline_gate() {
     .expect("openCypher read baseline should parse");
     assert_eq!(suite.suite, "coral-opencypher-read-baseline");
     assert!(
-        suite.scenarios.len() >= 32,
+        suite.scenarios.len() >= 41,
         "baseline should not shrink without an explicit compatibility decision"
     );
     assert_tck_coverage_contract(&suite);

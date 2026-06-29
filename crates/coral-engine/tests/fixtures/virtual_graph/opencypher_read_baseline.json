@@ -2,22 +2,22 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 3,
+    "Aggregation": 4,
     "CountSubquery": 2,
     "ExistsSubquery": 1,
-    "GraphMetadata": 2,
+    "GraphMetadata": 4,
     "Match": 3,
     "OptionalMatch": 3,
     "PathMetadata": 1,
     "PathValues": 1,
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
-    "RowModifiers": 1,
+    "RowModifiers": 2,
     "ScalarExpressions": 1,
     "Union": 2,
     "Unwind": 1,
-    "VariableLengthPaths": 1,
-    "Where": 6,
+    "VariableLengthPaths": 3,
+    "Where": 9,
     "With": 2
   },
   "scenarios": [
@@ -123,6 +123,42 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "where-xor-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.active XOR p.city = 'Paris' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "where-label-membership-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE 'Person' IN labels(p) AND NOT ('Service' IN labels(p)) RETURN count(p) AS people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3 }
+        ]
+      }
+    },
+    {
+      "id": "where-keys-membership-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE 'city' IN keys(p) AND NOT ('missing' IN keys(p)) RETURN count(p) AS people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3 }
         ]
       }
     },
@@ -233,6 +269,18 @@
       }
     },
     {
+      "id": "aggregate-count-star",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN count(*) AS people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "people": 3 }
+        ]
+      }
+    },
+    {
       "id": "aggregate-with-filter",
       "feature": "With",
       "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WITH p.name AS person, count(friend) AS friend_count WHERE friend_count > 1 RETURN person, friend_count",
@@ -326,6 +374,34 @@
       }
     },
     {
+      "id": "element-id-function",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN p.name AS name, elementId(p) AS element_id ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "element_id": "1" },
+          { "name": "Bob", "element_id": "2" },
+          { "name": "Carol", "element_id": "3" }
+        ]
+      }
+    },
+    {
+      "id": "labels-and-keys-metadata",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN p.name AS name, labels(p)[0] AS label, size(keys(p)) AS key_count ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "label": "Person", "key_count": 4 },
+          { "name": "Bob", "label": "Person", "key_count": 4 },
+          { "name": "Carol", "label": "Person", "key_count": 4 }
+        ]
+      }
+    },
+    {
       "id": "order-skip-limit",
       "feature": "RowModifiers",
       "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC SKIP 1 LIMIT 1",
@@ -334,6 +410,20 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "order-by-null-placement",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY CASE WHEN p.name = 'Bob' THEN null ELSE p.age END ASC NULLS LAST",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" },
+          { "name": "Bob" }
         ]
       }
     },
@@ -398,6 +488,36 @@
         "ordered": true,
         "rows": [
           { "source": "Alice", "target": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "bounded-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 2 },
+          { "source": "Bob", "target": "Carol", "hops": 1 }
+        ]
+      }
+    },
+    {
+      "id": "bounded-gql-relationship-quantifier",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->{1,2}(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 2 },
+          { "source": "Bob", "target": "Carol", "hops": 1 }
         ]
       }
     },

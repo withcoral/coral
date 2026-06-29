@@ -48,30 +48,34 @@ crates/coral-engine/tests/engine/opencypher_tck_tests.rs
 
 ## Scope
 
-The baseline currently contains 32 representative read-only scenarios:
+The baseline currently contains 41 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
-- `Where`: 6 scenarios for comparisons, boolean conjunction/disjunction,
-  negation, list membership, string predicates, and regex predicates.
+- `Where`: 9 scenarios for comparisons, boolean conjunction/disjunction,
+  negation, `XOR`, list membership, metadata-list membership, string
+  predicates, and regex predicates.
 - `RelationshipProperties`: 1 scenario for relationship property filtering.
 - `OptionalMatch`: 3 scenarios for null-preserving rows, null filtering, and
   `coalesce(...)`.
-- `Aggregation`: 3 scenarios for grouped counts, numeric aggregates, and
-  `count(DISTINCT ...)`.
+- `Aggregation`: 4 scenarios for grouped counts, `count(*)`, numeric
+  aggregates, and `count(DISTINCT ...)`.
 - `With`: 2 scenarios for transparent scope filtering and aggregate filtering
   through terminal `WITH`.
 - `CountSubquery`: 2 scenarios for `COUNT { ... }` projections and predicates.
 - `ExistsSubquery`: 1 scenario for `EXISTS { ... }` predicates.
 - `ScalarExpressions`: 1 scenario for searched `CASE`.
-- `GraphMetadata`: 2 scenarios for `id(...)` and `type(...)`.
-- `RowModifiers`: 1 scenario for `ORDER BY`, `SKIP`, and `LIMIT`.
+- `GraphMetadata`: 4 scenarios for `id(...)`, `elementId(...)`, `type(...)`,
+  `labels(...)`, and `keys(...)`.
+- `RowModifiers`: 2 scenarios for `ORDER BY`, `NULLS FIRST` / `NULLS LAST`,
+  `SKIP`, and `LIMIT`.
 - `Unwind`: 1 scenario for `UNWIND` list expansion.
 - `ReturnDistinct`: 1 scenario for `RETURN DISTINCT`.
 - `Union`: 2 scenarios for `UNION` duplicate removal and `UNION ALL`
   duplicate preservation.
 - `PathMetadata`: 1 scenario for `length(path)`.
-- `VariableLengthPaths`: 1 scenario for exact fixed-length relationship ranges.
+- `VariableLengthPaths`: 3 scenarios for exact fixed-length relationship
+  ranges, bounded ranges, and bounded GQL relationship quantifiers.
 - `PathValues`: 1 expected rejection for materialized path returns.
 
 Unsupported scenarios are not silently skipped. If a scenario is part of the
