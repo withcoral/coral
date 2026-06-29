@@ -156,11 +156,15 @@ The supported foundation subset is intentionally narrow:
   and the graph declaration infer one unique endpoint label. Declaration-aware
   standalone unlabeled node scans such as `MATCH (n)` and anonymous `MATCH ()`
   are lowered by expanding over the declared node labels through the same
-  capped union-branch planner used for explicit label alternatives;
-  declaration-free compilation keeps rejecting first-bound named variables and
-  anonymous nodes without labels. Bounded relationship-range pruning resolves
-  the same compile-time dynamic endpoint labels before it consults graph
-  declaration topology;
+  capped union-branch planner used for explicit label alternatives. After
+  branch compilation, missing node-property projections introduced by those
+  expanded labels are normalized to branch-local `NULL` literals for
+  projections, hidden `ORDER BY` columns, and aggregate source columns; property
+  predicates over missing branch properties still require a dedicated nullable
+  predicate rewrite. Declaration-free compilation keeps rejecting first-bound
+  named variables and anonymous nodes without labels. Bounded
+  relationship-range pruning resolves the same compile-time dynamic endpoint
+  labels before it consults graph declaration topology;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers

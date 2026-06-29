@@ -762,6 +762,8 @@ fn compile_single_query_as_graph_query(
             Ok(plan)
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
+    let mut plans = plans;
+    rewrite_missing_branch_property_projections_as_null(&mut plans, context);
     let projection_names = plans
         .first()
         .map(GraphPlan::projection_output_names)
@@ -1275,6 +1277,49 @@ fn graph_query_from_alternative_plans(
         limit,
     }))
 }
+
+fn rewrite_missing_branch_property_projections_as_null(
+    plans: &mut [GraphPlan],
+    context: &CypherCompileContext,
+) {
+    let Some(graph) = context.graph.as_ref() else {
+        return;
+    };
+    for plan in plans {
+        let nodes = plan
+            .nodes
+            .iter()
+            .map(|node| (node.variable.as_str(), node.label.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        for projection in &mut plan.projections {
+            let (variable, property_name, alias) = match projection {
+                Projection::Property { property, alias } => {
+                    let variable = property.variable.clone();
+                    let property_name = property.property.clone();
+                    let alias = alias
+                        .clone()
+                        .unwrap_or_else(|| format!("{variable}_{property_name}"));
+                    (variable, property_name, alias)
+                }
+                _ => continue,
+            };
+            let Some(label) = nodes.get(variable.as_str()).copied() else {
+                continue;
+            };
+            let Some(node) = graph.nodes.iter().find(|node| node.label == label) else {
+                continue;
+            };
+            if node.column_for_property(&property_name).is_some() {
+                continue;
+            }
+            *projection = Projection::Literal {
+                literal: Literal::Null,
+                alias,
+            };
+        }
+    }
+}
+
 fn clear_final_return_outer_modifiers(
     single_query: &mut SingleQuery,
     path: &str,
