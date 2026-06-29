@@ -391,9 +391,12 @@ The supported foundation subset is intentionally narrow:
 - projected and ordered searched `CASE` expressions can reference optional
   bindings and preserve SQL null/unknown semantics without moving those
   predicates into row-filtering scope;
-- inline node property maps normalized to equality predicates;
+- inline node property maps normalized to equality predicates, including
+  prior `WITH` scalar aliases when the alias can be represented as a property,
+  key, element-id, literal, or literal-list predicate RHS;
 - inline relationship property maps normalized to equality predicates, with
-  internal relationship variables for anonymous edges;
+  internal relationship variables for anonymous edges and the same restricted
+  scalar-alias RHS support as node maps;
 - `IS NULL` and `IS NOT NULL` predicates lowered with SQL null semantics;
 - `EXISTS { MATCH ... }` and compact `EXISTS { pattern WHERE ... }` lower to SQL
   semi-joins in `WHERE`; scalar `EXISTS` projections lower as correlated

@@ -7361,6 +7361,7 @@ fn compile_pattern_part_into(
     let start_node = compile_node(
         start,
         plan,
+        state,
         fresh_internal_node_variable(plan, part_index, 0),
         path_node_label_hint(start, 0, &label_hints),
         format!("match.pattern.parts[{part_index}].nodes[0]"),
@@ -7838,6 +7839,7 @@ fn compile_path_chain_into(
     let next_node = compile_node(
         &chain.node,
         plan,
+        state,
         fresh_internal_node_variable(plan, options.part_index, options.chain_index + 1),
         path_node_label_hint(&chain.node, options.chain_index + 1, label_hints),
         node_path,
@@ -7860,10 +7862,13 @@ fn compile_path_chain_into(
             left_label: &chain_state.previous_label,
             right_label: &next_label,
         },
-        relationship_index,
         plan,
-        relationship_path,
-        force_relationship_variable,
+        state,
+        RelationshipCompileOptions {
+            index: relationship_index,
+            path: relationship_path,
+            force_variable: force_relationship_variable,
+        },
         context,
     )?;
     let next_node_introduced = next_node.pattern.is_some();
@@ -8602,6 +8607,7 @@ fn node_pattern_uses_bound_variable(
 fn compile_node(
     pattern: &CypherNodePattern,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     anonymous_variable: String,
     label_hint: Option<&str>,
     path: impl Into<String>,
@@ -8625,7 +8631,13 @@ fn compile_node(
     let predicates = pattern.properties.as_ref().map_or_else(
         || Ok(Vec::new()),
         |properties| {
-            compile_inline_properties(properties, &variable, format!("{path}.properties"), context)
+            compile_inline_properties(
+                properties,
+                &variable,
+                state,
+                format!("{path}.properties"),
+                context,
+            )
         },
     )?;
     if let Some(existing) = plan.nodes.iter().find(|node| node.variable == variable) {
@@ -8665,6 +8677,7 @@ fn compile_node(
 fn compile_inline_properties(
     properties: &Properties,
     variable: &str,
+    state: &CypherCompileState,
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Vec<PropertyPredicate>, CoreError> {
@@ -8684,14 +8697,51 @@ fn compile_inline_properties(
                 property: key.name.name.clone(),
             },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(compile_literal(
+            rhs: compile_inline_property_predicate_rhs(
                 expression,
                 format!("{path}.entries[{index}].value"),
+                state,
                 context,
-            )?),
+            )?,
         });
     }
     Ok(predicates)
+}
+
+fn compile_inline_property_predicate_rhs(
+    expression: &Expression,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<PredicateRhs, CoreError> {
+    let path = path.into();
+    if let Some(expression) =
+        compile_optional_scalar_alias_expression(expression, path.clone(), Some(state))?
+    {
+        return scalar_alias_expression_to_predicate_rhs(expression, path);
+    }
+    Ok(PredicateRhs::Literal(compile_literal(
+        expression, path, context,
+    )?))
+}
+
+fn scalar_alias_expression_to_predicate_rhs(
+    expression: ScalarExpression,
+    path: impl Into<String>,
+) -> Result<PredicateRhs, CoreError> {
+    let path = path.into();
+    match expression {
+        ScalarExpression::Property(property) => Ok(PredicateRhs::Property(property)),
+        ScalarExpression::Key { variable } => Ok(PredicateRhs::Key { variable }),
+        ScalarExpression::ElementId { variable } => Ok(PredicateRhs::ElementId { variable }),
+        ScalarExpression::Literal(literal) => Ok(PredicateRhs::Literal(literal)),
+        ScalarExpression::LiteralList { literals }
+        | ScalarExpression::TypedLiteralList { literals, .. } => Ok(PredicateRhs::List(literals)),
+        _ => Err(unsupported(
+            path,
+            "inline property maps can only use WITH scalar aliases backed by graph properties, id(), elementId(), scalar literals, or literal lists",
+        )),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -8702,16 +8752,25 @@ struct RelationshipCompileEndpoints<'a> {
     right_label: &'a str,
 }
 
+struct RelationshipCompileOptions {
+    index: usize,
+    path: String,
+    force_variable: bool,
+}
+
 fn compile_relationship(
     pattern: &CypherRelationshipPattern,
     endpoints: RelationshipCompileEndpoints<'_>,
-    index: usize,
     plan: &GraphPlan,
-    path: impl Into<String>,
-    force_variable: bool,
+    state: &CypherCompileState,
+    options: RelationshipCompileOptions,
     context: &CypherCompileContext,
 ) -> Result<CompiledRelationship, CoreError> {
-    let path = path.into();
+    let RelationshipCompileOptions {
+        index,
+        path,
+        force_variable,
+    } = options;
     let length = relationship_fixed_length(pattern, &path)?;
 
     let direction = match pattern.direction {
@@ -8765,6 +8824,7 @@ fn compile_relationship(
             (Some(properties), Some(variable)) => compile_inline_properties(
                 properties,
                 variable,
+                state,
                 format!("{path}.properties"),
                 context,
             )?,
@@ -39622,6 +39682,70 @@ relationships:
                     rhs: PredicateRhs::Literal(Literal::String("catalog".to_string())),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn compiles_inline_property_maps_with_scalar_alias_values() {
+        let plan = compile_cypher(
+            "MATCH (source:Service) \
+             WITH source.name AS source_name \
+             MATCH (matched:Service {name: source_name}) \
+             RETURN matched.name",
+        )
+        .expect("inline node property map should accept property-backed scalar alias values");
+
+        let predicate = plan
+            .predicates
+            .first()
+            .expect("inline property predicate should exist");
+        assert_eq!(predicate.property.variable, "matched");
+        assert_eq!(predicate.property.property, "name");
+        let PredicateRhs::Property(property) = &predicate.rhs else {
+            panic!("expected property-backed scalar alias RHS, got {predicate:?}");
+        };
+        assert!(property.variable.starts_with("__coral_hidden_source"));
+        assert_eq!(property.property, "name");
+    }
+
+    #[test]
+    fn compiles_inline_relationship_property_maps_with_scalar_alias_values() {
+        let plan = compile_cypher(
+            "MATCH (team:Team)-[ownership:OWNS]->(service:Service) \
+             WITH service, ownership.source AS source_filter \
+             MATCH (service)-[dependency:DEPENDS_ON {source: source_filter}]->(target:Service) \
+             RETURN target.name",
+        )
+        .expect("inline relationship property map should accept property-backed scalar aliases");
+
+        let predicate = plan
+            .predicates
+            .iter()
+            .find(|predicate| predicate.property.variable == "dependency")
+            .expect("dependency inline property predicate should exist");
+        assert_eq!(predicate.property.property, "source");
+        let PredicateRhs::Property(property) = &predicate.rhs else {
+            panic!("expected property-backed scalar alias RHS, got {predicate:?}");
+        };
+        assert!(property.variable.starts_with("__coral_hidden_ownership"));
+        assert_eq!(property.property, "source");
+    }
+
+    #[test]
+    fn rejects_inline_property_maps_with_expression_scalar_alias_values() {
+        let error = compile_cypher(
+            "MATCH (source:Service) \
+             WITH toUpper(source.name) AS source_name \
+             MATCH (matched:Service {name: source_name}) \
+             RETURN matched.name",
+        )
+        .expect_err("inline property maps should reject expression-backed scalar aliases");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inline property maps can only use WITH scalar aliases"),
+            "{error}"
         );
     }
 
