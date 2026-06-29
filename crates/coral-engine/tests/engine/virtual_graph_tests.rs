@@ -1103,6 +1103,73 @@ async fn cypher_static_node_label_alternatives_rewrite_missing_relationships_in_
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_properties_in_optional_match() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         OPTIONAL MATCH (owner)-[:OWNS]->(service:Service) \
+         WHERE owner.cost_center IS NULL \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner, service.name AS service \
+         ORDER BY owner_label, owner, service",
+    )
+    .await
+    .expect("missing outer properties inside OPTIONAL MATCH predicates should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson", "service": "experiments"}),
+            json!({"owner_label": "Team", "owner": "analytics"}),
+            json!({"owner_label": "Team", "owner": "infra"}),
+            json!({"owner_label": "Team", "owner": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_relationships_in_optional_match() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team) \
+         OPTIONAL MATCH (owner)-[ownership:OWNS]->(service:Service) \
+         WHERE ownership.since IS NULL \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner, service.name AS service \
+         ORDER BY owner_label, owner, service",
+    )
+    .await
+    .expect("missing relationship properties inside OPTIONAL MATCH predicates should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson"}),
+            json!({"owner_label": "Team", "owner": "analytics", "service": "experiments"}),
+            json!({"owner_label": "Team", "owner": "infra", "service": "deployments"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "billing-api"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

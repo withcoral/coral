@@ -1411,6 +1411,17 @@ fn rewrite_missing_branch_property_predicates_as_null(
         }
     }
     plan.predicates = retained;
+
+    for optional_match in &mut plan.optional_matches {
+        if let Some(predicate) = optional_match.predicate.take() {
+            optional_match.predicate = Some(rewrite_missing_branch_property_predicate_expression(
+                predicate,
+                graph,
+                nodes,
+                relationships,
+            ));
+        }
+    }
 }
 
 fn rewrite_missing_branch_property_predicate_expression(

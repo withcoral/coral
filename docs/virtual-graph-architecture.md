@@ -113,16 +113,20 @@ The supported foundation subset is intentionally narrow:
 - one or more non-optional `MATCH` clauses with connected path parts or
   disconnected mandatory parts lowered as explicit cartesian products;
 - anchored `OPTIONAL MATCH` pattern parts lowered as null-preserving left joins,
-  including single-hop directed optional-local predicates and inline property
-  maps placed in the join scope. Optional plans still require mandatory
-  bindings to stay anchored to the first component, but later mandatory
-  `MATCH` clauses may continue from optional-introduced node bindings. The SQL
-  lowerer keeps ordinary mandatory joins first when possible, then joins
-  optional scopes before a mandatory relationship that is blocked on an
-  optional endpoint, so unmatched optional rows are dropped by the following
+  including single-hop directed and undirected optional-local predicates and
+  inline property maps placed in the join scope. Optional plans still require
+  mandatory bindings to stay anchored to the first component, but later
+  mandatory `MATCH` clauses may continue from optional-introduced node
+  bindings. The SQL lowerer keeps ordinary mandatory joins first when possible,
+  then joins optional scopes before a mandatory relationship that is blocked on
+  an optional endpoint, so unmatched optional rows are dropped by the following
   inner join. Later global `WHERE` predicates over still-optional bindings
   lower as ordinary row filters, while predicates attached to the `OPTIONAL
-  MATCH` clause stay inside the nullable join scope. Exact positive optional
+  MATCH` clause stay inside the nullable join scope. In branch-expanded plans,
+  optional-local predicates receive the same branch-local missing-property
+  normalization before validation, preserving nullable join semantics while
+  treating properties absent from the selected mapping as `NULL`. Exact
+  positive optional
   ranges such as `*2`, `*2..2`, and `{2}` reuse fixed-hop expansion inside one
   nullable optional scope. Same-label exact zero-hop optional ranges such as
   `*0` lower to an identity predicate for newly introduced endpoints when no
