@@ -22,7 +22,7 @@
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 4,
-    "Where": 9,
+    "Where": 10,
     "With": 4
   },
   "scenarios": [
@@ -163,6 +163,20 @@
         "ordered": true,
         "rows": [
           { "people": 3 }
+        ]
+      }
+    },
+    {
+      "id": "where-exists-property-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE exists(p.city) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
         ]
       }
     },
