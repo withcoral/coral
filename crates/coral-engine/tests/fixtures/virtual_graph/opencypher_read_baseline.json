@@ -14,7 +14,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 18,
+    "ScalarExpressions": 21,
     "TypeConversion": 3,
     "Union": 2,
     "Unwind": 1,
@@ -506,6 +506,34 @@
       }
     },
     {
+      "id": "round-numeric-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, round(p.age / 3.0) AS rounded_age_thirds ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "rounded_age_thirds": 11.0 },
+          { "name": "Bob", "rounded_age_thirds": 10.0 },
+          { "name": "Carol", "rounded_age_thirds": 14.0 }
+        ]
+      }
+    },
+    {
+      "id": "round-numeric-precision-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, round(p.age / 3.0, 1) AS rounded_age_thirds ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "rounded_age_thirds": 11.3 },
+          { "name": "Bob", "rounded_age_thirds": 9.7 },
+          { "name": "Carol", "rounded_age_thirds": 13.7 }
+        ]
+      }
+    },
+    {
       "id": "is-empty-string-wrong-arity-rejected",
       "feature": "ScalarExpressions",
       "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
@@ -548,6 +576,15 @@
       "expected": {
         "kind": "error",
         "contains": "sqrt() requires exactly one argument"
+      }
+    },
+    {
+      "id": "round-numeric-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN round(p.age, 1, 2) AS rounded_age",
+      "expected": {
+        "kind": "error",
+        "contains": "round() requires exactly one or two arguments"
       }
     },
     {

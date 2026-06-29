@@ -11356,7 +11356,7 @@ async fn cypher_numeric_scalar_expressions_execute_against_synthetic_sources() {
     assert!(
         execution
             .translated_sql()
-            .contains("abs((\"n0\".\"risk_score\" - 1)) < 0.11"),
+            .contains("abs((\"n0\".\"risk_score\" - 1.0)) < 0.11"),
         "{}",
         execution.translated_sql()
     );
@@ -11424,7 +11424,7 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
         execution.translated_sql()
     );
     assert!(
-        execution.translated_sql().contains("ln(1) AS \"ln_one\""),
+        execution.translated_sql().contains("ln(1.0) AS \"ln_one\""),
         "{}",
         execution.translated_sql()
     );
@@ -11477,12 +11477,12 @@ async fn cypher_trigonometric_scalar_expressions_execute_against_synthetic_sourc
         execution.translated_sql()
     );
     assert!(
-        execution.translated_sql().contains("cot(1) > 0"),
+        execution.translated_sql().contains("cot(1.0) > 0"),
         "{}",
         execution.translated_sql()
     );
     assert!(
-        execution.translated_sql().contains("atan2(0, 1)"),
+        execution.translated_sql().contains("atan2(0.0, 1.0)"),
         "{}",
         execution.translated_sql()
     );
@@ -11573,7 +11573,7 @@ async fn cypher_haversin_scalar_expressions_execute_against_synthetic_sources() 
     assert!(
         execution
             .translated_sql()
-            .contains("((1 - cos(0)) / 2) AS \"zero_haversin\""),
+            .contains("((1 - cos(0.0)) / 2) AS \"zero_haversin\""),
         "{}",
         execution.translated_sql()
     );
@@ -16301,9 +16301,9 @@ async fn cypher_numeric_static_list_comprehension_maps_execute_against_synthetic
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3, 5], "halved_weights": [1, 2, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2, 3], "signs": [-1, 0, 1, null], "ceilings": [2, 3, null], "floors": [1, 2, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1, 2, 2], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "incremented": [2, 3, 4], "doubled": [3.0, 5.0], "halved_weights": [1.0, 2.0, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2.0, 3.0], "signs": [-1, 0, 1, null], "ceilings": [2.0, 3.0, null], "floors": [1.0, 2.0, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1.0, 2.0, 2.0], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "incremented": [2, 3, 4], "doubled": [3.0, 5.0], "halved_weights": [1.0, 2.0, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2.0, 3.0], "signs": [-1, 0, 1, null], "ceilings": [2.0, 3.0, null], "floors": [1.0, 2.0, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1.0, 2.0, 2.0], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "incremented": [2, 3, 4], "doubled": [3.0, 5.0], "halved_weights": [1.0, 2.0, null], "absolute_ints": [2, 0, 3], "absolute_floats": [1.5, null, 2.5], "roots": [2.0, 3.0], "signs": [-1, 0, 1, null], "ceilings": [2.0, 3.0, null], "floors": [1.0, 2.0, null], "rounded_tenths": [1.2, 1.3, 1.3], "rounded_wholes": [1.0, 2.0, 2.0], "t_flags": [false, false, false, false, true, true], "empty_flags": [true, false, null]}),
         ]
     );
 }

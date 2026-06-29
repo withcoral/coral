@@ -7367,9 +7367,18 @@ fn render_literal(literal: &Literal) -> String {
     match literal {
         Literal::String(value) => quote_string_literal(value),
         Literal::Integer(value) => value.to_string(),
-        Literal::Float(value) => (*value).into_inner().to_string(),
+        Literal::Float(value) => render_float_literal((*value).into_inner()),
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
+    }
+}
+
+fn render_float_literal(value: f64) -> String {
+    let rendered = value.to_string();
+    if rendered.contains('.') || rendered.contains('e') || rendered.contains('E') {
+        rendered
+    } else {
+        format!("{rendered}.0")
     }
 }
 
@@ -9657,6 +9666,48 @@ relationships: []
     }
 
     #[test]
+    fn render_literal_preserves_whole_float_type() {
+        assert_eq!(
+            render_literal(&Literal::Float(ordered_float::OrderedFloat(3.0))),
+            "3.0"
+        );
+        assert_eq!(
+            render_literal(&Literal::Float(ordered_float::OrderedFloat(0.5))),
+            "0.5"
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_preserves_whole_float_literals_in_numeric_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![expression_projection(
+            "risk_thirds",
+            ScalarExpression::Round {
+                expression: Box::new(ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Divide,
+                    left: Box::new(service_risk_expression()),
+                    right: Box::new(float_literal(3.0)),
+                }),
+                places: None,
+            },
+        )];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("whole float literals should lower as floats");
+
+        assert!(
+            translation
+                .sql()
+                .contains("round((\"n1\".\"risk_score\" / 3.0)) AS \"risk_thirds\""),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
     fn lower_graph_plan_renders_more_numeric_scalar_expressions() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan(Direction::Outgoing);
@@ -9823,7 +9874,7 @@ relationships: []
             "tan(\"n1\".\"risk_score\") AS \"risk_tan\"",
             "cot(\"n1\".\"risk_score\") AS \"risk_cot\"",
             "asin(0.5) AS \"half_asin\"",
-            "acos(1) AS \"one_acos\"",
+            "acos(1.0) AS \"one_acos\"",
             "atan(\"n1\".\"risk_score\") AS \"risk_atan\"",
             "WHERE sin(\"n1\".\"risk_score\") >= 0",
         ] {
@@ -9877,7 +9928,7 @@ relationships: []
         for expected in [
             "atan2(\"n1\".\"risk_score\", 1) AS \"risk_atan2\"",
             "degrees(\"n1\".\"risk_score\") AS \"risk_degrees\"",
-            "radians(180) AS \"pi_radians\"",
+            "radians(180.0) AS \"pi_radians\"",
             "ORDER BY atan2(\"n1\".\"risk_score\", 1) ASC",
         ] {
             assert!(
