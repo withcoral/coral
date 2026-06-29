@@ -13,7 +13,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 1,
     "RowModifiers": 2,
-    "ScalarExpressions": 13,
+    "ScalarExpressions": 15,
     "Union": 2,
     "Unwind": 1,
     "VariableLengthPaths": 3,
@@ -466,6 +466,20 @@
       }
     },
     {
+      "id": "abs-numeric-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, abs(p.age - 35) AS d ORDER BY d, name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "d": 1 },
+          { "name": "Bob", "d": 6 },
+          { "name": "Carol", "d": 6 }
+        ]
+      }
+    },
+    {
       "id": "is-empty-string-wrong-arity-rejected",
       "feature": "ScalarExpressions",
       "query": "MATCH (p:Person) WHERE isEmpty(p.name, p.city) RETURN p.name AS name",
@@ -490,6 +504,15 @@
       "expected": {
         "kind": "error",
         "contains": "left() requires exactly two arguments"
+      }
+    },
+    {
+      "id": "abs-numeric-wrong-arity-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN abs() AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "abs() requires exactly one argument"
       }
     },
     {
