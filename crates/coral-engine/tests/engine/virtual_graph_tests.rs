@@ -10612,7 +10612,9 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
                 (service.id * 2) AS double_id, \
                 toInteger(service.id / 10) AS id_bucket, \
                 service.id % 20 AS id_mod, \
-                service.risk ^ 2 AS risk_squared \
+                service.risk ^ 2 AS risk_squared, \
+                pow(service.risk, 2) AS risk_pow, \
+                power(service.risk, 2) AS risk_power \
          ORDER BY service.id - 5",
     )
     .await
@@ -10646,6 +10648,20 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("power(\"n0\".\"risk_score\", 2) AS \"risk_pow\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("power(\"n0\".\"risk_score\", 2) AS \"risk_power\""),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
@@ -10655,6 +10671,8 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
                 "id_bucket": 2,
                 "id_mod": 0,
                 "risk_squared": 0.25,
+                "risk_pow": 0.25,
+                "risk_power": 0.25,
             }),
             json!({
                 "service": "experiments",
@@ -10662,6 +10680,8 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
                 "id_bucket": 3,
                 "id_mod": 10,
                 "risk_squared": 0.0625,
+                "risk_pow": 0.0625,
+                "risk_power": 0.0625,
             }),
             json!({
                 "service": "legacy-sync",
@@ -10669,6 +10689,8 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
                 "id_bucket": 4,
                 "id_mod": 0,
                 "risk_squared": 0.9025,
+                "risk_pow": 0.9025,
+                "risk_power": 0.9025,
             }),
         ]
     );

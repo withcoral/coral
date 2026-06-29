@@ -2851,6 +2851,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_exp_function(function)
         || is_log_function(function)
         || is_log10_function(function)
+        || is_power_function(function)
         || is_pi_function(function)
         || is_e_function(function)
         || is_sin_function(function)
@@ -17497,6 +17498,22 @@ fn compile_log10_scalar_expression(
     })
 }
 
+fn compile_power_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let function_name = single_segment_function_name(function).unwrap_or("power");
+    let (left, right) =
+        compile_two_scalar_function_arguments(function, path, function_name, mode, context)?;
+    Ok(ScalarExpression::Arithmetic {
+        operator: ArithmeticOperator::Power,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
 fn compile_pi_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -18087,6 +18104,8 @@ fn compile_numeric_scalar_function_expression(
         compile_log_scalar_expression(function, path, mode, context)?
     } else if is_log10_function(function) {
         compile_log10_scalar_expression(function, path, mode, context)?
+    } else if is_power_function(function) {
+        compile_power_scalar_expression(function, path, mode, context)?
     } else if is_pi_function(function) {
         compile_pi_scalar_expression(function, path)?
     } else if is_e_function(function) {
@@ -18284,7 +18303,7 @@ fn compile_scalar_expression_in_predicate_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -21695,6 +21714,14 @@ fn is_log10_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("log10")
+    )
+}
+
+fn is_power_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("pow")
+            || name.name.eq_ignore_ascii_case("power")
     )
 }
 
@@ -39731,6 +39758,8 @@ relationships:
         for cypher in [
             "MATCH (service:Service) RETURN atan2(service.risk) AS value",
             "MATCH (service:Service) RETURN atan2(service.risk, 1, 2) AS value",
+            "MATCH (service:Service) RETURN pow(service.risk) AS value",
+            "MATCH (service:Service) RETURN power(service.risk, 2, 3) AS value",
         ] {
             let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
             assert!(
@@ -39738,6 +39767,51 @@ relationships:
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn compiles_power_scalar_function_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE pow(service.risk, 2) > 0.5 \
+             RETURN power(service.risk, 2) AS risk_squared \
+             ORDER BY pow(service.risk, 2)",
+        )
+        .expect("power scalar functions should compile");
+
+        let expected = ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Power,
+            left: Box::new(ScalarExpression::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            })),
+            right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+        };
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: expected.clone(),
+                operator: ComparisonOperator::GreaterThan,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Float(
+                    ordered_float::OrderedFloat(0.5),
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Expression {
+                expression: expected.clone(),
+                alias: "risk_squared".to_string(),
+            }]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(expected),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
     }
 
     #[test]

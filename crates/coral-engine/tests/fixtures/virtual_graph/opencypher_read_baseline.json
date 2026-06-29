@@ -9,7 +9,7 @@
     "LiteralExpressions": 2,
     "ListExpressions": 4,
     "Match": 3,
-    "MathematicalFunctions": 4,
+    "MathematicalFunctions": 5,
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 2,
@@ -816,6 +816,19 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "power-function-predicate-and-order",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE pow(toFloat(p.age - 30), 2) > 10 RETURN p.name AS name ORDER BY power(toFloat(p.age - 30), 2)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
         ]
       }
     },

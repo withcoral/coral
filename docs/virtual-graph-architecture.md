@@ -391,15 +391,17 @@ The supported foundation subset is intentionally narrow:
   to DataFusion `SUBSTRING`, scalar-string `isEmpty(expr)` predicates lowered
   to `char_length(expr) = 0`, plus `left`, `right`, `reverse`, numeric
   `abs`, `ceil`, `floor`, `round`, `sqrt`, `sign`, `exp`, `log`, `log10`,
-  constants `pi` and `e`, and trigonometric `sin`, `cos`, `tan`, `cot`,
-  `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, and `haversin`;
+  `pow` / `power`, constants `pi` and `e`, and trigonometric `sin`, `cos`,
+  `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, and
+  `haversin`;
   `id(variable)`, `elementId(variable)`, and `type(relationship)` can also be
   nested in scalar expressions. `id(variable)` keeps the mapped key's native
   type, `elementId(variable)` lowers to a string cast, and relationship
   metadata preserves null for unmatched optional relationships. Cypher `log`
-  lowers to DataFusion `ln` to preserve natural-log semantics, while `pi()`
-  and `e()` compile to deterministic float literals and `haversin(x)` lowers
-  as `(1 - cos(x)) / 2`;
+  lowers to DataFusion `ln` to preserve natural-log semantics, `pow(x, y)` and
+  `power(x, y)` reuse the same DataFusion `power` lowering as `x ^ y`, while
+  `pi()` and `e()` compile to deterministic float literals and `haversin(x)`
+  lowers as `(1 - cos(x)) / 2`;
 - projected and ordered searched `CASE` expressions can reference optional
   bindings and preserve SQL null/unknown semantics without moving those
   predicates into row-filtering scope;
