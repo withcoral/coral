@@ -23,7 +23,7 @@
     "Unwind": 1,
     "VariableLengthPaths": 3,
     "Where": 9,
-    "With": 3
+    "With": 4
   },
   "scenarios": [
     {
@@ -1010,6 +1010,18 @@
           { "city": "" },
           { "city": "London" },
           { "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "terminal-with-order-skip-limit",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS name, p.age AS age ORDER BY age DESC SKIP 1 LIMIT 1 RETURN name, age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age": 34 }
         ]
       }
     },
