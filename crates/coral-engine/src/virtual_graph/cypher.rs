@@ -2629,6 +2629,15 @@ fn first_match_static_label_type_alternative_site(
         let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
             continue;
         };
+        if let Some(alternatives) =
+            graph_declared_standalone_node_label_alternatives(start, chains, context)
+        {
+            return Ok(Some((
+                part_index,
+                PatternAlternativeTarget::StartNode,
+                alternatives,
+            )));
+        }
         let raw_alternatives = label_expression_list_alternatives(
             &start.labels,
             "query.pattern.start.labels",
@@ -2688,6 +2697,32 @@ fn first_match_static_label_type_alternative_site(
         }
     }
     Ok(None)
+}
+
+fn graph_declared_standalone_node_label_alternatives(
+    start: &CypherNodePattern,
+    chains: &[PatternElementChain],
+    context: &CypherCompileContext,
+) -> Option<Vec<LabelTypeAlternative>> {
+    if !start.labels.is_empty() || !chains.is_empty() {
+        return None;
+    }
+    let graph = context.graph.as_ref()?;
+    if graph.nodes.is_empty() {
+        return None;
+    }
+    Some(
+        graph
+            .nodes
+            .iter()
+            .map(|node| {
+                LabelTypeAlternative::NodeLabels(vec![LabelExpression::Static(SymbolicName {
+                    name: node.label.clone(),
+                    span: start.span,
+                })])
+            })
+            .collect(),
+    )
 }
 
 fn deduplicate_node_label_alternatives(
@@ -25410,6 +25445,29 @@ relationships:
         );
         assert_eq!(projection_names(&union.first), vec!["name".to_string()]);
         assert_eq!(projection_names(&branch.plan), vec!["name".to_string()]);
+    }
+
+    #[test]
+    fn graph_aware_compiles_unlabeled_standalone_node_scan_as_declared_label_union() {
+        let graph = star_test_graph();
+        let query = compile_cypher_query_for_graph(
+            &graph,
+            "MATCH (entity) \
+             RETURN entity.name AS name \
+             ORDER BY entity.name",
+        )
+        .expect("graph declaration should expand an unlabeled standalone node scan");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("unlabeled graph-aware node scan should expand into a union query");
+        };
+        let labels = std::iter::once(&union.first)
+            .chain(union.branches.iter().map(|branch| &branch.plan))
+            .map(|plan| plan.nodes.first().expect("branch node").label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Person", "Service", "Team"]);
+        assert!(union.branches.iter().all(|branch| branch.all));
+        assert_eq!(projection_names(&union.first), vec!["name".to_string()]);
     }
 
     #[test]

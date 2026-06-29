@@ -153,11 +153,14 @@ The supported foundation subset is intentionally narrow:
   repeated bindings may omit the label. In declaration-aware compilation,
   fresh named and anonymous endpoints may omit the label when an exact typed
   relationship pattern, or an untyped exact single-hop relationship pattern,
-  and the graph declaration infer one unique endpoint label; declaration-free
-  compilation keeps rejecting first-bound named variables and anonymous nodes
-  without labels. Bounded relationship-range pruning resolves the same
-  compile-time dynamic endpoint labels before it consults graph declaration
-  topology;
+  and the graph declaration infer one unique endpoint label. Declaration-aware
+  standalone unlabeled node scans such as `MATCH (n)` and anonymous `MATCH ()`
+  are lowered by expanding over the declared node labels through the same
+  capped union-branch planner used for explicit label alternatives;
+  declaration-free compilation keeps rejecting first-bound named variables and
+  anonymous nodes without labels. Bounded relationship-range pruning resolves
+  the same compile-time dynamic endpoint labels before it consults graph
+  declaration topology;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
@@ -420,11 +423,13 @@ The supported foundation subset is intentionally narrow:
   `count(n.tier IS NULL)`, and `sum(n.risk + 1)` lower through the same
   scalar-expression renderer; correlated scalar subqueries are still rejected
   inside aggregate targets. Static and compile-time dynamic pattern-alternative
-  rewrites resolve dynamic label/type atoms before branch expansion, project
-  aggregate expression targets as hidden per-branch aliases, then apply the
-  aggregate over those aliases after `UNION ALL`; graph-variable collections
-  from static alternatives use label/type-qualified graph identity values so
-  keys from different mappings do not collide. GQL aggregate aliases include
+  rewrites resolve dynamic label/type atoms before branch expansion, while
+  declaration-aware standalone unlabeled node scans synthesize one node-label
+  branch per declaration mapping. Both paths project aggregate expression
+  targets as hidden per-branch aliases, then apply the aggregate over those
+  aliases after `UNION ALL`; graph-variable collections from branch-expanded
+  alternatives use label/type-qualified graph identity values so keys from
+  different mappings do not collide. GQL aggregate aliases include
   `collect_list`, `stdev_samp`, and `stdev_pop`; numeric property aggregates,
   property and identity `ORDER BY`, direct aggregate `ORDER BY` expressions
   that match projected aggregates, projection alias `ORDER BY` including

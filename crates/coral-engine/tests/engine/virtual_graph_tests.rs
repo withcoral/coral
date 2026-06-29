@@ -461,6 +461,80 @@ async fn cypher_static_node_label_alternatives_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_executes_across_declared_labels() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         RETURN labels(entity)[0] AS label, entity.name AS name \
+         ORDER BY label, name",
+    )
+    .await
+    .expect("graph-aware unlabeled node scan should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"label": "Person", "name": "Ada Lovelace"}),
+            json!({"label": "Person", "name": "Grace Hopper"}),
+            json!({"label": "Person", "name": "Katherine Johnson"}),
+            json!({"label": "Service", "name": "billing-api"}),
+            json!({"label": "Service", "name": "deployments"}),
+            json!({"label": "Service", "name": "experiments"}),
+            json!({"label": "Service", "name": "legacy-sync"}),
+            json!({"label": "Team", "name": "analytics"}),
+            json!({"label": "Team", "name": "infra"}),
+            json!({"label": "Team", "name": "platform"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_graph_aware_unlabeled_node_scan_aggregates_across_declared_labels() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let named = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (entity) RETURN count(entity) AS entities",
+    )
+    .await
+    .expect("graph-aware unlabeled node count should execute");
+    assert_eq!(
+        execution_to_rows(named.execution()),
+        vec![json!({"entities": 10})]
+    );
+
+    let anonymous = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH () RETURN count(*) AS entities",
+    )
+    .await
+    .expect("graph-aware anonymous unlabeled node count should execute");
+    assert_eq!(
+        execution_to_rows(anonymous.execution()),
+        vec![json!({"entities": 10})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
