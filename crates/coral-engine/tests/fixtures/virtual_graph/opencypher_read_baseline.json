@@ -5,7 +5,7 @@
     "Aggregation": 5,
     "CountSubquery": 2,
     "ExistsSubquery": 1,
-    "GraphMetadata": 4,
+    "GraphMetadata": 5,
     "LiteralExpressions": 2,
     "ListExpressions": 4,
     "Match": 3,
@@ -806,6 +806,20 @@
           { "relationship_id": 100, "relationship_type": "KNOWS", "source": "Alice", "target": "Bob" },
           { "relationship_id": 101, "relationship_type": "KNOWS", "source": "Bob", "target": "Carol" },
           { "relationship_id": 102, "relationship_type": "KNOWS", "source": "Alice", "target": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "relationship-endpoint-functions",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN startNode(r).name AS source, endNode(r).name AS target, id(startNode(r)) AS source_id, elementId(endNode(r)) AS target_element_id ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob", "source_id": 1, "target_element_id": "2" },
+          { "source": "Alice", "target": "Carol", "source_id": 1, "target_element_id": "3" },
+          { "source": "Bob", "target": "Carol", "source_id": 2, "target_element_id": "3" }
         ]
       }
     },
