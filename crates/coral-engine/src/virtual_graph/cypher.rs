@@ -3098,11 +3098,11 @@ fn filter_bounded_relationship_range_alternatives(
         return Ok(normal_bounded_relationship_range_alternatives(alternatives));
     };
     let (Some(start_label), Some(end_label)) =
-        bounded_relationship_endpoint_labels(start, chains, chain_index, &path)?
+        bounded_relationship_endpoint_labels(start, chains, chain_index, &path, context)?
     else {
         return Ok(normal_bounded_relationship_range_alternatives(alternatives));
     };
-    let Some(relationship_type) = bounded_relationship_type(relationship, &path)? else {
+    let Some(relationship_type) = bounded_relationship_type(relationship, &path, context)? else {
         return Ok(normal_bounded_relationship_range_alternatives(alternatives));
     };
     let direction = relationship_pattern_direction(relationship.direction);
@@ -3146,6 +3146,7 @@ fn bounded_relationship_endpoint_labels(
     chains: &[PatternElementChain],
     chain_index: usize,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<(Option<String>, Option<String>), CoreError> {
     let left = if chain_index == 0 {
         start
@@ -3160,23 +3161,25 @@ fn bounded_relationship_endpoint_labels(
         .ok_or_else(|| CoreError::internal("bounded range chain end is out of bounds"))?
         .node;
     Ok((
-        optional_single_static_label(&left.labels, format!("{path}.start.labels"))?,
-        optional_single_static_label(&right.labels, format!("{path}.end.labels"))?,
+        optional_single_compile_time_label(&left.labels, format!("{path}.start.labels"), context)?,
+        optional_single_compile_time_label(&right.labels, format!("{path}.end.labels"), context)?,
     ))
 }
 
 fn bounded_relationship_type(
     relationship: &CypherRelationshipPattern,
     path: &str,
+    context: &CypherCompileContext,
 ) -> Result<Option<String>, CoreError> {
     relationship
         .detail
         .as_ref()
         .and_then(|detail| detail.types.as_ref())
         .map(|relationship_type| {
-            single_static_label(
+            single_compile_time_label(
                 std::slice::from_ref(relationship_type),
                 format!("{path}.types"),
+                context,
             )
         })
         .transpose()
@@ -23094,37 +23097,26 @@ fn mapped_graph_label_for_variable<'a>(plan: &'a GraphPlan, variable: &str) -> O
         .map(|relationship| relationship.relationship_type.as_str())
 }
 
-fn evaluate_static_label_expression(
-    expression: &LabelExpression,
-    mapped_label: &str,
-    path: impl Into<String>,
-) -> Result<bool, CoreError> {
-    let path = path.into();
-    match expression {
-        LabelExpression::Static(label) => Ok(label.name == mapped_label),
-        LabelExpression::Dynamic { .. } => Err(unsupported(
-            path,
-            "dynamic label predicates are not supported yet",
-        )),
-        LabelExpression::Or { lhs, rhs, .. } => {
-            Ok(
-                evaluate_static_label_expression(lhs, mapped_label, format!("{path}.lhs"))?
-                    || evaluate_static_label_expression(rhs, mapped_label, format!("{path}.rhs"))?,
-            )
-        }
-        LabelExpression::And { lhs, rhs, .. } => {
-            Ok(
-                evaluate_static_label_expression(lhs, mapped_label, format!("{path}.lhs"))?
-                    && evaluate_static_label_expression(rhs, mapped_label, format!("{path}.rhs"))?,
-            )
-        }
-        LabelExpression::Not { inner, .. } => Ok(!evaluate_static_label_expression(
-            inner,
-            mapped_label,
-            format!("{path}.inner"),
-        )?),
-        LabelExpression::Group { inner, .. } => {
-            evaluate_static_label_expression(inner, mapped_label, path)
+#[derive(Clone, Copy)]
+enum LabelExpressionResolver<'a> {
+    StaticOnly,
+    CompileTimeDynamic { context: &'a CypherCompileContext },
+}
+
+impl LabelExpressionResolver<'_> {
+    fn resolve_dynamic(
+        self,
+        expression: &Expression,
+        path: impl Into<String>,
+    ) -> Result<String, CoreError> {
+        match self {
+            LabelExpressionResolver::StaticOnly => Err(unsupported(
+                path,
+                "dynamic label expressions are not supported yet",
+            )),
+            LabelExpressionResolver::CompileTimeDynamic { context } => {
+                compile_dynamic_label_expression(expression, path, context)
+            }
         }
     }
 }
@@ -23135,42 +23127,56 @@ fn evaluate_label_predicate_expression(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<bool, CoreError> {
+    evaluate_label_expression(
+        expression,
+        mapped_label,
+        path,
+        LabelExpressionResolver::CompileTimeDynamic { context },
+    )
+}
+
+fn evaluate_label_expression(
+    expression: &LabelExpression,
+    mapped_label: &str,
+    path: impl Into<String>,
+    resolver: LabelExpressionResolver<'_>,
+) -> Result<bool, CoreError> {
     let path = path.into();
     match expression {
         LabelExpression::Static(label) => Ok(label.name == mapped_label),
         LabelExpression::Dynamic { expression, .. } => {
-            Ok(compile_dynamic_label_expression(expression, path, context)? == mapped_label)
+            Ok(resolver.resolve_dynamic(expression, path)? == mapped_label)
         }
-        LabelExpression::Or { lhs, rhs, .. } => Ok(evaluate_label_predicate_expression(
-            lhs,
-            mapped_label,
-            format!("{path}.lhs"),
-            context,
-        )? || evaluate_label_predicate_expression(
-            rhs,
-            mapped_label,
-            format!("{path}.rhs"),
-            context,
-        )?),
-        LabelExpression::And { lhs, rhs, .. } => Ok(evaluate_label_predicate_expression(
-            lhs,
-            mapped_label,
-            format!("{path}.lhs"),
-            context,
-        )? && evaluate_label_predicate_expression(
-            rhs,
-            mapped_label,
-            format!("{path}.rhs"),
-            context,
-        )?),
-        LabelExpression::Not { inner, .. } => Ok(!evaluate_label_predicate_expression(
+        LabelExpression::Or { lhs, rhs, .. } => {
+            Ok(
+                evaluate_label_expression(lhs, mapped_label, format!("{path}.lhs"), resolver)?
+                    || evaluate_label_expression(
+                        rhs,
+                        mapped_label,
+                        format!("{path}.rhs"),
+                        resolver,
+                    )?,
+            )
+        }
+        LabelExpression::And { lhs, rhs, .. } => {
+            Ok(
+                evaluate_label_expression(lhs, mapped_label, format!("{path}.lhs"), resolver)?
+                    && evaluate_label_expression(
+                        rhs,
+                        mapped_label,
+                        format!("{path}.rhs"),
+                        resolver,
+                    )?,
+            )
+        }
+        LabelExpression::Not { inner, .. } => Ok(!evaluate_label_expression(
             inner,
             mapped_label,
             format!("{path}.inner"),
-            context,
+            resolver,
         )?),
         LabelExpression::Group { inner, .. } => {
-            evaluate_label_predicate_expression(inner, mapped_label, path, context)
+            evaluate_label_expression(inner, mapped_label, path, resolver)
         }
     }
 }
@@ -24650,59 +24656,25 @@ fn single_static_label(
     labels: &[LabelExpression],
     path: impl Into<String>,
 ) -> Result<String, CoreError> {
-    let path = path.into();
-    if labels.is_empty() {
-        return Err(unsupported(
-            path,
-            "exactly one positive static label or relationship type is required",
-        ));
-    }
-
-    let mut required = BTreeSet::new();
-    let mut forbidden = BTreeSet::new();
-    for (index, label) in labels.iter().enumerate() {
-        collect_static_label_requirements(
-            label,
-            &mut required,
-            &mut forbidden,
-            format!("{path}[{index}]"),
-        )?;
-    }
-
-    let mut required_labels = required.iter();
-    let Some(label) = required_labels.next() else {
-        return Err(unsupported(
-            path,
-            "node and relationship patterns require exactly one positive static label or relationship type",
-        ));
-    };
-    if required_labels.next().is_some() {
-        return Err(unsupported(
-            path,
-            "node and relationship patterns require exactly one positive static label or relationship type",
-        ));
-    }
-    if forbidden.contains(label) {
-        return Err(unsupported(
-            path,
-            "contradictory label expressions cannot be represented by one Coral mapping",
-        ));
-    }
-    for (index, expression) in labels.iter().enumerate() {
-        if !evaluate_static_label_expression(expression, label, format!("{path}[{index}]"))? {
-            return Err(unsupported(
-                path,
-                "contradictory label expressions cannot be represented by one Coral mapping",
-            ));
-        }
-    }
-    Ok((*label).clone())
+    single_resolved_label(labels, path, LabelExpressionResolver::StaticOnly)
 }
 
 fn single_compile_time_label(
     labels: &[LabelExpression],
     path: impl Into<String>,
     context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    single_resolved_label(
+        labels,
+        path,
+        LabelExpressionResolver::CompileTimeDynamic { context },
+    )
+}
+
+fn single_resolved_label(
+    labels: &[LabelExpression],
+    path: impl Into<String>,
+    resolver: LabelExpressionResolver<'_>,
 ) -> Result<String, CoreError> {
     let path = path.into();
     if labels.is_empty() {
@@ -24715,12 +24687,12 @@ fn single_compile_time_label(
     let mut required = BTreeSet::new();
     let mut forbidden = BTreeSet::new();
     for (index, label) in labels.iter().enumerate() {
-        collect_compile_time_label_requirements(
+        collect_label_requirements(
             label,
             &mut required,
             &mut forbidden,
             format!("{path}[{index}]"),
-            context,
+            resolver,
         )?;
     }
 
@@ -24744,12 +24716,7 @@ fn single_compile_time_label(
         ));
     }
     for (index, expression) in labels.iter().enumerate() {
-        if !evaluate_label_predicate_expression(
-            expression,
-            label,
-            format!("{path}[{index}]"),
-            context,
-        )? {
+        if !evaluate_label_expression(expression, label, format!("{path}[{index}]"), resolver)? {
             return Err(unsupported(
                 path,
                 "contradictory label expressions cannot be represented by one Coral mapping",
@@ -24759,12 +24726,12 @@ fn single_compile_time_label(
     Ok((*label).clone())
 }
 
-fn collect_compile_time_label_requirements(
+fn collect_label_requirements(
     expression: &LabelExpression,
     required: &mut BTreeSet<String>,
     forbidden: &mut BTreeSet<String>,
     path: impl Into<String>,
-    context: &CypherCompileContext,
+    resolver: LabelExpressionResolver<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     match expression {
@@ -24773,7 +24740,7 @@ fn collect_compile_time_label_requirements(
             Ok(())
         }
         LabelExpression::Dynamic { expression, .. } => {
-            required.insert(compile_dynamic_label_expression(expression, path, context)?);
+            required.insert(resolver.resolve_dynamic(expression, path)?);
             Ok(())
         }
         LabelExpression::Or { .. } => Err(unsupported(
@@ -24781,35 +24748,23 @@ fn collect_compile_time_label_requirements(
             "label/type alternatives require union planning and are not supported yet",
         )),
         LabelExpression::And { lhs, rhs, .. } => {
-            collect_compile_time_label_requirements(
-                lhs,
-                required,
-                forbidden,
-                format!("{path}.lhs"),
-                context,
-            )?;
-            collect_compile_time_label_requirements(
-                rhs,
-                required,
-                forbidden,
-                format!("{path}.rhs"),
-                context,
-            )
+            collect_label_requirements(lhs, required, forbidden, format!("{path}.lhs"), resolver)?;
+            collect_label_requirements(rhs, required, forbidden, format!("{path}.rhs"), resolver)
         }
         LabelExpression::Not { inner, .. } => {
-            collect_compile_time_label_exclusion(inner, forbidden, format!("{path}.inner"), context)
+            collect_label_exclusion(inner, forbidden, format!("{path}.inner"), resolver)
         }
         LabelExpression::Group { inner, .. } => {
-            collect_compile_time_label_requirements(inner, required, forbidden, path, context)
+            collect_label_requirements(inner, required, forbidden, path, resolver)
         }
     }
 }
 
-fn collect_compile_time_label_exclusion(
+fn collect_label_exclusion(
     expression: &LabelExpression,
     forbidden: &mut BTreeSet<String>,
     path: impl Into<String>,
-    context: &CypherCompileContext,
+    resolver: LabelExpressionResolver<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     match expression {
@@ -24818,137 +24773,42 @@ fn collect_compile_time_label_exclusion(
             Ok(())
         }
         LabelExpression::Dynamic { expression, .. } => {
-            forbidden.insert(compile_dynamic_label_expression(expression, path, context)?);
+            forbidden.insert(resolver.resolve_dynamic(expression, path)?);
             Ok(())
         }
         LabelExpression::Group { inner, .. } => {
-            collect_compile_time_label_exclusion(inner, forbidden, path, context)
+            collect_label_exclusion(inner, forbidden, path, resolver)
         }
         LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
-            validate_compile_time_label_expression(lhs, format!("{path}.lhs"), context)?;
-            validate_compile_time_label_expression(rhs, format!("{path}.rhs"), context)
+            validate_label_expression(lhs, format!("{path}.lhs"), resolver)?;
+            validate_label_expression(rhs, format!("{path}.rhs"), resolver)
         }
         LabelExpression::Not { inner, .. } => {
-            validate_compile_time_label_expression(inner, format!("{path}.inner"), context)
+            validate_label_expression(inner, format!("{path}.inner"), resolver)
         }
     }
 }
 
-fn validate_compile_time_label_expression(
+fn validate_label_expression(
     expression: &LabelExpression,
     path: impl Into<String>,
-    context: &CypherCompileContext,
+    resolver: LabelExpressionResolver<'_>,
 ) -> Result<(), CoreError> {
     let path = path.into();
     match expression {
         LabelExpression::Static(_) => Ok(()),
         LabelExpression::Dynamic { expression, .. } => {
-            compile_dynamic_label_expression(expression, path, context).map(|_| ())
+            resolver.resolve_dynamic(expression, path).map(|_| ())
         }
-        LabelExpression::Group { inner, .. } => {
-            validate_compile_time_label_expression(inner, path, context)
-        }
+        LabelExpression::Group { inner, .. } => validate_label_expression(inner, path, resolver),
         LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
-            validate_compile_time_label_expression(lhs, format!("{path}.lhs"), context)?;
-            validate_compile_time_label_expression(rhs, format!("{path}.rhs"), context)
+            validate_label_expression(lhs, format!("{path}.lhs"), resolver)?;
+            validate_label_expression(rhs, format!("{path}.rhs"), resolver)
         }
         LabelExpression::Not { inner, .. } => {
-            validate_compile_time_label_expression(inner, format!("{path}.inner"), context)
+            validate_label_expression(inner, format!("{path}.inner"), resolver)
         }
     }
-}
-
-fn collect_static_label_requirements(
-    expression: &LabelExpression,
-    required: &mut BTreeSet<String>,
-    forbidden: &mut BTreeSet<String>,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    let path = path.into();
-    match expression {
-        LabelExpression::Static(name) => {
-            required.insert(name.name.clone());
-            Ok(())
-        }
-        LabelExpression::Dynamic { .. } => Err(unsupported(
-            path,
-            "dynamic label expressions are not supported yet",
-        )),
-        LabelExpression::Or { .. } => Err(unsupported(
-            path,
-            "label/type alternatives require union planning and are not supported yet",
-        )),
-        LabelExpression::And { lhs, rhs, .. } => {
-            collect_static_label_requirements(lhs, required, forbidden, format!("{path}.lhs"))?;
-            collect_static_label_requirements(rhs, required, forbidden, format!("{path}.rhs"))
-        }
-        LabelExpression::Not { inner, .. } => {
-            collect_static_label_exclusion(inner, forbidden, format!("{path}.inner"))
-        }
-        LabelExpression::Group { inner, .. } => {
-            collect_static_label_requirements(inner, required, forbidden, path)
-        }
-    }
-}
-
-fn collect_static_label_exclusion(
-    expression: &LabelExpression,
-    forbidden: &mut BTreeSet<String>,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    let path = path.into();
-    match expression {
-        LabelExpression::Static(name) => {
-            forbidden.insert(name.name.clone());
-            Ok(())
-        }
-        LabelExpression::Group { inner, .. } => {
-            collect_static_label_exclusion(inner, forbidden, path)
-        }
-        LabelExpression::Dynamic { .. } => Err(unsupported(
-            path,
-            "dynamic label expressions are not supported yet",
-        )),
-        LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
-            validate_static_label_expression(lhs, format!("{path}.lhs"))?;
-            validate_static_label_expression(rhs, format!("{path}.rhs"))
-        }
-        LabelExpression::Not { inner, .. } => {
-            validate_static_label_expression(inner, format!("{path}.inner"))
-        }
-    }
-}
-
-fn validate_static_label_expression(
-    expression: &LabelExpression,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    let path = path.into();
-    match expression {
-        LabelExpression::Static(_) => Ok(()),
-        LabelExpression::Group { inner, .. } => validate_static_label_expression(inner, path),
-        LabelExpression::Dynamic { .. } => Err(unsupported(
-            path,
-            "dynamic label expressions are not supported yet",
-        )),
-        LabelExpression::And { lhs, rhs, .. } | LabelExpression::Or { lhs, rhs, .. } => {
-            validate_static_label_expression(lhs, format!("{path}.lhs"))?;
-            validate_static_label_expression(rhs, format!("{path}.rhs"))
-        }
-        LabelExpression::Not { inner, .. } => {
-            validate_static_label_expression(inner, format!("{path}.inner"))
-        }
-    }
-}
-
-fn optional_single_static_label(
-    labels: &[LabelExpression],
-    path: impl Into<String>,
-) -> Result<Option<String>, CoreError> {
-    if labels.is_empty() {
-        return Ok(None);
-    }
-    single_static_label(labels, path).map(Some)
 }
 
 fn optional_single_compile_time_label(
@@ -37681,6 +37541,49 @@ relationships:
         };
         assert_eq!(plan.relationships.len(), 2);
         assert_eq!(path_length_projection_literal(&plan), Some(2));
+    }
+
+    #[test]
+    fn compiles_parameterized_dynamic_bounded_cross_label_ranges_from_graph_declaration() {
+        let parameters = BTreeMap::from([
+            (
+                "from_label".to_string(),
+                CypherParameterValue::Literal(Literal::String("Person".to_string())),
+            ),
+            (
+                "relationship_type".to_string(),
+                CypherParameterValue::Literal(Literal::String("ROUTES".to_string())),
+            ),
+            (
+                "to_label".to_string(),
+                CypherParameterValue::Literal(Literal::String("Incident".to_string())),
+            ),
+        ]);
+        let query = compile_cypher_query_for_graph_with_parameters(
+            &route_test_graph(),
+            "MATCH path = (person:$($from_label))-[:$($relationship_type)*0..2]->(incident:$($to_label)) \
+             RETURN person.name AS person, incident.title AS incident, length(path) AS hops",
+            &parameters,
+        )
+        .expect("parameterized dynamic bounded cross-label path should prune and compile");
+
+        let GraphQuery::Plan(plan) = query else {
+            panic!("only the feasible two-hop branch should remain");
+        };
+        assert_eq!(plan.relationships.len(), 2);
+        assert_eq!(path_length_projection_literal(&plan), Some(2));
+        assert_eq!(
+            plan.nodes
+                .iter()
+                .map(|node| node.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Person", "Incident", "Service"]
+        );
+        assert!(
+            plan.relationships
+                .iter()
+                .all(|relationship| relationship.relationship_type == "ROUTES")
+        );
     }
 
     #[test]

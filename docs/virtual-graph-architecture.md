@@ -155,7 +155,9 @@ The supported foundation subset is intentionally narrow:
   relationship pattern, or an untyped exact single-hop relationship pattern,
   and the graph declaration infer one unique endpoint label; declaration-free
   compilation keeps rejecting first-bound named variables and anonymous nodes
-  without labels;
+  without labels. Bounded relationship-range pruning resolves the same
+  compile-time dynamic endpoint labels before it consults graph declaration
+  topology;
 - directed, reverse, and undirected typed relationships, with
   `startNode(r)` / `endNode(r)` endpoint functions over cross-label
   undirected relationships when a single graph declaration mapping recovers
@@ -163,8 +165,9 @@ The supported foundation subset is intentionally narrow:
   for an untyped exact single-hop relationship when the endpoint labels and
   direction select exactly one relationship type. Relationship type atoms may
   also be compile-time dynamic, such as `:$($type)` with a scalar string
-  parameter; untyped ranges, row-dependent dynamic types, and ambiguous
-  endpoint pairs remain rejected;
+  parameter, including during bounded relationship-range pruning; untyped
+  ranges, row-dependent dynamic types, and ambiguous endpoint pairs remain
+  rejected;
 - connected multi-hop relationship chains;
 - `WHERE` comparisons combined with `AND`, `OR`, `XOR`, `NOT`, and
   parentheses, with `XOR` lowered as a null-preserving boolean rewrite;

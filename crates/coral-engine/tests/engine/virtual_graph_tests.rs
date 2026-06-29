@@ -1951,6 +1951,67 @@ async fn cypher_bounded_cross_label_ranges_prune_impossible_lengths() {
 }
 
 #[tokio::test]
+async fn cypher_parameterized_dynamic_bounded_cross_label_ranges_prune_impossible_lengths() {
+    let temp = TempDir::new().expect("temp dir");
+    write_route_fixture(temp.path());
+    let source = build_source(route_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(ROUTE_GRAPH).expect("graph should parse");
+    let parameters = BTreeMap::from([
+        (
+            "from_label".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("Person".to_string())),
+        ),
+        (
+            "relationship_type".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("ROUTES".to_string())),
+        ),
+        (
+            "to_label".to_string(),
+            GraphCypherParameterValue::Literal(GraphLiteral::String("Incident".to_string())),
+        ),
+    ]);
+
+    let execution = CoralQuery::execute_cypher_with_parameters(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH path = (person:$($from_label))-[:$($relationship_type)*0..2]->(incident:$($to_label)) \
+         RETURN person.name AS person, incident.title AS incident, length(path) AS hops \
+         ORDER BY person, incident",
+        &parameters,
+    )
+    .await
+    .expect("parameterized dynamic bounded cross-label path should execute after pruning impossible lengths");
+
+    assert!(
+        !execution.translated_sql().contains("UNION ALL"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"person_service_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("JOIN \"ops\".\"service_incident_routes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"person": "Ada Lovelace", "incident": "billing latency", "hops": 2}),
+            json!({"person": "Grace Hopper", "incident": "deploy failed", "hops": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_bounded_cross_label_ranges_with_no_feasible_lengths_return_empty_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_route_fixture(temp.path());
