@@ -28,6 +28,13 @@ pub(crate) struct ScopedTableFunctionName {
 }
 
 impl ScopedTableFunctionName {
+    pub(crate) fn from_parts(schema: &str, function: &str) -> Self {
+        Self {
+            schema: normalize_runtime_identifier(schema),
+            function: normalize_runtime_identifier(function),
+        }
+    }
+
     pub(crate) fn from_manifest(function: &RegisteredTableFunction) -> Self {
         Self {
             schema: function.schema_name.clone(),
@@ -41,6 +48,10 @@ impl ScopedTableFunctionName {
             function: context.normalize_ident(function),
         }
     }
+}
+
+fn normalize_runtime_identifier(identifier: &str) -> String {
+    identifier.to_ascii_lowercase()
 }
 
 #[derive(Debug)]
@@ -100,6 +111,38 @@ pub(crate) fn find_placeholder(expr: &Expr) -> Option<String> {
 
 pub(crate) fn qualified_name(schema: &str, function: &str) -> String {
     format!("{schema}.{function}")
+}
+
+pub(crate) fn available_functions_hint<'a>(
+    schema: &str,
+    functions: impl IntoIterator<Item = (&'a ScopedTableFunctionName, &'a str)>,
+) -> String {
+    let mut names: Vec<&str> = functions
+        .into_iter()
+        .filter_map(|(key, display_name)| (key.schema == schema).then_some(display_name))
+        .collect();
+    names.sort_unstable();
+
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("; available functions: {}", names.join(", "))
+    }
+}
+
+pub(crate) fn reject_unbound_parameters<'a>(
+    display_name: &str,
+    args: impl IntoIterator<Item = (&'a str, &'a Expr)>,
+) -> Result<()> {
+    for (name, arg) in args {
+        if let Some(placeholder) = find_placeholder(arg) {
+            return Err(DataFusionError::Plan(format!(
+                "{display_name} argument '{name}' is bound to parameter {placeholder}, \
+                 but no value was provided for it"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn original_relation(relation: TableFactor) -> RelationPlanning {

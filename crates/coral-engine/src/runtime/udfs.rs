@@ -17,10 +17,6 @@ use crate::{
     UdfRuntimeImplementation, UdfRuntimeResultColumn, UdfRuntimeSignature, UdfRuntimeSqlDefinition,
 };
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes registered UDF SQL in the next stack branch."
-)]
 pub(crate) fn udf_sql(udf: &UdfRuntimeDefinition) -> &str {
     let UdfRuntimeImplementation::CoralSql { query } = &udf.implementation;
     query
@@ -70,13 +66,6 @@ pub(crate) fn udf_query_parameters(
     UdfArgumentBinding::new(udf, arguments).into_query_params()
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "UDF table-function execution consumes literal call binding in the next stack branch."
-    )
-)]
 pub(crate) fn udf_argument_values(
     udf: &UdfRuntimeDefinition,
     args: &[Expr],
@@ -134,10 +123,6 @@ fn unalias(mut expr: &Expr) -> &Expr {
     expr
 }
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes bound parameter values in the next stack branch."
-)]
 pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarValue)> {
     params
         .iter()
@@ -145,10 +130,6 @@ pub(crate) fn udf_param_values(params: &QueryParameters) -> Vec<(String, ScalarV
         .collect()
 }
 
-#[expect(
-    dead_code,
-    reason = "UDF table-function execution consumes result schemas in the next stack branch."
-)]
 pub(crate) fn udf_arrow_schema(udf: &UdfRuntimeDefinition) -> DataFusionResult<Arc<Schema>> {
     if udf.result_columns.is_empty() {
         return Err(DataFusionError::Plan(format!(
