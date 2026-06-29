@@ -359,7 +359,8 @@ The supported foundation subset is intentionally narrow:
   forms such as `atan2(x, x)` remain foldable.
   Sliced conditional sources over list-valued static `CASE` / `coalesce(...)`
   branches are supported for scalar list-comprehension projections and order
-  keys by slicing each branch before applying the static comprehension reducer;
+  keys, equality/ordered comparisons, and `IN` predicates by slicing each branch
+  before applying the static comprehension reducer;
 - `size(labels(...))` and declaration-aware `size(keys(...))` scalar
   expressions folded from static graph metadata, preserving optional nulls;
 - static `all` / `any` / `none` / `single` collection predicates over literal
