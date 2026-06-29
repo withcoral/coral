@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-42 scenarios, which is 2.60% of the full upstream scenario-definition inventory
-and 3.25% of the read-candidate inventory.
+45 scenarios, which is 2.79% of the full upstream scenario-definition inventory
+and 3.48% of the read-candidate inventory.
 
 The inventory gate fails if:
 

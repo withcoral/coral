@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(report.feature_file_count, 6);
         assert_eq!(report.scenario_count, 6);
         assert_eq!(report.read_candidate_scenario_count, 4);
-        assert_eq!(report.coral_baseline_scenario_count, 42);
+        assert_eq!(report.coral_baseline_scenario_count, 45);
         assert_eq!(
             report
                 .category_counts
@@ -621,9 +621,9 @@ mod tests {
 
     #[test]
     fn percentage_basis_points_rounds_to_nearest() {
-        assert_eq!(percentage_basis_points(42, 1_615), 260);
-        assert_eq!(percentage_basis_points(42, 1_294), 325);
-        assert_eq!(percentage_basis_points(42, 0), 0);
+        assert_eq!(percentage_basis_points(45, 1_615), 279);
+        assert_eq!(percentage_basis_points(45, 1_294), 348);
+        assert_eq!(percentage_basis_points(45, 0), 0);
     }
 
     fn workspace_root() -> PathBuf {
