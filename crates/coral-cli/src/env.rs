@@ -39,5 +39,7 @@ pub fn trace_parent() -> Option<String> {
 )]
 #[must_use]
 pub fn workspace() -> Option<String> {
-    std::env::var(CORAL_WORKSPACE_ENV).ok()
+    std::env::var(CORAL_WORKSPACE_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
 }

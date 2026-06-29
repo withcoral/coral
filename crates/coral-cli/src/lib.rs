@@ -523,10 +523,14 @@ pub async fn run_from_env() -> Result<(), CliError> {
 }
 
 fn selected_workspace(cli_workspace: Option<String>) -> Workspace {
-    let raw = cli_workspace
-        .or_else(env::workspace)
-        .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string());
-    workspace_resource(raw)
+    workspace_resource(selected_workspace_name(cli_workspace, env::workspace()))
+}
+
+fn selected_workspace_name(cli_workspace: Option<String>, env_workspace: Option<String>) -> String {
+    cli_workspace
+        .filter(|value| !value.is_empty())
+        .or_else(|| env_workspace.filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())
 }
 
 /// Returns the embedded Coral UI assets for the local server to serve.
@@ -1071,6 +1075,20 @@ mod tests {
         let workspace = super::selected_workspace(Some(" ../bad ".to_string()));
 
         assert_eq!(workspace.name, " ../bad ");
+    }
+
+    #[test]
+    fn selected_workspace_treats_empty_cli_value_as_unset() {
+        let workspace = super::selected_workspace_name(Some(String::new()), None);
+
+        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn selected_workspace_treats_empty_env_value_as_unset() {
+        let workspace = super::selected_workspace_name(None, Some(String::new()));
+
+        assert_eq!(workspace, super::DEFAULT_WORKSPACE_ID);
     }
 
     #[test]
