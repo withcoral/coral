@@ -318,7 +318,10 @@ The supported foundation subset is intentionally narrow:
   `coalesce(...)` right-hand sides in predicates;
 - static `node:Label` and `relationship:TYPE` predicates, including grouped
   label-expression conjunction, disjunction, and negation evaluated against
-  mapped labels and relationship types;
+  mapped labels and relationship types. Dynamic predicate atoms such as
+  `node:$($label)` are folded when the expression is a string literal or
+  scalar string parameter; row-dependent and list-valued dynamic labels remain
+  rejected because Coral does not evaluate graph labels per source row;
 - string prefix, suffix, and substring predicates lowered to escaped SQL
   `LIKE` for literal and parameter RHS values, or DataFusion string functions
   for scalar expression RHS values;

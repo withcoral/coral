@@ -23047,10 +23047,11 @@ fn compile_graph_label_predicate(
         true,
         |matches, (index, label)| -> Result<bool, CoreError> {
             Ok(matches
-                && evaluate_static_label_expression(
+                && evaluate_label_predicate_expression(
                     label,
                     mapped_label,
                     format!("{path}.labels[{index}]"),
+                    context,
                 )?)
         },
     )?;
@@ -23101,6 +23102,76 @@ fn evaluate_static_label_expression(
         }
     }
 }
+
+fn evaluate_label_predicate_expression(
+    expression: &LabelExpression,
+    mapped_label: &str,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    match expression {
+        LabelExpression::Static(label) => Ok(label.name == mapped_label),
+        LabelExpression::Dynamic { expression, .. } => {
+            Ok(compile_dynamic_label_predicate(expression, path, context)? == mapped_label)
+        }
+        LabelExpression::Or { lhs, rhs, .. } => Ok(evaluate_label_predicate_expression(
+            lhs,
+            mapped_label,
+            format!("{path}.lhs"),
+            context,
+        )? || evaluate_label_predicate_expression(
+            rhs,
+            mapped_label,
+            format!("{path}.rhs"),
+            context,
+        )?),
+        LabelExpression::And { lhs, rhs, .. } => Ok(evaluate_label_predicate_expression(
+            lhs,
+            mapped_label,
+            format!("{path}.lhs"),
+            context,
+        )? && evaluate_label_predicate_expression(
+            rhs,
+            mapped_label,
+            format!("{path}.rhs"),
+            context,
+        )?),
+        LabelExpression::Not { inner, .. } => Ok(!evaluate_label_predicate_expression(
+            inner,
+            mapped_label,
+            format!("{path}.inner"),
+            context,
+        )?),
+        LabelExpression::Group { inner, .. } => {
+            evaluate_label_predicate_expression(inner, mapped_label, path, context)
+        }
+    }
+}
+
+fn compile_dynamic_label_predicate(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_dynamic_label_predicate(inner, path, context),
+        Expression::Literal(CypherLiteral::String(label)) => Ok(label.value.clone()),
+        Expression::Parameter(parameter) => {
+            match context.parameter_value(parameter, path.clone())? {
+                CypherParameterValue::Literal(Literal::String(label)) => Ok(label.clone()),
+                CypherParameterValue::Literal(_) | CypherParameterValue::List(_) => {
+                    Err(unsupported(path, DYNAMIC_LABEL_PREDICATE_MESSAGE))
+                }
+            }
+        }
+        _ => Err(unsupported(path, DYNAMIC_LABEL_PREDICATE_MESSAGE)),
+    }
+}
+
+const DYNAMIC_LABEL_PREDICATE_MESSAGE: &str =
+    "dynamic label predicates require a string literal or scalar string parameter";
 
 fn compile_optional_keys_ref(
     expression: &Expression,
@@ -32306,7 +32377,79 @@ relationships:
         .expect_err("dynamic node label predicates should be rejected");
 
         assert!(
-            error.to_string().contains("dynamic label predicates"),
+            error
+                .to_string()
+                .contains("dynamic label predicates require a string literal"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compiles_parameterized_dynamic_node_label_predicates() {
+        let parameters = BTreeMap::from([
+            (
+                "label".to_string(),
+                CypherParameterValue::Literal(Literal::String("Service".to_string())),
+            ),
+            (
+                "other".to_string(),
+                CypherParameterValue::Literal(Literal::String("Team".to_string())),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             WHERE service:$($label) AND NOT service:$($other) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect("parameterized dynamic node label predicate should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_parameterized_dynamic_relationship_type_predicates() {
+        let parameters = BTreeMap::from([(
+            "type".to_string(),
+            CypherParameterValue::Literal(Literal::String("OWNS".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             WHERE owns:$($type) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect("parameterized dynamic relationship type predicate should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn rejects_dynamic_label_predicate_list_parameters() {
+        let parameters = BTreeMap::from([(
+            "labels".to_string(),
+            CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
+        )]);
+        let error = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             WHERE service:$($labels) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect_err("dynamic label predicate list parameter should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic label predicates require a string literal"),
             "{error:?}"
         );
     }
