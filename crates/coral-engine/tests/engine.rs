@@ -23,6 +23,8 @@ mod http_tests;
 mod json_tests;
 #[path = "engine/jsonl_tests.rs"]
 mod jsonl_tests;
+#[path = "engine/opencypher_tck_tests.rs"]
+mod opencypher_tck_tests;
 #[path = "engine/parquet_tests.rs"]
 mod parquet_tests;
 #[path = "engine/pattern_error_tests.rs"]

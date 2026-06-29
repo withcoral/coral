@@ -1,0 +1,163 @@
+{
+  "suite": "coral-opencypher-read-baseline",
+  "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
+  "scenarios": [
+    {
+      "id": "match-labeled-node-return-property",
+      "feature": "Match",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "match-directed-relationship",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob" },
+          { "source": "Alice", "target": "Carol" },
+          { "source": "Bob", "target": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "where-boolean-conjunction",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.age >= 30 AND p.active = true RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "where-in-list",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.city IN ['London', 'Paris'] RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-preserves-unmatched-row",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend": "Bob" },
+          { "person": "Alice", "friend": "Carol" },
+          { "person": "Bob", "friend": "Carol" },
+          { "person": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-count-by-group",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS person, count(friend) AS friend_count ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend_count": 2 },
+          { "person": "Bob", "friend_count": 1 }
+        ]
+      }
+    },
+    {
+      "id": "distinct-projection",
+      "feature": "ReturnDistinct",
+      "query": "MATCH (p:Person) RETURN DISTINCT p.city AS city ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London" },
+          { "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "path-length-metadata",
+      "feature": "PathMetadata",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Bob", "hops": 1 },
+          { "source": "Alice", "target": "Carol", "hops": 1 },
+          { "source": "Bob", "target": "Carol", "hops": 1 }
+        ]
+      }
+    },
+    {
+      "id": "fixed-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person)-[:KNOWS*2]->(c:Person) RETURN a.name AS source, c.name AS target ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "source": "Alice", "target": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "transparent-with-scope-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WITH p, friend WHERE friend.age > 30 RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend": "Carol" },
+          { "person": "Bob", "friend": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "top-level-union-all-preserves-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION ALL MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "materialized-path-return-rejected",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path",
+      "expected": {
+        "kind": "error",
+        "contains": "path values"
+      }
+    }
+  ]
+}

@@ -9,7 +9,7 @@ on:
       - "crates/coral-engine/**"
       - "docs/virtual-graph-*.md"
   push:
-    branches: [main]
+    branches: [main, prod]
     paths:
       - ".github/workflows/virtual-graph-core.yml"
       - "Cargo.toml"
@@ -54,3 +54,6 @@ jobs:
 
       - name: Virtual graph tests
         run: cargo test -p coral-engine virtual_graph --locked
+
+      - name: openCypher TCK read baseline
+        run: cargo test -p coral-engine opencypher_tck --locked

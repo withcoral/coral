@@ -9,7 +9,9 @@ Every virtual graph feature follows this loop:
    equivalent SQL.
 5. Add deterministic performance coverage when the feature can affect planning
    or execution cost.
-6. Implement the minimum production code needed to pass those tests.
+6. Add or update an openCypher TCK-style baseline scenario when the feature maps
+   to portable read-only Cypher behavior.
+7. Implement the minimum production code needed to pass those tests.
 
 ## Required Test Tiers
 
@@ -41,4 +43,7 @@ For each added Cypher/GQL feature:
    stays reviewable.
 3. Add SQL-lowering assertions when the feature changes generated SQL.
 4. Add synthetic `execute_cypher` or `explain_cypher` integration coverage.
-5. Update the compatibility matrix before broadening the parser.
+5. Add a scenario to
+   `crates/coral-engine/tests/fixtures/virtual_graph/opencypher_read_baseline.json`
+   when the behavior is part of Coral's claimed read-only Cypher compatibility.
+6. Update the compatibility matrix before broadening the parser.
