@@ -875,6 +875,115 @@ async fn cypher_graph_aware_unlabeled_node_scan_aggregates_missing_scalar_proper
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_project_missing_relationship_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[ownership:OWNS]->(service:Service) \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner, service.name AS service, ownership.since AS since \
+         ORDER BY owner_label, owner, service",
+    )
+    .await
+    .expect("heterogeneous relationship property projection should execute");
+
+    let schema = execution
+        .execution()
+        .batches()
+        .first()
+        .expect("execution should produce a batch")
+        .schema();
+    let field_names = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        field_names,
+        vec!["owner_label", "owner", "service", "since"]
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Person", "owner": "Ada Lovelace", "service": "billing-api", "since": "2024-01-10"}),
+            json!({"owner_label": "Person", "owner": "Grace Hopper", "service": "deployments", "since": "2024-02-20"}),
+            json!({"owner_label": "Person", "owner": "Katherine Johnson", "service": "experiments", "since": "2024-03-15"}),
+            json!({"owner_label": "Team", "owner": "analytics", "service": "experiments"}),
+            json!({"owner_label": "Team", "owner": "infra", "service": "deployments"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "billing-api"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_filter_missing_relationship_properties_as_null() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[ownership:OWNS]->(service:Service) \
+         WHERE ownership.since IS NULL \
+         RETURN labels(owner)[0] AS owner_label, owner.name AS owner, service.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("heterogeneous relationship property null predicate should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner_label": "Team", "owner": "analytics", "service": "experiments"}),
+            json!({"owner_label": "Team", "owner": "infra", "service": "deployments"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "billing-api"}),
+            json!({"owner_label": "Team", "owner": "platform", "service": "legacy-sync"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_static_node_label_alternatives_rewrite_missing_relationship_scalar_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[ownership:OWNS]->(service:Service) \
+         RETURN owner.name AS owner, service.name AS service, coalesce(ownership.since, 'unspecified') AS since_bucket \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("heterogeneous relationship scalar property should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "since_bucket": "2024-01-10"}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "since_bucket": "2024-02-20"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "since_bucket": "2024-03-15"}),
+            json!({"owner": "analytics", "service": "experiments", "since_bucket": "unspecified"}),
+            json!({"owner": "infra", "service": "deployments", "since_bucket": "unspecified"}),
+            json!({"owner": "platform", "service": "billing-api", "since_bucket": "unspecified"}),
+            json!({"owner": "platform", "service": "legacy-sync", "since_bucket": "unspecified"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_apply_global_row_modifiers_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
