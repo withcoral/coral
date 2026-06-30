@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { readSidebarCollapsedCookieValue, SIDEBAR_COOKIE_NAME } from './sidebar-state'
+import { readSidebarCollapsedCookiePreference, SIDEBAR_COOKIE_NAME } from './sidebar-state'
 
 const COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
 
@@ -17,8 +17,7 @@ function saveSidebarState(isMinimized: boolean) {
 export function useSidebarState(initialIsMinimized: boolean) {
   const [isMinimized, setIsMinimized] = useState(() => {
     if (typeof document === 'undefined') return initialIsMinimized
-    if (!document.cookie.includes(`${SIDEBAR_COOKIE_NAME}=`)) return initialIsMinimized
-    return readSidebarCollapsedCookieValue(document.cookie)
+    return readSidebarCollapsedCookiePreference(document.cookie) ?? initialIsMinimized
   })
 
   const toggleSidebar = () => {

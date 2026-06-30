@@ -14,7 +14,7 @@ export interface CoralSidecar {
 }
 
 const READY_RE = /Coral UI listening on (http:\/\/(?:127\.0\.0\.1|localhost|\[[^\]]+\])(?::\d+)?|http:\/\/[^\s]+)/
-const STARTUP_TIMEOUT_MS = 30_000
+const PACKAGED_STARTUP_TIMEOUT_MS = 30_000
 const OUTPUT_TAIL_LIMIT = 8000
 
 function moduleDir(): string {
@@ -91,6 +91,10 @@ function sidecarCommand(): { command: string; args: string[]; cwd: string } {
   return app.isPackaged ? packagedSidecarCommand() : devSidecarCommand()
 }
 
+function startupTimeoutMs(): number | null {
+  return app.isPackaged ? PACKAGED_STARTUP_TIMEOUT_MS : null
+}
+
 function envWithLoopbackNoProxy(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, CORAL_DESKTOP: '1' }
   for (const key of ['NO_PROXY', 'no_proxy']) {
@@ -119,6 +123,7 @@ export function startCoralSidecar(): Promise<CoralSidecar> {
     let stderrTail = ''
     let settled = false
     let startupTimeout: ReturnType<typeof setTimeout> | null = null
+    const timeoutMs = startupTimeoutMs()
 
     const reject = (error: Error) => {
       if (settled) return
@@ -141,10 +146,12 @@ export function startCoralSidecar(): Promise<CoralSidecar> {
       })
     }
 
-    startupTimeout = setTimeout(() => {
-      reject(new Error(`Coral runtime did not become ready within ${STARTUP_TIMEOUT_MS / 1000}s. ${stderrTail}`))
-      void stopChild(child)
-    }, STARTUP_TIMEOUT_MS)
+    if (timeoutMs !== null) {
+      startupTimeout = setTimeout(() => {
+        reject(new Error(`Coral runtime did not become ready within ${timeoutMs / 1000}s. ${stderrTail}`))
+        void stopChild(child)
+      }, timeoutMs)
+    }
 
     child.on('error', reject)
     child.stdout?.on('data', (chunk: Buffer) => {

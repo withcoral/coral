@@ -71,4 +71,14 @@ describe('Sidebar', () => {
     await expect.element(sidebar).toHaveAttribute('data-sidebar-minimized', 'true')
     await expect.element(screen.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
   })
+
+  it('ignores similarly named cookies when restoring the minimized state', async () => {
+    document.cookie = `not_${SIDEBAR_COOKIE_NAME}=true; Path=/`
+
+    const screen = await renderSidebar(false)
+    const sidebar = screen.getByRole('navigation', { name: 'Coral' })
+
+    await expect.element(sidebar).toHaveAttribute('data-sidebar-minimized', 'false')
+    await expect.element(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeVisible()
+  })
 })
