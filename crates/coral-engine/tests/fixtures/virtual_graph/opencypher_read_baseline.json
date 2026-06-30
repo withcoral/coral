@@ -21,7 +21,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "RowModifiers": 14,
-    "ScalarExpressions": 50,
+    "ScalarExpressions": 60,
     "TypeConversion": 3,
     "Union": 4,
     "Unwind": 13,
@@ -1481,6 +1481,192 @@
             "name": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "boolean-and-truth-table-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true AND true AS tt, true AND false AS tf, false AND true AS ft, false AND false AS ff",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "tt": true,
+            "tf": false,
+            "ft": false,
+            "ff": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-or-truth-table-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true OR true AS tt, true OR false AS tf, false OR true AS ft, false OR false AS ff",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "tt": true,
+            "tf": true,
+            "ft": true,
+            "ff": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-xor-truth-table-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true XOR true AS tt, true XOR false AS tf, false XOR true AS ft, false XOR false AS ff",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "tt": false,
+            "tf": true,
+            "ft": true,
+            "ff": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-not-truth-table-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN NOT true AS nt, NOT false AS nf, NOT NOT true AS nnt, NOT NOT false AS nnf",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "nt": false,
+            "nf": true,
+            "nnt": true,
+            "nnf": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-and-or-precedence-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true OR true AND false AS and_before_or, (true OR true) AND false AS grouped_or_first, false AND true OR true AS left_and_before_or, false AND (true OR true) AS grouped_or_right",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "and_before_or": true,
+            "grouped_or_first": false,
+            "left_and_before_or": true,
+            "grouped_or_right": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-parenthesized-not-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN (true OR false) AND false AS grouped_false, true OR (false AND false) AS grouped_true, NOT (true OR false) AS not_or, NOT (true AND false) AS not_and",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "grouped_false": false,
+            "grouped_true": true,
+            "not_or": false,
+            "not_and": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-property-xor-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.active XOR p.city = 'Paris' AS active_xor_paris ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "active_xor_paris": true
+          },
+          {
+            "name": "Bob",
+            "active_xor_paris": false
+          },
+          {
+            "name": "Carol",
+            "active_xor_paris": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-de-morgan-property-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, NOT (p.active OR p.city = 'Paris') AS neither_active_nor_paris, NOT p.active AND NOT (p.city = 'Paris') AS expanded ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "neither_active_nor_paris": false,
+            "expanded": false
+          },
+          {
+            "name": "Bob",
+            "neither_active_nor_paris": true,
+            "expanded": true
+          },
+          {
+            "name": "Carol",
+            "neither_active_nor_paris": false,
+            "expanded": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-property-precedence-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, (p.active AND p.age > 30) OR p.city = '' AS eligible, p.active AND (p.age > 30 OR p.city = '') AS active_qualifies ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "eligible": true,
+            "active_qualifies": true
+          },
+          {
+            "name": "Bob",
+            "eligible": true,
+            "active_qualifies": false
+          },
+          {
+            "name": "Carol",
+            "eligible": true,
+            "active_qualifies": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-non-boolean-operand-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.age AND p.active AS invalid_bool",
+      "expected": {
+        "kind": "error",
+        "contains": "INVALID_SCALAR_TYPE"
       }
     },
     {
