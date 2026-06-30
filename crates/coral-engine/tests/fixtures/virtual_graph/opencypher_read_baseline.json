@@ -19,11 +19,11 @@
     "PathMetadata": 1,
     "PathValues": 4,
     "RelationshipProperties": 1,
-    "ReturnDistinct": 1,
+    "ReturnDistinct": 3,
     "RowModifiers": 2,
     "ScalarExpressions": 23,
     "TypeConversion": 3,
-    "Union": 2,
+    "Union": 4,
     "Unwind": 2,
     "VariableLengthPaths": 4,
     "Where": 11,
@@ -1490,6 +1490,32 @@
       }
     },
     {
+      "id": "distinct-computed-age-category",
+      "feature": "ReturnDistinct",
+      "query": "MATCH (p:Person) RETURN DISTINCT CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS age_category ORDER BY age_category",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "age_category": "junior" },
+          { "age_category": "senior" }
+        ]
+      }
+    },
+    {
+      "id": "distinct-grouped-computed-age-category",
+      "feature": "ReturnDistinct",
+      "query": "MATCH (p:Person) RETURN DISTINCT CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS age_category, count(p) AS people ORDER BY age_category",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "age_category": "junior", "people": 1 },
+          { "age_category": "senior", "people": 2 }
+        ]
+      }
+    },
+    {
       "id": "top-level-union-distinct-removes-duplicates",
       "feature": "Union",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name",
@@ -1498,6 +1524,18 @@
         "ordered": false,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "top-level-union-computed-category-removes-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.city = 'London' RETURN CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS category UNION MATCH (p:Person) WHERE p.city = 'Paris' RETURN CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS category",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "category": "senior" }
         ]
       }
     },
@@ -1648,6 +1686,19 @@
         "rows": [
           { "name": "Alice" },
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "top-level-union-all-computed-category-preserves-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.city = 'London' RETURN CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS category UNION ALL MATCH (p:Person) WHERE p.city = 'Paris' RETURN CASE WHEN p.age > 30 THEN 'senior' ELSE 'junior' END AS category",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "category": "senior" },
+          { "category": "senior" }
         ]
       }
     },
