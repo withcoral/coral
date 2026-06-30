@@ -278,7 +278,11 @@ fn assert_tool_advertises_episode_id(tool: &Tool) {
 fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
     let compiled = JSONSchema::compile(schema)
         .unwrap_or_else(|error| panic!("{label} episode id schema should compile: {error}"));
-    for valid in [json!(null), json!("episode-1")] {
+    for valid in [
+        json!(null),
+        json!("episode-1"),
+        json!("x".repeat(CORAL_EPISODE_ID_MAX_LEN)),
+    ] {
         if let Err(errors) = compiled.validate(&valid) {
             let details = errors
                 .map(|error| error.to_string())
@@ -291,6 +295,7 @@ fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
         json!(""),
         json!("episode with space"),
         json!("x".repeat(CORAL_EPISODE_ID_MAX_LEN + 1)),
+        json!("episode-é"),
     ] {
         assert!(
             compiled.validate(&invalid).is_err(),
@@ -969,6 +974,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(described["column_count"], 3);
     assert!(described["columns_hint"].as_str().is_some());
     assert!(described["columns"].is_null());
+    assert_matches_output_schema(list_columns_tool, &described);
 
     let missing_table = client
         .call_tool(

@@ -234,6 +234,7 @@ enum DescribeTableOutputValue<'a> {
 )]
 enum ListColumnsOutputValue<'a> {
     Page(ListColumnsPageValue<'a>),
+    Found(FoundTableValue<'a>),
     Missing(MissingTableValue<'a>),
 }
 
