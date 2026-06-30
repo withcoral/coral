@@ -81,6 +81,7 @@ mod tests {
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
+    use crate::telemetry::{StoredTraceStatus, TraceSummaryRecord};
     use crate::workspaces::WorkspaceName;
 
     #[test]
@@ -313,6 +314,7 @@ mod tests {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace_id = format!("workspace_{suffix}");
         let source_name = format!("source_{suffix}");
+        let trace_id = format!("trace_{suffix}");
         let workspace = WorkspaceName::parse(&workspace_id).expect("workspace");
         let source = SourceName::parse(&source_name).expect("source name");
         let mut session = db.begin().await.expect("begin migration contract tx");
@@ -325,6 +327,11 @@ mod tests {
             .insert_if_absent(&workspace, &source, &credential_document_write(), 5)
             .await
             .expect("insert credential document row");
+        session
+            .trace_summaries()
+            .upsert(&migration_trace_summary(&workspace_id, &trace_id))
+            .await
+            .expect("insert trace summary row");
         assert_eq!(
             source_variable_count(&mut session, &workspace_id, &source_name)
                 .await
@@ -446,6 +453,14 @@ mod tests {
                 .get(&workspace, &source)
                 .await
                 .expect("get credential document after workspace delete")
+                .is_none()
+        );
+        assert!(
+            session
+                .trace_summaries()
+                .get(&trace_id)
+                .await
+                .expect("get trace summary after workspace delete")
                 .is_none()
         );
         session
@@ -662,6 +677,23 @@ mod tests {
                     .to_owned(),
             )
             .await
+    }
+
+    fn migration_trace_summary(workspace_id: &str, trace_id: &str) -> TraceSummaryRecord {
+        TraceSummaryRecord {
+            trace_id: trace_id.to_string(),
+            workspace_id: Some(workspace_id.to_string()),
+            root_span_id: "root".to_string(),
+            name: "coral.query".to_string(),
+            query: "SELECT 1".to_string(),
+            status: StoredTraceStatus::Ok,
+            start_time_unix_nanos: 1,
+            end_time_unix_nanos: 2,
+            duration_nanos: 1,
+            span_count: 1,
+            row_count: 1,
+            row_count_recorded: true,
+        }
     }
 
     async fn delete_source<S>(

@@ -342,6 +342,7 @@ impl StreamingQueryStreamAggregate {
             .or_else(|| text_enrichment.and_then(|enrichment| enrichment.row_count));
         TraceSummaryRecord {
             trace_id: self.entry.trace_id,
+            workspace_id: self.entry.workspace,
             root_span_id: self.entry.span_id,
             name: self.entry.name,
             query: query.unwrap_or_default(),
