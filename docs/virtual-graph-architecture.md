@@ -103,6 +103,12 @@ static string list before SQL lowering. Only the map key tokens are
 materialized; map values are ignored for key extraction and runtime map values
 remain unsupported until Coral has a dedicated map IR.
 
+For graph-backed map access, `properties(variable).field` and endpoint forms
+such as `properties(startNode(relationship)).field` are normalized to ordinary
+property references before IR construction. This keeps the map-compatible
+surface useful while preserving the core invariant that Coral does not
+materialize dynamic map values.
+
 Some Cypher constructs are blocked before Coral compilation because the current
 parser dependency does not accept or fully preserve their standard syntax. Coral
 keeps narrow source-compatibility normalizers for parser gaps that can lower
@@ -366,6 +372,10 @@ The supported foundation subset is intentionally narrow:
   folded as a source-order typed string list and then routed through the same
   static-list reducers used for projection, ordering, list endpoint functions,
   predicates, and comprehensions. This does not materialize a map value.
+  Property access through `properties(...)`, such as `properties(n).name`, is
+  normalized to the existing `n.name` property-reference IR and therefore
+  composes with property predicates, projection, ordering, and aggregate
+  targets without adding a dynamic map representation.
   Sliced conditional sources over list-valued static `CASE` / `coalesce(...)`
   branches are supported for scalar list-comprehension projections and order
   keys, equality/ordered comparisons, and `IN` predicates by slicing each branch

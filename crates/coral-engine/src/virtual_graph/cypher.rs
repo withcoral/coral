@@ -10548,12 +10548,14 @@ fn compile_order_expression_after_metadata_list_index(
             compile_labels_order_expression(function, path, plan, context)
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
-            if let Some(expression) = compile_optional_static_list_scalar_expression(
-                expression,
-                path.clone(),
-                Some(plan),
-                context,
-            )? {
+            if is_literal_map_keys_function(function)
+                && let Some(expression) = compile_optional_static_list_scalar_expression(
+                    expression,
+                    path.clone(),
+                    Some(plan),
+                    context,
+                )?
+            {
                 return compile_scalar_order_expression(expression, projections, path);
             }
             compile_keys_order_expression(function, path, plan, context)
@@ -16201,12 +16203,7 @@ fn compile_projection(
             compile_labels_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_keys_function(function) => {
-            if let Some(projection) =
-                compile_optional_static_list_projection(item, path.clone(), plan, context)?
-            {
-                return Ok(projection);
-            }
-            compile_keys_projection(function, item, path, plan, context)
+            compile_keys_or_static_map_keys_projection(function, item, path, plan, context)
         }
         Expression::FunctionCall(function) if is_length_function(function) => {
             compile_path_length_projection(function, item, path, state, context)
@@ -16224,6 +16221,23 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_keys_or_static_map_keys_projection(
+    function: &FunctionInvocation,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    if is_literal_map_keys_function(function)
+        && let Some(projection) =
+            compile_optional_static_list_projection(item, path.clone(), plan, context)?
+    {
+        return Ok(projection);
+    }
+    compile_keys_projection(function, item, path, plan, context)
 }
 
 fn compile_other_function_projection(
@@ -22059,6 +22073,21 @@ fn is_keys_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("keys")
+    )
+}
+
+fn is_literal_map_keys_function(function: &FunctionInvocation) -> bool {
+    is_keys_function(function)
+        && matches!(
+            function.arguments.as_slice(),
+            [Expression::Literal(CypherLiteral::Map(_))]
+        )
+}
+
+fn is_properties_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("properties")
     )
 }
 
@@ -29363,6 +29392,9 @@ fn compile_property_base_variable(
             compile_property_base_variable(inner, path, plan, context)
         }
         Expression::Variable(variable) => Ok(variable_name(variable)),
+        Expression::FunctionCall(function) if is_properties_function(function) => {
+            compile_properties_function_base_variable(function, path, plan, context)
+        }
         Expression::FunctionCall(function)
             if is_start_node_function(function) || is_end_node_function(function) =>
         {
@@ -29377,6 +29409,36 @@ fn compile_property_base_variable(
         _ => Err(unsupported(
             path,
             "property references must be variable.property or startNode()/endNode() relationship endpoint properties",
+        )),
+    }
+}
+
+fn compile_properties_function_base_variable(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match function.arguments.as_slice() {
+        [argument] => compile_property_base_variable(
+            argument,
+            format!("{path}.arguments[0]"),
+            plan,
+            context,
+        ),
+        [] => context
+            .variable_function_argument(function)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                unsupported(
+                    path,
+                    "properties() supports exactly one graph variable or relationship endpoint argument when followed by a property lookup",
+                )
+            }),
+        _ => Err(unsupported(
+            path,
+            "properties() supports exactly one graph variable or relationship endpoint argument when followed by a property lookup",
         )),
     }
 }
@@ -34268,6 +34330,71 @@ relationships:
                         property: "name".to_string(),
                     },
                     alias: Some("target".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_properties_function_property_lookups() {
+        let plan = compile_cypher(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             WHERE properties(source).tier = properties(target).tier \
+             RETURN properties(source).name AS source_name, \
+                    properties(startNode(dependency)).name AS start_name, \
+                    properties(endNode(dependency)).tier AS end_tier \
+             ORDER BY properties(target).name",
+        )
+        .expect("properties(variable).property lookups should compile as graph properties");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "source".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "tier".to_string(),
+                }),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source_name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("start_name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("end_tier".to_string()),
                 },
             ]
         );
@@ -46140,6 +46267,50 @@ relationships:
             plan.order_by,
             vec![OrderKey {
                 expression: OrderExpression::ProjectionAlias("services".to_string()),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_properties_function_aggregate_targets() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN properties(service).tier AS tier, \
+                    count(properties(service).name) AS services \
+             ORDER BY tier",
+        )
+        .expect("properties(variable).property aggregate targets should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::Count,
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "services".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                }),
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
