@@ -4,8 +4,8 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "BooleanFilters": 1,
-    "ErrorHandling": 3,
-    "GeneratedClientShape": 1,
+    "ErrorHandling": 4,
+    "GeneratedClientShape": 5,
     "IdentityFields": 1,
     "NestedRelationships": 1,
     "RelationshipExistence": 1,
@@ -288,6 +288,54 @@
       }
     },
     {
+      "id": "directive-skip-field-true",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name age @skip(if: true) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "directive-include-field-false",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name city @include(if: false) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "directive-skip-false-keeps-field",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name age @skip(if: false) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age": 34 }
+        ]
+      }
+    },
+    {
+      "id": "directive-include-false-on-fragment-spread",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name ...AgeFields @include(if: false) } } fragment AgeFields on Person { age }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
       "id": "unknown-property-rejection",
       "feature": "ErrorHandling",
       "query": "query { Person { missingProperty } }",
@@ -312,6 +360,15 @@
       "expected": {
         "kind": "error",
         "contains": "requires exactly one 'field' argument"
+      }
+    },
+    {
+      "id": "directive-unsupported-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { name @uppercase(foo: 1) } }",
+      "expected": {
+        "kind": "error",
+        "contains": "unsupported GraphQL directive '@uppercase'"
       }
     }
   ]
