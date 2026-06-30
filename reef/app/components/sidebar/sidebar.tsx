@@ -1,8 +1,10 @@
 import classNames from 'classnames'
+import { NavLink, useLocation } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
+import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Typography } from '@/wax/components/typography'
 
 import * as styles from './sidebar.css'
@@ -13,7 +15,9 @@ interface SidebarProps {
 }
 
 export function Sidebar({ initialIsMinimized }: SidebarProps) {
+  const location = useLocation()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  const isSettingsActive = location.pathname === '/settings'
 
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
@@ -75,7 +79,18 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
 
       <div className={styles.nav} />
 
-      <div className={styles.footer} />
+      <div className={styles.footer}>
+        <SidebarButton
+          aria-label="Settings"
+          as={NavLink}
+          icon="Settings"
+          isActive={isSettingsActive}
+          isMinimized={isMinimized}
+          to="/settings"
+        >
+          Settings
+        </SidebarButton>
+      </div>
     </nav>
   )
 }

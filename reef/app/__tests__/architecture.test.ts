@@ -334,11 +334,11 @@ describe('Architectural Tests', () => {
   })
 
   describe('2. Route Dependency Direction', () => {
-    it('app shell should wrap only the root index', () => {
+    it('app shell should wrap only top-level app routes', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
       expect(routeConfig).toMatch(
-        /layout\('routes\/app-shell\.tsx', \[index\('routes\/index\.tsx'\)\]\)/,
+        /layout\('routes\/app-shell\.tsx', \[index\('routes\/index\.tsx'\), route\('settings', 'routes\/settings\.tsx'\)\]\)/,
       )
     })
 
