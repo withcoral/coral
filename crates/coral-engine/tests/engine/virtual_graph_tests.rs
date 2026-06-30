@@ -12290,6 +12290,73 @@ async fn cypher_more_numeric_scalar_expressions_execute_against_synthetic_source
 }
 
 #[tokio::test]
+async fn cypher_is_nan_scalar_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         WHERE isNaN(service.risk) = false \
+         RETURN service.name AS service, \
+                isNaN(service.risk) AS risk_is_nan \
+         ORDER BY risk_is_nan, service",
+    )
+    .await
+    .expect("isNaN scalar function query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("isnan(\"n0\".\"risk_score\") = false"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("isnan(\"n0\".\"risk_score\") AS \"risk_is_nan\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "service": "experiments",
+            "risk_is_nan": false,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_is_nan_non_numeric_operand_rejects_before_sql_execution() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'experiments'}) \
+         RETURN isNaN(service.name) AS invalid",
+    )
+    .await
+    .expect_err("isNaN over a string should fail before SQL execution");
+
+    assert!(
+        error.to_string().contains("INVALID_SCALAR_TYPE"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("isNaN"), "{error:?}");
+}
+
+#[tokio::test]
 async fn cypher_trigonometric_scalar_expressions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

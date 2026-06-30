@@ -2971,6 +2971,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_atan2_function(function)
         || is_degrees_function(function)
         || is_radians_function(function)
+        || is_is_nan_function(function)
         || is_haversin_function(function)
 }
 
@@ -6979,6 +6980,7 @@ fn unary_scalar_expression_operand_mut(
         | ScalarExpression::Atan { expression }
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
+        | ScalarExpression::IsNaN { expression }
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -7537,6 +7539,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Atan { .. }
         | ScalarExpression::Degrees { .. }
         | ScalarExpression::Radians { .. }
+        | ScalarExpression::IsNaN { .. }
         | ScalarExpression::Negate { .. } => {
             unreachable!("unary scalar expressions handled before structural path checks")
         }
@@ -7821,6 +7824,7 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Atan { expression }
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
+        | ScalarExpression::IsNaN { expression }
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -10930,6 +10934,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Atan { .. }
         | ScalarExpression::Degrees { .. }
         | ScalarExpression::Radians { .. }
+        | ScalarExpression::IsNaN { .. }
         | ScalarExpression::Negate { .. } => {
             unreachable!("unary scalar expressions handled above")
         }
@@ -11240,6 +11245,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Atan { .. }
         | ScalarExpression::Degrees { .. }
         | ScalarExpression::Radians { .. }
+        | ScalarExpression::IsNaN { .. }
         | ScalarExpression::Negate { .. } => {
             unreachable!("child-bearing scalar expressions handled above")
         }
@@ -18900,6 +18906,19 @@ fn compile_radians_scalar_expression(
     })
 }
 
+fn compile_is_nan_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    Ok(ScalarExpression::IsNaN {
+        expression: Box::new(compile_single_scalar_function_argument(
+            function, path, "isNaN", mode, context,
+        )?),
+    })
+}
+
 fn compile_haversin_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -19368,6 +19387,8 @@ fn compile_numeric_scalar_function_expression(
         compile_degrees_scalar_expression(function, path, mode, context)?
     } else if is_radians_function(function) {
         compile_radians_scalar_expression(function, path, mode, context)?
+    } else if is_is_nan_function(function) {
+        compile_is_nan_scalar_expression(function, path, mode, context)?
     } else if is_haversin_function(function) {
         compile_haversin_scalar_expression(function, path, mode, context)?
     } else {
@@ -23453,6 +23474,14 @@ fn is_radians_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("radians")
+    )
+}
+
+fn is_is_nan_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("isNaN")
+            || name.name.eq_ignore_ascii_case("isnan")
     )
 }
 
@@ -43907,6 +43936,53 @@ relationships:
     }
 
     #[test]
+    fn compiles_is_nan_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE isNaN(service.risk) = false \
+             RETURN isNaN(service.risk) AS risk_is_nan, \
+                    isnan(toFloat(service.risk)) AS coerced_risk_is_nan \
+             ORDER BY isNaN(service.risk)",
+        )
+        .expect("isNaN scalar function should compile");
+
+        assert!(matches!(
+            &plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::IsNaN { expression },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Boolean(false))),
+            })) if matches!(
+                expression.as_ref(),
+                ScalarExpression::Property(PropertyRef { property, .. }) if property == "risk"
+            )
+        ));
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::IsNaN { .. },
+                    alias: risk_is_nan,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::IsNaN { expression },
+                    alias: coerced_risk_is_nan,
+                },
+            ] if risk_is_nan == "risk_is_nan"
+                && coerced_risk_is_nan == "coerced_risk_is_nan"
+                && matches!(expression.as_ref(), ScalarExpression::ToFloat { .. })
+        ));
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::IsNaN { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
     fn compiles_gql_numeric_scalar_aliases() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -43963,6 +44039,8 @@ relationships:
             "MATCH (service:Service) RETURN exp(service.risk, 1) AS value",
             "MATCH (service:Service) RETURN log(service.risk, 10) AS value",
             "MATCH (service:Service) RETURN log10(service.risk, 10) AS value",
+            "MATCH (service:Service) RETURN isNaN() AS value",
+            "MATCH (service:Service) RETURN isNaN(service.risk, 1) AS value",
         ] {
             let error = compile_cypher(cypher).expect_err("wrong arity should be rejected");
             assert!(

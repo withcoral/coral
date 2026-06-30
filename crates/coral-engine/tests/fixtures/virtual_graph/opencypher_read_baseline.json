@@ -11,7 +11,7 @@
     "ListExpressions": 15,
     "MapExpressions": 5,
     "Match": 3,
-    "MathematicalFunctions": 5,
+    "MathematicalFunctions": 6,
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 3,
@@ -1190,6 +1190,20 @@
         "rows": [
           { "name": "Alice" },
           { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "isnan-function-predicate-and-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE isNaN(toFloat(p.age)) = false RETURN p.name AS name, isNaN(toFloat(p.age)) AS age_is_nan ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age_is_nan": false },
+          { "name": "Bob", "age_is_nan": false },
+          { "name": "Carol", "age_is_nan": false }
         ]
       }
     },

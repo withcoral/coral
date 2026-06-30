@@ -48,6 +48,7 @@ macro_rules! unary_scalar_expression_pattern {
             | ScalarExpression::Atan { .. }
             | ScalarExpression::Degrees { .. }
             | ScalarExpression::Radians { .. }
+            | ScalarExpression::IsNaN { .. }
             | ScalarExpression::Negate { .. }
     };
 }
@@ -1485,6 +1486,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Atan { expression }
             | ScalarExpression::Degrees { expression }
             | ScalarExpression::Radians { expression }
+            | ScalarExpression::IsNaN { expression }
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,
         }
@@ -3147,6 +3149,19 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Integer)
             }
+            ScalarExpression::IsNaN { expression } => {
+                let expression_type = self.infer_scoped_scalar_expression_type(
+                    expression,
+                    scope,
+                    format!("{path}.expression"),
+                )?;
+                Self::require_numeric_compatible_type(
+                    expression_type,
+                    format!("{path}.expression"),
+                    "isNaN",
+                )?;
+                Ok(ScalarType::Boolean)
+            }
             ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
             | ScalarExpression::Floor { expression }
@@ -4773,6 +4788,9 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Integer)
             }
+            ScalarExpression::IsNaN { expression } => {
+                self.infer_is_nan_scalar_type(expression, path)
+            }
             ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
             | ScalarExpression::Floor { expression }
@@ -4930,6 +4948,21 @@ impl<'a> GraphPlanValidator<'a> {
             "numeric function",
         )?;
         Ok(numeric_result_type(expression_type))
+    }
+
+    fn infer_is_nan_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "isNaN",
+        )?;
+        Ok(ScalarType::Boolean)
     }
 
     fn infer_round_scalar_type(

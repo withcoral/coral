@@ -425,6 +425,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Atan { .. }
             | ScalarExpression::Degrees { .. }
             | ScalarExpression::Radians { .. }
+            | ScalarExpression::IsNaN { .. }
             | ScalarExpression::Negate { .. } => {
                 unreachable!("unary scalar expressions handled before candidate collection")
             }
@@ -1784,6 +1785,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Atan { .. }
             | ScalarExpression::Degrees { .. }
             | ScalarExpression::Radians { .. }
+            | ScalarExpression::IsNaN { .. }
             | ScalarExpression::Negate { .. } => {
                 unreachable!("unary scalar expressions handled before scoped check")
             }
@@ -3863,6 +3865,10 @@ impl<'a> Lowerer<'a> {
         self.render_scalar_expression(expression)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scalar IR dispatcher keeps projection subquery checks total over every scalar variant"
+    )]
     fn reject_unprecomputed_projection_scalar_subqueries(
         &self,
         expression: &ScalarExpression,
@@ -3963,6 +3969,7 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Atan { .. }
             | ScalarExpression::Degrees { .. }
             | ScalarExpression::Radians { .. }
+            | ScalarExpression::IsNaN { .. }
             | ScalarExpression::Negate { .. } => {
                 unreachable!("unary scalar expressions handled before projection subquery checks")
             }
@@ -6314,6 +6321,7 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Atan2 { y, x } => binary("atan2", y, x),
             ScalarExpression::Degrees { expression } => unary("degrees", expression),
             ScalarExpression::Radians { expression } => unary("radians", expression),
+            ScalarExpression::IsNaN { expression } => unary("isnan", expression),
             ScalarExpression::Negate { expression } => Ok(Some(format!(
                 "-({})",
                 self.render_scoped_scalar_expression(
@@ -7693,94 +7701,62 @@ impl<'a> Lowerer<'a> {
                 .render_binary_function_expression(function_name, expression, pattern)
                 .map(Some);
         }
+        if let Some((function_name, expression)) = Self::unary_sql_function_expression(expression) {
+            return self
+                .render_unary_function_expression(function_name, expression)
+                .map(Some);
+        }
 
         match expression {
-            ScalarExpression::ToLower { expression } => self
-                .render_unary_function_expression("LOWER", expression)
-                .map(Some),
-            ScalarExpression::ToUpper { expression } => self
-                .render_unary_function_expression("UPPER", expression)
-                .map(Some),
-            ScalarExpression::Trim { expression } => self
-                .render_unary_function_expression("TRIM", expression)
-                .map(Some),
-            ScalarExpression::LTrim { expression } => self
-                .render_unary_function_expression("LTRIM", expression)
-                .map(Some),
-            ScalarExpression::RTrim { expression } => self
-                .render_unary_function_expression("RTRIM", expression)
-                .map(Some),
-            ScalarExpression::CharacterLength { expression } => self
-                .render_unary_function_expression("character_length", expression)
-                .map(Some),
             ScalarExpression::Left { expression, count } => self
                 .render_binary_function_expression("left", expression, count)
                 .map(Some),
             ScalarExpression::Right { expression, count } => self
                 .render_binary_function_expression("right", expression, count)
                 .map(Some),
-            ScalarExpression::Reverse { expression } => self
-                .render_unary_function_expression("reverse", expression)
-                .map(Some),
-            ScalarExpression::Abs { expression } => self
-                .render_unary_function_expression("abs", expression)
-                .map(Some),
-            ScalarExpression::Ceil { expression } => self
-                .render_unary_function_expression("ceil", expression)
-                .map(Some),
-            ScalarExpression::Floor { expression } => self
-                .render_unary_function_expression("floor", expression)
-                .map(Some),
-            ScalarExpression::Sqrt { expression } => self
-                .render_unary_function_expression("sqrt", expression)
-                .map(Some),
-            ScalarExpression::Sign { expression } => self
-                .render_unary_function_expression("signum", expression)
-                .map(Some),
-            ScalarExpression::Exp { expression } => self
-                .render_unary_function_expression("exp", expression)
-                .map(Some),
-            ScalarExpression::Log { expression } => self
-                .render_unary_function_expression("ln", expression)
-                .map(Some),
-            ScalarExpression::Log10 { expression } => self
-                .render_unary_function_expression("log10", expression)
-                .map(Some),
-            ScalarExpression::Sin { expression } => self
-                .render_unary_function_expression("sin", expression)
-                .map(Some),
-            ScalarExpression::Cos { expression } => self
-                .render_unary_function_expression("cos", expression)
-                .map(Some),
-            ScalarExpression::Tan { expression } => self
-                .render_unary_function_expression("tan", expression)
-                .map(Some),
-            ScalarExpression::Cot { expression } => self
-                .render_unary_function_expression("cot", expression)
-                .map(Some),
-            ScalarExpression::Asin { expression } => self
-                .render_unary_function_expression("asin", expression)
-                .map(Some),
-            ScalarExpression::Acos { expression } => self
-                .render_unary_function_expression("acos", expression)
-                .map(Some),
-            ScalarExpression::Atan { expression } => self
-                .render_unary_function_expression("atan", expression)
-                .map(Some),
             ScalarExpression::Atan2 { y, x } => self
                 .render_binary_function_expression("atan2", y, x)
-                .map(Some),
-            ScalarExpression::Degrees { expression } => self
-                .render_unary_function_expression("degrees", expression)
-                .map(Some),
-            ScalarExpression::Radians { expression } => self
-                .render_unary_function_expression("radians", expression)
                 .map(Some),
             ScalarExpression::Negate { expression } => Ok(Some(format!(
                 "-({})",
                 self.render_scalar_expression(expression)?
             ))),
             _ => Ok(None),
+        }
+    }
+
+    fn unary_sql_function_expression(
+        expression: &ScalarExpression,
+    ) -> Option<(&'static str, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::ToLower { expression } => Some(("LOWER", expression)),
+            ScalarExpression::ToUpper { expression } => Some(("UPPER", expression)),
+            ScalarExpression::Trim { expression } => Some(("TRIM", expression)),
+            ScalarExpression::LTrim { expression } => Some(("LTRIM", expression)),
+            ScalarExpression::RTrim { expression } => Some(("RTRIM", expression)),
+            ScalarExpression::CharacterLength { expression } => {
+                Some(("character_length", expression))
+            }
+            ScalarExpression::Reverse { expression } => Some(("reverse", expression)),
+            ScalarExpression::Abs { expression } => Some(("abs", expression)),
+            ScalarExpression::Ceil { expression } => Some(("ceil", expression)),
+            ScalarExpression::Floor { expression } => Some(("floor", expression)),
+            ScalarExpression::Sqrt { expression } => Some(("sqrt", expression)),
+            ScalarExpression::Sign { expression } => Some(("signum", expression)),
+            ScalarExpression::Exp { expression } => Some(("exp", expression)),
+            ScalarExpression::Log { expression } => Some(("ln", expression)),
+            ScalarExpression::Log10 { expression } => Some(("log10", expression)),
+            ScalarExpression::Sin { expression } => Some(("sin", expression)),
+            ScalarExpression::Cos { expression } => Some(("cos", expression)),
+            ScalarExpression::Tan { expression } => Some(("tan", expression)),
+            ScalarExpression::Cot { expression } => Some(("cot", expression)),
+            ScalarExpression::Asin { expression } => Some(("asin", expression)),
+            ScalarExpression::Acos { expression } => Some(("acos", expression)),
+            ScalarExpression::Atan { expression } => Some(("atan", expression)),
+            ScalarExpression::Degrees { expression } => Some(("degrees", expression)),
+            ScalarExpression::Radians { expression } => Some(("radians", expression)),
+            ScalarExpression::IsNaN { expression } => Some(("isnan", expression)),
+            _ => None,
         }
     }
 
@@ -8022,6 +7998,7 @@ fn scalar_expression_unary_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Atan { expression }
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
+        | ScalarExpression::IsNaN { expression }
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }

@@ -548,6 +548,11 @@ pub enum ScalarExpression {
         /// Inner expression.
         expression: Box<ScalarExpression>,
     },
+    /// Test whether a floating-point scalar expression is NaN.
+    IsNaN {
+        /// Inner expression.
+        expression: Box<ScalarExpression>,
+    },
     /// Negate a numeric scalar expression.
     Negate {
         /// Inner expression to negate.
@@ -1136,6 +1141,7 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Atan { .. }
         | ScalarExpression::Degrees { .. }
         | ScalarExpression::Radians { .. }
+        | ScalarExpression::IsNaN { .. }
         | ScalarExpression::Negate { .. } => unreachable!(
             "direct variable and unary scalar expressions handled before scope recursion"
         ),
@@ -1197,6 +1203,7 @@ fn scalar_expression_unary_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Atan { expression }
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
+        | ScalarExpression::IsNaN { expression }
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
