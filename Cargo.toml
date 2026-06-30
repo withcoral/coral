@@ -89,7 +89,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 schemars = "1.2.1"
+sea-query = { version = "1", default-features = false, features = ["backend-postgres", "backend-sqlite", "derive", "thread-safe"] }
+sea-query-sqlx = { version = "0.9", default-features = false, features = ["sqlx-postgres", "sqlx-sqlite"] }
 sha2 = "0.10"
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "runtime-tokio", "sqlite", "tls-rustls"] }
 sqlparser = "0.59.0"
 strsim = "0.11"
 thiserror = "2"
