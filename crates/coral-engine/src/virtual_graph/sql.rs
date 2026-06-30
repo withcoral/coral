@@ -138,7 +138,10 @@ struct UndirectedEndpointSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarSubqueryCandidate {
-    Count(CountSubqueryPattern),
+    Count {
+        pattern: CountSubqueryPattern,
+        distinct_target: Option<ScalarExpression>,
+    },
     Exists(ExistsPatternPredicate),
     Collect {
         pattern: ExistsPatternPredicate,
@@ -348,23 +351,15 @@ impl<'a> Lowerer<'a> {
                     predicate, required, candidates,
                 );
             }
-            ScalarExpression::CountSubquery { pattern } => match pattern.as_ref() {
-                CountSubqueryPattern::Relationships(predicate)
-                    if required || predicate.references_outer_variables() =>
-                {
-                    candidates.push(ScalarSubqueryCandidateUse {
-                        candidate: ScalarSubqueryCandidate::Count((**pattern).clone()),
-                        required,
-                    });
-                }
-                CountSubqueryPattern::Nodes { .. } if required => {
-                    candidates.push(ScalarSubqueryCandidateUse {
-                        candidate: ScalarSubqueryCandidate::Count((**pattern).clone()),
-                        required,
-                    });
-                }
-                _ => {}
-            },
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => Self::collect_count_subquery_candidate(
+                pattern,
+                distinct_target.as_deref(),
+                required,
+                candidates,
+            ),
             ScalarExpression::CollectSubquery {
                 pattern,
                 target,
@@ -429,6 +424,29 @@ impl<'a> Lowerer<'a> {
             _ => self.collect_structural_scalar_expression_subquery_candidates(
                 expression, required, candidates,
             ),
+        }
+    }
+
+    fn collect_count_subquery_candidate(
+        pattern: &CountSubqueryPattern,
+        distinct_target: Option<&ScalarExpression>,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
+    ) {
+        let should_precompute = match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                required || predicate.references_outer_variables()
+            }
+            CountSubqueryPattern::Nodes { .. } => required,
+        };
+        if should_precompute {
+            candidates.push(ScalarSubqueryCandidateUse {
+                candidate: ScalarSubqueryCandidate::Count {
+                    pattern: pattern.clone(),
+                    distinct_target: distinct_target.cloned(),
+                },
+                required,
+            });
         }
     }
 
@@ -640,7 +658,10 @@ impl<'a> Lowerer<'a> {
         precomputed: &PrecomputedScalarSubquery,
     ) -> Result<Option<String>, CoreError> {
         match &precomputed.candidate {
-            ScalarSubqueryCandidate::Count(CountSubqueryPattern::Relationships(predicate)) => {
+            ScalarSubqueryCandidate::Count {
+                pattern: CountSubqueryPattern::Relationships(predicate),
+                ..
+            } => {
                 if predicate.references_outer_variables() {
                     self.render_precomputed_relationship_scalar_subquery_join(
                         predicate,
@@ -668,9 +689,10 @@ impl<'a> Lowerer<'a> {
             ScalarSubqueryCandidate::Collect { pattern, .. } => {
                 self.render_precomputed_relationship_scalar_subquery_join(pattern, precomputed)
             }
-            ScalarSubqueryCandidate::Count(pattern @ CountSubqueryPattern::Nodes { .. }) => {
-                self.render_precomputed_node_count_scalar_subquery_join(pattern, precomputed)
-            }
+            ScalarSubqueryCandidate::Count {
+                pattern: pattern @ CountSubqueryPattern::Nodes { .. },
+                ..
+            } => self.render_precomputed_node_count_scalar_subquery_join(pattern, precomputed),
         }
     }
 
@@ -681,7 +703,18 @@ impl<'a> Lowerer<'a> {
     ) -> Result<String, CoreError> {
         let value_expression = match &precomputed.candidate {
             ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0",
-            ScalarSubqueryCandidate::Count(_) => "COUNT(*)",
+            ScalarSubqueryCandidate::Count {
+                distinct_target: None,
+                ..
+            } => "COUNT(*)",
+            ScalarSubqueryCandidate::Count {
+                distinct_target: Some(_),
+                ..
+            } => {
+                return Err(CoreError::internal(
+                    "uncorrelated distinct COUNT subqueries require distinct row planning",
+                ));
+            }
             ScalarSubqueryCandidate::Collect { .. } => {
                 return Err(CoreError::internal(
                     "uncorrelated collect subqueries are not precomputed",
@@ -1029,6 +1062,10 @@ impl<'a> Lowerer<'a> {
         Ok(from_clause)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Precomputed scalar subquery joins carry scoped bindings, predicates, and aggregate rendering in one SQL shape"
+    )]
     fn render_precomputed_relationship_scalar_subquery_join(
         &self,
         predicate: &ExistsPatternPredicate,
@@ -1097,7 +1134,34 @@ impl<'a> Lowerer<'a> {
         };
         let value_expression = match &precomputed.candidate {
             ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0".to_string(),
-            ScalarSubqueryCandidate::Count(_) => "COUNT(*)".to_string(),
+            ScalarSubqueryCandidate::Count {
+                distinct_target: None,
+                ..
+            } => "COUNT(*)".to_string(),
+            ScalarSubqueryCandidate::Count {
+                distinct_target: Some(target),
+                ..
+            } => {
+                let Some(target_sql) = self.render_precomputed_relationship_distinct_count_target(
+                    target,
+                    &relationship_bindings,
+                    &local_nodes,
+                    &local_aliases,
+                )?
+                else {
+                    return Ok(None);
+                };
+                return self
+                    .render_precomputed_relationship_distinct_count_join(
+                        precomputed,
+                        &outer_variable,
+                        &outer_key_ref,
+                        &from_clause,
+                        &where_clause,
+                        &target_sql,
+                    )
+                    .map(Some);
+            }
             ScalarSubqueryCandidate::Collect { distinct, .. } => {
                 let target_sql = collect_target_sql.as_deref().ok_or_else(|| {
                     CoreError::internal("precomputed collect target SQL was not rendered")
@@ -1117,6 +1181,53 @@ impl<'a> Lowerer<'a> {
             quote_ident(&precomputed.outer_key_alias),
             self.render_binding_key_ref(&outer_variable)?
         )))
+    }
+
+    fn render_precomputed_relationship_distinct_count_target<'b>(
+        &self,
+        target: &ScalarExpression,
+        relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        if !Self::scoped_scalar_expression_is_inner(target, relationship_bindings, local_nodes) {
+            return Ok(None);
+        }
+        self.render_scoped_scalar_expression(
+            target,
+            relationship_bindings,
+            local_nodes,
+            local_aliases,
+        )
+        .map(Some)
+    }
+
+    fn render_precomputed_relationship_distinct_count_join(
+        &self,
+        precomputed: &PrecomputedScalarSubquery,
+        outer_variable: &str,
+        outer_key_ref: &str,
+        from_clause: &str,
+        where_clause: &str,
+        target_sql: &str,
+    ) -> Result<String, CoreError> {
+        let outer_key_alias = quote_ident(&precomputed.outer_key_alias);
+        let value_alias = quote_ident(&precomputed.value_alias);
+        let distinct_alias = quote_ident("__coral_count_distinct");
+        let distinct_value_alias = quote_ident("__coral_count_value");
+        let distinct_rows = format!(
+            "SELECT DISTINCT {outer_key_ref} AS {outer_key_alias}, {target_sql} AS {distinct_value_alias} FROM {from_clause}{where_clause}"
+        );
+        let subquery = format!(
+            "SELECT {outer_key_alias}, COUNT(*) AS {value_alias} FROM ({distinct_rows}) AS {distinct_alias} GROUP BY {outer_key_alias}"
+        );
+        Ok(format!(
+            "LEFT JOIN ({subquery}) AS {} ON {}.{} = {}",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.table_alias),
+            outer_key_alias,
+            self.render_binding_key_ref(outer_variable)?
+        ))
     }
 
     fn precomputed_outer_anchor<'b>(
@@ -3005,11 +3116,16 @@ impl<'a> Lowerer<'a> {
     fn render_precomputed_count_subquery_ref(
         &self,
         pattern: &CountSubqueryPattern,
+        distinct_target: Option<&ScalarExpression>,
     ) -> Option<String> {
         self.precomputed_scalar_subqueries
             .iter()
             .find(|precomputed| {
-                precomputed.candidate == ScalarSubqueryCandidate::Count(pattern.clone())
+                precomputed.candidate
+                    == ScalarSubqueryCandidate::Count {
+                        pattern: pattern.clone(),
+                        distinct_target: distinct_target.cloned(),
+                    }
             })
             .map(Self::render_precomputed_count_ref)
     }
@@ -3323,7 +3439,11 @@ impl<'a> Lowerer<'a> {
         &self,
         predicate: &ScalarPredicate,
     ) -> Result<Option<String>, CoreError> {
-        let ScalarExpression::CountSubquery { pattern } = &predicate.lhs else {
+        let ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target: None,
+        } = &predicate.lhs
+        else {
             return Ok(None);
         };
         let Some(existence) = Self::count_existence_predicate(predicate.operator, &predicate.rhs)
@@ -3523,19 +3643,30 @@ impl<'a> Lowerer<'a> {
     fn render_count_subquery_expression(
         &self,
         pattern: &CountSubqueryPattern,
+        distinct_target: Option<&ScalarExpression>,
     ) -> Result<String, CoreError> {
-        if let Some(rendered) = self.render_precomputed_count_subquery_ref(pattern) {
+        if let Some(rendered) = self.render_precomputed_count_subquery_ref(pattern, distinct_target)
+        {
             return Ok(rendered);
         }
         match pattern {
             CountSubqueryPattern::Relationships(predicate) => {
-                self.render_scoped_pattern_select(predicate, "COUNT(*)")
+                if let Some(target) = distinct_target {
+                    self.render_count_distinct_scoped_pattern_select(predicate, target)
+                } else {
+                    self.render_scoped_pattern_select(predicate, "COUNT(*)")
+                }
             }
             CountSubqueryPattern::Nodes {
                 nodes,
                 predicates,
                 predicate,
-            } => self.render_count_node_subquery(nodes, predicates, predicate.as_deref()),
+            } => self.render_count_node_subquery(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                distinct_target,
+            ),
         }
     }
 
@@ -3573,6 +3704,13 @@ impl<'a> Lowerer<'a> {
         format!("COALESCE(ARRAY_AGG({distinct}{target_sql}), make_array())")
     }
 
+    fn render_count_distinct_rows_select(row_select: &str) -> String {
+        format!(
+            "(SELECT COUNT(*) FROM {row_select} AS {})",
+            quote_ident("__coral_count_distinct")
+        )
+    }
+
     fn render_projection_scalar_expression(
         &self,
         expression: &ScalarExpression,
@@ -3590,11 +3728,14 @@ impl<'a> Lowerer<'a> {
         }
 
         match expression {
-            ScalarExpression::CountSubquery { pattern } => {
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => {
                 if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
                     && predicate.references_outer_variables()
                     && self
-                        .render_precomputed_count_subquery_ref(pattern)
+                        .render_precomputed_count_subquery_ref(pattern, distinct_target.as_deref())
                         .is_none()
                 {
                     return Err(CoreError::InvalidInput(
@@ -4052,13 +4193,146 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_count_distinct_scoped_pattern_select(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        target: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.exists_local_node_map(predicate)?;
+        let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
+        let local_aliases = Self::exists_local_node_aliases(predicate);
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?;
+        let select_expression = format!(
+            "DISTINCT {target_sql} AS {}",
+            quote_ident("__coral_count_value")
+        );
+        if relationship_bindings.is_empty() {
+            let row_select = self.render_scoped_node_select(
+                &predicate.nodes,
+                &predicate.predicates,
+                predicate.predicate.as_deref(),
+                &select_expression,
+                &local_nodes,
+                &local_aliases,
+                "COUNT DISTINCT",
+            )?;
+            return Ok(Self::render_count_distinct_rows_select(&row_select));
+        }
+
+        let mut from_clause = relationship_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let table_ref = format!(
+                    "{} AS {}",
+                    render_table_ref(&binding.relationship.table),
+                    quote_ident(&binding.alias)
+                );
+                if index == 0 {
+                    table_ref
+                } else {
+                    format!("JOIN {table_ref} ON TRUE")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for node in &predicate.nodes {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COUNT DISTINCT local node mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COUNT DISTINCT local node alias was missing")
+            })?;
+            write!(
+                from_clause,
+                " JOIN {} AS {} ON TRUE",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render COUNT DISTINCT pattern SQL"))?;
+        }
+
+        let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
+            relationship_bindings.len(),
+            predicate.predicates.len(),
+            predicate.predicate.as_deref(),
+        ));
+        for binding in &relationship_bindings {
+            conditions.push(self.exists_relationship_condition(
+                binding.pattern,
+                binding.relationship,
+                &binding.alias,
+                &local_nodes,
+                &local_aliases,
+            )?);
+        }
+        conditions.extend(self.render_scoped_conditions(
+            &predicate.predicates,
+            predicate.predicate.as_deref(),
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?);
+        let row_select = format!(
+            "(SELECT {select_expression} FROM {from_clause} WHERE {})",
+            conditions.join(" AND ")
+        );
+        Ok(Self::render_count_distinct_rows_select(&row_select))
+    }
+
     fn render_count_node_subquery(
         &self,
         nodes: &[NodePattern],
         predicates: &[PropertyPredicate],
         predicate: Option<&PredicateExpression>,
+        distinct_target: Option<&ScalarExpression>,
     ) -> Result<String, CoreError> {
+        if let Some(target) = distinct_target {
+            return self.render_count_distinct_node_subquery(nodes, predicates, predicate, target);
+        }
         self.render_count_node_select(nodes, predicates, predicate, "COUNT(*)")
+    }
+
+    fn render_count_distinct_node_subquery(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        target: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        if nodes.is_empty() {
+            return Err(CoreError::internal(
+                "validated COUNT DISTINCT node subquery had no node bindings",
+            ));
+        }
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::count_local_node_aliases(nodes);
+        let relationships = Vec::new();
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &relationships,
+            &local_nodes,
+            &local_aliases,
+        )?;
+        let select_expression = format!(
+            "DISTINCT {target_sql} AS {}",
+            quote_ident("__coral_count_value")
+        );
+        let row_select = self.render_scoped_node_select(
+            nodes,
+            predicates,
+            predicate,
+            &select_expression,
+            &local_nodes,
+            &local_aliases,
+            "COUNT DISTINCT",
+        )?;
+        Ok(Self::render_count_distinct_rows_select(&row_select))
     }
 
     fn render_collect_node_subquery(
@@ -4724,34 +4998,187 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Nested distinct COUNT rendering mirrors nested scoped pattern rendering while adding parent-scope target projection"
+    )]
+    fn render_nested_scoped_count_distinct_pattern_select<'b, 'c>(
+        &self,
+        predicate: &'c ExistsPatternPredicate,
+        target: &ScalarExpression,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.scoped_local_node_map(&predicate.nodes)?;
+        let relationship_bindings = self.nested_scoped_exists_relationship_bindings(
+            predicate,
+            &local_nodes,
+            parent_local_nodes,
+            "__coral_nested_count_r",
+        )?;
+        let local_aliases =
+            Self::nested_scoped_local_node_aliases(&predicate.nodes, "__coral_nested_count_n");
+
+        let mut scoped_relationships = relationship_bindings.clone();
+        scoped_relationships.extend(parent_relationships.iter().cloned());
+        let mut scoped_local_nodes = parent_local_nodes.clone();
+        scoped_local_nodes.extend(
+            local_nodes
+                .iter()
+                .map(|(variable, node)| (*variable, *node)),
+        );
+        let mut scoped_local_aliases = parent_local_aliases.clone();
+        scoped_local_aliases.extend(
+            local_aliases
+                .iter()
+                .map(|(variable, alias)| (*variable, alias.clone())),
+        );
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &scoped_relationships,
+            &scoped_local_nodes,
+            &scoped_local_aliases,
+        )?;
+        let select_expression = format!(
+            "DISTINCT {target_sql} AS {}",
+            quote_ident("__coral_count_value")
+        );
+
+        if relationship_bindings.is_empty() {
+            let row_select = self.render_scoped_node_select(
+                &predicate.nodes,
+                &predicate.predicates,
+                predicate.predicate.as_deref(),
+                &select_expression,
+                &local_nodes,
+                &local_aliases,
+                "nested COUNT DISTINCT",
+            )?;
+            return Ok(Self::render_count_distinct_rows_select(&row_select));
+        }
+
+        let mut from_clause = relationship_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let table_ref = format!(
+                    "{} AS {}",
+                    render_table_ref(&binding.relationship.table),
+                    quote_ident(&binding.alias)
+                );
+                if index == 0 {
+                    table_ref
+                } else {
+                    format!("JOIN {table_ref} ON TRUE")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for node in &predicate.nodes {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal(
+                    "validated nested COUNT DISTINCT local node mapping was missing",
+                )
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated nested COUNT DISTINCT local node alias was missing")
+            })?;
+            write!(
+                from_clause,
+                " JOIN {} AS {} ON TRUE",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| {
+                CoreError::internal("failed to render nested COUNT DISTINCT pattern SQL")
+            })?;
+        }
+
+        let mut conditions = Vec::with_capacity(
+            relationship_bindings
+                .len()
+                .saturating_add(predicate.predicates.len())
+                .saturating_add(usize::from(predicate.predicate.is_some())),
+        );
+        for binding in &relationship_bindings {
+            conditions.push(self.nested_scoped_exists_relationship_condition(
+                binding,
+                &local_nodes,
+                &local_aliases,
+                parent_relationships,
+                parent_local_nodes,
+                parent_local_aliases,
+            )?);
+        }
+        conditions.extend(self.render_scoped_conditions(
+            &predicate.predicates,
+            predicate.predicate.as_deref(),
+            &scoped_relationships,
+            &scoped_local_nodes,
+            &scoped_local_aliases,
+        )?);
+        let row_select = format!(
+            "(SELECT {select_expression} FROM {from_clause} WHERE {})",
+            conditions.join(" AND ")
+        );
+        Ok(Self::render_count_distinct_rows_select(&row_select))
+    }
+
     fn render_nested_scoped_count_subquery_expression<'b>(
         &self,
         pattern: &CountSubqueryPattern,
+        distinct_target: Option<&ScalarExpression>,
         parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
         parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
         parent_local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
         match pattern {
-            CountSubqueryPattern::Relationships(predicate) => self
-                .render_nested_scoped_pattern_select(
-                    predicate,
-                    "COUNT(*)",
-                    parent_relationships,
-                    parent_local_nodes,
-                    parent_local_aliases,
-                    "__coral_nested_count_n",
-                    "__coral_nested_count_r",
-                    "nested COUNT",
-                ),
+            CountSubqueryPattern::Relationships(predicate) => {
+                if let Some(target) = distinct_target {
+                    self.render_nested_scoped_count_distinct_pattern_select(
+                        predicate,
+                        target,
+                        parent_relationships,
+                        parent_local_nodes,
+                        parent_local_aliases,
+                    )
+                } else {
+                    self.render_nested_scoped_pattern_select(
+                        predicate,
+                        "COUNT(*)",
+                        parent_relationships,
+                        parent_local_nodes,
+                        parent_local_aliases,
+                        "__coral_nested_count_n",
+                        "__coral_nested_count_r",
+                        "nested COUNT",
+                    )
+                }
+            }
             CountSubqueryPattern::Nodes {
                 nodes,
                 predicates,
                 predicate,
-            } => self.render_nested_scoped_count_node_subquery(
-                nodes,
-                predicates,
-                predicate.as_deref(),
-            ),
+            } => {
+                if let Some(target) = distinct_target {
+                    self.render_nested_scoped_count_distinct_node_subquery(
+                        nodes,
+                        predicates,
+                        predicate.as_deref(),
+                        target,
+                        parent_relationships,
+                        parent_local_nodes,
+                        parent_local_aliases,
+                    )
+                } else {
+                    self.render_nested_scoped_count_node_subquery(
+                        nodes,
+                        predicates,
+                        predicate.as_deref(),
+                    )
+                }
+            }
         }
     }
 
@@ -4794,6 +5221,61 @@ impl<'a> Lowerer<'a> {
         predicate: Option<&PredicateExpression>,
     ) -> Result<String, CoreError> {
         self.render_nested_scoped_count_node_select(nodes, predicates, predicate, "COUNT(*)")
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Nested node distinct COUNT rendering needs local pattern inputs plus parent scoped SQL context"
+    )]
+    fn render_nested_scoped_count_distinct_node_subquery<'b>(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        target: &ScalarExpression,
+        parent_relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        parent_local_nodes: &BTreeMap<&'b str, &'a Node>,
+        parent_local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        if nodes.is_empty() {
+            return Err(CoreError::internal(
+                "validated nested COUNT DISTINCT node subquery had no node bindings",
+            ));
+        }
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::nested_scoped_local_node_aliases(nodes, "__coral_nested_count_n");
+        let mut scoped_local_nodes = parent_local_nodes.clone();
+        scoped_local_nodes.extend(
+            local_nodes
+                .iter()
+                .map(|(variable, node)| (*variable, *node)),
+        );
+        let mut scoped_local_aliases = parent_local_aliases.clone();
+        scoped_local_aliases.extend(
+            local_aliases
+                .iter()
+                .map(|(variable, alias)| (*variable, alias.clone())),
+        );
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            parent_relationships,
+            &scoped_local_nodes,
+            &scoped_local_aliases,
+        )?;
+        let select_expression = format!(
+            "DISTINCT {target_sql} AS {}",
+            quote_ident("__coral_count_value")
+        );
+        let row_select = self.render_scoped_node_select(
+            nodes,
+            predicates,
+            predicate,
+            &select_expression,
+            &scoped_local_nodes,
+            &scoped_local_aliases,
+            "nested COUNT DISTINCT",
+        )?;
+        Ok(Self::render_count_distinct_rows_select(&row_select))
     }
 
     fn render_nested_scoped_count_node_select(
@@ -5203,7 +5685,11 @@ impl<'a> Lowerer<'a> {
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<Option<String>, CoreError> {
-        let ScalarExpression::CountSubquery { pattern } = &predicate.lhs else {
+        let ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target: None,
+        } = &predicate.lhs
+        else {
             return Ok(None);
         };
         let Some(existence) = Self::count_existence_predicate(predicate.operator, &predicate.rhs)
@@ -5383,9 +5869,13 @@ impl<'a> Lowerer<'a> {
                 local_nodes,
                 local_aliases,
             ),
-            ScalarExpression::CountSubquery { pattern } => self
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => self
                 .render_nested_scoped_count_subquery_expression(
                     pattern,
+                    distinct_target.as_deref(),
                     relationships,
                     local_nodes,
                     local_aliases,
@@ -6926,9 +7416,10 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Predicate(predicate) => {
                 self.render_scalar_predicate_expression(predicate)
             }
-            ScalarExpression::CountSubquery { pattern } => {
-                self.render_count_subquery_expression(pattern)
-            }
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => self.render_count_subquery_expression(pattern, distinct_target.as_deref()),
             ScalarExpression::CollectSubquery {
                 pattern,
                 target,
@@ -10851,6 +11342,7 @@ relationships: []
                         ],
                         predicate: None,
                     }),
+                    distinct_target: None,
                 }),
                 direction: OrderDirection::Descending,
                 nulls: None,
@@ -10884,7 +11376,7 @@ relationships: []
 
         let order_expression = &mut plan.order_by.first_mut().expect("order key").expression;
         let CountSubqueryPattern::Nodes { predicates, .. } = (match order_expression {
-            OrderExpression::Scalar(ScalarExpression::CountSubquery { pattern }) => {
+            OrderExpression::Scalar(ScalarExpression::CountSubquery { pattern, .. }) => {
                 pattern.as_mut()
             }
             _ => panic!("expected count subquery order expression"),

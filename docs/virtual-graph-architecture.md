@@ -489,12 +489,16 @@ The supported foundation subset is intentionally narrow:
   `RETURN *`, `RETURN 1`, and scalar/property projections such as
   `RETURN target.name` are accepted as no-op compatibility syntax after the
   return expressions validate against the scoped graph plan, because `EXISTS`
-  and `COUNT` consume only subquery cardinality. `EXISTS` also accepts
+  and plain `COUNT` consume only subquery cardinality. `EXISTS` also accepts
   `RETURN DISTINCT` over those no-op scoped returns because distinctness cannot
-  change existence. `OPTIONAL MATCH`, `WITH`, cardinality-changing
-  `RETURN DISTINCT` inside counted subqueries, `RETURN` over graph objects,
-  return ordering/pagination, and `UNION` inside scoped subqueries still require
-  staged planning and are rejected before SQL lowering;
+  change existence. `COUNT` accepts a single `RETURN DISTINCT scalar` target and
+  lowers it through a distinct row source before `COUNT(*)`, which preserves one
+  returned `NULL` row instead of using SQL `COUNT(DISTINCT ...)` null-filtering
+  semantics. Correlated relationship-count projections precompute grouped rows
+  and therefore require the distinct target to be renderable from scoped inner
+  rows. `OPTIONAL MATCH`, `WITH`, multi-item distinct counted returns, `RETURN`
+  over graph objects, return ordering/pagination, and `UNION` inside scoped
+  subqueries still require staged planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
   `COUNT { MATCH pattern WHERE ... FINISH }`, allowing Coral to support GQL-style
   counted pattern syntax without depending on parser-private AST recovery. The

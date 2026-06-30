@@ -5330,6 +5330,79 @@ async fn cypher_count_subqueries_execute_as_precomputed_correlated_counts() {
 }
 
 #[tokio::test]
+async fn cypher_count_distinct_subqueries_execute_as_precomputed_correlated_counts() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COUNT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+                  RETURN DISTINCT dependency.source \
+                } AS distinct_dependency_sources, \
+                COUNT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+                  RETURN DISTINCT CASE WHEN dependency.criticality = 'optional' THEN null ELSE dependency.source END \
+                } AS distinct_sources_preserving_null, \
+                COUNT { \
+                  MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+                  RETURN DISTINCT dependency.team \
+                } AS distinct_dependency_teams \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COUNT DISTINCT subquery projections should execute");
+
+    assert!(
+        execution.translated_sql().contains("SELECT DISTINCT"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COUNT(*) AS \"__coral_value\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "billing-api",
+                "distinct_dependency_sources": 1,
+                "distinct_sources_preserving_null": 2,
+                "distinct_dependency_teams": 2
+            }),
+            json!({
+                "service": "deployments",
+                "distinct_dependency_sources": 1,
+                "distinct_sources_preserving_null": 1,
+                "distinct_dependency_teams": 1
+            }),
+            json!({
+                "service": "experiments",
+                "distinct_dependency_sources": 0,
+                "distinct_sources_preserving_null": 0,
+                "distinct_dependency_teams": 0
+            }),
+            json!({
+                "service": "legacy-sync",
+                "distinct_dependency_sources": 0,
+                "distinct_sources_preserving_null": 0,
+                "distinct_dependency_teams": 0
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

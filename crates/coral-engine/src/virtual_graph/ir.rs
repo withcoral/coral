@@ -244,6 +244,10 @@ pub enum ScalarExpression {
     CountSubquery {
         /// Scoped graph pattern counted by the subquery.
         pattern: Box<CountSubqueryPattern>,
+        /// Optional scalar projection used for `RETURN DISTINCT scalar` inside
+        /// the counted subquery. Distinct counting is row-based and preserves a
+        /// returned `NULL` as one distinct row.
+        distinct_target: Option<Box<ScalarExpression>>,
     },
     /// Collect scalar values produced by a read-only graph subquery.
     CollectSubquery {
@@ -1055,9 +1059,13 @@ fn scalar_expression_references_outside_scope(
         ScalarExpression::Predicate(predicate) => {
             predicate_expression_references_outside_scope(predicate, scope)
         }
-        ScalarExpression::CountSubquery { pattern } => {
-            count_subquery_pattern_references_outside_scope(pattern, scope)
-        }
+        ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target,
+        } => distinct_target.as_deref().map_or_else(
+            || count_subquery_pattern_references_outside_scope(pattern, scope),
+            |target| collect_subquery_references_outside_scope(pattern, target, scope),
+        ),
         ScalarExpression::CollectSubquery {
             pattern, target, ..
         } => collect_subquery_references_outside_scope(pattern, target, scope),

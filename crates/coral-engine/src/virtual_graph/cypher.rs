@@ -1848,8 +1848,19 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
         | ScalarExpression::NodeLabels { .. }
         | ScalarExpression::PropertyKeys { .. }
         | ScalarExpression::RelationshipType { .. } => true,
-        ScalarExpression::CountSubquery { pattern } => {
+        ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target,
+        } => {
             rewrite_missing_branch_count_subquery_as_null(pattern, graph, nodes, relationships);
+            if let Some(target) = distinct_target {
+                rewrite_missing_branch_scalar_expression_as_null(
+                    target,
+                    graph,
+                    nodes,
+                    relationships,
+                );
+            }
             true
         }
         ScalarExpression::Predicate(predicate) => {
@@ -7223,8 +7234,23 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::Predicate(predicate) => {
             reject_ignored_path_variable_references_in_predicate(predicate, state, path)
         }
-        ScalarExpression::CountSubquery { pattern } => {
-            reject_ignored_path_variable_references_in_count_subquery(pattern, state, path)
+        ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target,
+        } => {
+            reject_ignored_path_variable_references_in_count_subquery(
+                pattern,
+                state,
+                format!("{path}.pattern"),
+            )?;
+            if let Some(target) = distinct_target {
+                reject_ignored_path_variable_references_in_scalar_expression(
+                    target,
+                    state,
+                    format!("{path}.distinct_target"),
+                )?;
+            }
+            Ok(())
         }
         ScalarExpression::CollectSubquery {
             pattern, target, ..
@@ -10746,9 +10772,17 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         ScalarExpression::Predicate(predicate) => Some(
             hidden_subquery_order_predicate_can_be_precomputed(predicate),
         ),
-        ScalarExpression::CountSubquery { pattern } => Some(match pattern.as_ref() {
-            CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => true,
-        }),
+        ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target,
+        } => Some(
+            distinct_target.is_none()
+                && match pattern.as_ref() {
+                    CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => {
+                        true
+                    }
+                },
+        ),
         ScalarExpression::CollectSubquery { .. } => Some(false),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -11049,9 +11083,10 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ScalarExpression::Predicate(predicate) => {
             predicate_expression_correlated_subquery_count(predicate)
         }
-        ScalarExpression::CountSubquery { pattern } => {
-            usize::from(pattern.references_outer_variables())
-        }
+        ScalarExpression::CountSubquery {
+            pattern,
+            distinct_target,
+        } => usize::from(pattern.references_outer_variables() || distinct_target.is_some()),
         ScalarExpression::CollectSubquery { .. } => 1,
         ScalarExpression::Case {
             alternatives,
@@ -23151,7 +23186,7 @@ fn compile_count_subquery_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
-    let pattern = compile_regular_query_count_subquery_pattern(
+    let (pattern, distinct_target) = compile_regular_query_count_subquery(
         &count.query,
         format!("{path}.query"),
         plan,
@@ -23161,6 +23196,7 @@ fn compile_count_subquery_scalar_expression(
     )?;
     Ok(ScalarExpression::CountSubquery {
         pattern: Box::new(pattern),
+        distinct_target: distinct_target.map(Box::new),
     })
 }
 
@@ -23187,9 +23223,11 @@ fn compile_collect_subquery_scalar_expression(
 }
 
 #[derive(Debug)]
-struct CompiledScopedPlan {
+struct CompiledScopedPlan<'a> {
     plan: GraphPlan,
+    state: CypherCompileState,
     delta: ScopedPlanDelta,
+    return_clause: Option<&'a Return>,
 }
 
 fn compile_regular_query_scoped_pattern(
@@ -23220,14 +23258,14 @@ fn compile_regular_query_scoped_pattern(
     compile_scoped_plan_delta_pattern(scoped.plan, plan, scoped.delta, path, feature_name)
 }
 
-fn compile_regular_query_count_subquery_pattern(
+fn compile_regular_query_count_subquery(
     query: &RegularQuery,
     path: impl Into<String>,
     plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
     feature_name: &'static str,
     missing_match_message: &'static str,
-) -> Result<CountSubqueryPattern, CoreError> {
+) -> Result<(CountSubqueryPattern, Option<ScalarExpression>), CoreError> {
     let path = path.into();
     let Some(plan) = plan else {
         return Err(unsupported(
@@ -23242,9 +23280,25 @@ fn compile_regular_query_count_subquery_pattern(
         context,
         feature_name,
         missing_match_message,
-        false,
+        true,
     )?;
-    compile_scoped_plan_delta_count_subquery(scoped.plan, scoped.delta, path, feature_name)
+    let distinct_target = scoped
+        .return_clause
+        .filter(|return_clause| return_clause.distinct)
+        .map(|return_clause| {
+            compile_count_subquery_distinct_target(
+                return_clause,
+                &path,
+                feature_name,
+                &scoped.plan,
+                &scoped.state,
+                context,
+            )
+        })
+        .transpose()?;
+    let pattern =
+        compile_scoped_plan_delta_count_subquery(scoped.plan, scoped.delta, path, feature_name)?;
+    Ok((pattern, distinct_target))
 }
 
 fn compile_regular_query_collect_subquery(
@@ -23333,15 +23387,15 @@ fn compile_regular_query_collect_subquery(
     Ok((pattern, target, distinct))
 }
 
-fn compile_regular_query_scoped_plan(
-    query: &RegularQuery,
+fn compile_regular_query_scoped_plan<'a>(
+    query: &'a RegularQuery,
     path: &str,
     plan: &GraphPlan,
     context: &CypherCompileContext,
     feature_name: &'static str,
     missing_match_message: &'static str,
     allow_distinct_noop_return: bool,
-) -> Result<CompiledScopedPlan, CoreError> {
+) -> Result<CompiledScopedPlan<'a>, CoreError> {
     let path = path.to_string();
     if !query.unions.is_empty() {
         return Err(unsupported(
@@ -23423,12 +23477,61 @@ fn compile_regular_query_scoped_plan(
     }
     Ok(CompiledScopedPlan {
         plan: exists_plan,
+        state: exists_state,
         delta: ScopedPlanDelta {
             nodes_before: node_start,
             relationship_base: relationship_start,
             predicate_offset: predicate_start,
         },
+        return_clause,
     })
+}
+
+fn compile_count_subquery_distinct_target(
+    return_clause: &Return,
+    path: &str,
+    feature_name: &'static str,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    if return_clause.star || return_clause.items.len() != 1 {
+        return Err(unsupported(
+            format!("{path}.return.items"),
+            format!(
+                "RETURN DISTINCT inside {feature_name} currently supports exactly one scalar projection"
+            ),
+        ));
+    }
+    let item = return_clause.items.first().ok_or_else(|| {
+        unsupported(
+            format!("{path}.return.items"),
+            format!(
+                "RETURN DISTINCT inside {feature_name} currently supports exactly one scalar projection"
+            ),
+        )
+    })?;
+    if matches!(item.expression, Expression::Variable(_))
+        || matches!(item.expression, Expression::CountStar { .. })
+        || expression_contains_aggregate(&item.expression)
+        || expression_contains_subquery(&item.expression)
+    {
+        return Err(unsupported(
+            format!("{path}.return.items[0]"),
+            format!(
+                "RETURN DISTINCT inside {feature_name} currently supports exactly one scalar projection"
+            ),
+        ));
+    }
+    compile_scalar_expression_in_predicate_mode(
+        &item.expression,
+        format!("{path}.return.items[0].expression"),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )
 }
 
 fn validate_scoped_subquery_noop_return(
@@ -40103,7 +40206,10 @@ relationships:
         assert!(matches!(
             plan.projections.as_slice(),
             [Projection::Expression {
-                expression: ScalarExpression::CountSubquery { pattern },
+                expression: ScalarExpression::CountSubquery {
+                    pattern,
+                    distinct_target: None,
+                },
                 alias,
             }] if alias == "dev_dependencies"
                 && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
@@ -40127,7 +40233,10 @@ relationships:
         assert!(matches!(
             plan.projections.as_slice(),
             [Projection::Expression {
-                expression: ScalarExpression::CountSubquery { pattern },
+                expression: ScalarExpression::CountSubquery {
+                    pattern,
+                    distinct_target: None,
+                },
                 alias,
             }] if alias == "dependency_paths"
                 && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
@@ -40283,12 +40392,42 @@ relationships:
     }
 
     #[test]
+    fn compiles_distinct_return_inside_count_subqueries_as_count_target() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN COUNT { \
+               MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+               RETURN DISTINCT target.team \
+             } AS dependency_teams",
+        )
+        .expect("COUNT subquery DISTINCT scalar projection should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CountSubquery {
+                        pattern,
+                        distinct_target: Some(target),
+                    },
+                alias,
+            }] if alias == "dependency_teams"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
+                && matches!(
+                    target.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "target" && property == "team"
+                )
+        ));
+    }
+
+    #[test]
     fn rejects_cardinality_changing_or_graph_expression_scoped_subquery_returns() {
         for (cypher, expected) in [
             (
                 "MATCH (service:Service) \
-                 RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1 } AS dependencies",
-                "RETURN DISTINCT inside COUNT subqueries requires scoped projection planning",
+                 RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1, 2 } AS dependencies",
+                "RETURN DISTINCT inside COUNT subqueries currently supports exactly one scalar projection",
             ),
             (
                 "MATCH (service:Service) \

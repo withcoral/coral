@@ -1282,8 +1282,15 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }
-            ScalarExpression::CountSubquery { pattern } => {
-                Self::collect_count_subquery_outer_variables(pattern, variables);
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => {
+                if let Some(target) = distinct_target {
+                    Self::collect_collect_subquery_outer_variables(pattern, target, variables);
+                } else {
+                    Self::collect_count_subquery_outer_variables(pattern, variables);
+                }
             }
             ScalarExpression::CollectSubquery {
                 pattern, target, ..
@@ -2837,12 +2844,22 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_scoped_predicate_expression(predicate, scope, path)?;
                 Ok(ScalarType::Boolean)
             }
-            ScalarExpression::CountSubquery { pattern } => {
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => {
                 self.validate_nested_scoped_count_subquery_pattern(
                     pattern,
                     scope,
                     format!("{path}.pattern"),
                 )?;
+                if let Some(target) = distinct_target {
+                    self.infer_scoped_scalar_expression_type(
+                        target,
+                        scope,
+                        format!("{path}.distinct_target"),
+                    )?;
+                }
                 Ok(ScalarType::Integer)
             }
             ScalarExpression::CollectSubquery { .. } => Err(Diagnostic::new(
@@ -4495,8 +4512,18 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Coalesce { expressions } => {
                 self.infer_coalesce_scalar_type(expressions, &path)
             }
-            ScalarExpression::CountSubquery { pattern } => {
+            ScalarExpression::CountSubquery {
+                pattern,
+                distinct_target,
+            } => {
                 self.validate_count_subquery_pattern(pattern, format!("{path}.pattern"))?;
+                if let Some(target) = distinct_target {
+                    self.validate_collect_subquery_pattern(
+                        pattern,
+                        target,
+                        format!("{path}.distinct_target"),
+                    )?;
+                }
                 Ok(ScalarType::Integer)
             }
             ScalarExpression::CollectSubquery {
