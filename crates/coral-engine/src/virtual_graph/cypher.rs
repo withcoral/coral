@@ -10775,14 +10775,11 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         ScalarExpression::CountSubquery {
             pattern,
             distinct_target,
-        } => Some(
-            distinct_target.is_none()
-                && match pattern.as_ref() {
-                    CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => {
-                        true
-                    }
-                },
-        ),
+        } => Some(match (pattern.as_ref(), distinct_target.as_deref()) {
+            (CountSubqueryPattern::Relationships(_), _)
+            | (CountSubqueryPattern::Nodes { .. }, None) => true,
+            (CountSubqueryPattern::Nodes { .. }, Some(_)) => false,
+        }),
         ScalarExpression::CollectSubquery { .. } => Some(false),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }

@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "CollectSubquery": 2,
-    "CountSubquery": 4,
+    "CountSubquery": 5,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
@@ -394,6 +394,20 @@
           { "person": "Alice", "active_states": 2 },
           { "person": "Bob", "active_states": 1 },
           { "person": "Carol", "active_states": 0 }
+        ]
+      }
+    },
+    {
+      "id": "count-subquery-distinct-hidden-order",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) RETURN p.name AS person ORDER BY COUNT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN DISTINCT friend.active } DESC, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" },
+          { "person": "Bob" },
+          { "person": "Carol" }
         ]
       }
     },

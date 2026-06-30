@@ -708,11 +708,18 @@ impl<'a> Lowerer<'a> {
                 ..
             } => "COUNT(*)",
             ScalarSubqueryCandidate::Count {
-                distinct_target: Some(_),
+                distinct_target: Some(target),
                 ..
             } => {
-                return Err(CoreError::internal(
-                    "uncorrelated distinct COUNT subqueries require distinct row planning",
+                let value_expression =
+                    self.render_count_distinct_scoped_pattern_select(predicate, target)?;
+                let select_expression = format!(
+                    "{value_expression} AS {}",
+                    quote_ident(&precomputed.value_alias)
+                );
+                return Ok(format!(
+                    "CROSS JOIN (SELECT {select_expression}) AS {}",
+                    quote_ident(&precomputed.table_alias)
                 ));
             }
             ScalarSubqueryCandidate::Collect { .. } => {
