@@ -20,8 +20,8 @@ use crate::credentials::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
-    validate_imported_manifest_database_persistence,
+    InstalledSourceManifest, describe_manifest, list_bundled_sources, load_bundled_source,
+    resolve_installed_manifest_from_yaml, validate_imported_manifest_database_persistence,
     validate_imported_manifest_database_persistence_shape,
 };
 use crate::sources::materialization::{
@@ -301,9 +301,9 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         match self.get_source(workspace_name, source_name) {
             Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
+                return Ok(self
+                    .resolve_source_manifest(workspace_name, &source)?
+                    .candidate);
             }
             Err(AppError::SourceNotFound(_)) => {}
             Err(error) => return Err(error),
@@ -603,12 +603,8 @@ impl SourceManager {
             .transpose()?;
         let previous = SourceRollbackState {
             source: stored,
-            manifest_yaml: match removed.origin {
-                SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
-            },
+            manifest_yaml: self
+                .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &removed)?,
             credential_material,
         };
         let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
@@ -820,8 +816,11 @@ impl SourceManager {
             credential_storage,
             origin: request.origin,
         };
-        if let Err(error) = self.upsert_source_with_state_lock_held(workspace_name, stored.clone())
-        {
+        if let Err(error) = self.upsert_source_with_state_lock_held(
+            workspace_name,
+            stored.clone(),
+            request.manifest_yaml,
+        ) {
             let restore_result = restore_materialization_backup(
                 &self.layout,
                 workspace_name,
@@ -901,7 +900,7 @@ impl SourceManager {
                 continue;
             }
             let installed_manifest =
-                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+                self.resolve_source_manifest_with_state_lock_held(workspace_name, &installed)?;
             let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
             if let Some(schema_name) = candidate_schema_names
                 .intersection(&installed_schema_names)
@@ -1097,9 +1096,14 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source: InstalledSource,
+        manifest_yaml: Option<&str>,
     ) -> Result<(), AppError> {
         if self.catalog_db.is_some() {
-            return self.upsert_db_source_with_state_lock_held(workspace_name, source);
+            return self.upsert_db_source_with_state_lock_held(
+                workspace_name,
+                source,
+                manifest_yaml,
+            );
         }
         self.config_store
             .upsert_source_unlocked(workspace_name, source)?;
@@ -1110,11 +1114,22 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source: InstalledSource,
+        manifest_yaml: Option<&str>,
     ) -> Result<(), AppError> {
         let Some(db) = self.catalog_db.clone() else {
             return Ok(());
         };
         let workspace_name = workspace_name.clone();
+        let manifest_yaml = manifest_yaml.map(str::to_string);
+        if source.origin == SourceOrigin::Imported {
+            let manifest_yaml = manifest_yaml.as_deref().ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "imported source '{}' is missing manifest YAML for database persistence",
+                    source.name
+                ))
+            })?;
+            validate_imported_manifest_database_persistence(manifest_yaml, &source.variables)?;
+        }
         run_db_catalog_operation(async move {
             let mut tx = db.begin().await?;
             let now_unix_nanos = now_unix_nanos_i64()?;
@@ -1124,6 +1139,68 @@ impl SourceManager {
             tx.sources()
                 .upsert_source(&workspace_name, &source, now_unix_nanos)
                 .await?;
+            if source.origin == SourceOrigin::Imported {
+                let manifest_yaml = manifest_yaml.ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "imported source '{}' is missing manifest YAML for database persistence",
+                        source.name
+                    ))
+                })?;
+                tx.source_manifests()
+                    .upsert(
+                        &workspace_name,
+                        &source.name,
+                        &manifest_yaml,
+                        now_unix_nanos,
+                    )
+                    .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
+    fn restore_db_source_snapshot_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+        manifest_yaml: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(db) = self.catalog_db.clone() else {
+            return Ok(());
+        };
+        let workspace_name = workspace_name.clone();
+        let manifest_yaml = manifest_yaml.map(str::to_string);
+        run_db_catalog_operation(async move {
+            let mut tx = db.begin().await?;
+            let now_unix_nanos = now_unix_nanos_i64()?;
+            tx.workspaces()
+                .ensure(workspace_name.as_str(), now_unix_nanos)
+                .await?;
+            tx.sources()
+                .upsert_source(&workspace_name, &source, now_unix_nanos)
+                .await?;
+            match manifest_yaml {
+                Some(manifest_yaml) if source.origin == SourceOrigin::Imported => {
+                    validate_imported_manifest_database_persistence(
+                        &manifest_yaml,
+                        &source.variables,
+                    )?;
+                    tx.source_manifests()
+                        .upsert(
+                            &workspace_name,
+                            &source.name,
+                            &manifest_yaml,
+                            now_unix_nanos,
+                        )
+                        .await?;
+                }
+                _ => {
+                    tx.source_manifests()
+                        .remove(&workspace_name, &source.name)
+                        .await?;
+                }
+            }
             tx.commit().await?;
             Ok(())
         })
@@ -1152,7 +1229,7 @@ impl SourceManager {
     fn delete_db_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<InstalledSource>, AppError> {
+    ) -> Result<Vec<(InstalledSource, Option<String>)>, AppError> {
         let Some(db) = self.catalog_db.clone() else {
             return Ok(Vec::new());
         };
@@ -1160,10 +1237,90 @@ impl SourceManager {
         run_db_catalog_operation(async move {
             let mut tx = db.begin().await?;
             let sources = tx.sources().list_workspace_sources(&workspace_name).await?;
+            let mut source_snapshots = Vec::with_capacity(sources.len());
+            for source in sources {
+                let manifest_yaml = if source.origin == SourceOrigin::Imported {
+                    tx.source_manifests()
+                        .get(&workspace_name, &source.name)
+                        .await?
+                        .map(|record| record.manifest_yaml)
+                } else {
+                    None
+                };
+                source_snapshots.push((source, manifest_yaml));
+            }
             tx.workspaces().remove(workspace_name.as_str()).await?;
             tx.commit().await?;
-            Ok(sources)
+            Ok(source_snapshots)
         })
+    }
+
+    fn resolve_source_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<InstalledSourceManifest, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        self.resolve_source_manifest_with_state_lock_held(workspace_name, source)
+    }
+
+    fn resolve_source_manifest_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<InstalledSourceManifest, AppError> {
+        let manifest_yaml =
+            self.source_manifest_yaml_with_state_lock_held(workspace_name, source)?;
+        resolve_installed_manifest_from_yaml(source, &manifest_yaml)
+    }
+
+    fn source_manifest_yaml_for_rollback_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<Option<String>, AppError> {
+        match source.origin {
+            SourceOrigin::Bundled => Ok(None),
+            SourceOrigin::Imported => {
+                match self.source_manifest_yaml_with_state_lock_held(workspace_name, source) {
+                    Ok(manifest_yaml) => Ok(Some(manifest_yaml)),
+                    Err(AppError::SourceNotFound(_)) if self.catalog_db.is_some() => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+
+    fn source_manifest_yaml_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<String, AppError> {
+        match source.origin {
+            SourceOrigin::Bundled => Ok(load_bundled_source(&source.name)?.manifest_yaml),
+            SourceOrigin::Imported => {
+                if let Some(db) = self.catalog_db.clone() {
+                    let workspace_name = workspace_name.clone();
+                    let source_name = source.name.clone();
+                    return run_db_catalog_operation(async move {
+                        let mut session = db.as_ref();
+                        session
+                            .source_manifests()
+                            .get(&workspace_name, &source_name)
+                            .await?
+                            .map(|record| record.manifest_yaml)
+                            .ok_or_else(|| {
+                                AppError::SourceNotFound(format!(
+                                    "manifest for imported source '{workspace_name}:{source_name}'"
+                                ))
+                            })
+                    });
+                }
+                Ok(std::fs::read_to_string(
+                    self.layout.manifest_file(workspace_name, &source.name),
+                )?)
+            }
+        }
     }
 
     fn validate_oauth_import_preflight(
@@ -1292,12 +1449,8 @@ impl SourceManager {
             })
             .transpose()?;
         Ok(Some(SourceRollbackState {
-            manifest_yaml: match source.origin {
-                SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
-            },
+            manifest_yaml: self
+                .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &source)?,
             source,
             credential_material,
         }))
@@ -1312,6 +1465,7 @@ impl SourceManager {
         credential_material: &CredentialMaterialGuard<'_>,
     ) {
         if let Some(previous) = previous {
+            let previous_manifest_yaml = previous.manifest_yaml.clone();
             let manifest_path = self.layout.manifest_file(workspace_name, source_name);
             match previous.manifest_yaml {
                 Some(manifest_yaml) => {
@@ -1350,9 +1504,11 @@ impl SourceManager {
             }
             let previous_source = previous.source;
             if self.catalog_db.is_some() {
-                if let Err(e) =
-                    self.upsert_db_source_with_state_lock_held(workspace_name, previous_source)
-                {
+                if let Err(e) = self.restore_db_source_snapshot_with_state_lock_held(
+                    workspace_name,
+                    previous_source,
+                    previous_manifest_yaml.as_deref(),
+                ) {
                     warn!("rollback: failed to restore source database row: {e}");
                 }
             } else if let Err(e) = self
@@ -1416,7 +1572,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
+        source.version = self
+            .resolve_source_manifest_with_state_lock_held(workspace_name, &source)?
             .candidate
             .version;
         Ok(source)
@@ -1454,13 +1611,17 @@ impl WorkspaceStore for SourceManager {
             ));
         }
         let _state_lock = self.config_store.state_lock_exclusive()?;
-        let mut db_sources = self.delete_db_workspace_sources(workspace_name)?;
+        let db_sources = self.delete_db_workspace_sources(workspace_name)?;
         let config_deleted = match self.config_store.delete_workspace_unlocked(workspace_name) {
             Ok(deleted) => deleted,
             Err(error) => {
-                for source in db_sources.iter().cloned() {
-                    if let Err(restore_error) =
-                        self.upsert_db_source_with_state_lock_held(workspace_name, source)
+                for (source, manifest_yaml) in &db_sources {
+                    if let Err(restore_error) = self
+                        .restore_db_source_snapshot_with_state_lock_held(
+                            workspace_name,
+                            source.clone(),
+                            manifest_yaml.as_deref(),
+                        )
                     {
                         return Err(AppError::FailedPrecondition(format!(
                             "failed to delete workspace '{workspace_name}': {error}; failed to restore workspace source database rows: {restore_error}"
@@ -1479,7 +1640,11 @@ impl WorkspaceStore for SourceManager {
             },
             sources: Vec::new(),
         });
-        deleted.sources.append(&mut db_sources);
+        deleted.sources.extend(
+            db_sources
+                .into_iter()
+                .map(|(source, _manifest_yaml)| source),
+        );
         Ok(Some(deleted))
     }
 }

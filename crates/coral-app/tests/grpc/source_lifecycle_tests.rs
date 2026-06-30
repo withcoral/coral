@@ -90,8 +90,12 @@ async fn import_source_persists_and_lists() {
 
     let installed_manifest =
         source_dir(harness.config_dir(), "local_messages").join("manifest.yaml");
+    assert!(
+        installed_manifest.exists(),
+        "DB-backed imports should keep a legacy manifest for rollback compatibility"
+    );
     assert_eq!(
-        fs::read_to_string(&installed_manifest).expect("read installed manifest"),
+        fs::read_to_string(&installed_manifest).expect("read legacy manifest"),
         manifest_yaml
     );
 
@@ -1619,7 +1623,7 @@ origin = "imported"
             name: "demo".to_string(),
         }))
         .await
-        .expect_err("missing manifest file should fail");
+        .expect_err("missing manifest file should fail at source resolution");
     assert_eq!(error.code(), tonic::Code::NotFound);
 }
 
@@ -1645,6 +1649,13 @@ enabled = false
         harness
             .import_source(manifest_yaml, Vec::new(), Vec::new())
             .await;
+        let installed_manifest =
+            source_dir(harness.config_dir(), "local_messages").join("manifest.yaml");
+        fs::remove_file(&installed_manifest).expect("remove compatibility manifest");
+        assert!(
+            !installed_manifest.exists(),
+            "restart coverage must not rely on a legacy manifest file"
+        );
         let rows = harness
             .execute_sql_rows("SELECT COUNT(*) AS n FROM local_messages.messages")
             .await;
@@ -1799,10 +1810,24 @@ async fn overwrite_restores_previous_source_on_config_write_failure() {
 
     let installed_manifest =
         source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
+    assert!(
+        installed_manifest.exists(),
+        "DB-backed rollback should restore legacy manifest files"
+    );
     assert_eq!(
         fs::read_to_string(&installed_manifest).expect("read restored manifest"),
         original_manifest
     );
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("source should validate after rollback")
+        .into_inner();
+    assert_eq!(validated.tables.len(), 1);
     let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
     let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
     assert!(
@@ -1852,18 +1877,31 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
             name: "secured_messages".to_string(),
         }))
         .await
-        .expect_err("manifest cleanup should fail");
+        .expect_err("source directory cleanup should fail");
 
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o700))
         .expect("restore sources dir permissions");
 
     assert_eq!(error.code(), tonic::Code::Internal);
-    assert!(manifest_path.exists(), "manifest should be restored");
+    assert!(
+        manifest_path.exists(),
+        "DB-backed rollback should restore legacy manifest files"
+    );
     assert!(secret_path.exists(), "secret file should be restored");
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "secured_messages");
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("source should still validate from DB manifest")
+        .into_inner();
+    assert_eq!(validated.tables.len(), 1);
 }
 
 #[tokio::test]

@@ -26,7 +26,8 @@ use crate::query::extensions::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    resolve_installed_manifest, validate_imported_manifest_database_persistence,
+    load_bundled_source, resolve_installed_manifest, resolve_installed_manifest_from_yaml,
+    validate_imported_manifest_database_persistence,
 };
 use crate::sources::materialization::{
     incompatible_materialization_error, load_v4_materialization,
@@ -293,6 +294,7 @@ impl QueryManager {
                 .map_err(QueryManagerError::App)?;
             let (loaded_source, version) = self
                 .load_query_source(workspace_name, &source)
+                .await
                 .map_err(QueryManagerError::App)?;
             (source, loaded_source, version, config)
         };
@@ -324,7 +326,9 @@ impl QueryManager {
         let config = self.config_store.load_config_unlocked()?;
         config.require_workspace(workspace_name)?;
         let installed_sources = self.installed_sources(workspace_name, &config).await?;
-        let sources = self.load_query_sources_from_installed(workspace_name, installed_sources)?;
+        let sources = self
+            .load_query_sources_from_installed(workspace_name, installed_sources)
+            .await?;
         Ok((sources, config))
     }
 
@@ -361,7 +365,38 @@ impl QueryManager {
         Ok(config.get_source(workspace_name, source_name))
     }
 
-    fn load_query_sources_from_installed(
+    async fn resolve_source_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<crate::sources::catalog::InstalledSourceManifest, AppError> {
+        let manifest_yaml = match source.origin {
+            crate::sources::model::SourceOrigin::Bundled => {
+                load_bundled_source(&source.name)?.manifest_yaml
+            }
+            crate::sources::model::SourceOrigin::Imported => {
+                if let Some(db) = self.catalog_db.as_ref() {
+                    let mut session = db.as_ref();
+                    session
+                        .source_manifests()
+                        .get(workspace_name, &source.name)
+                        .await?
+                        .map(|record| record.manifest_yaml)
+                        .ok_or_else(|| {
+                            AppError::SourceNotFound(format!(
+                                "manifest for imported source '{workspace_name}:{}'",
+                                source.name
+                            ))
+                        })?
+                } else {
+                    return resolve_installed_manifest(workspace_name, source, &self.layout);
+                }
+            }
+        };
+        resolve_installed_manifest_from_yaml(source, &manifest_yaml)
+    }
+
+    async fn load_query_sources_from_installed(
         &self,
         workspace_name: &WorkspaceName,
         installed_sources: Vec<InstalledSource>,
@@ -375,7 +410,7 @@ impl QueryManager {
         let _guard = span.enter();
         let mut loaded_sources = Vec::new();
         for source in installed_sources {
-            match self.load_query_source(workspace_name, &source) {
+            match self.load_query_source(workspace_name, &source).await {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
@@ -396,12 +431,12 @@ impl QueryManager {
         Ok(loaded_sources)
     }
 
-    fn load_query_source(
+    async fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        let installed = self.resolve_source_manifest(workspace_name, source).await?;
         let source_spec = installed.source_spec;
         if source.origin == SourceOrigin::Imported {
             validate_imported_manifest_database_persistence(
@@ -1221,8 +1256,8 @@ mod tests {
         assert_eq!(config, 42);
     }
 
-    #[test]
-    fn load_query_source_passes_present_optional_secrets_to_runtime() {
+    #[tokio::test]
+    async fn load_query_source_passes_present_optional_secrets_to_runtime() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
@@ -1296,6 +1331,7 @@ tables:
         let (loaded_source, _) = fixture
             .manager
             .load_query_source(&workspace_name, &source)
+            .await
             .expect("optional secret should load when present");
 
         assert_eq!(
@@ -1304,8 +1340,8 @@ tables:
         );
     }
 
-    #[test]
-    fn load_query_source_revalidates_persisted_imported_credential_transport() {
+    #[tokio::test]
+    async fn load_query_source_revalidates_persisted_imported_credential_transport() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
@@ -1361,6 +1397,7 @@ tables:
         let error = fixture
             .manager
             .load_query_source(&workspace_name, &source)
+            .await
             .expect_err("persisted imported cleartext credential endpoint should fail");
 
         assert!(error.to_string().contains("base_url must use https"));
