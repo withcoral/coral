@@ -1,12 +1,18 @@
 //! Internal bootstrap seam for assembling the local server runtime.
 
-use std::{cmp::Reverse, collections::HashSet, path::PathBuf};
+use std::{
+    cmp::Reverse, collections::HashSet, future::Future, path::PathBuf, time::SystemTime,
+    time::UNIX_EPOCH,
+};
 
 mod consts;
 mod env;
 mod error;
 mod server;
 
+use crate::state::db::{
+    CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig, import_config_source_catalog,
+};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::{
     TelemetryConfig, TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage,
@@ -31,7 +37,7 @@ pub(crate) fn env_var(name: &str) -> Option<String> {
     env::AppEnvironment::env_var(name)
 }
 
-/// Loads installed source names for the default workspace from local config only.
+/// Loads installed source names for the default workspace from local durable state.
 ///
 /// This is intentionally narrower than starting the local server and calling
 /// `ListSources`: startup surfaces such as MCP initialize only need source
@@ -45,7 +51,85 @@ pub(crate) fn env_var(name: &str) -> Option<String> {
 pub fn default_workspace_source_names() -> Result<Vec<String>, AppError> {
     let layout = discover_app_state_layout(None)?;
     layout.ensure()?;
-    ConfigStore::new(layout).list_workspace_source_names(&WorkspaceName::default())
+    default_workspace_source_names_for_layout(layout)
+}
+
+fn default_workspace_source_names_for_layout(
+    layout: AppStateLayout,
+) -> Result<Vec<String>, AppError> {
+    let config_store = ConfigStore::new(layout.clone());
+    run_db_bootstrap_operation(async move {
+        let db = open_bootstrap_db(&layout).await?;
+        db.migrate().await?;
+        import_config_source_catalog(&db, &config_store, now_unix_nanos_i64()?).await?;
+        let mut session = &db;
+        session
+            .sources()
+            .list_workspace_source_names(&WorkspaceName::default())
+            .await
+            .map_err(AppError::from)
+    })
+}
+
+async fn open_bootstrap_db(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
+    let database_config = DatabaseConfig::load(layout)?;
+    let database_config = match database_config {
+        DatabaseConfig::Sqlite { path } => ResolvedDatabaseConfig::Sqlite { path },
+        DatabaseConfig::Postgres { url_env } => {
+            let url = env::AppEnvironment::env_var(&url_env).ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "database backend 'postgres' requires environment variable `{url_env}`"
+                ))
+            })?;
+            ResolvedDatabaseConfig::Postgres { url }
+        }
+    };
+    CoralDb::open(database_config).await.map_err(AppError::from)
+}
+
+fn run_db_bootstrap_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "failed to create bootstrap database runtime: {error}"
+                ))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                AppError::FailedPrecondition(
+                    "bootstrap database operation thread panicked".to_string(),
+                )
+            })?;
+    }
+
+    run_on_runtime(operation)
+}
+
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
+    })
 }
 
 /// Startup context loaded from local state for default-workspace MCP sessions.
@@ -213,8 +297,7 @@ pub fn default_workspace_mcp_startup_context(
 ) -> Result<DefaultWorkspaceMcpStartupContext, AppError> {
     let layout = discover_app_state_layout(None)?;
     layout.ensure()?;
-    let source_names =
-        ConfigStore::new(layout.clone()).list_workspace_source_names(&WorkspaceName::default())?;
+    let source_names = default_workspace_source_names_for_layout(layout.clone())?;
     let telemetry_config = TelemetryConfig::load(&layout)?;
     let query_history = if telemetry_config.trace_history.enabled {
         let query_history = crate::telemetry::list_local_query_history(
