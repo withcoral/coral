@@ -23,7 +23,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 14,
     "ScalarExpressions": 60,
-    "TypeConversion": 3,
+    "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
     "VariableLengthPaths": 4,
@@ -4185,6 +4185,231 @@
       "expected": {
         "kind": "error",
         "contains": "toIntegerOrNull() requires exactly one argument"
+      }
+    },
+    {
+      "id": "to-integer-float-literal-truncates",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger(82.9) AS weight, toInteger(-3.9) AS negative_weight",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "weight": 82,
+            "negative_weight": -3
+          }
+        ]
+      }
+    },
+    {
+      "id": "to-integer-string-literal",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger('42') AS parsed_answer, toInteger('0') AS parsed_zero",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "parsed_answer": 42,
+            "parsed_zero": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "to-float-string-and-integer-literals",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toFloat('3.14') AS parsed_pi, toFloat(7) AS seven_float",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "parsed_pi": 3.14,
+            "seven_float": 7.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "to-string-literal-values",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(42) AS integer_text, toString(true) AS boolean_text, toString(3.5) AS float_text",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "integer_text": "42",
+            "boolean_text": "true",
+            "float_text": "3.5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "to-boolean-string-literals",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toBoolean('true') AS true_value, toBoolean('false') AS false_value",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "true_value": true,
+            "false_value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "type-conversion-null-inputs",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name, toInteger(null) AS null_int, toFloat(null) AS null_float, toString(null) AS null_text, toBoolean(null) AS null_bool",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "type-conversion-person-property-projections",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) RETURN p.name AS name, toString(p.age) AS age_text, toFloat(p.age) AS age_float, toString(p.active) AS active_text ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age_text": "34",
+            "age_float": 34.0,
+            "active_text": "true"
+          },
+          {
+            "name": "Bob",
+            "age_text": "29",
+            "age_float": 29.0,
+            "active_text": "false"
+          },
+          {
+            "name": "Carol",
+            "age_text": "41",
+            "age_float": 41.0,
+            "active_text": "true"
+          }
+        ]
+      }
+    },
+    {
+      "id": "type-conversion-relationship-property-projections",
+      "feature": "TypeConversion",
+      "query": "MATCH (a:Person)-[k:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, toString(k.since) AS since_text, toFloat(k.since) AS since_float, toInteger(k.strength) AS strength_int ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "since_text": "2020",
+            "since_float": 2020.0,
+            "strength_int": 0
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "since_text": "2022",
+            "since_float": 2022.0,
+            "strength_int": 0
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "since_text": "2021",
+            "since_float": 2021.0,
+            "strength_int": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "type-conversion-static-list-comprehension-casts",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN ['1', '2', null] | toInteger(x)] AS ints, [x IN ['1.5', '2.25', null] | toFloat(x)] AS floats, [x IN ['true', 'FALSE', null] | toBoolean(x)] AS booleans, [x IN [1, 2, null] | toString(x)] AS strings",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "ints": [
+              1,
+              2,
+              null
+            ],
+            "floats": [
+              1.5,
+              2.25,
+              null
+            ],
+            "booleans": [
+              true,
+              false,
+              null
+            ],
+            "strings": [
+              "1",
+              "2",
+              null
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "nullable-type-conversion-invalid-strings-yield-null",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toIntegerOrNull('abc') AS invalid_int, toFloatOrNull('abc') AS invalid_float, toBooleanOrNull('maybe') AS invalid_bool, coalesce(toIntegerOrNull('abc'), -1) AS fallback_int",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "fallback_int": -1
+          }
+        ]
+      }
+    },
+    {
+      "id": "strict-to-integer-invalid-string-rejected",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger('abc') AS invalid_int",
+      "expected": {
+        "kind": "error",
+        "contains": "Cannot cast string"
+      }
+    },
+    {
+      "id": "strict-to-float-invalid-string-rejected",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toFloat('abc') AS invalid_float",
+      "expected": {
+        "kind": "error",
+        "contains": "Cannot cast string"
+      }
+    },
+    {
+      "id": "strict-to-boolean-invalid-string-rejected",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toBoolean('maybe') AS invalid_bool",
+      "expected": {
+        "kind": "error",
+        "contains": "Cannot cast value"
       }
     },
     {
