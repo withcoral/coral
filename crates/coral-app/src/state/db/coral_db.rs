@@ -5,7 +5,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::backend::{CoralDbBackend, PostgresCoralDb, SqliteCoralDb};
-use super::{DbError, ResolvedDatabaseConfig};
+use super::{CoralTx, DbError, ResolvedDatabaseConfig};
 use crate::storage::fs as storage_fs;
 
 #[derive(Debug)]
@@ -19,6 +19,10 @@ impl CoralDb {
             ResolvedDatabaseConfig::Sqlite { path } => open_sqlite(&path).await,
             ResolvedDatabaseConfig::Postgres { url } => open_postgres(&url).await,
         }
+    }
+
+    pub(crate) async fn begin(&self) -> Result<CoralTx<'_>, DbError> {
+        CoralTx::begin(&self.backend).await
     }
 
     pub(crate) async fn ping(&self) -> Result<(), DbError> {
