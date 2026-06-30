@@ -185,8 +185,9 @@ impl SourceServiceApi for SourceService {
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
             let response_workspace_name = workspace_name.clone();
+            let install_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&workspace_name, &command)
+                sources.create_bundled_source(&install_workspace_name, &command)
             })
             .await?;
             Ok(Response::new(CreateBundledSourceResponse {
@@ -224,14 +225,15 @@ impl SourceServiceApi for SourceService {
             let stream =
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
-                        sources
+                        let installed = sources
                             .create_bundled_source_with_oauth(
                                 &workspace_name,
                                 command,
                                 event_sender,
                             )
                             .await
-                            .map_err(app_status)
+                            .map_err(app_status)?;
+                        Ok(installed)
                     })
                 });
             Ok(Response::new(Box::pin(stream.map(|response| {
