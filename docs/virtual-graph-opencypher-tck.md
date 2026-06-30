@@ -276,27 +276,29 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 74 representative read-only scenarios:
+The GraphQL baseline currently contains 79 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
-- `ScalarFilters`: 12 scenarios for scalar operator objects, shorthand equality,
-  list membership, null checks, negated string predicates, and regex `matches`.
+- `ScalarFilters`: 13 scenarios for scalar operator objects, shorthand equality,
+  list membership, null checks, empty-result filters, negated string predicates,
+  and regex `matches`.
 - `BooleanFilters`: 6 scenarios for `and`/`or` arrays, nested and/or, `not`
   composition, `xor`, and uppercase operator aliases.
-- `RowModifiers`: 8 scenarios for root ordering, multi-key ordering, offset,
-  limit, `ASCENDING`/`DESCENDING` and shorthand `orderBy` directions, and
-  distinct projection.
+- `RowModifiers`: 11 scenarios for root ordering, multi-key ordering, offset,
+  limit, pagination edge windows including offset-beyond-count, limit `0`, and
+  last-window overshoot, `ASCENDING`/`DESCENDING` and shorthand `orderBy`
+  directions, and distinct projection.
 - `Aggregation`: 9 scenarios for grouped `_count`, numeric property
   aggregates including `_median`, distinct counts, and exact
   `_percentileCont(field:, percentile:)`.
 - `IdentityFields`: 6 scenarios for `_id` / `_elementId` selection, `_id`
   equality/range/list filters, `_id` ordering, and `_elementId` equality
   filters.
-- `NestedRelationships`: 11 scenarios for out/in/any relationship traversal with
-  endpoint predicates, `_edge` projections, in/any strength
-  relationship-property filters, and combined float relationship-property
-  predicates.
+- `NestedRelationships`: 12 scenarios for out/in/any relationship traversal with
+  endpoint predicates, endpoint and `_edge` projections, in/any strength
+  relationship-property filters, combined float relationship-property
+  predicates, and empty outgoing traversals that flatten to no rows.
 - `RelationshipExistence`: 5 scenarios for `EXISTS`-style out/in/any
   relationship filters, endpoint and relationship-property predicates, and
   negated existence.

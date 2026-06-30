@@ -7,11 +7,11 @@
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
-    "NestedRelationships": 11,
+    "NestedRelationships": 12,
     "RelationshipExistence": 5,
     "RootSelection": 4,
-    "RowModifiers": 8,
-    "ScalarFilters": 12
+    "RowModifiers": 11,
+    "ScalarFilters": 13
   },
   "scenarios": [
     {
@@ -916,6 +916,58 @@
       "expected": {
         "kind": "error",
         "contains": "do not support row modifiers"
+      }
+    },
+    {
+      "id": "filter-empty-result",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { gt: 100 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "pagination-offset-beyond-count",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], offset: 5) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "pagination-limit-zero",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], limit: 0) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "pagination-offset-last-window",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], offset: 2, limit: 5) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "traversal-empty-no-out-edges",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name out_KNOWS(to: Person) { target: name } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
       }
     }
   ]

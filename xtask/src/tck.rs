@@ -534,11 +534,11 @@ mod tests {
             .expect("GraphQL baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 74);
+        assert_eq!(report.scenario_count, 79);
         assert_eq!(report.expected_error_count, 8);
         assert_eq!(report.feature_counts.get("Aggregation"), Some(&9));
         assert_eq!(report.feature_counts.get("RootSelection"), Some(&4));
-        assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&12));
+        assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&13));
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
