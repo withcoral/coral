@@ -257,10 +257,10 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 13 representative read-only scenarios:
+The GraphQL baseline currently contains 20 representative read-only scenarios:
 
 - `RootSelection`: 2 scenarios for exact-label and generated root aliases.
-- `ScalarFilters`: 2 scenarios for scalar operator objects, shorthand equality,
+- `ScalarFilters`: 8 scenarios for scalar operator objects, shorthand equality,
   list membership, and null checks.
 - `BooleanFilters`: 1 scenario for `xor` and `not` composition.
 - `RowModifiers`: 1 scenario for root ordering, offset, and limit.

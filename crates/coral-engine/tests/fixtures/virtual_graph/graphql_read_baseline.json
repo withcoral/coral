@@ -4,14 +4,14 @@
   "minimum_feature_counts": {
     "Aggregation": 2,
     "BooleanFilters": 1,
-    "ErrorHandling": 1,
+    "ErrorHandling": 2,
     "GeneratedClientShape": 1,
     "IdentityFields": 1,
     "NestedRelationships": 1,
     "RelationshipExistence": 1,
     "RootSelection": 2,
     "RowModifiers": 1,
-    "ScalarFilters": 2
+    "ScalarFilters": 8
   },
   "scenarios": [
     {
@@ -65,6 +65,78 @@
           { "name": "Bob" },
           { "name": "Carol" }
         ]
+      }
+    },
+    {
+      "id": "scalar-numeric-range-gt-lt",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { gt: 29, lt: 41 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-numeric-lte-boundary",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { lte: 34 } }, orderBy: [{ field: name, direction: ASC }]) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "age": 34 },
+          { "name": "Bob", "age": 29 }
+        ]
+      }
+    },
+    {
+      "id": "scalar-string-not-equal",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { city: { ne: \"London\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-string-ends-with",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { city: { endsWith: \"n\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-set-not-in",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { name: { notIn: [\"Alice\", \"Bob\"] } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-null-check-is-null",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { city: { isNull: true } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
       }
     },
     {
@@ -172,6 +244,15 @@
       "expected": {
         "kind": "error",
         "contains": "UNKNOWN_PROPERTY"
+      }
+    },
+    {
+      "id": "id-string-predicate-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person(where: { _id: { startsWith: \"1\" } }) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "GraphQL _id filters do not support string predicates"
       }
     }
   ]
