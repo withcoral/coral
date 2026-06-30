@@ -26,7 +26,7 @@
     "Union": 4,
     "Unwind": 13,
     "VariableLengthPaths": 4,
-    "Where": 14,
+    "Where": 24,
     "With": 14
   },
   "scenarios": [
@@ -303,6 +303,173 @@
         "rows": [
           {
             "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-arithmetic-modulo-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.age % 2 = 0 RETURN p.name AS name, p.age % 2 AS remainder",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "remainder": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-arithmetic-addition-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.age + 1 > 40 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-computed-property-expression-comparison",
+      "feature": "Where",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WHERE p.age > friend.age - 5 RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-parenthesized-boolean-precedence",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE (p.active = true AND p.city = 'London') OR (p.active = false AND p.city = '') RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-relationship-property-conjunction",
+      "feature": "Where",
+      "query": "MATCH (a:Person)-[k:KNOWS]->(b:Person) WHERE k.since >= 2021 AND k.strength < 0.8 RETURN a.name AS source, b.name AS target, k.since AS since ORDER BY since, source",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "since": 2021
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "since": 2022
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-relationship-float-bound",
+      "feature": "Where",
+      "query": "MATCH (a:Person)-[k:KNOWS]->(b:Person) WHERE k.strength >= 0.7 RETURN a.name AS source, b.name AS target, k.strength AS strength ORDER BY strength DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "strength": 0.9
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "strength": 0.7
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-chained-age-range",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE 30 <= p.age <= 40 RETURN p.name AS name, p.age AS age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-bare-boolean-property",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.active RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-inequality-operator",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.name <> 'Bob' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-empty-string-equality",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.city = '' RETURN p.name AS name, p.city AS city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "city": ""
           }
         ]
       }

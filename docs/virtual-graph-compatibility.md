@@ -60,7 +60,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Multi-hop relationship chains | Supported foundation | Forward, reverse, and mixed chains compile through the shared graph IR |
 | Parenthesized path patterns | Supported foundation | Transparent path parentheses such as `MATCH ((a)-[:OWNS]->(b))`, named variants such as `MATCH p = ((a)-[:OWNS]->(b))`, exact-one grouped quantifiers such as `((a)-[:OWNS]->(b)){1}` / `{1,1}`, static label/type alternatives, bounded ranges, and anchored `OPTIONAL MATCH` forms lower through the same path-pattern compiler. Non-exact quantified parenthesized path patterns remain rejected until Coral has grouped path-pattern repetition planning. |
 | Multiple `MATCH` clauses | Supported foundation | Transparent multi-part read clauses compile into one connected graph plan |
-| `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, property-to-property comparisons, and scalar-expression RHS comparisons |
+| `WHERE` property comparisons | Supported foundation | String, integer, float, boolean, null literal, property-to-property comparisons, relationship-property comparisons, arithmetic scalar predicates, and scalar-expression RHS comparisons |
 | `WHERE id(...)` predicates | Supported foundation | Node ids and keyed relationship ids lower to mapped key comparisons and `IN` predicates |
 | `WHERE type(r)` predicates | Supported foundation | Folded to boolean predicates because each relationship pattern has one static type; equality, inequality, `IN`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, and regex matching are supported |
 | `WHERE node:Label` / `relationship:TYPE` predicates | Supported foundation | Static label/type expressions fold against the mapped node label or relationship type, including grouped conjunction/disjunction/negation. Dynamic predicate atoms such as `node:$($label)`, `node:$(['Label', 'Other'])`, `node:$(split('Label,Other', ','))`, `node:$(CASE WHEN true THEN ['Label'] ELSE ['Other'] END)`, `node:$($labels)`, `relationship:$($type)`, `relationship:$(['TYPE', 'OTHER'])`, `relationship:$(split('TYPE,OTHER', ','))`, `relationship:$(CASE WHEN true THEN ['TYPE'] ELSE ['OTHER'] END)`, and `relationship:$($types)` are accepted when the inner expression is a string literal, scalar string parameter, non-empty literal string list, folded static string-list expression, statically selected list-valued `CASE`, or non-empty string-list parameter and are folded against the mapped label/type. Runtime graph-property dynamic labels, non-foldable `CASE WHEN` predicates, empty label/type lists, and non-string list members remain rejected. |
@@ -147,7 +147,7 @@ Live-source tests are intentionally excluded from product validation.
 The `Virtual Graph Core` workflow currently enforces two executable
 compatibility baseline gates:
 
-- `coral-opencypher-read-baseline`: 232 openCypher-style read scenarios with
+- `coral-opencypher-read-baseline`: 242 openCypher-style read scenarios with
   declared feature floors.
 - `coral-graphql-read-baseline`: 13 GraphQL read-adapter scenarios with declared
   feature floors.
@@ -161,5 +161,5 @@ the pinned upstream openCypher `2024.3` TCK feature tree and classifies scenario
 definitions into Coral's read-only product scope. That inventory is a backlog
 and credibility gate, not an execution claim: it currently reports 1,615
 upstream scenario definitions, 1,294 read-candidate scenario definitions after
-excluding mutations and procedure calls, and a 232-scenario Coral curated
+excluding mutations and procedure calls, and a 242-scenario Coral curated
 baseline.
