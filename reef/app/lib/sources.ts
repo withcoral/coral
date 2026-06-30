@@ -13,7 +13,7 @@ import {
   type SourceInfo,
 } from '@/generated/coral/v1/sources_pb'
 
-import { sourceClient, WORKSPACE } from './coral-clients'
+import { getSourceClient, WORKSPACE } from './coral-clients'
 
 export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
 
@@ -52,6 +52,7 @@ function toCatalogEntry(s: SourceInfo): CatalogEntry {
 }
 
 export async function discoverBundled(): Promise<CatalogEntry[]> {
+  const sourceClient = await getSourceClient()
   const resp = await sourceClient.discoverSources(
     create(DiscoverSourcesRequestSchema, { workspace: WORKSPACE }),
   )
@@ -59,6 +60,7 @@ export async function discoverBundled(): Promise<CatalogEntry[]> {
 }
 
 export async function getSourceInfo(name: string): Promise<ResolvedSourceInfo> {
+  const sourceClient = await getSourceClient()
   const resp = await sourceClient.getSourceInfo(
     create(GetSourceInfoRequestSchema, { workspace: WORKSPACE, name }),
   )
@@ -69,6 +71,7 @@ export async function getSourceInfo(name: string): Promise<ResolvedSourceInfo> {
 }
 
 export async function getInstalledSource(name: string): Promise<Source> {
+  const sourceClient = await getSourceClient()
   const resp = await sourceClient.getSource(
     create(GetSourceRequestSchema, { workspace: WORKSPACE, name }),
   )
@@ -77,6 +80,7 @@ export async function getInstalledSource(name: string): Promise<Source> {
 }
 
 export async function deleteSource(name: string): Promise<void> {
+  const sourceClient = await getSourceClient()
   await sourceClient.deleteSource(create(DeleteSourceRequestSchema, { workspace: WORKSPACE, name }))
 }
 
@@ -87,6 +91,7 @@ function splitBindings(inputs: InstallInput[]) {
 }
 
 export async function createBundledSource(name: string, inputs: InstallInput[]): Promise<Source> {
+  const sourceClient = await getSourceClient()
   const { variables, secrets } = splitBindings(inputs)
   const resp = await sourceClient.createBundledSource(
     create(CreateBundledSourceRequestSchema, {
@@ -119,6 +124,7 @@ export async function createBundledSourceWithOAuth(
   oauthRetrievals: OAuthCredentialRetrieval[],
   callbacks: OAuthFlowCallbacks = {},
 ): Promise<Source> {
+  const sourceClient = await getSourceClient()
   const { variables, secrets } = splitBindings(inputs)
   const stream = sourceClient.createBundledSourceWithOAuth(
     create(CreateBundledSourceWithOAuthRequestSchema, {
