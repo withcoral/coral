@@ -1,7 +1,10 @@
 //! Owns the source lifecycle workflow for the local app.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use coral_spec::v4::SurfaceDescriptor;
 use serde_yaml::Value as YamlValue;
@@ -25,6 +28,7 @@ use crate::sources::materialization::{
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
@@ -36,6 +40,7 @@ use tracing::warn;
 #[derive(Clone)]
 pub(crate) struct SourceManager {
     config_store: ConfigStore,
+    catalog_db: Option<Arc<CoralDb>>,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
@@ -167,6 +172,51 @@ fn materialization_inputs_from_bindings(
     }
 }
 
+fn run_db_catalog_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "failed to create source catalog database runtime: {error}"
+                ))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                AppError::FailedPrecondition(
+                    "source catalog database operation thread panicked".to_string(),
+                )
+            })?;
+    }
+
+    run_on_runtime(operation)
+}
+
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
+    })
+}
+
 impl SourceManager {
     #[cfg(test)]
     pub(crate) fn new_for_tests(
@@ -190,6 +240,24 @@ impl SourceManager {
     ) -> Self {
         Self {
             config_store,
+            catalog_db: None,
+            credential_manager,
+            oauth_credential_service: OAuthCredentialService::new(),
+            layout,
+            lifecycle_lock,
+        }
+    }
+
+    pub(crate) fn with_db(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
+        catalog_db: Arc<CoralDb>,
+    ) -> Self {
+        Self {
+            config_store,
+            catalog_db: Some(catalog_db),
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
@@ -201,9 +269,9 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
         Ok(self
-            .config_store
-            .list_workspace_sources(workspace_name)?
+            .list_workspace_sources_with_state_lock_held(workspace_name)?
             .into_iter()
             .map(|source| self.populate_source_version_or_keep(workspace_name, source))
             .collect())
@@ -214,10 +282,11 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        Ok(self.populate_source_version_or_keep(
-            workspace_name,
-            self.config_store.get_source(workspace_name, source_name)?,
-        ))
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let source = self
+            .get_source_with_state_lock_held(workspace_name, source_name)?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))?;
+        Ok(self.populate_source_version_or_keep(workspace_name, source))
     }
 
     pub(crate) fn get_source_info(
@@ -225,7 +294,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<CandidateSource, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
+        match self.get_source(workspace_name, source_name) {
             Ok(source) => {
                 return Ok(
                     resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
@@ -248,7 +317,8 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<CandidateSource>, AppError> {
-        let installed_sources = self.config_store.list_workspace_sources(workspace_name)?;
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let installed_sources = self.list_workspace_sources_with_state_lock_held(workspace_name)?;
         let installed = installed_sources
             .iter()
             .map(|source| source.name.clone())
@@ -491,6 +561,10 @@ impl SourceManager {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Delete keeps filesystem, credential, config, and DB rollback ordering together."
+    )]
     pub(crate) fn delete_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -504,8 +578,8 @@ impl SourceManager {
             .material_guard(workspace_name, &credential_set_id)?;
         let _state_lock = self.config_store.state_lock_exclusive()?;
         let stored = self
-            .config_store
-            .get_source_unlocked(workspace_name, source_name)?;
+            .get_source_with_state_lock_held(workspace_name, source_name)?
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))?;
         let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let credential_storage = stored.credential_storage_for_material();
         let credential_material = credential_storage
@@ -545,6 +619,24 @@ impl SourceManager {
         if let Err(error) = self
             .config_store
             .remove_source_unlocked(workspace_name, source_name)
+        {
+            let restore_dir_result = source_dir_backup.restore();
+            self.restore_source_rollback_state_with_state_lock_held(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.remove_db_source_with_state_lock_held(workspace_name, source_name)
         {
             let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
@@ -711,9 +803,7 @@ impl SourceManager {
             credential_storage,
             origin: request.origin,
         };
-        if let Err(error) = self
-            .config_store
-            .upsert_source_unlocked(workspace_name, stored.clone())
+        if let Err(error) = self.upsert_source_with_state_lock_held(workspace_name, stored.clone())
         {
             let restore_result = restore_materialization_backup(
                 &self.layout,
@@ -789,7 +879,7 @@ impl SourceManager {
         let candidate_manifest = parse_source_manifest_yaml(manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let candidate_schema_names = runtime_schema_names(&candidate_manifest);
-        for installed in self.config_store.list_workspace_sources(workspace_name)? {
+        for installed in self.list_workspace_sources(workspace_name)? {
             if installed.name == *candidate_name {
                 continue;
             }
@@ -815,9 +905,8 @@ impl SourceManager {
         source_name: &SourceName,
     ) -> Result<bool, AppError> {
         Ok(self
-            .config_store
-            .load_catalog()?
-            .contains(workspace_name, source_name))
+            .get_source_optional(workspace_name, source_name)?
+            .is_some())
     }
 
     fn read_source_material(
@@ -849,25 +938,21 @@ impl SourceManager {
         bindings: &SourceBindings,
         filled_secret_keys: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, String>, AppError> {
-        let (credential_storage, persisted_secret_keys) = match self
-            .config_store
-            .get_source(workspace_name, &candidate.name)
-        {
-            Ok(source) => (
-                source.credential_storage_for_material(),
-                Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
-            ),
-            Err(AppError::SourceNotFound(_))
-                if self
+        let (credential_storage, persisted_secret_keys) =
+            match self.get_source_optional(workspace_name, &candidate.name)? {
+                Some(source) => (
+                    source.credential_storage_for_material(),
+                    Some(source.secrets.iter().cloned().collect::<BTreeSet<_>>()),
+                ),
+                None if self
                     .layout
                     .secret_file(workspace_name, &candidate.name)
                     .exists() =>
-            {
-                (Some(CredentialStorageKind::File), None)
-            }
-            Err(AppError::SourceNotFound(_)) => (None, Some(BTreeSet::new())),
-            Err(error) => return Err(error),
-        };
+                {
+                    (Some(CredentialStorageKind::File), None)
+                }
+                None => (None, Some(BTreeSet::new())),
+            };
 
         if !source_needs_stored_material_for_validation(
             candidate,
@@ -898,11 +983,10 @@ impl SourceManager {
                 && !bindings.secrets.contains_key(&input.key)
         });
         let existing_storage = match self
-            .config_store
-            .get_source_unlocked(workspace_name, &candidate.name)
+            .get_source_with_state_lock_held(workspace_name, &candidate.name)?
         {
-            Ok(source) => source.credential_storage_for_material(),
-            Err(AppError::SourceNotFound(_)) if needs_stored_material => {
+            Some(source) => source.credential_storage_for_material(),
+            None if needs_stored_material => {
                 let legacy_secret_file = self.layout.secret_file(workspace_name, &candidate.name);
                 if legacy_secret_file.is_file() {
                     Some(CredentialStorageKind::File)
@@ -910,8 +994,7 @@ impl SourceManager {
                     None
                 }
             }
-            Err(AppError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
+            None => None,
         };
         let stored_material = match existing_storage {
             Some(storage) => self.read_source_material(workspace_name, &candidate.name, storage)?,
@@ -927,6 +1010,104 @@ impl SourceManager {
         } else {
             self.credential_manager.default_write_storage().map(Some)
         }
+    }
+
+    fn list_workspace_sources_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        if let Some(db) = self.catalog_db.clone() {
+            let workspace_name = workspace_name.clone();
+            return run_db_catalog_operation(async move {
+                let mut session = db.as_ref();
+                session
+                    .sources()
+                    .list_workspace_sources(&workspace_name)
+                    .await
+                    .map_err(AppError::from)
+            });
+        }
+        Ok(self
+            .config_store
+            .load_catalog_unlocked()?
+            .workspace_sources(workspace_name))
+    }
+
+    fn get_source_optional(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        self.get_source_with_state_lock_held(workspace_name, source_name)
+    }
+
+    fn get_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        if let Some(db) = self.catalog_db.clone() {
+            let workspace_name = workspace_name.clone();
+            let source_name = source_name.clone();
+            return run_db_catalog_operation(async move {
+                let mut session = db.as_ref();
+                session
+                    .sources()
+                    .get_source(&workspace_name, &source_name)
+                    .await
+                    .map_err(AppError::from)
+            });
+        }
+        Ok(self
+            .config_store
+            .load_catalog_unlocked()?
+            .get_source(workspace_name, source_name))
+    }
+
+    fn upsert_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        self.config_store
+            .upsert_source_unlocked(workspace_name, source.clone())?;
+        if let Some(db) = self.catalog_db.clone() {
+            let workspace_name = workspace_name.clone();
+            return run_db_catalog_operation(async move {
+                let mut tx = db.begin().await?;
+                let now_unix_nanos = now_unix_nanos_i64()?;
+                tx.workspaces()
+                    .ensure(workspace_name.as_str(), now_unix_nanos)
+                    .await?;
+                tx.sources()
+                    .upsert_source(&workspace_name, &source, now_unix_nanos)
+                    .await?;
+                tx.commit().await?;
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+
+    fn remove_db_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        if let Some(db) = self.catalog_db.clone() {
+            let workspace_name = workspace_name.clone();
+            let source_name = source_name.clone();
+            return run_db_catalog_operation(async move {
+                let mut tx = db.begin().await?;
+                tx.sources()
+                    .remove_source(&workspace_name, &source_name)
+                    .await?;
+                tx.commit().await?;
+                Ok(())
+            });
+        }
+        Ok(())
     }
 
     fn validate_oauth_import_preflight(
@@ -1044,13 +1225,9 @@ impl SourceManager {
         source_name: &SourceName,
         credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
-        let source = match self
-            .config_store
-            .get_source_unlocked(workspace_name, source_name)
-        {
-            Ok(source) => source,
-            Err(AppError::SourceNotFound(_)) => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(source) = self.get_source_with_state_lock_held(workspace_name, source_name)?
+        else {
+            return Ok(None);
         };
         let credential_material = source
             .credential_storage_for_material()

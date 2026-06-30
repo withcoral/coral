@@ -17,6 +17,7 @@ use coral_api::v1::{
 };
 use coral_client::default_workspace;
 use tempfile::TempDir;
+use toml_edit::DocumentMut;
 use tonic::Request;
 
 use crate::harness::{
@@ -69,6 +70,28 @@ async fn import_source_persists_and_lists() {
         listed[0].credential_storage,
         SourceCredentialStorage::Unspecified as i32
     );
+}
+
+#[tokio::test]
+async fn list_sources_reads_database_after_config_source_section_is_removed() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    let config_path = harness.config_dir().join("config.toml");
+    let raw = fs::read_to_string(&config_path).expect("read config");
+    let mut doc = raw.parse::<DocumentMut>().expect("parse config");
+    doc["workspaces"]["default"]["sources"]
+        .as_table_mut()
+        .expect("sources table")
+        .remove("local_messages");
+    fs::write(&config_path, doc.to_string()).expect("write config without source section");
+
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "local_messages");
 }
 
 #[tokio::test]

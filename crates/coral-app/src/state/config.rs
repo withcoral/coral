@@ -302,16 +302,6 @@ impl SourceCatalog {
             .cloned()
     }
 
-    pub(crate) fn contains(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> bool {
-        self.0
-            .get(workspace_name)
-            .is_some_and(|sources| sources.contains_key(source_name))
-    }
-
     pub(crate) fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,

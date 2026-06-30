@@ -284,6 +284,7 @@ impl ServerBuilder {
         coral_db.migrate().await?;
         let config_store = ConfigStore::new(layout.clone());
         import_config_source_catalog(&coral_db, &config_store, now_unix_nanos_i64()?).await?;
+        let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -305,11 +306,12 @@ impl ServerBuilder {
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
-        let source_manager = SourceManager::new(
+        let source_manager = SourceManager::with_db(
             config_store.clone(),
             credential_manager.clone(),
             layout.clone(),
             workspace_lifecycle_lock.clone(),
+            Arc::clone(&coral_db),
         );
         let workspace_manager = WorkspaceManager::new(
             config_store.clone(),
