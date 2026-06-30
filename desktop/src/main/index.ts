@@ -75,7 +75,7 @@ function currentWindowIconPath(): string {
 }
 
 function currentDockIconPath(): string {
-  return desktopIconPath(currentIconAppearance(), 'icns')
+  return desktopIconPath(currentIconAppearance(), 'png')
 }
 
 function updatePlatformIcon() {
