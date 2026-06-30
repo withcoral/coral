@@ -20,6 +20,7 @@
     "PatternComprehension": 2,
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
+    "ReturnProjection": 12,
     "RowModifiers": 14,
     "ScalarExpressions": 60,
     "TypeConversion": 3,
@@ -4586,6 +4587,268 @@
             "people": 2
           }
         ]
+      }
+    },
+    {
+      "id": "return-star-single-node",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN *",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "p.__id": 1,
+            "p.__labels": [
+              "Person"
+            ],
+            "p.active": true,
+            "p.age": 34,
+            "p.city": "London",
+            "p.name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-star-node-relationship-node",
+      "feature": "ReturnProjection",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN *",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a.__id": 1,
+            "a.__labels": [
+              "Person"
+            ],
+            "a.active": true,
+            "a.age": 34,
+            "a.city": "London",
+            "a.name": "Alice",
+            "b.__id": 2,
+            "b.__labels": [
+              "Person"
+            ],
+            "b.active": false,
+            "b.age": 29,
+            "b.city": "",
+            "b.name": "Bob",
+            "r.__id": 100,
+            "r.__type": "KNOWS",
+            "r.since": 2020,
+            "r.strength": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-star-with-explicit-projection",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN *, p.city AS hometown",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "hometown": "London",
+            "p.__id": 1,
+            "p.__labels": [
+              "Person"
+            ],
+            "p.active": true,
+            "p.age": 34,
+            "p.city": "London",
+            "p.name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-aliased-property",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob"
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-same-expression-different-aliases",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.age AS age, p.age AS years",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 34,
+            "years": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-multiple-aliased-properties",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) RETURN p.city AS city, p.name AS name, p.age AS age ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 34,
+            "city": "London",
+            "name": "Alice"
+          },
+          {
+            "age": 29,
+            "city": "",
+            "name": "Bob"
+          },
+          {
+            "age": 41,
+            "city": "Paris",
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-property-and-literal",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) RETURN p.name AS name, 'person' AS kind, true AS matched ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "kind": "person",
+            "matched": true,
+            "name": "Alice"
+          },
+          {
+            "kind": "person",
+            "matched": true,
+            "name": "Bob"
+          },
+          {
+            "kind": "person",
+            "matched": true,
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-property-arithmetic-expression",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age + 1 AS next_age ORDER BY next_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "next_age": 30
+          },
+          {
+            "name": "Alice",
+            "next_age": 35
+          },
+          {
+            "name": "Carol",
+            "next_age": 42
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-relationship-property-projection",
+      "feature": "ReturnProjection",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, r.since AS since, r.strength AS strength ORDER BY since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "since": 2020,
+            "source": "Alice",
+            "strength": 0.9,
+            "target": "Bob"
+          },
+          {
+            "since": 2021,
+            "source": "Bob",
+            "strength": 0.7,
+            "target": "Carol"
+          },
+          {
+            "since": 2022,
+            "source": "Alice",
+            "strength": 0.3,
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-node-variable-expands-properties",
+      "feature": "ReturnProjection",
+      "query": "MATCH (p:Person) WHERE p.name = 'Bob' RETURN p AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person.__id": 2,
+            "person.__labels": [
+              "Person"
+            ],
+            "person.active": false,
+            "person.age": 29,
+            "person.city": "",
+            "person.name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-relationship-variable-expands-properties",
+      "feature": "ReturnProjection",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) WHERE r.since = 2021 RETURN r AS rel",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rel.__id": 101,
+            "rel.__type": "KNOWS",
+            "rel.since": 2021,
+            "rel.strength": 0.7
+          }
+        ]
+      }
+    },
+    {
+      "id": "return-star-path-variable-rejected",
+      "feature": "ReturnProjection",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN *",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN * cannot carry path variables"
       }
     },
     {
