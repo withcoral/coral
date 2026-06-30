@@ -6,7 +6,7 @@
     "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 2,
-    "GraphMetadata": 5,
+    "GraphMetadata": 19,
     "ListExpressions": 36,
     "LiteralExpressions": 15,
     "MapExpressions": 19,
@@ -4102,6 +4102,310 @@
             "key_count": 4
           }
         ]
+      }
+    },
+    {
+      "id": "node-labels-list",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN p.name AS name, labels(p) AS labels ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "labels": [
+              "Person"
+            ]
+          },
+          {
+            "name": "Bob",
+            "labels": [
+              "Person"
+            ]
+          },
+          {
+            "name": "Carol",
+            "labels": [
+              "Person"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "node-keys-list",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN p.name AS name, keys(p) AS property_keys ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "property_keys": [
+              "active",
+              "age",
+              "city",
+              "name"
+            ]
+          },
+          {
+            "name": "Bob",
+            "property_keys": [
+              "active",
+              "age",
+              "city",
+              "name"
+            ]
+          },
+          {
+            "name": "Carol",
+            "property_keys": [
+              "active",
+              "age",
+              "city",
+              "name"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-keys-list",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN id(r) AS relationship_id, keys(r) AS property_keys ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationship_id": 100,
+            "property_keys": [
+              "since",
+              "strength"
+            ]
+          },
+          {
+            "relationship_id": 101,
+            "property_keys": [
+              "since",
+              "strength"
+            ]
+          },
+          {
+            "relationship_id": 102,
+            "property_keys": [
+              "since",
+              "strength"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-node-keys-rejected",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) UNWIND keys(p) AS key RETURN DISTINCT key AS property_key",
+      "expected": {
+        "kind": "error",
+        "contains": "UNWIND currently supports literal lists"
+      }
+    },
+    {
+      "id": "keys-property-existence",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN p.name AS name, 'city' IN keys(p) AS has_city, 'missing' IN keys(p) AS has_missing ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "has_city": true,
+            "has_missing": false
+          },
+          {
+            "name": "Bob",
+            "has_city": true,
+            "has_missing": false
+          },
+          {
+            "name": "Carol",
+            "has_city": true,
+            "has_missing": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-keys-property-existence",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN id(r) AS relationship_id, 'since' IN keys(r) AS has_since, 'city' IN keys(r) AS has_city ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationship_id": 100,
+            "has_since": true,
+            "has_city": false
+          },
+          {
+            "relationship_id": 101,
+            "has_since": true,
+            "has_city": false
+          },
+          {
+            "relationship_id": 102,
+            "has_since": true,
+            "has_city": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-element-id-function",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN id(r) AS relationship_id, elementId(r) AS element_id ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationship_id": 100,
+            "element_id": "100"
+          },
+          {
+            "relationship_id": 101,
+            "element_id": "101"
+          },
+          {
+            "relationship_id": 102,
+            "element_id": "102"
+          }
+        ]
+      }
+    },
+    {
+      "id": "id-in-list-predicate",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) WHERE id(p) IN [1, 3] RETURN p.name AS name ORDER BY id(p)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "type-equality-predicate",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) WHERE type(r) = 'KNOWS' RETURN count(r) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "relationships": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-type-null",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(:Person {name: 'Nobody'}) RETURN p.name AS name, type(r) AS relationship_type ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "endpoint-labels-function",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN id(r) AS relationship_id, labels(startNode(r))[0] AS source_label, labels(endNode(r))[0] AS target_label ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationship_id": 100,
+            "source_label": "Person",
+            "target_label": "Person"
+          },
+          {
+            "relationship_id": 101,
+            "source_label": "Person",
+            "target_label": "Person"
+          },
+          {
+            "relationship_id": 102,
+            "source_label": "Person",
+            "target_label": "Person"
+          }
+        ]
+      }
+    },
+    {
+      "id": "endpoint-keys-membership",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN id(r) AS relationship_id, 'active' IN keys(startNode(r)) AS source_has_active, 'since' IN keys(endNode(r)) AS target_has_since ORDER BY relationship_id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationship_id": 100,
+            "source_has_active": true,
+            "target_has_since": false
+          },
+          {
+            "relationship_id": 101,
+            "source_has_active": true,
+            "target_has_since": false
+          },
+          {
+            "relationship_id": 102,
+            "source_has_active": true,
+            "target_has_since": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "properties-node-map-projection-rejected",
+      "feature": "GraphMetadata",
+      "query": "MATCH (p:Person) RETURN properties(p) AS properties",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'properties' is not supported yet"
+      }
+    },
+    {
+      "id": "properties-relationship-map-projection-rejected",
+      "feature": "GraphMetadata",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN properties(r) AS properties",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'properties' is not supported yet"
       }
     },
     {
