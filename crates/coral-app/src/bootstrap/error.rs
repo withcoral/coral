@@ -87,6 +87,7 @@ impl From<DbError> for AppError {
             DbError::Config(detail) => {
                 Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
             }
+            DbError::InvalidData(detail) => Self::Database(detail),
             DbError::MissingDatabaseParent(path) => Self::FailedPrecondition(format!(
                 "database file parent directory is missing for {}",
                 path.display()

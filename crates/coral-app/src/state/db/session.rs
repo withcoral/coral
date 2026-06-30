@@ -6,18 +6,12 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::sources::SourcesRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
 pub(crate) trait DbSession {
     async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError>;
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "delete execution is used by the source repository in the next stacked PR"
-        )
-    )]
     async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
 
     async fn fetch_optional<T>(&mut self, statement: SelectStatement) -> Result<Option<T>, DbError>
@@ -36,6 +30,10 @@ pub(crate) trait DbSession {
 pub(crate) trait DbRepos: DbSession + Sized {
     fn workspaces(&mut self) -> WorkspacesRepo<'_, Self> {
         WorkspacesRepo::new(self)
+    }
+
+    fn sources(&mut self) -> SourcesRepo<'_, Self> {
+        SourcesRepo::new(self)
     }
 }
 
