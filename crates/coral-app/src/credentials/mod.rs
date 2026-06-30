@@ -48,6 +48,7 @@ impl CredentialMaterialSnapshot {
 pub(crate) enum CredentialStorageKind {
     File,
     Keychain,
+    Database,
 }
 
 impl CredentialStorageKind {
@@ -55,6 +56,7 @@ impl CredentialStorageKind {
         match self {
             Self::File => "file",
             Self::Keychain => "keychain",
+            Self::Database => "database",
         }
     }
 }
@@ -73,6 +75,7 @@ pub(crate) enum CredentialStoragePreference {
     Auto,
     File,
     Keychain,
+    Database,
 }
 
 /// Result of replacing credential material.
@@ -242,6 +245,16 @@ impl CredentialManager {
         inputs: &[ManifestInputSpec],
         material: &mut BTreeMap<String, String>,
     ) -> Result<(), AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self
+                .refresh_and_persist_database_oauth_material(
+                    workspace_name,
+                    credential_set_id,
+                    inputs,
+                    material,
+                )
+                .await;
+        }
         for input in inputs {
             if self.refresh_oauth_input_material(input, material).await? {
                 *material = self.persist_refreshed_oauth_material(
@@ -251,6 +264,37 @@ impl CredentialManager {
                     &input.key,
                     material,
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn refresh_and_persist_database_oauth_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        inputs: &[ManifestInputSpec],
+        material: &mut BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        for input in inputs {
+            loop {
+                let current = self
+                    .store
+                    .read_database_material_for_update(workspace_name, credential_set_id)?;
+                let mut next = current.values;
+                if !self.refresh_oauth_input_material(input, &mut next).await? {
+                    *material = next;
+                    break;
+                }
+                if self.store.replace_database_material_if_current(
+                    workspace_name,
+                    credential_set_id,
+                    current.document_version,
+                    &next,
+                )? {
+                    *material = next;
+                    break;
+                }
             }
         }
         Ok(())

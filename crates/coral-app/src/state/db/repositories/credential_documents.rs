@@ -113,17 +113,16 @@ impl<S> CredentialDocumentsRepo<'_, S>
 where
     S: DbWriteSession,
 {
-    pub(crate) async fn upsert(
+    pub(crate) async fn insert_if_absent(
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
         document: &CredentialDocumentWrite,
         now_unix_nanos: i64,
-    ) -> Result<CredentialDocumentRecord, DbError> {
-        let current_document_version = Expr::col((
-            CredentialDocuments::Table,
-            CredentialDocuments::DocumentVersion,
-        ));
+    ) -> Result<bool, DbError> {
+        if self.get(workspace_name, source_name).await?.is_some() {
+            return Ok(false);
+        }
         let statement = Query::insert()
             .into_table(CredentialDocuments::Table)
             .columns([
@@ -159,33 +158,31 @@ where
                     CredentialDocuments::WorkspaceId,
                     CredentialDocuments::SourceName,
                 ])
-                .value(
-                    CredentialDocuments::DocumentVersion,
-                    Expr::case(current_document_version.clone().eq(i64::MAX), Expr::null())
-                        .finally(current_document_version.add(1)),
-                )
-                .update_columns([
-                    CredentialDocuments::Ciphertext,
-                    CredentialDocuments::Nonce,
-                    CredentialDocuments::WrappedDek,
-                    CredentialDocuments::WrappedDekNonce,
-                    CredentialDocuments::KeyId,
-                    CredentialDocuments::Algorithm,
-                    CredentialDocuments::AadVersion,
-                    CredentialDocuments::UpdatedAtUnixNanos,
-                ])
+                .do_nothing()
                 .to_owned(),
             )
             .to_owned();
         self.session.execute(statement).await?;
-        self.get(workspace_name, source_name).await?.ok_or_else(|| {
-            DbError::InvalidData(format!(
-                "credential document upsert did not return a row for {workspace_name}:{source_name}"
-            ))
-        })
+        Ok(self
+            .get(workspace_name, source_name)
+            .await?
+            .is_some_and(|record| document_matches_record(document, &record)))
     }
 
-    pub(crate) async fn rewrap_if_current(
+    #[cfg(test)]
+    pub(crate) async fn upsert(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        document: &CredentialDocumentWrite,
+        now_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        self.insert_if_absent(workspace_name, source_name, document, now_unix_nanos)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn replace_if_current(
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
@@ -245,6 +242,24 @@ where
         Ok(self.session.execute_update(statement).await? == 1)
     }
 
+    pub(crate) async fn rewrap_if_current(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        expected_document_version: i64,
+        document: &CredentialDocumentWrite,
+        now_unix_nanos: i64,
+    ) -> Result<bool, DbError> {
+        self.replace_if_current(
+            workspace_name,
+            source_name,
+            expected_document_version,
+            document,
+            now_unix_nanos,
+        )
+        .await
+    }
+
     pub(crate) async fn remove(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -274,6 +289,20 @@ fn record_columns() -> [CredentialDocuments; 10] {
         CredentialDocuments::CreatedAtUnixNanos,
         CredentialDocuments::UpdatedAtUnixNanos,
     ]
+}
+
+fn document_matches_record(
+    document: &CredentialDocumentWrite,
+    record: &CredentialDocumentRecord,
+) -> bool {
+    record.document_version == 1
+        && record.ciphertext == document.ciphertext
+        && record.nonce == document.nonce
+        && record.wrapped_dek == document.wrapped_dek
+        && record.wrapped_dek_nonce == document.wrapped_dek_nonce
+        && record.key_id == document.key_id
+        && record.algorithm == document.algorithm
+        && record.aad_version == document.aad_version
 }
 
 #[cfg(test)]
@@ -330,6 +359,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn credential_document_repository_rejects_document_without_workspace_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("missing").expect("source name");
+
+        let mut tx = db.begin().await.expect("begin tx");
+        let error = tx
+            .credential_documents()
+            .insert_if_absent(
+                &workspace,
+                &source_name,
+                &document_write("key-1", b"secret"),
+                10,
+            )
+            .await
+            .expect_err("credential document rows must require an existing workspace");
+
+        assert!(
+            error.to_string().to_lowercase().contains("foreign key"),
+            "unexpected error: {error}"
+        );
+        tx.rollback().await.expect("rollback failed tx");
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn credential_document_repository_round_trips_against_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
@@ -349,20 +409,26 @@ mod tests {
 
         let mut tx = db.begin().await.expect("begin tx");
         seed_source(&mut tx, &workspace, &source_name).await;
-        upsert_document(&mut tx, &workspace, &source_name, "key-1", b"first", 10).await;
+        assert!(insert_document(&mut tx, &workspace, &source_name, "key-1", b"first", 10).await);
         tx.commit().await.expect("commit first document");
 
         let mut tx = db.begin().await.expect("begin replacement tx");
-        let replacement = upsert_document(
-            &mut tx,
-            &workspace,
-            &source_name,
-            "key-2",
-            b"replacement",
-            20,
-        )
-        .await;
+        assert!(
+            replace_document(
+                &mut tx,
+                &workspace,
+                &source_name,
+                1,
+                "key-2",
+                b"replacement",
+                20
+            )
+            .await
+        );
         tx.commit().await.expect("commit replacement document");
+        let replacement = get_document(db, &workspace, &source_name)
+            .await
+            .expect("replacement document");
 
         assert_document(&replacement, 2, "key-2", b"replacement", 10, 20);
         let debug = format!(
@@ -469,23 +535,44 @@ mod tests {
             .expect("get credential document")
     }
 
-    async fn upsert_document(
+    async fn insert_document(
         tx: &mut CoralTx<'_>,
         workspace: &WorkspaceName,
         source_name: &SourceName,
         key_id: &str,
         ciphertext: &[u8],
         now_unix_nanos: i64,
-    ) -> CredentialDocumentRecord {
+    ) -> bool {
         tx.credential_documents()
-            .upsert(
+            .insert_if_absent(
                 workspace,
                 source_name,
                 &document_write(key_id, ciphertext),
                 now_unix_nanos,
             )
             .await
-            .expect("upsert credential document")
+            .expect("insert credential document")
+    }
+
+    async fn replace_document(
+        tx: &mut CoralTx<'_>,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        expected_document_version: i64,
+        key_id: &str,
+        ciphertext: &[u8],
+        now_unix_nanos: i64,
+    ) -> bool {
+        tx.credential_documents()
+            .replace_if_current(
+                workspace,
+                source_name,
+                expected_document_version,
+                &document_write(key_id, ciphertext),
+                now_unix_nanos,
+            )
+            .await
+            .expect("replace credential document")
     }
 
     async fn rewrap_document(

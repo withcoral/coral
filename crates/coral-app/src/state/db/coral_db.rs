@@ -36,6 +36,10 @@ impl CoralDb {
         }
         Ok(())
     }
+
+    pub(crate) fn is_postgres(&self) -> bool {
+        matches!(self.backend, CoralDbBackend::Postgres(_))
+    }
 }
 
 async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {

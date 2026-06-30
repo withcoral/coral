@@ -562,6 +562,7 @@ fn proto_source_credential_storage(
     match storage {
         Some(CredentialStorageKind::File) => ProtoSourceCredentialStorage::File,
         Some(CredentialStorageKind::Keychain) => ProtoSourceCredentialStorage::Keychain,
+        Some(CredentialStorageKind::Database) => ProtoSourceCredentialStorage::Unspecified,
         None => ProtoSourceCredentialStorage::Unspecified,
     }
 }

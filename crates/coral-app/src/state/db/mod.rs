@@ -25,10 +25,6 @@ pub(crate) use error::DbError;
 pub(crate) use import::{
     import_config_source_catalog, import_filesystem_episodes, import_filesystem_feedback_reports,
 };
-#[expect(
-    unused_imports,
-    reason = "Credential runtime branches consume these once restacked."
-)]
 pub(crate) use repositories::credential_documents::{
     CredentialDocumentRecord, CredentialDocumentWrite,
 };
