@@ -233,6 +233,15 @@ struct ListComprehensionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticReduceSource {
+    accumulator_variable: String,
+    initial_source: String,
+    item_variable: String,
+    collection_source: String,
+    expression_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct InlinePropertyValueSource {
     source: String,
     end: usize,
@@ -297,8 +306,37 @@ impl StaticListCastTarget {
 struct StaticFilterEvaluation<'a> {
     variable: &'a str,
     item: &'a Literal,
+    accumulator_variable: Option<&'a str>,
+    accumulator: Option<&'a Literal>,
     mode: PredicateCompileMode<'a>,
     context: &'a CypherCompileContext,
+}
+
+impl<'a> StaticFilterEvaluation<'a> {
+    fn literal_for_variable(self, variable: &str) -> Option<&'a Literal> {
+        if variable == self.variable {
+            return Some(self.item);
+        }
+        if self
+            .accumulator_variable
+            .is_some_and(|accumulator| accumulator == variable)
+        {
+            return self.accumulator;
+        }
+        None
+    }
+
+    fn expected_variable_message(self) -> String {
+        match self.accumulator_variable {
+            Some(accumulator) => {
+                format!(
+                    "the item variable '{}' or accumulator variable '{}'",
+                    self.variable, accumulator
+                )
+            }
+            None => format!("the item variable '{}'", self.variable),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -361,6 +399,7 @@ struct CypherCompileContext {
     function_argument_sources: BTreeMap<(usize, usize), FunctionArgumentSources>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
+    static_reduce_sources: BTreeMap<(usize, usize), StaticReduceSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
     inline_property_value_sources: BTreeMap<usize, InlinePropertyValueSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
@@ -381,6 +420,7 @@ impl CypherCompileContext {
             function_argument_sources: collect_function_argument_sources(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
+            static_reduce_sources: collect_static_reduce_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
             inline_property_value_sources: collect_inline_property_value_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
@@ -425,6 +465,11 @@ impl CypherCompileContext {
     ) -> Option<&ListComprehensionSource> {
         self.list_comprehension_sources
             .get(&(comprehension.span.start, comprehension.span.end))
+    }
+
+    fn static_reduce_source(&self, function: &FunctionInvocation) -> Option<&StaticReduceSource> {
+        self.static_reduce_sources
+            .get(&(function.span.start, function.span.end))
     }
 
     fn unwind_expression_source(&self, unwind: &Unwind) -> Option<&str> {
@@ -12228,12 +12273,16 @@ fn evaluate_static_list_comprehension_value(
             let filter_evaluation = StaticFilterEvaluation {
                 variable: evaluation.variable,
                 item,
+                accumulator_variable: None,
+                accumulator: None,
                 mode: evaluation.mode,
                 context: evaluation.filter_context,
             };
             let map_evaluation = StaticFilterEvaluation {
                 variable: evaluation.variable,
                 item,
+                accumulator_variable: None,
+                accumulator: None,
                 mode: evaluation.mode,
                 context: evaluation.map_context,
             };
@@ -12633,19 +12682,21 @@ fn evaluate_static_map_expression(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => evaluate_static_map_expression(inner, evaluation, path),
-        Expression::Variable(variable_ref)
-            if variable_name(variable_ref) == evaluation.variable =>
-        {
-            Ok(evaluation.item.clone())
+        Expression::Variable(variable_ref) => {
+            let variable = variable_name(variable_ref);
+            evaluation
+                .literal_for_variable(&variable)
+                .cloned()
+                .ok_or_else(|| {
+                    unsupported(
+                        path,
+                        format!(
+                            "static map variable '{variable}' is not {}",
+                            evaluation.expected_variable_message()
+                        ),
+                    )
+                })
         }
-        Expression::Variable(variable_ref) => Err(unsupported(
-            path,
-            format!(
-                "list comprehension map variable '{}' is not the item variable '{}'",
-                variable_name(variable_ref),
-                evaluation.variable,
-            ),
-        )),
         Expression::Literal(_) | Expression::Parameter(_) => {
             compile_literal(expression, path, evaluation.context)
         }
@@ -13273,12 +13324,16 @@ fn evaluate_static_map_function_arguments(
 
     let variable_argument = evaluation.context.variable_function_argument_info(function);
     if let Some(argument) = variable_argument {
-        if argument.variable != evaluation.variable {
+        if evaluation
+            .literal_for_variable(argument.variable.as_str())
+            .is_none()
+        {
             return Err(unsupported(
                 format!("{path}.arguments"),
                 format!(
-                    "{function_name}() argument '{}' is not the item variable '{}'",
-                    argument.variable, evaluation.variable
+                    "{function_name}() argument '{}' is not {}",
+                    argument.variable,
+                    evaluation.expected_variable_message()
                 ),
             ));
         }
@@ -13309,7 +13364,10 @@ fn evaluate_static_map_function_arguments(
         })
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(argument) = variable_argument {
-        literals.insert(argument.index, evaluation.item.clone());
+        let literal = evaluation
+            .literal_for_variable(argument.variable.as_str())
+            .ok_or_else(|| CoreError::internal("validated static function variable was missing"))?;
+        literals.insert(argument.index, literal.clone());
     }
     Ok(literals)
 }
@@ -13340,13 +13398,14 @@ fn evaluate_static_map_function_argument_sources(
             )
             .map_err(|error| {
                 if parse_collection_filter_variable(source)
-                    .is_some_and(|variable| variable != evaluation.variable)
+                    .is_some_and(|variable| evaluation.literal_for_variable(&variable).is_none())
                 {
                     unsupported(
                         format!("{path}.arguments[{index}]"),
                         format!(
-                            "{function_name}() argument '{}' is not the item variable '{}'",
-                            source, evaluation.variable
+                            "{function_name}() argument '{}' is not {}",
+                            source,
+                            evaluation.expected_variable_message()
                         ),
                     )
                 } else {
@@ -18119,6 +18178,128 @@ fn static_list_is_empty_scalar_expression(value: StaticListValue) -> ScalarExpre
     )
 }
 
+#[derive(Clone, Copy)]
+struct StaticReduceEvaluation<'a> {
+    items: &'a [Literal],
+    accumulator_variable: &'a str,
+    item_variable: &'a str,
+    expression: &'a Expression,
+    mode: PredicateCompileMode<'a>,
+    context: &'a CypherCompileContext,
+}
+
+fn compile_static_reduce_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if function.distinct {
+        return Err(unsupported(
+            path,
+            "reduce(DISTINCT ...) is not valid Cypher syntax",
+        ));
+    }
+    let source = context.static_reduce_source(function).ok_or_else(|| {
+        unsupported(
+            format!("{path}.arguments"),
+            "reduce() requires accumulator initialization, item IN collection, and reducer expression",
+        )
+    })?;
+    if source.accumulator_variable == source.item_variable {
+        return Err(unsupported(
+            format!("{path}.arguments[1]"),
+            "reduce() accumulator and item variables must be distinct",
+        ));
+    }
+    let (initial, initial_context) = parse_cypher_expression_fragment(
+        &source.initial_source,
+        format!("{path}.arguments[0].initial"),
+        context,
+    )?;
+    let accumulator = compile_static_reduce_initial_literal(
+        &initial,
+        format!("{path}.arguments[0].initial"),
+        mode,
+        &initial_context,
+    )?;
+    let collection = compile_static_list_value_source(
+        &source.collection_source,
+        format!("{path}.arguments[1].collection"),
+        mode.static_metadata_plan(),
+        context,
+    )?
+    .ok_or_else(|| {
+        unsupported(
+            format!("{path}.arguments[1].collection"),
+            "reduce() requires a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list",
+        )
+    })?;
+    let (expression, expression_context) = parse_cypher_expression_fragment(
+        &source.expression_source,
+        format!("{path}.expression"),
+        context,
+    )?;
+    let presence_variable = collection.presence_variable.clone();
+    let accumulator = evaluate_static_reduce(
+        accumulator,
+        StaticReduceEvaluation {
+            items: &collection.literals,
+            accumulator_variable: &source.accumulator_variable,
+            item_variable: &source.item_variable,
+            expression: &expression,
+            mode,
+            context: &expression_context,
+        },
+        path,
+    )?;
+    Ok(presence_gate_scalar_expression(
+        presence_variable,
+        ScalarExpression::Literal(accumulator),
+    ))
+}
+
+fn compile_static_reduce_initial_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    compile_optional_static_literal_scalar_operand(expression, path.clone(), mode, context)?
+        .ok_or_else(|| {
+            unsupported(
+                path,
+                "reduce() initial accumulator must be a scalar literal, scalar parameter, or static scalar expression",
+            )
+        })
+}
+
+fn evaluate_static_reduce(
+    mut accumulator: Literal,
+    reduce: StaticReduceEvaluation<'_>,
+    path: impl Into<String>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    for (index, item) in reduce.items.iter().enumerate() {
+        let evaluation = StaticFilterEvaluation {
+            variable: reduce.item_variable,
+            item,
+            accumulator_variable: Some(reduce.accumulator_variable),
+            accumulator: Some(&accumulator),
+            mode: reduce.mode,
+            context: reduce.context,
+        };
+        accumulator = evaluate_static_map_expression(
+            reduce.expression,
+            evaluation,
+            format!("{path}.expression[{index}]"),
+        )?;
+    }
+    Ok(accumulator)
+}
+
 fn list_length_scalar_expression(length: usize) -> Result<ScalarExpression, CoreError> {
     let length = i64::try_from(length)
         .map_err(|error| CoreError::internal(format!("literal list length overflow: {error}")))?;
@@ -18817,6 +18998,8 @@ fn compile_core_scalar_function_expression(
         )?
     } else if is_tail_function(function) {
         compile_static_list_tail_scalar_expression(function, path, mode, context)?
+    } else if is_reduce_function(function) {
+        compile_static_reduce_scalar_expression(function, path, mode, context)?
     } else if is_character_length_function(function) {
         compile_character_length_scalar_expression(function, path, mode, context)?
     } else if is_substring_function(function) {
@@ -19224,7 +19407,7 @@ fn compile_scalar_expression_in_predicate_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }
@@ -20696,6 +20879,20 @@ fn collect_list_comprehension_sources(
         .collect()
 }
 
+fn collect_static_reduce_sources(cypher: &str) -> BTreeMap<(usize, usize), StaticReduceSource> {
+    // decypher's high-level AST does not expose reduce(acc = init, x IN list | expr)
+    // as three regular function arguments. Recover the header and reducer
+    // expression from the lossless CST, then parse each expression fragment
+    // through the normal expression compiler.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
+        .filter_map(|node| static_reduce_source_from_cst(cypher, &node))
+        .collect()
+}
+
 fn collect_unwind_expression_sources(cypher: &str) -> BTreeMap<(usize, usize), String> {
     // decypher's high-level AST can under-represent UNWIND expressions such as
     // `UNWIND ['a'] + $extra AS value`. Recover the full source expression from
@@ -21778,6 +21975,66 @@ fn parse_collection_filter_call_source(source: &str) -> Option<CollectionFilterC
     })
 }
 
+fn static_reduce_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), StaticReduceSource)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let reduce = parse_static_reduce_source(source)?;
+    Some(((start, end), reduce))
+}
+
+fn parse_static_reduce_source(source: &str) -> Option<StaticReduceSource> {
+    let open = source.find('(')?;
+    let close = source.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let function_name = source.get(..open)?.trim();
+    if !function_name.eq_ignore_ascii_case("reduce") {
+        return None;
+    }
+
+    let inner = source.get(open + 1..close)?.trim();
+    let comma = find_top_level_character(inner, ',')?;
+    let accumulator_source = inner.get(..comma)?.trim();
+    let source_and_expression = inner.get(comma + 1..)?.trim();
+
+    let equals = find_top_level_character(accumulator_source, '=')?;
+    let accumulator_variable =
+        parse_collection_filter_variable(accumulator_source.get(..equals)?.trim())?;
+    let initial_source = accumulator_source.get(equals + 1..)?.trim();
+    if initial_source.is_empty() {
+        return None;
+    }
+
+    let pipe = find_top_level_character(source_and_expression, '|')?;
+    let collection_header = source_and_expression.get(..pipe)?.trim();
+    let expression_source = source_and_expression.get(pipe + 1..)?.trim();
+    if expression_source.is_empty() {
+        return None;
+    }
+
+    let in_index = find_top_level_keyword(collection_header, "IN")?;
+    let item_variable =
+        parse_collection_filter_variable(collection_header.get(..in_index)?.trim())?;
+    let collection_source = collection_header.get(in_index + "IN".len()..)?.trim();
+    if collection_source.is_empty() {
+        return None;
+    }
+
+    Some(StaticReduceSource {
+        accumulator_variable,
+        initial_source: initial_source.to_string(),
+        item_variable,
+        collection_source: collection_source.to_string(),
+        expression_source: expression_source.to_string(),
+    })
+}
+
 fn parse_collection_filter_variable(source: &str) -> Option<String> {
     if source.is_empty() {
         return None;
@@ -22730,6 +22987,13 @@ fn is_tail_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("tail")
+    )
+}
+
+fn is_reduce_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("reduce")
     )
 }
 
@@ -24833,6 +25097,8 @@ fn compile_optional_static_literal_scalar_operand(
     let evaluation = StaticFilterEvaluation {
         variable: "__coral_static_literal_operand",
         item: &item,
+        accumulator_variable: None,
+        accumulator: None,
         mode,
         context,
     };
@@ -26083,6 +26349,8 @@ fn compile_static_list_quantifier_value_predicate(
             let evaluation = StaticFilterEvaluation {
                 variable,
                 item,
+                accumulator_variable: None,
+                accumulator: None,
                 mode,
                 context,
             };
@@ -26706,10 +26974,18 @@ fn evaluate_static_filter_predicate_expression(
         Expression::Literal(CypherLiteral::Boolean(value)) => {
             Ok(StaticBooleanOutcome::from_bool(*value))
         }
-        Expression::Variable(variable_ref)
-            if variable_name(variable_ref) == evaluation.variable =>
-        {
-            static_boolean_outcome_from_literal(evaluation.item, path)
+        Expression::Variable(variable_ref) => {
+            let variable = variable_name(variable_ref);
+            let literal = evaluation.literal_for_variable(&variable).ok_or_else(|| {
+                unsupported(
+                    path.clone(),
+                    format!(
+                        "collection predicate variable '{variable}' is not {}",
+                        evaluation.expected_variable_message()
+                    ),
+                )
+            })?;
+            static_boolean_outcome_from_literal(literal, path)
         }
         _ => Err(unsupported(
             path,
@@ -26861,19 +27137,21 @@ fn compile_static_filter_literal_operand(
         Expression::Parenthesized(inner) => {
             compile_static_filter_literal_operand(inner, evaluation, path)
         }
-        Expression::Variable(variable_ref)
-            if variable_name(variable_ref) == evaluation.variable =>
-        {
-            Ok(evaluation.item.clone())
+        Expression::Variable(variable_ref) => {
+            let variable = variable_name(variable_ref);
+            evaluation
+                .literal_for_variable(&variable)
+                .cloned()
+                .ok_or_else(|| {
+                    unsupported(
+                        path,
+                        format!(
+                            "collection predicate variable '{variable}' is not {}",
+                            evaluation.expected_variable_message()
+                        ),
+                    )
+                })
         }
-        Expression::Variable(variable_ref) => Err(unsupported(
-            path,
-            format!(
-                "collection predicate item variable '{}' is not the filter variable '{}'",
-                variable_name(variable_ref),
-                evaluation.variable,
-            ),
-        )),
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             ..
@@ -41604,6 +41882,86 @@ relationships:
                     Literal::String("DEV".to_string()),
                 ]
         ));
+    }
+
+    #[test]
+    fn compiles_static_reduce_scalar_expressions() {
+        let parameters = BTreeMap::from([
+            (
+                "seed".to_string(),
+                CypherParameterValue::Literal(Literal::Integer(1)),
+            ),
+            (
+                "weights".to_string(),
+                CypherParameterValue::List(vec![Literal::Integer(2), Literal::Integer(4)]),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             WHERE reduce(total = 0, x IN range(1, 3) | total + x) = 6 \
+             RETURN reduce(total = $seed, x IN $weights | total + x) AS weighted, \
+                    reduce(found = false, key IN ['name', 'tier'] | found OR key = 'tier') AS has_tier \
+             ORDER BY reduce(total = 0, x IN [3, 1] | total + x)",
+            &parameters,
+        )
+        .expect("static reduce scalar expressions should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Integer(7)),
+                    alias: weighted_alias,
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::Literal(Literal::Boolean(true)),
+                    alias: has_tier_alias,
+                },
+            ] if weighted_alias == "weighted" && has_tier_alias == "has_tier"
+        ));
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::Literal(Literal::Integer(4))),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_static_reduce_unsupported_shapes() {
+        let dynamic_collection = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN reduce(total = 0, x IN service.name | total + x) AS total",
+        )
+        .expect_err("dynamic reduce collection should be rejected");
+        assert!(
+            dynamic_collection
+                .to_string()
+                .contains("reduce() requires a literal list"),
+            "{dynamic_collection}"
+        );
+
+        let dynamic_initial = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN reduce(total = service.risk, x IN [1, 2] | total + x) AS total",
+        )
+        .expect_err("dynamic reduce initial accumulator should be rejected");
+        assert!(
+            dynamic_initial.to_string().contains("initial accumulator"),
+            "{dynamic_initial}"
+        );
+
+        let reused_variable = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN reduce(total = 0, total IN [1, 2] | total + total) AS total",
+        )
+        .expect_err("reduce should reject reused accumulator and item variables");
+        assert!(
+            reused_variable.to_string().contains("must be distinct"),
+            "{reused_variable}"
+        );
     }
 
     #[test]

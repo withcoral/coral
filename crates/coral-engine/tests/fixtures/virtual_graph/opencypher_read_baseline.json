@@ -8,7 +8,7 @@
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 9,
+    "ListExpressions": 10,
     "MapExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 5,
@@ -835,6 +835,18 @@
         "rows": [
           { "person": "Bob", "first_key_is_active": true, "middle_keys_include_city": true },
           { "person": "Carol", "first_key_is_active": false, "middle_keys_include_city": false }
+        ]
+      }
+    },
+    {
+      "id": "static-list-reduce-expression",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN reduce(total = 0, x IN range(1, 3) | total + x) AS total, reduce(found = false, city IN ['Paris', 'London'] | found OR city = 'London') AS city_seen",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "total": 6, "city_seen": true }
         ]
       }
     },

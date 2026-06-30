@@ -17417,6 +17417,43 @@ async fn cypher_static_list_comprehension_cast_maps_execute_against_synthetic_so
 }
 
 #[tokio::test]
+async fn cypher_static_reduce_expressions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         WHERE reduce(total = 0, x IN range(1, 3) | total + x) = 6 \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                reduce(total = 0, x IN [1, 2, 3] | total + x) AS weight, \
+                reduce(found = false, key IN keys(service) | found OR key = 'tier') AS has_tier_key \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("static reduce expressions should execute");
+
+    assert!(
+        execution.translated_sql().contains(" AS \"weight\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "weight": 6, "has_tier_key": true}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "weight": 6, "has_tier_key": true}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "weight": 6, "has_tier_key": true}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_comparison_predicates_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
