@@ -298,7 +298,8 @@ where
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
             .and_where(Expr::col(Sources::Name).eq(source.name.as_str()))
             .to_owned();
-        self.session.execute_update(statement).await
+        self.session.execute_update(statement).await?;
+        Ok(())
     }
 
     async fn insert_source_variables(

@@ -1,4 +1,5 @@
 pub(crate) mod app_state_markers;
+pub(crate) mod credential_documents;
 pub(crate) mod episodes;
 pub(crate) mod feedback_reports;
 pub(crate) mod materializations;

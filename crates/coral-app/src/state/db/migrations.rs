@@ -74,13 +74,17 @@ mod tests {
 
     use super::{MIGRATOR, rows_match_current_migrations};
     use crate::bootstrap;
+    use crate::sources::SourceName;
     use crate::state::AppStateLayout;
+    use crate::state::db::repositories::credential_documents::CredentialDocumentWrite;
     use crate::state::db::schema::{
         SourceManifests, SourceSecretKeys, SourceVariables, Sources, Workspaces,
     };
+    use crate::state::db::session::DbRepos;
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbError, DbSession, DbWriteSession, ResolvedDatabaseConfig,
     };
+    use crate::workspaces::WorkspaceName;
 
     #[derive(Debug, sqlx::FromRow)]
     struct CountRow {
@@ -159,11 +163,18 @@ mod tests {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace_id = format!("workspace_{suffix}");
         let source_name = format!("source_{suffix}");
+        let workspace = WorkspaceName::parse(&workspace_id).expect("workspace");
+        let source = SourceName::parse(&source_name).expect("source name");
         let mut session = db.begin().await.expect("begin migration contract tx");
 
         insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
             .await
             .expect("insert source catalog rows");
+        session
+            .credential_documents()
+            .upsert(&workspace, &source, &credential_document_write(), 5)
+            .await
+            .expect("insert credential document row");
         assert_eq!(
             source_variable_count(&mut session, &workspace_id, &source_name)
                 .await
@@ -229,10 +240,23 @@ mod tests {
                 .expect("count manifests after source delete"),
             0
         );
+        assert!(
+            session
+                .credential_documents()
+                .get(&workspace, &source)
+                .await
+                .expect("get credential document after source delete")
+                .is_none()
+        );
 
         insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
             .await
             .expect("reinsert source catalog rows");
+        session
+            .credential_documents()
+            .upsert(&workspace, &source, &credential_document_write(), 5)
+            .await
+            .expect("reinsert credential document row");
         delete_workspace(&mut session, &workspace_id)
             .await
             .expect("delete workspace");
@@ -259,6 +283,14 @@ mod tests {
                 .await
                 .expect("count manifests after workspace delete"),
             0
+        );
+        assert!(
+            session
+                .credential_documents()
+                .get(&workspace, &source)
+                .await
+                .expect("get credential document after workspace delete")
+                .is_none()
         );
         session
             .commit()
@@ -315,6 +347,18 @@ mod tests {
         tx.rollback()
             .await
             .expect("rollback duplicate secret key tx");
+    }
+
+    fn credential_document_write() -> CredentialDocumentWrite {
+        CredentialDocumentWrite {
+            ciphertext: b"ciphertext".to_vec(),
+            nonce: b"nonce".to_vec(),
+            wrapped_dek: b"wrapped-dek".to_vec(),
+            wrapped_dek_nonce: b"wrapped-dek-nonce".to_vec(),
+            key_id: "key-id".to_string(),
+            algorithm: "AES-256-GCM".to_string(),
+            aad_version: 1,
+        }
     }
 
     async fn insert_workspace_row<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>

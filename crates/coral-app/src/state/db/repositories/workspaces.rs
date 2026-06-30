@@ -89,7 +89,8 @@ where
             )
             .and_where(Expr::col(Workspaces::Id).eq(id))
             .to_owned();
-        self.session.execute_update(statement).await
+        self.session.execute_update(statement).await?;
+        Ok(())
     }
 
     pub(crate) async fn remove(&mut self, id: &str) -> Result<(), DbError> {

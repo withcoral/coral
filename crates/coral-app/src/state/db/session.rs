@@ -7,6 +7,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
 use crate::state::db::repositories::app_state_markers::AppStateMarkersRepo;
+use crate::state::db::repositories::credential_documents::CredentialDocumentsRepo;
 use crate::state::db::repositories::episodes::EpisodesRepo;
 use crate::state::db::repositories::feedback_reports::FeedbackReportsRepo;
 use crate::state::db::repositories::materializations::MaterializationsRepo;
@@ -33,7 +34,7 @@ pub(crate) trait DbSession {
 pub(crate) trait DbWriteSession: DbSession {
     async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
 
-    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<(), DbError>;
+    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<u64, DbError>;
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
@@ -59,6 +60,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn episodes(&mut self) -> EpisodesRepo<'_, Self> {
         EpisodesRepo::new(self)
+    }
+
+    fn credential_documents(&mut self) -> CredentialDocumentsRepo<'_, Self> {
+        CredentialDocumentsRepo::new(self)
     }
 
     fn app_state_markers(&mut self) -> AppStateMarkersRepo<'_, Self> {
@@ -97,7 +102,7 @@ impl DbWriteSession for CoralTx<'_> {
         self.execute_delete(statement).await
     }
 
-    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<(), DbError> {
+    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<u64, DbError> {
         self.execute_update(statement).await
     }
 }

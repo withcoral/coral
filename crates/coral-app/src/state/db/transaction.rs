@@ -83,22 +83,24 @@ impl<'a> CoralTx<'a> {
     pub(super) async fn execute_update(
         &mut self,
         statement: UpdateStatement,
-    ) -> Result<(), DbError> {
-        match &mut self.backend {
+    ) -> Result<u64, DbError> {
+        let rows_affected = match &mut self.backend {
             CoralTxBackend::Sqlite(tx) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
                 sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
                     .execute(&mut **tx)
-                    .await?;
+                    .await?
+                    .rows_affected()
             }
             CoralTxBackend::Postgres(tx) => {
                 let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
                 sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
                     .execute(&mut **tx)
-                    .await?;
+                    .await?
+                    .rows_affected()
             }
-        }
-        Ok(())
+        };
+        Ok(rows_affected)
     }
 
     pub(super) async fn fetch_optional<T>(
