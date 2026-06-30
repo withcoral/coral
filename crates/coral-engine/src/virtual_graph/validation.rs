@@ -1326,6 +1326,12 @@ impl<'a> GraphPlanValidator<'a> {
             Self::collect_scalar_expression_variables(right, variables);
             return;
         }
+        if let Some((first, second, third)) = Self::scalar_expression_ternary_operands(expression) {
+            Self::collect_scalar_expression_variables(first, variables);
+            Self::collect_scalar_expression_variables(second, variables);
+            Self::collect_scalar_expression_variables(third, variables);
+            return;
+        }
 
         match expression {
             ScalarExpression::Literal(_)
@@ -1370,15 +1376,6 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(places, variables);
                 }
             }
-            ScalarExpression::Replace {
-                expression,
-                search,
-                replacement,
-            } => {
-                Self::collect_scalar_expression_variables(expression, variables);
-                Self::collect_scalar_expression_variables(search, variables);
-                Self::collect_scalar_expression_variables(replacement, variables);
-            }
             ScalarExpression::Substring {
                 expression,
                 start,
@@ -1413,7 +1410,11 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::NullIf { expression, value } => Some((expression, value)),
             ScalarExpression::Left { expression, count }
             | ScalarExpression::Right { expression, count } => Some((expression, count)),
-            ScalarExpression::StringContains {
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringContains {
                 expression,
                 pattern,
             }
@@ -1427,6 +1428,29 @@ impl<'a> GraphPlanValidator<'a> {
             } => Some((expression, pattern)),
             ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
             ScalarExpression::Atan2 { y, x } => Some((y, x)),
+            _ => None,
+        }
+    }
+
+    fn scalar_expression_ternary_operands(
+        expression: &ScalarExpression,
+    ) -> Option<(&ScalarExpression, &ScalarExpression, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            }
+            | ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => Some((expression, length, fill)),
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => Some((expression, search, replacement)),
             _ => None,
         }
     }
@@ -3241,6 +3265,64 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::String)
             }
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            } => {
+                for (name, expression) in [
+                    ("expression", expression.as_ref()),
+                    ("pattern", pattern.as_ref()),
+                ] {
+                    let expression_type = self.infer_scoped_scalar_expression_type(
+                        expression,
+                        scope,
+                        format!("{path}.{name}"),
+                    )?;
+                    Self::require_string_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "indices",
+                    )?;
+                }
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            }
+            | ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => {
+                for (name, expression) in [
+                    ("expression", expression.as_ref()),
+                    ("fill", fill.as_ref()),
+                ] {
+                    let expression_type = self.infer_scoped_scalar_expression_type(
+                        expression,
+                        scope,
+                        format!("{path}.{name}"),
+                    )?;
+                    Self::require_string_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "padding string function",
+                    )?;
+                }
+                let length_type = self.infer_scoped_scalar_expression_type(
+                    length,
+                    scope,
+                    format!("{path}.length"),
+                )?;
+                Self::require_integer_compatible_type(
+                    length_type,
+                    format!("{path}.length"),
+                    "padding length",
+                )?;
+                Ok(ScalarType::String)
+            }
             ScalarExpression::StringContains {
                 expression,
                 pattern: operand,
@@ -4749,6 +4831,10 @@ impl<'a> GraphPlanValidator<'a> {
         expression: &ScalarExpression,
         path: &str,
     ) -> Result<ScalarType, CoreError> {
+        if let Some(scalar_type) = self.infer_string_scalar_function_type(expression, path)? {
+            return Ok(scalar_type);
+        }
+
         match expression {
             ScalarExpression::ToString { expression }
             | ScalarExpression::ToStringOrNull { expression } => {
@@ -4769,24 +4855,6 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::ToBooleanOrNull { expression } => {
                 self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
                 Ok(ScalarType::Boolean)
-            }
-            ScalarExpression::ToLower { expression }
-            | ScalarExpression::ToUpper { expression }
-            | ScalarExpression::Trim { expression }
-            | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression }
-            | ScalarExpression::Reverse { expression } => {
-                self.infer_string_unary_scalar_type(expression, path)
-            }
-            ScalarExpression::CharacterLength { expression } => {
-                let expression_type =
-                    self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
-                Self::require_string_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "character length",
-                )?;
-                Ok(ScalarType::Integer)
             }
             ScalarExpression::IsNaN { expression } => {
                 self.infer_is_nan_scalar_type(expression, path)
@@ -4814,10 +4882,60 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Round { expression, places } => {
                 self.infer_round_scalar_type(expression, places.as_deref(), path)
             }
-            ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => {
-                self.infer_sized_string_scalar_type(expression, count, path)
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                self.infer_arithmetic_scalar_type(left, right, path)
             }
+            ScalarExpression::Atan2 { y, x } => self.infer_atan2_scalar_type(y, x, path),
+            _ => unreachable!("non-function scalar expression reached function type inference"),
+        }
+    }
+
+    fn infer_string_scalar_function_type(
+        &self,
+        expression: &ScalarExpression,
+        path: &str,
+    ) -> Result<Option<ScalarType>, CoreError> {
+        match expression {
+            ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression }
+            | ScalarExpression::Trim { expression }
+            | ScalarExpression::LTrim { expression }
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::Reverse { expression } => self
+                .infer_string_unary_scalar_type(expression, path)
+                .map(Some),
+            ScalarExpression::CharacterLength { expression } => {
+                let expression_type =
+                    self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+                Self::require_string_compatible_type(
+                    expression_type,
+                    format!("{path}.expression"),
+                    "character length",
+                )?;
+                Ok(Some(ScalarType::Integer))
+            }
+            ScalarExpression::Left { expression, count }
+            | ScalarExpression::Right { expression, count } => self
+                .infer_sized_string_scalar_type(expression, count, path)
+                .map(Some),
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            } => self
+                .infer_string_indices_scalar_type(expression, pattern, path)
+                .map(Some),
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            }
+            | ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => self
+                .infer_padding_scalar_type(expression, length, fill, path)
+                .map(Some),
             ScalarExpression::StringContains {
                 expression,
                 pattern: operand,
@@ -4829,22 +4947,24 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::StringEndsWith {
                 expression,
                 pattern: operand,
-            } => self.infer_string_predicate_function_scalar_type(expression, operand, path),
+            } => self
+                .infer_string_predicate_function_scalar_type(expression, operand, path)
+                .map(Some),
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => self.infer_replace_scalar_type(expression, search, replacement, path),
+            } => self
+                .infer_replace_scalar_type(expression, search, replacement, path)
+                .map(Some),
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
-            } => self.infer_substring_scalar_type(expression, start, length.as_deref(), path),
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                self.infer_arithmetic_scalar_type(left, right, path)
-            }
-            ScalarExpression::Atan2 { y, x } => self.infer_atan2_scalar_type(y, x, path),
-            _ => unreachable!("non-function scalar expression reached function type inference"),
+            } => self
+                .infer_substring_scalar_type(expression, start, length.as_deref(), path)
+                .map(Some),
+            _ => Ok(None),
         }
     }
 
@@ -5008,6 +5128,49 @@ impl<'a> GraphPlanValidator<'a> {
             count_type,
             format!("{path}.count"),
             "sized string count",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_string_indices_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        pattern: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("pattern", pattern)] {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "indices",
+            )?;
+        }
+        Ok(ScalarType::Other)
+    }
+
+    fn infer_padding_scalar_type(
+        &self,
+        expression: &ScalarExpression,
+        length: &ScalarExpression,
+        fill: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("fill", fill)] {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "padding string function",
+            )?;
+        }
+        let length_type = self.infer_scalar_expression_type(length, format!("{path}.length"))?;
+        Self::require_integer_compatible_type(
+            length_type,
+            format!("{path}.length"),
+            "padding length",
         )?;
         Ok(ScalarType::String)
     }

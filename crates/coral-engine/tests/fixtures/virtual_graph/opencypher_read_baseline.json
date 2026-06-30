@@ -7,21 +7,21 @@
     "CountSubquery": 10,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
-    "LiteralExpressions": 2,
     "ListExpressions": 15,
+    "LiteralExpressions": 2,
     "MapExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 6,
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 3,
-    "PatternComprehension": 2,
     "PathMetadata": 1,
     "PathValues": 4,
+    "PatternComprehension": 2,
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "RowModifiers": 2,
-    "ScalarExpressions": 23,
+    "ScalarExpressions": 24,
     "TypeConversion": 3,
     "Union": 4,
     "Unwind": 2,
@@ -979,6 +979,18 @@
           { "name": "Alice", "city_suffix": "on" },
           { "name": "Bob", "city_suffix": "" },
           { "name": "Carol", "city_suffix": "is" }
+        ]
+      }
+    },
+    {
+      "id": "string-padding-functions",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name='Alice' RETURN lpad(p.name,10,'*') AS pl, rpad(p.city,8,'-') AS pr",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "pl": "*****Alice", "pr": "London--" }
         ]
       }
     },

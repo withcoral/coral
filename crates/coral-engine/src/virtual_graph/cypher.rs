@@ -7410,16 +7410,17 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
     state: &CypherCompileState,
     path: String,
 ) -> Result<(), CoreError> {
+    if let Some((left, right)) = path_variable_scalar_pair_operands(expression) {
+        return reject_path_variables_in_scalar_pair(left, right, state, path);
+    }
+    if let Some((first, second, third)) = path_variable_scalar_triple_operands(expression) {
+        return reject_path_variables_in_scalar_triple(first, second, third, state, path);
+    }
+
     match expression {
         ScalarExpression::Coalesce { expressions } => {
             reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
         }
-        ScalarExpression::NullIf { expression, value } => reject_path_variables_in_scalar_pair(
-            ("expression", expression),
-            ("value", value),
-            state,
-            path,
-        ),
         ScalarExpression::Round { expression, places } => {
             reject_path_variables_in_scalar_optional_pair(
                 ("expression", expression),
@@ -7428,41 +7429,6 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
                 path,
             )
         }
-        ScalarExpression::Left { expression, count }
-        | ScalarExpression::Right { expression, count } => reject_path_variables_in_scalar_pair(
-            ("expression", expression),
-            ("count", count),
-            state,
-            path,
-        ),
-        ScalarExpression::StringContains {
-            expression,
-            pattern: operand,
-        }
-        | ScalarExpression::StringStartsWith {
-            expression,
-            pattern: operand,
-        }
-        | ScalarExpression::StringEndsWith {
-            expression,
-            pattern: operand,
-        } => reject_path_variables_in_scalar_pair(
-            ("expression", expression),
-            ("pattern", operand),
-            state,
-            path,
-        ),
-        ScalarExpression::Replace {
-            expression,
-            search,
-            replacement,
-        } => reject_path_variables_in_replace_expression(
-            expression,
-            search,
-            replacement,
-            state,
-            path,
-        ),
         ScalarExpression::Substring {
             expression,
             start,
@@ -7474,12 +7440,6 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             state,
             path,
         ),
-        ScalarExpression::Arithmetic { left, right, .. } => {
-            reject_path_variables_in_scalar_pair(("left", left), ("right", right), state, path)
-        }
-        ScalarExpression::Atan2 { y, x } => {
-            reject_path_variables_in_scalar_pair(("y", y), ("x", x), state, path)
-        }
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -7493,6 +7453,78 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             reject_ignored_path_variable_references_in_non_structural_scalar_expression(expression);
             Ok(())
         }
+    }
+}
+
+type NamedScalarOperand<'a> = (&'static str, &'a ScalarExpression);
+
+fn path_variable_scalar_pair_operands(
+    expression: &ScalarExpression,
+) -> Option<(NamedScalarOperand<'_>, NamedScalarOperand<'_>)> {
+    match expression {
+        ScalarExpression::NullIf { expression, value } => {
+            Some((("expression", expression), ("value", value)))
+        }
+        ScalarExpression::Left { expression, count }
+        | ScalarExpression::Right { expression, count } => {
+            Some((("expression", expression), ("count", count)))
+        }
+        ScalarExpression::StringIndices {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringContains {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringStartsWith {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringEndsWith {
+            expression,
+            pattern: operand,
+        } => Some((("expression", expression), ("pattern", operand))),
+        ScalarExpression::Arithmetic { left, right, .. } => {
+            Some((("left", left), ("right", right)))
+        }
+        ScalarExpression::Atan2 { y, x } => Some((("y", y), ("x", x))),
+        _ => None,
+    }
+}
+
+fn path_variable_scalar_triple_operands(
+    expression: &ScalarExpression,
+) -> Option<(
+    NamedScalarOperand<'_>,
+    NamedScalarOperand<'_>,
+    NamedScalarOperand<'_>,
+)> {
+    match expression {
+        ScalarExpression::LPad {
+            expression,
+            length,
+            fill,
+        }
+        | ScalarExpression::RPad {
+            expression,
+            length,
+            fill,
+        } => Some((
+            ("expression", expression),
+            ("length", length),
+            ("fill", fill),
+        )),
+        ScalarExpression::Replace {
+            expression,
+            search,
+            replacement,
+        } => Some((
+            ("expression", expression),
+            ("search", search),
+            ("replacement", replacement),
+        )),
+        _ => None,
     }
 }
 
@@ -7564,6 +7596,9 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Round { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringIndices { .. }
+        | ScalarExpression::LPad { .. }
+        | ScalarExpression::RPad { .. }
         | ScalarExpression::StringContains { .. }
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
@@ -7702,6 +7737,31 @@ fn reject_path_variables_in_scalar_pair(
     )
 }
 
+fn reject_path_variables_in_scalar_triple(
+    first: (&str, &ScalarExpression),
+    second: (&str, &ScalarExpression),
+    third: (&str, &ScalarExpression),
+    state: &CypherCompileState,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let path = path.into();
+    reject_ignored_path_variable_references_in_scalar_expression(
+        first.1,
+        state,
+        format!("{path}.{}", first.0),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        second.1,
+        state,
+        format!("{path}.{}", second.0),
+    )?;
+    reject_ignored_path_variable_references_in_scalar_expression(
+        third.1,
+        state,
+        format!("{path}.{}", third.0),
+    )
+}
+
 fn reject_path_variables_in_scalar_optional_pair(
     required: (&str, &ScalarExpression),
     optional: (&str, Option<&ScalarExpression>),
@@ -7722,31 +7782,6 @@ fn reject_path_variables_in_scalar_optional_pair(
         )?;
     }
     Ok(())
-}
-
-fn reject_path_variables_in_replace_expression(
-    expression: &ScalarExpression,
-    search: &ScalarExpression,
-    replacement: &ScalarExpression,
-    state: &CypherCompileState,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    let path = path.into();
-    reject_ignored_path_variable_references_in_scalar_expression(
-        expression,
-        state,
-        format!("{path}.expression"),
-    )?;
-    reject_ignored_path_variable_references_in_scalar_expression(
-        search,
-        state,
-        format!("{path}.search"),
-    )?;
-    reject_ignored_path_variable_references_in_scalar_expression(
-        replacement,
-        state,
-        format!("{path}.replacement"),
-    )
 }
 
 fn reject_path_variables_in_substring_expression(
@@ -10911,6 +10946,9 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringIndices { .. }
+        | ScalarExpression::LPad { .. }
+        | ScalarExpression::RPad { .. }
         | ScalarExpression::StringContains { .. }
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
@@ -10980,7 +11018,11 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
             hidden_subquery_order_expression_can_be_precomputed(expression)
                 && hidden_subquery_order_expression_can_be_precomputed(count)
         }
-        ScalarExpression::StringContains {
+        ScalarExpression::StringIndices {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringContains {
             expression,
             pattern: operand,
         }
@@ -10994,6 +11036,20 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         } => {
             hidden_subquery_order_expression_can_be_precomputed(expression)
                 && hidden_subquery_order_expression_can_be_precomputed(operand)
+        }
+        ScalarExpression::LPad {
+            expression,
+            length,
+            fill,
+        }
+        | ScalarExpression::RPad {
+            expression,
+            length,
+            fill,
+        } => {
+            hidden_subquery_order_expression_can_be_precomputed(expression)
+                && hidden_subquery_order_expression_can_be_precomputed(length)
+                && hidden_subquery_order_expression_can_be_precomputed(fill)
         }
         ScalarExpression::Replace {
             expression,
@@ -11131,7 +11187,11 @@ fn compound_scalar_expression_correlated_subquery_count(
             scalar_expression_correlated_subquery_count(expression)
                 + scalar_expression_correlated_subquery_count(count),
         ),
-        ScalarExpression::StringContains {
+        ScalarExpression::StringIndices {
+            expression,
+            pattern: operand,
+        }
+        | ScalarExpression::StringContains {
             expression,
             pattern: operand,
         }
@@ -11145,6 +11205,20 @@ fn compound_scalar_expression_correlated_subquery_count(
         } => Some(
             scalar_expression_correlated_subquery_count(expression)
                 + scalar_expression_correlated_subquery_count(operand),
+        ),
+        ScalarExpression::LPad {
+            expression,
+            length,
+            fill,
+        }
+        | ScalarExpression::RPad {
+            expression,
+            length,
+            fill,
+        } => Some(
+            scalar_expression_correlated_subquery_count(expression)
+                + scalar_expression_correlated_subquery_count(length)
+                + scalar_expression_correlated_subquery_count(fill),
         ),
         ScalarExpression::Replace {
             expression,
@@ -11223,6 +11297,9 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringIndices { .. }
+        | ScalarExpression::LPad { .. }
+        | ScalarExpression::RPad { .. }
         | ScalarExpression::StringContains { .. }
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
@@ -18625,6 +18702,50 @@ fn compile_right_scalar_expression(
     })
 }
 
+fn compile_indices_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, pattern) =
+        compile_two_scalar_function_arguments(function, path, "indices", mode, context)?;
+    Ok(ScalarExpression::StringIndices {
+        expression: Box::new(expression),
+        pattern: Box::new(pattern),
+    })
+}
+
+fn compile_lpad_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, length, fill) =
+        compile_three_scalar_function_arguments(function, path, "lpad", mode, context)?;
+    Ok(ScalarExpression::LPad {
+        expression: Box::new(expression),
+        length: Box::new(length),
+        fill: Box::new(fill),
+    })
+}
+
+fn compile_rpad_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let (expression, length, fill) =
+        compile_three_scalar_function_arguments(function, path, "rpad", mode, context)?;
+    Ok(ScalarExpression::RPad {
+        expression: Box::new(expression),
+        length: Box::new(length),
+        fill: Box::new(fill),
+    })
+}
+
 fn compile_contains_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -19126,6 +19247,42 @@ fn compile_two_scalar_function_arguments(
     ))
 }
 
+fn compile_three_scalar_function_arguments(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    function_name: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<(ScalarExpression, ScalarExpression, ScalarExpression), CoreError> {
+    let path = path.into();
+    let [first, second, third] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!("{function_name}() requires exactly three arguments"),
+        ));
+    };
+    Ok((
+        compile_scalar_expression_in_predicate_mode(
+            first,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?,
+        compile_scalar_expression_in_predicate_mode(
+            second,
+            format!("{path}.arguments[1]"),
+            mode,
+            context,
+        )?,
+        compile_scalar_expression_in_predicate_mode(
+            third,
+            format!("{path}.arguments[2]"),
+            mode,
+            context,
+        )?,
+    ))
+}
+
 fn compile_scalar_function_expression_with_path_state(
     function: &FunctionInvocation,
     path: impl Into<String>,
@@ -19262,6 +19419,12 @@ fn compile_core_scalar_function_expression(
         compile_left_scalar_expression(function, path, mode, context)?
     } else if is_right_function(function) {
         compile_right_scalar_expression(function, path, mode, context)?
+    } else if is_indices_function(function) {
+        compile_indices_scalar_expression(function, path, mode, context)?
+    } else if is_lpad_function(function) {
+        compile_lpad_scalar_expression(function, path, mode, context)?
+    } else if is_rpad_function(function) {
+        compile_rpad_scalar_expression(function, path, mode, context)?
     } else if is_contains_function(function) {
         compile_contains_scalar_expression(function, path, mode, context)?
     } else if is_starts_with_function(function) {
@@ -23453,6 +23616,27 @@ fn is_right_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("right")
+    )
+}
+
+fn is_indices_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("indices")
+    )
+}
+
+fn is_lpad_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("lpad")
+    )
+}
+
+fn is_rpad_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("rpad")
     )
 }
 
@@ -44049,6 +44233,72 @@ relationships:
     }
 
     #[test]
+    fn compiles_indices_lpad_and_rpad_scalar_expressions() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE lpad(service.name, 13, '*') = '**billing-api' \
+             RETURN indices(service.name, 'i') AS name_indices, \
+                    rpad(service.tier, 8, '-') AS padded_tier \
+             ORDER BY indices(service.name, 'i')",
+        )
+        .expect("indices, lpad, and rpad scalar expressions should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::LPad {
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    })),
+                    length: Box::new(ScalarExpression::Literal(Literal::Integer(13))),
+                    fill: Box::new(ScalarExpression::Literal(Literal::String("*".to_string()))),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                    "**billing-api".to_string()
+                ))),
+            }))
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::StringIndices {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                        pattern: Box::new(ScalarExpression::Literal(Literal::String(
+                            "i".to_string()
+                        ))),
+                    },
+                    alias: "name_indices".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::RPad {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        })),
+                        length: Box::new(ScalarExpression::Literal(Literal::Integer(8))),
+                        fill: Box::new(ScalarExpression::Literal(Literal::String("-".to_string()))),
+                    },
+                    alias: "padded_tier".to_string(),
+                },
+            ]
+        );
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::StringIndices { .. }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        ));
+    }
+
+    #[test]
     fn compiles_string_predicate_function_scalar_projections() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
@@ -44200,6 +44450,22 @@ relationships:
             error
                 .to_string()
                 .contains("left() requires exactly two arguments"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_lpad_with_unsupported_arity() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN lpad(service.name, 10) AS padded",
+        )
+        .expect_err("lpad() requires a fill argument");
+
+        assert!(
+            error
+                .to_string()
+                .contains("lpad() requires exactly three arguments"),
             "{error}"
         );
     }

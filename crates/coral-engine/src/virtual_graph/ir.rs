@@ -423,6 +423,32 @@ pub enum ScalarExpression {
         /// Character count expression.
         count: Box<ScalarExpression>,
     },
+    /// Return all zero-based positions where one scalar string expression
+    /// occurs inside another.
+    StringIndices {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Substring expression.
+        pattern: Box<ScalarExpression>,
+    },
+    /// Left-pad a scalar string expression to a target length.
+    LPad {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Target character length.
+        length: Box<ScalarExpression>,
+        /// Fill expression.
+        fill: Box<ScalarExpression>,
+    },
+    /// Right-pad a scalar string expression to a target length.
+    RPad {
+        /// Source expression.
+        expression: Box<ScalarExpression>,
+        /// Target character length.
+        length: Box<ScalarExpression>,
+        /// Fill expression.
+        fill: Box<ScalarExpression>,
+    },
     /// Test whether one scalar string expression contains another.
     StringContains {
         /// Source expression.
@@ -1085,6 +1111,9 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Round { .. }
         | ScalarExpression::Left { .. }
         | ScalarExpression::Right { .. }
+        | ScalarExpression::StringIndices { .. }
+        | ScalarExpression::LPad { .. }
+        | ScalarExpression::RPad { .. }
         | ScalarExpression::StringContains { .. }
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
@@ -1239,7 +1268,11 @@ fn structural_scalar_expression_references_outside_scope(
             scalar_expression_references_outside_scope(expression, scope)
                 || scalar_expression_references_outside_scope(count, scope)
         }
-        ScalarExpression::StringContains {
+        ScalarExpression::StringIndices {
+            expression,
+            pattern,
+        }
+        | ScalarExpression::StringContains {
             expression,
             pattern,
         }
@@ -1253,6 +1286,20 @@ fn structural_scalar_expression_references_outside_scope(
         } => {
             scalar_expression_references_outside_scope(expression, scope)
                 || scalar_expression_references_outside_scope(pattern, scope)
+        }
+        ScalarExpression::LPad {
+            expression,
+            length,
+            fill,
+        }
+        | ScalarExpression::RPad {
+            expression,
+            length,
+            fill,
+        } => {
+            scalar_expression_references_outside_scope(expression, scope)
+                || scalar_expression_references_outside_scope(length, scope)
+                || scalar_expression_references_outside_scope(fill, scope)
         }
         ScalarExpression::Replace {
             expression,

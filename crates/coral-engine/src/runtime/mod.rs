@@ -12,3 +12,4 @@ pub(crate) mod query_planner;
 pub(crate) mod registry;
 pub(crate) mod schema_provider;
 pub(crate) mod source_functions;
+pub(crate) mod string_functions;

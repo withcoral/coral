@@ -30,6 +30,7 @@ use crate::runtime::registry::{
     CompiledQuerySource, SourceRegistrationCandidate, SourceRegistrationFailure, register_sources,
 };
 use crate::runtime::source_functions::SourceFunctionRegistry;
+use crate::runtime::string_functions::register_string_functions;
 use crate::{
     CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
     QueryMemoryConfig, QueryPlan, QueryResultObserver, QueryResultObserverError,
@@ -228,6 +229,7 @@ fn build_session_context(
         state: session_state
     );
     let mut ctx = SessionContext::new_with_state(session_state);
+    register_string_functions(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     register_json_support(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     register_pattern_validator(&mut ctx).map_err(|err| datafusion_to_core(&err, &[]))?;
     Ok(Arc::new(ctx))

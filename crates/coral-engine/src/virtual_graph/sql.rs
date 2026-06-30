@@ -514,6 +514,22 @@ impl<'a> Lowerer<'a> {
                     );
                 }
             }
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            }
+            | ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => {
+                self.collect_scalar_expression_subquery_candidates(
+                    expression, required, candidates,
+                );
+                self.collect_scalar_expression_subquery_candidates(length, required, candidates);
+                self.collect_scalar_expression_subquery_candidates(fill, required, candidates);
+            }
             ScalarExpression::Replace {
                 expression,
                 search,
@@ -568,7 +584,11 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::NullIf { expression, value } => Some((expression, value)),
             ScalarExpression::Left { expression, count }
             | ScalarExpression::Right { expression, count } => Some((expression, count)),
-            ScalarExpression::StringContains {
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            }
+            | ScalarExpression::StringContains {
                 expression,
                 pattern,
             }
@@ -582,6 +602,29 @@ impl<'a> Lowerer<'a> {
             } => Some((expression, pattern)),
             ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
             ScalarExpression::Atan2 { y, x } => Some((y, x)),
+            _ => None,
+        }
+    }
+
+    fn structural_scalar_ternary_operands(
+        expression: &ScalarExpression,
+    ) -> Option<(&ScalarExpression, &ScalarExpression, &ScalarExpression)> {
+        match expression {
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            }
+            | ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => Some((expression, length, fill)),
+            ScalarExpression::Replace {
+                expression,
+                search,
+                replacement,
+            } => Some((expression, search, replacement)),
             _ => None,
         }
     }
@@ -1687,6 +1730,10 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scoped scalar IR dispatcher keeps inner/outer binding checks total over every scalar variant"
+    )]
     fn scoped_scalar_expression_is_inner<'b>(
         expression: &ScalarExpression,
         relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
@@ -1735,6 +1782,9 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Round { .. }
             | ScalarExpression::Left { .. }
             | ScalarExpression::Right { .. }
+            | ScalarExpression::StringIndices { .. }
+            | ScalarExpression::LPad { .. }
+            | ScalarExpression::RPad { .. }
             | ScalarExpression::StringContains { .. }
             | ScalarExpression::StringStartsWith { .. }
             | ScalarExpression::StringEndsWith { .. }
@@ -1805,6 +1855,15 @@ impl<'a> Lowerer<'a> {
                 local_nodes,
             );
         }
+        if let Some((first, second, third)) = Self::structural_scalar_ternary_operands(expression) {
+            return Self::scoped_scalar_triple_is_inner(
+                first,
+                second,
+                third,
+                relationship_bindings,
+                local_nodes,
+            );
+        }
 
         match expression {
             ScalarExpression::PresenceGated {
@@ -1840,22 +1899,6 @@ impl<'a> Lowerer<'a> {
                         local_nodes,
                     )
                 })
-            }
-            ScalarExpression::Replace {
-                expression,
-                search,
-                replacement,
-            } => {
-                Self::scoped_scalar_pair_is_inner(
-                    expression,
-                    search,
-                    relationship_bindings,
-                    local_nodes,
-                ) && Self::scoped_scalar_expression_is_inner(
-                    replacement,
-                    relationship_bindings,
-                    local_nodes,
-                )
             }
             ScalarExpression::Substring {
                 expression,
@@ -1896,6 +1939,17 @@ impl<'a> Lowerer<'a> {
     ) -> bool {
         Self::scoped_scalar_expression_is_inner(left, relationship_bindings, local_nodes)
             && Self::scoped_scalar_expression_is_inner(right, relationship_bindings, local_nodes)
+    }
+
+    fn scoped_scalar_triple_is_inner<'b>(
+        first: &ScalarExpression,
+        second: &ScalarExpression,
+        third: &ScalarExpression,
+        relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> bool {
+        Self::scoped_scalar_pair_is_inner(first, second, relationship_bindings, local_nodes)
+            && Self::scoped_scalar_expression_is_inner(third, relationship_bindings, local_nodes)
     }
 
     fn scoped_case_expression_is_inner<'b>(
@@ -3910,6 +3964,9 @@ impl<'a> Lowerer<'a> {
             | ScalarExpression::Round { .. }
             | ScalarExpression::Left { .. }
             | ScalarExpression::Right { .. }
+            | ScalarExpression::StringIndices { .. }
+            | ScalarExpression::LPad { .. }
+            | ScalarExpression::RPad { .. }
             | ScalarExpression::StringContains { .. }
             | ScalarExpression::StringStartsWith { .. }
             | ScalarExpression::StringEndsWith { .. }
@@ -3981,6 +4038,18 @@ impl<'a> Lowerer<'a> {
         &self,
         expression: &ScalarExpression,
     ) -> Result<(), CoreError> {
+        if let Some((left, right)) = Self::structural_scalar_binary_operands(expression) {
+            self.reject_unprecomputed_projection_scalar_subqueries(left)?;
+            self.reject_unprecomputed_projection_scalar_subqueries(right)?;
+            return Ok(());
+        }
+        if let Some((first, second, third)) = Self::structural_scalar_ternary_operands(expression) {
+            self.reject_unprecomputed_projection_scalar_subqueries(first)?;
+            self.reject_unprecomputed_projection_scalar_subqueries(second)?;
+            self.reject_unprecomputed_projection_scalar_subqueries(third)?;
+            return Ok(());
+        }
+
         match expression {
             ScalarExpression::PresenceGated { expression, .. } => {
                 self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
@@ -3990,44 +4059,11 @@ impl<'a> Lowerer<'a> {
                     self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
                 }
             }
-            ScalarExpression::NullIf { expression, value } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(value)?;
-            }
             ScalarExpression::Round { expression, places } => {
                 self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
                 if let Some(places) = places {
                     self.reject_unprecomputed_projection_scalar_subqueries(places)?;
                 }
-            }
-            ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(count)?;
-            }
-            ScalarExpression::StringContains {
-                expression,
-                pattern: operand,
-            }
-            | ScalarExpression::StringStartsWith {
-                expression,
-                pattern: operand,
-            }
-            | ScalarExpression::StringEndsWith {
-                expression,
-                pattern: operand,
-            } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(operand)?;
-            }
-            ScalarExpression::Replace {
-                expression,
-                search,
-                replacement,
-            } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(search)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(replacement)?;
             }
             ScalarExpression::Substring {
                 expression,
@@ -4040,10 +4076,6 @@ impl<'a> Lowerer<'a> {
                     self.reject_unprecomputed_projection_scalar_subqueries(length)?;
                 }
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(left)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(right)?;
-            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -4055,10 +4087,6 @@ impl<'a> Lowerer<'a> {
                 if let Some(else_expression) = else_expression {
                     self.reject_unprecomputed_projection_scalar_subqueries(else_expression)?;
                 }
-            }
-            ScalarExpression::Atan2 { y, x } => {
-                self.reject_unprecomputed_projection_scalar_subqueries(y)?;
-                self.reject_unprecomputed_projection_scalar_subqueries(x)?;
             }
             _ => {
                 unreachable!("projection subquery dispatcher called structural helper incorrectly")
@@ -6240,6 +6268,10 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scoped scalar IR renderer keeps function rendering total over every scalar variant"
+    )]
     fn render_scoped_simple_scalar_expression<'b>(
         &self,
         expression: &ScalarExpression,
@@ -6284,7 +6316,6 @@ impl<'a> Lowerer<'a> {
                 )?
             )))
         };
-
         if let Some((function_name, expression, pattern)) =
             Self::string_predicate_function_expression(expression)
         {
@@ -6302,6 +6333,36 @@ impl<'a> Lowerer<'a> {
             }
             ScalarExpression::Left { expression, count } => binary("left", expression, count),
             ScalarExpression::Right { expression, count } => binary("right", expression, count),
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            } => binary("coral_string_indices", expression, pattern),
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            } => self.render_scoped_ternary_function_expression(
+                "lpad",
+                expression,
+                length,
+                fill,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
+            ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => self.render_scoped_ternary_function_expression(
+                "rpad",
+                expression,
+                length,
+                fill,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
             ScalarExpression::Reverse { expression } => unary("reverse", expression),
             ScalarExpression::Abs { expression } => unary("abs", expression),
             ScalarExpression::Ceil { expression } => unary("ceil", expression),
@@ -6333,6 +6394,33 @@ impl<'a> Lowerer<'a> {
             ))),
             _ => Ok(None),
         }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Scoped rendering helpers pass the same relationship, node, and alias context as neighboring renderers"
+    )]
+    fn render_scoped_ternary_function_expression<'b>(
+        &self,
+        function_name: &str,
+        first: &ScalarExpression,
+        second: &ScalarExpression,
+        third: &ScalarExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(Some(format!(
+            "{function_name}({}, {}, {})",
+            self.render_scoped_scalar_expression(first, relationships, local_nodes, local_aliases)?,
+            self.render_scoped_scalar_expression(
+                second,
+                relationships,
+                local_nodes,
+                local_aliases,
+            )?,
+            self.render_scoped_scalar_expression(third, relationships, local_nodes, local_aliases)?
+        )))
     }
 
     fn render_scoped_scalar_cast_expression<'b>(
@@ -7714,6 +7802,26 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Right { expression, count } => self
                 .render_binary_function_expression("right", expression, count)
                 .map(Some),
+            ScalarExpression::StringIndices {
+                expression,
+                pattern,
+            } => self
+                .render_binary_function_expression("coral_string_indices", expression, pattern)
+                .map(Some),
+            ScalarExpression::LPad {
+                expression,
+                length,
+                fill,
+            } => self
+                .render_ternary_function_expression("lpad", expression, length, fill)
+                .map(Some),
+            ScalarExpression::RPad {
+                expression,
+                length,
+                fill,
+            } => self
+                .render_ternary_function_expression("rpad", expression, length, fill)
+                .map(Some),
             ScalarExpression::Atan2 { y, x } => self
                 .render_binary_function_expression("atan2", y, x)
                 .map(Some),
@@ -7870,6 +7978,21 @@ impl<'a> Lowerer<'a> {
             "{function_name}({}, {})",
             self.render_scalar_expression(left)?,
             self.render_scalar_expression(right)?
+        ))
+    }
+
+    fn render_ternary_function_expression(
+        &self,
+        function_name: &str,
+        first: &ScalarExpression,
+        second: &ScalarExpression,
+        third: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "{function_name}({}, {}, {})",
+            self.render_scalar_expression(first)?,
+            self.render_scalar_expression(second)?,
+            self.render_scalar_expression(third)?
         ))
     }
 

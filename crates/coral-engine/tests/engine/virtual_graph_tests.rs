@@ -12098,6 +12098,57 @@ async fn cypher_left_right_and_reverse_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_indices_and_padding_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.name = 'billing-api' \
+         RETURN indices(service.name, 'i') AS i_positions, \
+                lpad(service.name, 13, '*') AS padded_left, \
+                rpad(service.tier, 8, '-') AS padded_right",
+    )
+    .await
+    .expect("indices, lpad, and rpad query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("coral_string_indices(\"n0\".\"service_name\", 'i') AS \"i_positions\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("lpad(\"n0\".\"service_name\", 13, '*') AS \"padded_left\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("rpad(\"n0\".\"tier\", 8, '-') AS \"padded_right\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "i_positions": [1, 4, 10],
+            "padded_left": "**billing-api",
+            "padded_right": "prod----",
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_string_predicate_function_projections_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
