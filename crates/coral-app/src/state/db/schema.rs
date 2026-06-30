@@ -71,6 +71,20 @@ pub(in crate::state::db) enum MaterializationSurfaces {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum FeedbackReports {
+    Table,
+    Id,
+    WorkspaceId,
+    CreatedAtUnixNanos,
+    TryingToDo,
+    Tried,
+    Stuck,
+    PublishStatus,
+    PublishError,
+    PublishedAtUnixNanos,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum AppStateMarkers {
     Table,
     Key,

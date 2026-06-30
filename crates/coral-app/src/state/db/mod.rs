@@ -23,6 +23,11 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::import_config_source_catalog;
+#[expect(
+    unused_imports,
+    reason = "Feedback runtime branches import this from the state::db boundary once restacked."
+)]
+pub(crate) use repositories::feedback_reports::FeedbackReportRecord;
 pub(crate) use repositories::materializations::{
     MaterializationRecord, MaterializationSurfaceRecord,
 };
