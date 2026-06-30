@@ -21,7 +21,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "RowModifiers": 2,
-    "ScalarExpressions": 24,
+    "ScalarExpressions": 33,
     "TypeConversion": 3,
     "Union": 4,
     "Unwind": 3,
@@ -1072,6 +1072,124 @@
         "rows": [
           { "name": "Alice", "city_reversed": "nodnoL" },
           { "name": "Bob", "city_reversed": "" }
+        ]
+      }
+    },
+    {
+      "id": "substring-default-length-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, substring(p.name, 1) AS name_tail ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "name_tail": "lice" },
+          { "name": "Bob", "name_tail": "ob" },
+          { "name": "Carol", "name_tail": "arol" }
+        ]
+      }
+    },
+    {
+      "id": "empty-prefix-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.city STARTS WITH '' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "empty-suffix-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.city ENDS WITH '' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "empty-substring-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.city CONTAINS '' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "not-starts-with-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE NOT p.name STARTS WITH 'A' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "not-ends-with-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE NOT p.name ENDS WITH 'e' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "not-contains-string-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE NOT p.name CONTAINS 'o' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "combined-string-search-operators",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name STARTS WITH 'A' AND p.name CONTAINS 'i' AND p.name ENDS WITH 'e' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "literal-reverse-string-return-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN reverse('raksO') AS reversed",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "reversed": "Oskar" }
         ]
       }
     },
