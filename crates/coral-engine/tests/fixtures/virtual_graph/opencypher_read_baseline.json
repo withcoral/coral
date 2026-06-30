@@ -15,6 +15,7 @@
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 3,
+    "PatternComprehension": 1,
     "PathMetadata": 1,
     "PathValues": 4,
     "RelationshipProperties": 1,
@@ -871,6 +872,20 @@
         "ordered": true,
         "rows": [
           { "cities": ["London", "Paris"], "scores": [20, 30] }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-projection",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS name, [(p)-[knows:KNOWS]->(friend:Person) WHERE knows.since >= 2021 | friend.name] AS recent_friends ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "recent_friends": ["Carol"] },
+          { "name": "Bob", "recent_friends": ["Carol"] },
+          { "name": "Carol", "recent_friends": [] }
         ]
       }
     },

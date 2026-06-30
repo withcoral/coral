@@ -233,6 +233,11 @@ struct ListComprehensionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PatternComprehensionSource {
+    collect_query_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StaticReduceSource {
     accumulator_variable: String,
     initial_source: String,
@@ -414,6 +419,7 @@ struct CypherCompileContext {
     function_argument_sources: BTreeMap<(usize, usize), FunctionArgumentSources>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
+    pattern_comprehension_sources: BTreeMap<(usize, usize), PatternComprehensionSource>,
     static_reduce_sources: BTreeMap<(usize, usize), StaticReduceSource>,
     static_list_function_sources: BTreeMap<(usize, usize), StaticListFunctionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
@@ -436,6 +442,7 @@ impl CypherCompileContext {
             function_argument_sources: collect_function_argument_sources(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
+            pattern_comprehension_sources: collect_pattern_comprehension_sources(cypher),
             static_reduce_sources: collect_static_reduce_sources(cypher),
             static_list_function_sources: collect_static_list_function_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
@@ -481,6 +488,14 @@ impl CypherCompileContext {
         comprehension: &ListComprehension,
     ) -> Option<&ListComprehensionSource> {
         self.list_comprehension_sources
+            .get(&(comprehension.span.start, comprehension.span.end))
+    }
+
+    fn pattern_comprehension_source(
+        &self,
+        comprehension: &decypher::ast::expr::PatternComprehension,
+    ) -> Option<&PatternComprehensionSource> {
+        self.pattern_comprehension_sources
             .get(&(comprehension.span.start, comprehension.span.end))
     }
 
@@ -16487,20 +16502,14 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
-        Expression::CountSubquery(count) => Ok(Projection::Expression {
-            expression: compile_count_subquery_scalar_expression(
-                count,
-                format!("{path}.expression"),
-                Some(plan),
-                context,
-            )?,
-            alias: item
-                .alias
-                .as_ref()
-                .map_or_else(|| "count".to_string(), variable_name),
-        }),
+        Expression::CountSubquery(count) => {
+            compile_count_subquery_projection(count, item, path, plan, context)
+        }
         Expression::CollectSubquery(collect) => {
             compile_collect_subquery_projection(collect, item, path, plan, context)
+        }
+        Expression::PatternComprehension(comprehension) => {
+            compile_pattern_comprehension_projection(comprehension, item, path, plan, context)
         }
         expression if is_literal_projection_expression(expression) => {
             compile_literal_projection(expression, item, path, context)
@@ -16574,6 +16583,28 @@ fn compile_projection(
     }
 }
 
+fn compile_count_subquery_projection(
+    count: &CountSubqueryExpression,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_count_subquery_scalar_expression(
+            count,
+            format!("{path}.expression"),
+            Some(plan),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "count".to_string(), variable_name),
+    })
+}
+
 fn compile_collect_subquery_projection(
     collect: &CollectSubqueryExpression,
     item: &ProjectionItem,
@@ -16593,6 +16624,28 @@ fn compile_collect_subquery_projection(
             .alias
             .as_ref()
             .map_or_else(|| "collect".to_string(), variable_name),
+    })
+}
+
+fn compile_pattern_comprehension_projection(
+    comprehension: &decypher::ast::expr::PatternComprehension,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_pattern_comprehension_scalar_expression(
+            comprehension,
+            format!("{path}.expression"),
+            Some(plan),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "list".to_string(), variable_name),
     })
 }
 
@@ -19551,6 +19604,9 @@ fn compile_scalar_expression_in_predicate_mode(
         Expression::CollectSubquery(collect) => {
             compile_collect_subquery_scalar_expression(collect, path, plan, context)
         }
+        Expression::PatternComprehension(comprehension) => {
+            compile_pattern_comprehension_scalar_expression(comprehension, path, plan, context)
+        }
         Expression::FunctionCall(function) => {
             if let Some(expression) = compile_optional_path_length_scalar_expression(
                 expression,
@@ -21045,6 +21101,21 @@ fn collect_list_comprehension_sources(
         .collect()
 }
 
+fn collect_pattern_comprehension_sources(
+    cypher: &str,
+) -> BTreeMap<(usize, usize), PatternComprehensionSource> {
+    // decypher currently recognizes pattern comprehensions but does not expose
+    // the relationship pattern in the typed AST. Recover the lossless source
+    // and lower it through the same scoped MATCH path as COLLECT subqueries.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::PATTERN_COMPREHENSION)
+        .filter_map(|node| pattern_comprehension_source_from_cst(cypher, &node))
+        .collect()
+}
+
 fn collect_static_reduce_sources(cypher: &str) -> BTreeMap<(usize, usize), StaticReduceSource> {
     // decypher's high-level AST does not expose reduce(acc = init, x IN list | expr)
     // as three regular function arguments. Recover the header and reducer
@@ -21202,6 +21273,47 @@ fn parse_list_comprehension_source(source: &str) -> Option<ListComprehensionSour
         collection_source: collection_source.to_string(),
         filter_source,
         has_map: map_index.is_some(),
+    })
+}
+
+fn pattern_comprehension_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), PatternComprehensionSource)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let value = parse_pattern_comprehension_source(source)?;
+    Some(((start, end), value))
+}
+
+fn parse_pattern_comprehension_source(source: &str) -> Option<PatternComprehensionSource> {
+    let inner = source.strip_prefix('[')?.strip_suffix(']')?.trim();
+    let map_index = find_top_level_character(inner, '|')?;
+    let left = inner.get(..map_index)?.trim();
+    let map_source = inner.get(map_index + '|'.len_utf8()..)?.trim();
+    if left.is_empty() || map_source.is_empty() {
+        return None;
+    }
+    let where_index = find_top_level_keyword(left, "WHERE");
+    let (pattern_source, where_source) = match where_index {
+        Some(where_index) => (
+            left.get(..where_index)?.trim(),
+            left.get(where_index + "WHERE".len()..)?.trim(),
+        ),
+        None => (left, ""),
+    };
+    if pattern_source.is_empty() || where_index.is_some() && where_source.is_empty() {
+        return None;
+    }
+    let collect_query_source = if where_source.is_empty() {
+        format!("MATCH {pattern_source} RETURN {map_source}")
+    } else {
+        format!("MATCH {pattern_source} WHERE {where_source} RETURN {map_source}")
+    };
+    Some(PatternComprehensionSource {
+        collect_query_source,
     })
 }
 
@@ -23832,6 +23944,49 @@ fn compile_collect_subquery_scalar_expression(
         context,
         "COLLECT subqueries",
         "COLLECT subqueries require an explicit MATCH clause",
+    )?;
+    Ok(ScalarExpression::CollectSubquery {
+        pattern: Box::new(pattern),
+        target: Box::new(target),
+        distinct,
+    })
+}
+
+fn compile_pattern_comprehension_scalar_expression(
+    comprehension: &decypher::ast::expr::PatternComprehension,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let Some(source) = context.pattern_comprehension_source(comprehension) else {
+        return Err(unsupported(
+            path,
+            "pattern comprehensions require recoverable source text",
+        ));
+    };
+    let query = decypher::parse(&source.collect_query_source).map_err(|error| {
+        Diagnostic::new(
+            "CYPHER_PARSE_ERROR",
+            path.clone(),
+            format!("could not parse pattern comprehension recovery: {error}"),
+        )
+        .into_core_error()
+    })?;
+    let regular_query = regular_query_from_single_statement(query, &path)?;
+    let fragment_context = CypherCompileContext::from_source_with_parameters_and_graph(
+        &source.collect_query_source,
+        context.parameters.clone(),
+        context.graph.clone(),
+        BTreeMap::new(),
+    );
+    let (pattern, target, distinct) = compile_regular_query_collect_subquery(
+        &regular_query,
+        path.clone(),
+        plan,
+        &fragment_context,
+        "pattern comprehensions",
+        "pattern comprehensions require a relationship pattern",
     )?;
     Ok(ScalarExpression::CollectSubquery {
         pattern: Box::new(pattern),
@@ -41133,6 +41288,82 @@ relationships:
                         if variable == "dependency" && property == "name"
                 )
         ));
+    }
+
+    #[test]
+    fn compiles_pattern_comprehension_scalar_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN [(service)-[dependency:DEPENDS_ON]->(target:Service) \
+                       WHERE dependency.strength > 0.5 | target.name] AS dependency_names",
+        )
+        .expect("pattern comprehension projection should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CollectSubquery {
+                        pattern,
+                        target,
+                        distinct,
+                    },
+                alias,
+            }] if alias == "dependency_names"
+                && !*distinct
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.relationships.len() == 1
+                        && pattern.predicates.iter().any(|predicate| {
+                            predicate.property.variable == "dependency"
+                                && predicate.property.property == "strength"
+                                && predicate.operator == ComparisonOperator::GreaterThan
+                                && predicate.rhs == PredicateRhs::Literal(Literal::Float(OrderedFloat(0.5)))
+                        }))
+                && matches!(
+                    target.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "target" && property == "name"
+                )
+        ));
+    }
+
+    #[test]
+    fn compiles_pattern_comprehension_path_variable_maps() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN [dependency_path = (service)-[:DEPENDS_ON]->(target:Service) | length(dependency_path)] AS dependency_lengths",
+        )
+        .expect("pattern comprehension path variable maps should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CollectSubquery {
+                        pattern,
+                        target,
+                        distinct: false,
+                    },
+                alias,
+            }] if alias == "dependency_lengths"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.relationships.len() == 1)
+                && matches!(target.as_ref(), ScalarExpression::Literal(Literal::Integer(1)))
+        ));
+    }
+
+    #[test]
+    fn rejects_pattern_comprehension_graph_object_maps() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN [(service)-[:DEPENDS_ON]->(target:Service) | target] AS dependencies",
+        )
+        .expect_err("pattern comprehension graph-object maps should remain rejected");
+
+        assert!(
+            error.to_string().contains("scalar alias"),
+            "expected scalar alias rejection, got {error}"
+        );
     }
 
     #[test]
