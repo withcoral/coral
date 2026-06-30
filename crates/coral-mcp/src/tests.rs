@@ -18,7 +18,7 @@ use coral_client::{
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams, Tool},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
@@ -324,6 +324,17 @@ fn assert_matches_output_schema(tool: &Tool, value: &Value) {
     }
 }
 
+fn assert_structured_content_only(result: &CallToolResult) {
+    assert!(
+        result.content.is_empty(),
+        "tool results should not duplicate structured payloads as text content"
+    );
+    assert!(
+        result.structured_content.is_some(),
+        "tool result should expose structured_content"
+    );
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -389,6 +400,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .await
         .expect("open root episode");
     assert_eq!(root.is_error, Some(false));
+    assert_structured_content_only(&root);
     let root = root.structured_content.expect("root structured content");
     assert_matches_output_schema(open_episode_tool, &root);
     let root_episode_id = root["episode_id"]
@@ -415,6 +427,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
         .await
         .expect("open child episode");
     assert_eq!(child.is_error, Some(false));
+    assert_structured_content_only(&child);
     let child = child.structured_content.expect("child structured content");
     assert_matches_output_schema(open_episode_tool, &child);
     let child_episode_id = child["episode_id"]
@@ -427,22 +440,23 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT 1 AS ok",
+                "queries": ["SELECT 1 AS ok"],
                 "episode_id": child_episode_id
             }))),
         )
         .await
         .expect("tagged sql");
     assert_eq!(sql.is_error, Some(false));
+    assert_structured_content_only(&sql);
     assert_eq!(
-        sql.structured_content.expect("sql structured")["rows"][0]["ok"],
+        sql.structured_content.expect("sql structured")["results"][0]["rows"][0]["ok"],
         "1"
     );
 
     let invalid_episode_id = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT 1",
+                "queries": ["SELECT 1"],
                 "episode_id": "has space"
             }))),
         )
@@ -562,12 +576,13 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"
+                "queries": ["SELECT table_name FROM coral.tables WHERE schema_name = 'coral' ORDER BY table_name"]
             }))),
         )
         .await
         .expect("sql system catalog");
-    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["rows"]
+    assert_structured_content_only(&sql);
+    let sql_rows = sql.structured_content.as_ref().expect("structured sql")["results"][0]["rows"]
         .as_array()
         .expect("sql rows");
     assert_eq!(
@@ -586,9 +601,9 @@ async fn mcp_catalog_helpers_expose_coral_system_tables_from_sql_catalog() {
             }))),
         )
         .await
-        .expect("list system catalog")
-        .structured_content
-        .expect("structured catalog");
+        .expect("list system catalog");
+    assert_structured_content_only(&catalog);
+    let catalog = catalog.structured_content.expect("structured catalog");
     assert_eq!(catalog["total"], expected_tables.len());
     assert_eq!(
         catalog["items"]
@@ -1462,6 +1477,44 @@ async fn mcp_feedback_tool_is_disabled_by_default() {
 }
 
 #[tokio::test]
+async fn mcp_sql_executes_successful_batch_in_input_order() {
+    let temp = TempDir::new().expect("temp dir");
+    let manifest_path = write_fixture_manifest(temp.path());
+    let manifest_yaml = fs::read_to_string(&manifest_path).expect("read manifest");
+    let mut session = start_session(&temp).await;
+    add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let client = &session.client;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
+
+    let sql = client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": [
+                    "SELECT text FROM local_messages.messages WHERE text = 'world'",
+                    "SELECT text FROM local_messages.messages WHERE text = 'hello'"
+                ]
+            }))),
+        )
+        .await
+        .expect("batched sql");
+    assert_eq!(sql.is_error, Some(false));
+    let sql = sql.structured_content.expect("sql structured");
+    assert_matches_output_schema(sql_tool, &sql);
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(sql["results"][0]["status"], "success");
+    assert_eq!(sql["results"][0]["rows"][0]["text"], "world");
+    assert_eq!(sql["results"][1]["index"], 1);
+    assert_eq!(sql["results"][1]["status"], "success");
+    assert_eq!(sql["results"][1]["rows"][0]["text"], "hello");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn mcp_tool_error_does_not_end_session() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_fixture_manifest(temp.path());
@@ -1470,40 +1523,49 @@ async fn mcp_tool_error_does_not_end_session() {
     let client = &session.client;
 
     add_demo_source(&mut session.source_client, manifest_yaml).await;
+    let tools = client.list_all_tools().await.expect("tools");
+    let sql_tool = tool_by_name(&tools, "sql");
 
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+                "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
             }))),
         )
         .await
         .expect("sql");
     assert_eq!(
-        sql.structured_content.expect("structured content")["rows"][0]["text"],
+        sql.structured_content.expect("structured content")["results"][0]["rows"][0]["text"],
         "hello"
     );
     assert_eq!(sql.is_error, Some(false));
 
-    let invalid_sql = client
+    let mixed_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "DELETE FROM local_messages.messages"
+                "queries": [
+                    "SELECT text FROM local_messages.messages WHERE text = 'hello'",
+                    "DELETE FROM local_messages.messages"
+                ]
             }))),
         )
         .await
-        .expect("failing sql still returns tool result");
-    assert_eq!(invalid_sql.is_error, Some(true));
+        .expect("mixed sql still returns tool result");
+    assert_eq!(mixed_sql.is_error, Some(true));
+    assert_structured_content_only(&mixed_sql);
+    let mixed_sql = mixed_sql.structured_content.expect("structured content");
+    assert_matches_output_schema(sql_tool, &mixed_sql);
+    assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
+    let mixed_sql_batch = &mixed_sql["data"];
+    assert_eq!(mixed_sql_batch["total_count"], 2);
+    assert_eq!(mixed_sql_batch["success_count"], 1);
+    assert_eq!(mixed_sql_batch["error_count"], 1);
+    assert_eq!(mixed_sql_batch["results"][0]["status"], "success");
+    assert_eq!(mixed_sql_batch["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql_batch["results"][1]["status"], "error");
     assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        mixed_sql_batch["results"][1]["error"]["summary"],
         "Query request is invalid"
-    );
-    assert!(
-        invalid_sql.content[0]
-            .as_text()
-            .expect("text content")
-            .text
-            .contains("Detail:")
     );
 
     let catalog_after_error = client
@@ -1542,14 +1604,14 @@ async fn mcp_sql_returns_large_int64_as_string() {
     let sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"
+                "queries": ["SELECT CAST(-8504475857937456387 AS BIGINT) AS user_id"]
             }))),
         )
         .await
         .expect("sql");
     assert_eq!(sql.is_error, Some(false));
 
-    let rows = &sql.structured_content.expect("structured content")["rows"];
+    let rows = &sql.structured_content.expect("structured content")["results"][0]["rows"];
     assert_eq!(
         rows[0]["user_id"],
         Value::String("-8504475857937456387".to_string()),

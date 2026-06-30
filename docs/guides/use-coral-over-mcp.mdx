@@ -192,7 +192,7 @@ The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` 
 
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `sql`            | Execute 1 to 10 independent read-only SQL queries against the Coral database |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
 | Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
@@ -204,7 +204,7 @@ Clients see the same database catalog and query results as `coral sql`. You set 
 
 The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
 
-Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For data questions, prefer a single `sql` call using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions over multiple tool calls that fetch rows and combine them in the agent.
+Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For dependent data questions, prefer one SQL statement using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions. For several independent questions, use one `sql` tool call with multiple `queries[]` entries.
 
 ### Discovery tools
 
@@ -234,22 +234,58 @@ Agents should treat the discovery tools as catalog helpers, not as replacement p
 
 When the agent needs metadata it can filter, join, sort, or aggregate before writing the final SQL, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
 
+### SQL tool input
+
+The `sql` tool accepts a required `queries` array, not a top-level `sql` string:
+
+```json
+{
+  "queries": [
+    "SELECT table_name FROM coral.tables WHERE schema_name = 'github' ORDER BY table_name",
+    "SELECT column_name, data_type FROM coral.columns WHERE schema_name = 'github' AND table_name = 'pulls' ORDER BY ordinal_position"
+  ]
+}
+```
+
+Each entry must be one independent read-only SQL statement. Coral starts entries concurrently, so a later entry must not depend on rows, errors, or side effects from an earlier entry. If the work is dependent, combine it into one SQL statement or make separate tool calls after inspecting each result.
+
+`queries` must contain 1 to 10 non-blank strings. Missing `queries`, an empty array, more than 10 entries, non-string entries, and blank strings are MCP argument errors and do not dispatch any SQL.
+
 ### Searching a provider's data
 
 Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
 
 ## Query result format
 
-The `sql` tool returns rows as a JSON array of objects. To preserve exact values across JSON parsers, Coral encodes precision-sensitive numeric types as JSON **strings** rather than JSON numbers:
+MCP tool results use `structuredContent` for rows and errors. The `content` array is empty for successful tool results and structured tool errors, so clients should not parse text content.
 
-- `Int64` (`BIGINT`) and `UInt64`
-- `Decimal32`, `Decimal64`, `Decimal128`, and `Decimal256`
+When every query succeeds, the `sql` tool returns one ordered batch:
 
-This applies wherever these types appear, including nested inside `Struct`, `List`, and `Map` columns. The column's declared SQL type does not change — `describe_table`, `list_columns`, and `coral.columns` still report `Int64` or `Decimal(p, s)`; only the JSON encoding of the value is a string. A `BIGINT` `user_id`, for example, comes back as `{ "user_id": "-8504475857937456387" }`.
+```json
+{
+  "total_count": 2,
+  "success_count": 2,
+  "error_count": 0,
+  "results": [
+    {
+      "index": 0,
+      "status": "success",
+      "rows": [{ "table_name": "pulls" }]
+    },
+    {
+      "index": 1,
+      "status": "success",
+      "rows": [{ "column_name": "title", "data_type": "Utf8" }]
+    }
+  ]
+}
+```
 
-Coral does this because MCP uses JSON-RPC, and many clients — JavaScript/TypeScript `JSON.parse` and most MCP hosts — decode JSON numbers as IEEE-754 doubles. Values beyond 2^53 silently lose precision when read as a number.
+`results` is ordered to match `queries`, and each item includes its zero-based `index`.
 
-The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
+If any query fails, the MCP tool result is marked as an error. The top-level `error` describes the batch failure, and `data` contains the same ordered batch with successful items and per-query error items.
+
+Successful SQL rows are JSON objects. In MCP results, precision-sensitive numeric values such as `Int64`, `UInt64`, and decimals are encoded as JSON strings to avoid precision loss in JSON clients. The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
 
 ## Troubleshooting
 

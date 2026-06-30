@@ -68,8 +68,9 @@ pub use composition::{
 };
 pub use contracts::{
     CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
-    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution, QueryMemoryConfig,
-    QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure,
     QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
     SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
     TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,

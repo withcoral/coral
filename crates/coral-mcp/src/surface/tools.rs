@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rmcp::{
     ErrorData,
-    model::{CallToolResult, Content, Tool, ToolAnnotations},
+    model::{CallToolResult, Tool, ToolAnnotations},
 };
 use serde_json::{Map, Value, json};
 
@@ -10,6 +10,7 @@ use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{
     Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
+    schema::json_object_schema, sql_input_schema, sql_output_schema,
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
@@ -85,27 +86,15 @@ pub(crate) struct OpenEpisodeArguments {
 }
 
 pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
-    Tool::new(
-        "sql",
-        sql_tool_description(context),
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["sql"],
-            "properties": {
-                "sql": {
-                    "type": "string",
-                    "description": "One read-only SQL statement to execute against the Coral database and its configured connected source schemas."
-                }
-            }
-        })),
-    )
-    .with_annotations(
-        ToolAnnotations::with_title("Run SQL")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(true),
-    )
+    Tool::new("sql", sql_tool_description(context), sql_input_schema())
+        .with_raw_output_schema(sql_output_schema())
+        .with_annotations(
+            ToolAnnotations::with_title("Run SQL")
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
 }
 
 pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
@@ -485,23 +474,21 @@ pub(crate) fn optional_episode_id_argument(
     Ok(Some(value.to_string()))
 }
 
-pub(crate) fn build_tool_result(value: Value) -> Result<CallToolResult, ErrorData> {
-    let compact = serde_json::to_string(&value)
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+pub(crate) fn build_tool_result(value: Value) -> CallToolResult {
     let mut result = CallToolResult::structured(value);
-    result.content = vec![Content::text(compact)];
-    Ok(result)
+    result.content = Vec::new();
+    result
 }
 
 fn sql_tool_description(context: &ToolDescriptionContext) -> String {
     if context.visible_table_count == 0 {
         format!(
-            "Execute read-only SQL against the Coral database. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
             context.connected_sources_sentence()
         )
     } else {
         format!(
-            "Execute read-only SQL against the Coral database across connected Coral sources/schemas. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates to combine tables in one statement.",
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database across connected Coral sources/schemas using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates inside one query when work is dependent.",
             context.connected_sources_sentence(),
             context.visible_table_count
         )
@@ -968,15 +955,6 @@ fn optional_bool_argument(
     })
 }
 
-fn json_object_schema(value: &Value) -> Arc<Map<String, Value>> {
-    Arc::new(
-        value
-            .as_object()
-            .cloned()
-            .expect("tool schemas should be JSON objects"),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, Value, json};
@@ -988,7 +966,7 @@ mod tests {
     };
 
     #[test]
-    fn success_tool_result_text_uses_compact_json() {
+    fn success_tool_result_uses_structured_content_only() {
         let value = json!({
             "rows": [
                 {
@@ -1002,17 +980,9 @@ mod tests {
             ]
         });
 
-        let result = build_tool_result(value.clone()).expect("tool result");
+        let result = build_tool_result(value.clone());
 
-        let text = result
-            .content
-            .first()
-            .and_then(|content| content.as_text())
-            .expect("text content");
-        assert_eq!(
-            text.text,
-            r#"{"rows":[{"id":1,"text":"hello"},{"id":2,"text":"world"}]}"#
-        );
+        assert!(result.content.is_empty());
         assert_eq!(
             result.structured_content.expect("structured content"),
             value
@@ -1045,12 +1015,20 @@ mod tests {
             .input_schema
             .get("properties")
             .and_then(Value::as_object)
-            .and_then(|properties| properties.get("sql"))
+            .and_then(|properties| {
+                assert!(!properties.contains_key("sql"));
+                properties.get("queries")
+            })
             .and_then(Value::as_object)
-            .and_then(|sql| sql.get("description"))
+            .and_then(|queries| {
+                assert_eq!(queries.get("minItems"), Some(&json!(1)));
+                assert_eq!(queries.get("maxItems"), Some(&json!(10)));
+                queries.get("description")
+            })
             .and_then(Value::as_str)
-            .expect("sql input description");
-        assert!(sql_input_description.contains("connected source schemas"));
+            .expect("queries input description");
+        assert!(sql_input_description.contains("independent"));
+        assert!(sql_tool.output_schema.is_some());
 
         let search_description = search_catalog_tool(&context)
             .description

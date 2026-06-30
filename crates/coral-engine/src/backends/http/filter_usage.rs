@@ -86,6 +86,7 @@ fn collect_value_source_filters(source: &ValueSourceSpec, filters: &mut HashSet<
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => {
             filters.insert(key.clone());
