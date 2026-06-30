@@ -11,7 +11,7 @@
     "LiteralExpressions": 15,
     "MapExpressions": 19,
     "Match": 15,
-    "MathematicalFunctions": 18,
+    "MathematicalFunctions": 30,
     "NullSemantics": 14,
     "OptionalMatch": 15,
     "Parameters": 3,
@@ -4266,6 +4266,247 @@
             "angle_degrees": 135.0
           }
         ]
+      }
+    },
+    {
+      "id": "integer-division-left-associativity",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 5 / 4 / 3 AS chained_division, 5 / (4 / 3) AS grouped_division",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "chained_division": 0,
+            "grouped_division": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "modulo-left-associativity",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 5 % 4 % 3 AS chained_modulo, 5 % (4 % 3) AS grouped_modulo",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "chained_modulo": 1,
+            "grouped_modulo": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "unary-negation-power-precedence",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN -3 ^ 2 AS negative_base_power, -(3 ^ 2) AS negated_power",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "negative_base_power": 9.0,
+            "negated_power": -9.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "power-precedence-over-multiplication",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger(4 ^ 3 * 2 ^ 3) AS power_before_multiply, toInteger((4 ^ 3) * (2 ^ 3)) AS grouped_power_multiply",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "power_before_multiply": 512,
+            "grouped_power_multiply": 512
+          }
+        ]
+      }
+    },
+    {
+      "id": "modulo-filter-and-ordering",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.age % 10 = 1 OR p.age % 10 = 4 RETURN p.name AS name, p.age % 10 AS age_remainder ORDER BY age_remainder, name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "age_remainder": 1
+          },
+          {
+            "name": "Alice",
+            "age_remainder": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "integer-and-float-division-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age / 10 AS integer_decade, round(p.age / 10.0, 1) AS float_decade ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "integer_decade": 3,
+            "float_decade": 3.4
+          },
+          {
+            "name": "Bob",
+            "integer_decade": 2,
+            "float_decade": 2.9
+          },
+          {
+            "name": "Carol",
+            "integer_decade": 4,
+            "float_decade": 4.1
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-strength-percentage",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, toInteger(round(r.strength * 100.0, 0)) AS strength_percent ORDER BY strength_percent DESC, person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "strength_percent": 90
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "strength_percent": 70
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "strength_percent": 30
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-age-gap-absolute-value",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, abs(friend.age - p.age) AS age_gap ORDER BY age_gap, person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "age_gap": 5
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "age_gap": 7
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "age_gap": 12
+          }
+        ]
+      }
+    },
+    {
+      "id": "property-sqrt-and-sign-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, sqrt(toFloat(p.age - 25)) AS root_offset, toInteger(sign(p.age - 34)) AS sign_from_alice ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "root_offset": 3.0,
+            "sign_from_alice": 0
+          },
+          {
+            "name": "Bob",
+            "root_offset": 2.0,
+            "sign_from_alice": -1
+          },
+          {
+            "name": "Carol",
+            "root_offset": 4.0,
+            "sign_from_alice": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "trig-over-property-derived-degrees",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, round(sin(radians(toFloat(p.age - 29))), 2) AS age_angle_sin ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age_angle_sin": 0.09
+          },
+          {
+            "name": "Bob",
+            "age_angle_sin": 0.0
+          },
+          {
+            "name": "Carol",
+            "age_angle_sin": 0.21
+          }
+        ]
+      }
+    },
+    {
+      "id": "atan2-over-relationship-age-delta",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, round(degrees(atan2(toFloat(friend.age - p.age), r.strength * 10.0)), 0) AS age_strength_angle ORDER BY age_strength_angle, person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "age_strength_angle": -29.0
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "age_strength_angle": 60.0
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "age_strength_angle": 67.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "math-function-non-numeric-property-rejected",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN sin(p.name) AS value",
+      "expected": {
+        "kind": "error",
+        "contains": "numeric"
       }
     },
     {
