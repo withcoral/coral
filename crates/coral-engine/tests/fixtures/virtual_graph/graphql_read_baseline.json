@@ -2,9 +2,9 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 2,
+    "Aggregation": 6,
     "BooleanFilters": 1,
-    "ErrorHandling": 2,
+    "ErrorHandling": 3,
     "GeneratedClientShape": 1,
     "IdentityFields": 1,
     "NestedRelationships": 1,
@@ -189,6 +189,56 @@
       }
     },
     {
+      "id": "aggregate-sum-min-max",
+      "feature": "Aggregation",
+      "query": "query { Person { totalAge: _sum(field: age) youngest: _min(field: age) oldest: _max(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "totalAge": 104, "youngest": 29, "oldest": 41 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-avg-grouped-by-city",
+      "feature": "Aggregation",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }]) { city avgAge: _avg(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "avgAge": 31.5 },
+          { "city": "Paris", "avgAge": 41.0 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-count-distinct-city",
+      "feature": "Aggregation",
+      "query": "query { Person { distinctCities: _countDistinct(field: city) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "distinctCities": 2 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-min-max-grouped-by-city",
+      "feature": "Aggregation",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }]) { city youngest: _min(field: age) oldest: _max(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "youngest": 29, "oldest": 34 },
+          { "city": "Paris", "youngest": 41, "oldest": 41 }
+        ]
+      }
+    },
+    {
       "id": "identity-fields",
       "feature": "IdentityFields",
       "query": "query { Person(where: { name: { eq: \"Alice\" } }) { id: _id element: _elementId name } }",
@@ -253,6 +303,15 @@
       "expected": {
         "kind": "error",
         "contains": "GraphQL _id filters do not support string predicates"
+      }
+    },
+    {
+      "id": "aggregate-sum-missing-field",
+      "feature": "ErrorHandling",
+      "query": "query { Person { _sum } }",
+      "expected": {
+        "kind": "error",
+        "contains": "requires exactly one 'field' argument"
       }
     }
   ]
