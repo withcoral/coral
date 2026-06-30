@@ -18666,7 +18666,7 @@ fn compile_character_length_scalar_expression(
         return Ok(length);
     }
     if is_size_function(function)
-        && let Some(length) = compile_optional_pattern_comprehension_size_scalar_expression(
+        && let Some(length) = compile_optional_count_only_collection_size_scalar_expression(
             argument,
             format!("{path}.arguments[0]"),
             mode,
@@ -18687,7 +18687,7 @@ fn compile_character_length_scalar_expression(
     })
 }
 
-fn compile_optional_pattern_comprehension_size_scalar_expression(
+fn compile_optional_count_only_collection_size_scalar_expression(
     expression: &Expression,
     path: impl Into<String>,
     mode: PredicateCompileMode<'_>,
@@ -18696,7 +18696,7 @@ fn compile_optional_pattern_comprehension_size_scalar_expression(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_optional_pattern_comprehension_size_scalar_expression(
+            compile_optional_count_only_collection_size_scalar_expression(
                 inner, path, mode, context,
             )
         }
@@ -18709,6 +18709,13 @@ fn compile_optional_pattern_comprehension_size_scalar_expression(
             )
             .map(Some)
         }
+        Expression::CollectSubquery(collect) => compile_collect_subquery_count_scalar_expression(
+            collect,
+            path,
+            mode.static_metadata_plan(),
+            context,
+        )
+        .map(Some),
         _ => Ok(None),
     }
 }
@@ -24520,6 +24527,27 @@ fn compile_collect_subquery_scalar_expression(
     })
 }
 
+fn compile_collect_subquery_count_scalar_expression(
+    collect: &CollectSubqueryExpression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let (pattern, target, distinct) = compile_regular_query_collect_subquery(
+        &collect.query,
+        format!("{path}.query"),
+        plan,
+        context,
+        "COLLECT subqueries",
+        "COLLECT subqueries require an explicit MATCH clause",
+    )?;
+    Ok(ScalarExpression::CountSubquery {
+        pattern: Box::new(pattern),
+        distinct_target: distinct.then_some(Box::new(target)),
+    })
+}
+
 fn compile_pattern_comprehension_scalar_expression(
     comprehension: &decypher::ast::expr::PatternComprehension,
     path: impl Into<String>,
@@ -25349,7 +25377,7 @@ fn compile_is_empty_predicate(
             rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
         });
     }
-    if let Some(length) = compile_optional_pattern_comprehension_size_scalar_expression(
+    if let Some(length) = compile_optional_count_only_collection_size_scalar_expression(
         argument,
         format!("{path}.arguments[0]"),
         mode,
@@ -41972,6 +42000,96 @@ relationships:
                     ScalarExpression::Property(PropertyRef { variable, property })
                         if variable == "dependency" && property == "name"
                 )
+        ));
+    }
+
+    #[test]
+    fn compiles_collect_subquery_size_as_count_subquery() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN size(COLLECT { \
+               MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+               RETURN dependency.name \
+             }) AS dependency_count",
+        )
+        .expect("COLLECT subquery size should compile through count lowering");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CountSubquery {
+                        pattern,
+                        distinct_target: None,
+                    },
+                alias,
+            }] if alias == "dependency_count"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.relationships.len() == 1)
+        ));
+    }
+
+    #[test]
+    fn compiles_distinct_collect_subquery_size_as_distinct_count_subquery() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN size(COLLECT { \
+               MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+               RETURN DISTINCT dependency.team \
+             }) AS dependency_teams",
+        )
+        .expect("DISTINCT COLLECT subquery size should compile through distinct count lowering");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CountSubquery {
+                        pattern,
+                        distinct_target: Some(target),
+                    },
+                alias,
+            }] if alias == "dependency_teams"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.relationships.len() == 1)
+                && matches!(
+                    target.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "dependency" && property == "team"
+                )
+        ));
+    }
+
+    #[test]
+    fn compiles_collect_subquery_is_empty_as_count_predicate() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE isEmpty(COLLECT { \
+               MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+               WHERE dependency.tier = 'prod' \
+               RETURN dependency.name \
+             }) \
+             RETURN service.name AS service",
+        )
+        .expect("COLLECT subquery isEmpty should compile through count lowering");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::CountSubquery {
+                    pattern,
+                    distinct_target: None,
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+            })) if matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                if pattern.relationships.len() == 1
+                    && pattern.predicates.iter().any(|predicate| {
+                        predicate.property.variable == "dependency"
+                            && predicate.property.property == "tier"
+                            && predicate.operator == ComparisonOperator::Equal
+                            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+                    }))
         ));
     }
 

@@ -5759,6 +5759,79 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_collect_subquery_size_and_is_empty_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE isEmpty(COLLECT { \
+           MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+           WHERE dependency.tier = 'prod' \
+           RETURN dependency.name \
+         }) \
+         RETURN service.name AS service, \
+                size(COLLECT { \
+                  MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+                  RETURN dependency.name \
+                }) AS dependency_count, \
+                size(COLLECT { \
+                  MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+                  RETURN DISTINCT dependency.tier \
+                }) AS distinct_dependency_tiers \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COLLECT subquery size/isEmpty query should execute");
+
+    assert!(
+        execution.translated_sql().contains("COUNT(*)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("NOT EXISTS"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("SELECT DISTINCT"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains("ARRAY_AGG"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "deployments",
+                "dependency_count": 1,
+                "distinct_dependency_tiers": 1
+            }),
+            json!({
+                "service": "experiments",
+                "dependency_count": 0,
+                "distinct_dependency_tiers": 0
+            }),
+            json!({
+                "service": "legacy-sync",
+                "dependency_count": 0,
+                "distinct_dependency_tiers": 0
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_pattern_comprehension_size_and_is_empty_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

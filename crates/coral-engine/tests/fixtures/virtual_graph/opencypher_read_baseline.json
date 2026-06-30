@@ -3,7 +3,7 @@
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
     "Aggregation": 9,
-    "CollectSubquery": 2,
+    "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
@@ -547,6 +547,19 @@
         "ordered": true,
         "rows": [
           { "friend_markers": ["friend"] }
+        ]
+      }
+    },
+    {
+      "id": "collect-subquery-size-and-is-empty",
+      "feature": "CollectSubquery",
+      "query": "MATCH (p:Person) WHERE isEmpty(COLLECT { MATCH (p)-[:KNOWS]->(friend:Person) WHERE friend.name = 'Bob' RETURN friend.name }) RETURN p.name AS person, size(COLLECT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN DISTINCT friend.active }) AS active_friend_states ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Bob", "active_friend_states": 1 },
+          { "person": "Carol", "active_friend_states": 0 }
         ]
       }
     },

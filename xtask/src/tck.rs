@@ -491,10 +491,10 @@ mod tests {
             .expect("baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-opencypher-read-baseline");
-        assert_eq!(report.scenario_count, 137);
+        assert_eq!(report.scenario_count, 138);
         assert_eq!(report.expected_error_count, 11);
         assert_eq!(report.feature_counts.get("Aggregation"), Some(&9));
-        assert_eq!(report.feature_counts.get("CollectSubquery"), Some(&2));
+        assert_eq!(report.feature_counts.get("CollectSubquery"), Some(&3));
         assert_eq!(report.feature_counts.get("CountSubquery"), Some(&10));
         assert_eq!(report.feature_counts.get("ExistsSubquery"), Some(&2));
         assert_eq!(report.feature_counts.get("GraphMetadata"), Some(&5));
@@ -529,11 +529,11 @@ mod tests {
             .expect("GraphQL baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 137);
-        assert_eq!(report.expected_error_count, 11);
-        assert_eq!(report.feature_counts.get("Aggregation"), Some(&9));
-        assert_eq!(report.feature_counts.get("RootSelection"), Some(&0));
-        assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&0));
+        assert_eq!(report.scenario_count, 13);
+        assert_eq!(report.expected_error_count, 1);
+        assert_eq!(report.feature_counts.get("Aggregation"), Some(&2));
+        assert_eq!(report.feature_counts.get("RootSelection"), Some(&2));
+        assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&2));
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
@@ -576,9 +576,9 @@ mod tests {
         .expect("upstream report should parse");
 
         assert_eq!(report.feature_file_count, 6);
-        assert_eq!(report.scenario_count, 137);
+        assert_eq!(report.scenario_count, 6);
         assert_eq!(report.read_candidate_scenario_count, 4);
-        assert_eq!(report.coral_baseline_scenario_count, 137);
+        assert_eq!(report.coral_baseline_scenario_count, 138);
         assert_eq!(
             report
                 .category_counts

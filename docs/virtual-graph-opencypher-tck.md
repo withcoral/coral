@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-137 scenarios, which is 8.48% of the full upstream scenario-definition inventory
-and 10.60% of the read-candidate inventory.
+138 scenarios, which is 8.54% of the full upstream scenario-definition inventory
+and 10.66% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 137 representative read-only scenarios:
+The baseline currently contains 138 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -171,9 +171,10 @@ The baseline currently contains 137 representative read-only scenarios:
   hidden ordering, scoped scalar `RETURN` validation, `RETURN DISTINCT scalar`
   row-counting, distinct-count threshold predicates, and reversed
   arbitrary-threshold count predicates.
-- `CollectSubquery`: 2 scenarios for `COLLECT { MATCH ... RETURN scalar }`
+- `CollectSubquery`: 3 scenarios for `COLLECT { MATCH ... RETURN scalar }`
   projection lists over correlated scoped patterns, including `RETURN DISTINCT`
-  scalar collection.
+  scalar collection and count-only `size(...)` / `isEmpty(...)` lowering over
+  `COLLECT` subqueries.
 - `PatternComprehension`: 2 scenarios for parser-recovered
   `[(pattern) WHERE predicate | scalar]` projection lists over correlated
   scoped relationship patterns, plus count-only `size(...)` / `isEmpty(...)`
@@ -245,7 +246,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 137 representative read-only scenarios:
+The GraphQL baseline currently contains 13 representative read-only scenarios:
 
 - `RootSelection`: 2 scenarios for exact-label and generated root aliases.
 - `ScalarFilters`: 2 scenarios for scalar operator objects, shorthand equality,
