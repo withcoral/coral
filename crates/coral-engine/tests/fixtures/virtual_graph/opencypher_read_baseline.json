@@ -24,7 +24,7 @@
     "ScalarExpressions": 24,
     "TypeConversion": 3,
     "Union": 4,
-    "Unwind": 2,
+    "Unwind": 3,
     "VariableLengthPaths": 4,
     "Where": 11,
     "With": 6
@@ -1497,6 +1497,21 @@
         "rows": [
           { "city": "London", "name": "Alice" },
           { "city": "Paris", "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "unwind-after-with",
+      "feature": "Unwind",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Alice','Bob'] WITH p UNWIND [1,2] AS n RETURN p.name AS name, n ORDER BY name, n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "n": 1 },
+          { "name": "Alice", "n": 2 },
+          { "name": "Bob", "n": 1 },
+          { "name": "Bob", "n": 2 }
         ]
       }
     },

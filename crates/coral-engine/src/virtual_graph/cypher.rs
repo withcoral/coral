@@ -162,6 +162,17 @@ type MatchBoundedRelationshipRangeSiteInfo = (
     Vec<BoundedRelationshipRangeAlternative>,
 );
 
+#[derive(Debug, Clone, Copy)]
+enum StaticUnwindSite {
+    SinglePart {
+        reading_clause_index: usize,
+    },
+    MultiPart {
+        query_part: MultiPartAlternativePart,
+        reading_clause_index: usize,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct ExpandedSingleQuery {
     query: SingleQuery,
@@ -1042,12 +1053,12 @@ fn expand_single_query_static_unwinds(
         let mut progressed = false;
         let mut next = Vec::new();
         for variant in expanded {
-            let Some(index) = first_static_unwind_index(&variant.query, path)? else {
+            let Some(site) = first_static_unwind_site(&variant.query) else {
                 next.push(variant);
                 continue;
             };
             progressed = true;
-            let alternatives = expand_static_unwind_at_index(&variant, index, context, path)?;
+            let alternatives = expand_static_unwind_at_site(&variant, site, context, path)?;
             for alternative in alternatives {
                 if next.len() >= MAX_STATIC_UNWIND_BRANCHES {
                     return Err(unsupported(
@@ -1067,24 +1078,37 @@ fn expand_single_query_static_unwinds(
     }
 }
 
-fn first_static_unwind_index(
-    single_query: &SingleQuery,
-    path: &str,
-) -> Result<Option<usize>, CoreError> {
+fn first_static_unwind_site(single_query: &SingleQuery) -> Option<StaticUnwindSite> {
     match &single_query.kind {
-        SingleQueryKind::SinglePart(query) => Ok(query
+        SingleQueryKind::SinglePart(query) => query
             .reading_clauses
             .iter()
-            .position(|clause| matches!(clause, ReadingClause::Unwind(_)))),
+            .position(|clause| matches!(clause, ReadingClause::Unwind(_)))
+            .map(|reading_clause_index| StaticUnwindSite::SinglePart {
+                reading_clause_index,
+            }),
         SingleQueryKind::MultiPart(query) => {
-            if multi_part_query_contains_unwind(query) {
-                Err(unsupported(
-                    path,
-                    "UNWIND with WITH-separated multipart queries requires staged row-source planning and is not supported yet",
-                ))
-            } else {
-                Ok(None)
+            for (part_index, part) in query.parts.iter().enumerate() {
+                if let Some(reading_clause_index) = part
+                    .reading_clauses
+                    .iter()
+                    .position(|clause| matches!(clause, ReadingClause::Unwind(_)))
+                {
+                    return Some(StaticUnwindSite::MultiPart {
+                        query_part: MultiPartAlternativePart::Part(part_index),
+                        reading_clause_index,
+                    });
+                }
             }
+            query
+                .final_part
+                .reading_clauses
+                .iter()
+                .position(|clause| matches!(clause, ReadingClause::Unwind(_)))
+                .map(|reading_clause_index| StaticUnwindSite::MultiPart {
+                    query_part: MultiPartAlternativePart::FinalPart,
+                    reading_clause_index,
+                })
         }
     }
 }
@@ -1111,34 +1135,22 @@ fn single_query_contains_unwind(single_query: &SingleQuery) -> bool {
     }
 }
 
-fn expand_static_unwind_at_index(
+fn expand_static_unwind_at_site(
     variant: &ExpandedSingleQuery,
-    index: usize,
+    site: StaticUnwindSite,
     context: &CypherCompileContext,
     path: &str,
 ) -> Result<Vec<ExpandedSingleQuery>, CoreError> {
-    let SingleQueryKind::SinglePart(query) = &variant.query.kind else {
-        return Err(CoreError::internal(
-            "static UNWIND expansion reached non-single-part query",
-        ));
-    };
-    let ReadingClause::Unwind(unwind) = query
-        .reading_clauses
-        .get(index)
-        .ok_or_else(|| CoreError::internal("static UNWIND index was out of bounds"))?
-    else {
-        return Err(CoreError::internal(
-            "static UNWIND expansion index did not point at UNWIND",
-        ));
-    };
+    let unwind = static_unwind_at_site(&variant.query, site)?;
     let variable = variable_name(&unwind.variable);
-    validate_static_unwind_scope(query, index, &variable, path)?;
-    let values = compile_static_unwind_values(unwind, index, context, path)?;
+    validate_static_unwind_scope(&variant.query, site, &variable, path)?;
+    let reading_clause_path = static_unwind_reading_clause_path(path, site);
+    let values = compile_static_unwind_values(unwind, &reading_clause_path, context)?;
 
     if values.is_empty() {
         return Ok(vec![expand_static_unwind_literal_branch(
             variant,
-            index,
+            site,
             &variable,
             &Literal::Null,
             true,
@@ -1150,7 +1162,7 @@ fn expand_static_unwind_at_index(
         .map(|literal| {
             expand_static_unwind_literal_branch(
                 variant,
-                index,
+                site,
                 &variable,
                 literal,
                 variant.force_empty,
@@ -1159,13 +1171,94 @@ fn expand_static_unwind_at_index(
         .collect()
 }
 
+fn static_unwind_at_site(
+    single_query: &SingleQuery,
+    site: StaticUnwindSite,
+) -> Result<&Unwind, CoreError> {
+    let reading_clauses = match (&single_query.kind, site) {
+        (SingleQueryKind::SinglePart(single_part), StaticUnwindSite::SinglePart { .. }) => {
+            &single_part.reading_clauses
+        }
+        (
+            SingleQueryKind::MultiPart(multi_part),
+            StaticUnwindSite::MultiPart {
+                query_part: MultiPartAlternativePart::Part(index),
+                ..
+            },
+        ) => {
+            &multi_part
+                .parts
+                .get(index)
+                .ok_or_else(|| {
+                    CoreError::internal("static UNWIND multipart site is out of bounds")
+                })?
+                .reading_clauses
+        }
+        (
+            SingleQueryKind::MultiPart(multi_part),
+            StaticUnwindSite::MultiPart {
+                query_part: MultiPartAlternativePart::FinalPart,
+                ..
+            },
+        ) => &multi_part.final_part.reading_clauses,
+        (SingleQueryKind::SinglePart(_), StaticUnwindSite::MultiPart { .. }) => {
+            return Err(CoreError::internal(
+                "multipart static UNWIND site applied to single-part query",
+            ));
+        }
+        (SingleQueryKind::MultiPart(_), StaticUnwindSite::SinglePart { .. }) => {
+            return Err(CoreError::internal(
+                "single-part static UNWIND site applied to multipart query",
+            ));
+        }
+    };
+    let reading_clause_index = static_unwind_reading_clause_index(site);
+    let ReadingClause::Unwind(unwind) = reading_clauses
+        .get(reading_clause_index)
+        .ok_or_else(|| CoreError::internal("static UNWIND site was out of bounds"))?
+    else {
+        return Err(CoreError::internal(
+            "static UNWIND site did not point at UNWIND",
+        ));
+    };
+    Ok(unwind)
+}
+
+fn static_unwind_reading_clause_index(site: StaticUnwindSite) -> usize {
+    match site {
+        StaticUnwindSite::SinglePart {
+            reading_clause_index,
+        }
+        | StaticUnwindSite::MultiPart {
+            reading_clause_index,
+            ..
+        } => reading_clause_index,
+    }
+}
+
+fn static_unwind_reading_clause_path(path: &str, site: StaticUnwindSite) -> String {
+    let reading_clause_index = static_unwind_reading_clause_index(site);
+    match site {
+        StaticUnwindSite::SinglePart { .. } => {
+            format!("{path}.reading_clauses[{reading_clause_index}]")
+        }
+        StaticUnwindSite::MultiPart {
+            query_part: MultiPartAlternativePart::Part(part_index),
+            ..
+        } => format!("{path}.parts[{part_index}].reading_clauses[{reading_clause_index}]"),
+        StaticUnwindSite::MultiPart {
+            query_part: MultiPartAlternativePart::FinalPart,
+            ..
+        } => format!("{path}.final_part.reading_clauses[{reading_clause_index}]"),
+    }
+}
+
 fn compile_static_unwind_values(
     unwind: &Unwind,
-    index: usize,
+    reading_clause_path: &str,
     context: &CypherCompileContext,
-    path: &str,
 ) -> Result<Vec<Literal>, CoreError> {
-    let expression_path = format!("{path}.reading_clauses[{index}].unwind.expression");
+    let expression_path = format!("{reading_clause_path}.unwind.expression");
     let value = if let Some(source) = context.unwind_expression_source(unwind) {
         compile_static_unwind_value_source(source, expression_path.clone(), context)?
     } else {
@@ -1326,22 +1419,171 @@ fn static_folded_case_result_value(
 }
 
 fn validate_static_unwind_scope(
-    query: &SinglePartQuery,
+    query: &SingleQuery,
+    site: StaticUnwindSite,
+    variable: &str,
+    path: &str,
+) -> Result<(), CoreError> {
+    match (&query.kind, site) {
+        (
+            SingleQueryKind::SinglePart(single_part),
+            StaticUnwindSite::SinglePart {
+                reading_clause_index,
+            },
+        ) => validate_static_unwind_single_part_scope(
+            &single_part.reading_clauses,
+            reading_clause_index,
+            variable,
+            path,
+        ),
+        (
+            SingleQueryKind::MultiPart(multi_part),
+            StaticUnwindSite::MultiPart {
+                query_part,
+                reading_clause_index,
+            },
+        ) => validate_static_unwind_multi_part_scope(
+            multi_part,
+            query_part,
+            reading_clause_index,
+            variable,
+            path,
+        ),
+        (SingleQueryKind::SinglePart(_), StaticUnwindSite::MultiPart { .. }) => Err(
+            CoreError::internal("multipart static UNWIND scope applied to single-part query"),
+        ),
+        (SingleQueryKind::MultiPart(_), StaticUnwindSite::SinglePart { .. }) => Err(
+            CoreError::internal("single-part static UNWIND scope applied to multipart query"),
+        ),
+    }
+}
+
+fn validate_static_unwind_single_part_scope(
+    reading_clauses: &[ReadingClause],
     index: usize,
     variable: &str,
     path: &str,
 ) -> Result<(), CoreError> {
-    for (clause_index, clause) in query.reading_clauses.iter().take(index).enumerate() {
+    let target_path = format!("{path}.reading_clauses[{index}]");
+    validate_static_unwind_prior_reading_clauses(
+        reading_clauses.iter().take(index).enumerate(),
+        variable,
+        &target_path,
+    )?;
+    validate_static_unwind_later_reading_clauses(
+        reading_clauses.iter().enumerate().skip(index + 1),
+        variable,
+        path,
+    )
+}
+
+fn validate_static_unwind_multi_part_scope(
+    query: &MultiPartQuery,
+    query_part: MultiPartAlternativePart,
+    index: usize,
+    variable: &str,
+    path: &str,
+) -> Result<(), CoreError> {
+    let target_path = static_unwind_reading_clause_path(
+        path,
+        StaticUnwindSite::MultiPart {
+            query_part,
+            reading_clause_index: index,
+        },
+    );
+    match query_part {
+        MultiPartAlternativePart::Part(part_index) => {
+            for part in query.parts.iter().take(part_index) {
+                validate_static_unwind_prior_reading_clauses(
+                    part.reading_clauses.iter().enumerate(),
+                    variable,
+                    &target_path,
+                )?;
+                if with_projects_variable(&part.with, variable) {
+                    return Err(unsupported(
+                        target_path.as_str(),
+                        format!(
+                            "UNWIND variable '{variable}' is already bound before this reading clause"
+                        ),
+                    ));
+                }
+            }
+            let part = query.parts.get(part_index).ok_or_else(|| {
+                CoreError::internal("static UNWIND multipart scope is out of bounds")
+            })?;
+            validate_static_unwind_prior_reading_clauses(
+                part.reading_clauses.iter().take(index).enumerate(),
+                variable,
+                &target_path,
+            )?;
+            validate_static_unwind_later_reading_clauses(
+                part.reading_clauses.iter().enumerate().skip(index + 1),
+                variable,
+                &format!("{path}.parts[{part_index}]"),
+            )?;
+            for (later_index, part) in query.parts.iter().enumerate().skip(part_index + 1) {
+                validate_static_unwind_later_reading_clauses(
+                    part.reading_clauses.iter().enumerate(),
+                    variable,
+                    &format!("{path}.parts[{later_index}]"),
+                )?;
+            }
+            validate_static_unwind_later_reading_clauses(
+                query.final_part.reading_clauses.iter().enumerate(),
+                variable,
+                &format!("{path}.final_part"),
+            )
+        }
+        MultiPartAlternativePart::FinalPart => {
+            for part in &query.parts {
+                validate_static_unwind_prior_reading_clauses(
+                    part.reading_clauses.iter().enumerate(),
+                    variable,
+                    &target_path,
+                )?;
+                if with_projects_variable(&part.with, variable) {
+                    return Err(unsupported(
+                        target_path.as_str(),
+                        format!(
+                            "UNWIND variable '{variable}' is already bound before this reading clause"
+                        ),
+                    ));
+                }
+            }
+            validate_static_unwind_single_part_scope(
+                &query.final_part.reading_clauses,
+                index,
+                variable,
+                &format!("{path}.final_part"),
+            )
+        }
+    }
+}
+
+fn validate_static_unwind_prior_reading_clauses<'a>(
+    clauses: impl Iterator<Item = (usize, &'a ReadingClause)>,
+    variable: &str,
+    target_path: &str,
+) -> Result<(), CoreError> {
+    for (clause_index, clause) in clauses {
         if reading_clause_binds_variable(clause, variable) {
             return Err(unsupported(
-                format!("{path}.reading_clauses[{index}].unwind.variable"),
+                format!("{target_path}.unwind.variable"),
                 format!(
                     "UNWIND variable '{variable}' is already bound before reading clause {clause_index}"
                 ),
             ));
         }
     }
-    for (clause_index, clause) in query.reading_clauses.iter().enumerate().skip(index + 1) {
+    Ok(())
+}
+
+fn validate_static_unwind_later_reading_clauses<'a>(
+    clauses: impl Iterator<Item = (usize, &'a ReadingClause)>,
+    variable: &str,
+    path: &str,
+) -> Result<(), CoreError> {
+    for (clause_index, clause) in clauses {
         if reading_clause_binds_variable(clause, variable) {
             return Err(unsupported(
                 format!("{path}.reading_clauses[{clause_index}]"),
@@ -1352,6 +1594,12 @@ fn validate_static_unwind_scope(
         }
     }
     Ok(())
+}
+
+fn with_projects_variable(with: &With, variable: &str) -> bool {
+    with.items
+        .iter()
+        .any(|item| return_item_projection_name(item) == variable)
 }
 
 fn reading_clause_binds_variable(clause: &ReadingClause, variable: &str) -> bool {
@@ -1452,23 +1700,61 @@ fn relationship_pattern_bound_variables(
 
 fn expand_static_unwind_literal_branch(
     variant: &ExpandedSingleQuery,
-    index: usize,
+    site: StaticUnwindSite,
     variable: &str,
     literal: &Literal,
     force_empty: bool,
 ) -> Result<ExpandedSingleQuery, CoreError> {
     let mut query = variant.query.clone();
-    let SingleQueryKind::SinglePart(single_part) = &mut query.kind else {
-        return Err(CoreError::internal(
-            "static UNWIND literal branch reached non-single-part query",
-        ));
-    };
-    single_part.reading_clauses.remove(index);
-    substitute_static_unwind_literal(single_part, index, variable, literal);
+    substitute_static_unwind_literal(&mut query, site, variable, literal)?;
     Ok(ExpandedSingleQuery { query, force_empty })
 }
 
 fn substitute_static_unwind_literal(
+    query: &mut SingleQuery,
+    site: StaticUnwindSite,
+    variable: &str,
+    literal: &Literal,
+) -> Result<(), CoreError> {
+    match (&mut query.kind, site) {
+        (
+            SingleQueryKind::SinglePart(single_part),
+            StaticUnwindSite::SinglePart {
+                reading_clause_index,
+            },
+        ) => {
+            single_part.reading_clauses.remove(reading_clause_index);
+            substitute_static_unwind_literal_in_single_part(
+                single_part,
+                reading_clause_index,
+                variable,
+                literal,
+            );
+            Ok(())
+        }
+        (
+            SingleQueryKind::MultiPart(multi_part),
+            StaticUnwindSite::MultiPart {
+                query_part,
+                reading_clause_index,
+            },
+        ) => substitute_static_unwind_literal_in_multi_part(
+            multi_part,
+            query_part,
+            reading_clause_index,
+            variable,
+            literal,
+        ),
+        (SingleQueryKind::SinglePart(_), StaticUnwindSite::MultiPart { .. }) => Err(
+            CoreError::internal("multipart static UNWIND branch applied to single-part query"),
+        ),
+        (SingleQueryKind::MultiPart(_), StaticUnwindSite::SinglePart { .. }) => Err(
+            CoreError::internal("single-part static UNWIND branch applied to multipart query"),
+        ),
+    }
+}
+
+fn substitute_static_unwind_literal_in_single_part(
     query: &mut SinglePartQuery,
     start_index: usize,
     variable: &str,
@@ -1479,6 +1765,51 @@ fn substitute_static_unwind_literal(
         substitution.visit_reading_clause(clause);
     }
     substitution.visit_single_part_body(&mut query.body);
+}
+
+fn substitute_static_unwind_literal_in_multi_part(
+    query: &mut MultiPartQuery,
+    query_part: MultiPartAlternativePart,
+    start_index: usize,
+    variable: &str,
+    literal: &Literal,
+) -> Result<(), CoreError> {
+    let mut substitution = StaticUnwindSubstitution { variable, literal };
+    match query_part {
+        MultiPartAlternativePart::Part(part_index) => {
+            let part = query.parts.get_mut(part_index).ok_or_else(|| {
+                CoreError::internal("static UNWIND multipart branch is out of bounds")
+            })?;
+            part.reading_clauses.remove(start_index);
+            for clause in part.reading_clauses.iter_mut().skip(start_index) {
+                substitution.visit_reading_clause(clause);
+            }
+            substitution.visit_with(&mut part.with);
+            for part in query.parts.iter_mut().skip(part_index + 1) {
+                for clause in &mut part.reading_clauses {
+                    substitution.visit_reading_clause(clause);
+                }
+                substitution.visit_with(&mut part.with);
+            }
+            for clause in &mut query.final_part.reading_clauses {
+                substitution.visit_reading_clause(clause);
+            }
+            substitution.visit_single_part_body(&mut query.final_part.body);
+        }
+        MultiPartAlternativePart::FinalPart => {
+            query.final_part.reading_clauses.remove(start_index);
+            for clause in query
+                .final_part
+                .reading_clauses
+                .iter_mut()
+                .skip(start_index)
+            {
+                substitution.visit_reading_clause(clause);
+            }
+            substitution.visit_single_part_body(&mut query.final_part.body);
+        }
+    }
+    Ok(())
 }
 
 struct StaticUnwindSubstitution<'a> {
@@ -1536,6 +1867,16 @@ impl StaticUnwindSubstitution<'_> {
 }
 
 impl VisitMut for StaticUnwindSubstitution<'_> {
+    fn visit_projection_item(&mut self, item: &mut ProjectionItem) {
+        if item.alias.is_none()
+            && let Expression::Variable(variable) = &item.expression
+            && variable_name(variable) == self.variable
+        {
+            item.alias = Some(variable.clone());
+        }
+        visit::walk_projection_item_mut(self, item);
+    }
+
     fn visit_expression(&mut self, expression: &mut Expression) {
         if let Expression::Variable(variable) = expression
             && variable_name(variable) == self.variable
@@ -32909,6 +33250,59 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_unwind_after_transparent_with_as_union_all_branches() {
+        let query = compile_cypher_query(
+            "MATCH (service:Service) \
+             WITH service \
+             UNWIND [1, 2] AS n \
+             RETURN service.name AS service, n \
+             ORDER BY service, n",
+        )
+        .expect("WITH-separated static UNWIND query should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("expected static UNWIND after WITH to expand into a union query");
+        };
+        assert_eq!(union.branches.len(), 1);
+        assert!(union.branches.first().expect("branch").all);
+        assert_eq!(
+            union.first.projections.get(1),
+            Some(&Projection::Literal {
+                literal: Literal::Integer(1),
+                alias: "n".to_string(),
+            })
+        );
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .expect("static UNWIND branch should exist")
+                .plan
+                .projections
+                .get(1),
+            Some(&Projection::Literal {
+                literal: Literal::Integer(2),
+                alias: "n".to_string(),
+            })
+        );
+        assert_eq!(
+            union.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("service".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::ProjectionAlias("n".to_string()),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn compiles_static_unwind_over_list_case_expressions() {
         let query = compile_cypher_query(
             "UNWIND (CASE WHEN true THEN ['prod', 'dev', 'stage'] ELSE ['legacy'] END)[0..2] AS tier \
@@ -33043,6 +33437,16 @@ relationships:
         assert_unsupported(
             "MATCH (service:Service) \
              UNWIND service.tier AS tier \
+             RETURN tier",
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_static_unwind_sources_after_with() {
+        assert_unsupported(
+            "MATCH (service:Service) \
+             WITH service \
+             UNWIND [service.tier] AS tier \
              RETURN tier",
         );
     }

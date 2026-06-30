@@ -2337,6 +2337,43 @@ async fn cypher_static_unwind_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_unwind_after_with_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (p:Person) \
+         WHERE p.name IN ['Ada Lovelace', 'Grace Hopper'] \
+         WITH p \
+         UNWIND [1, 2] AS n \
+         RETURN p.name AS name, n \
+         ORDER BY name, n",
+    )
+    .await
+    .expect("WITH-separated static UNWIND Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(" UNION ALL "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"name": "Ada Lovelace", "n": 1}),
+            json!({"name": "Ada Lovelace", "n": 2}),
+            json!({"name": "Grace Hopper", "n": 1}),
+            json!({"name": "Grace Hopper", "n": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_unwind_case_lists_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
