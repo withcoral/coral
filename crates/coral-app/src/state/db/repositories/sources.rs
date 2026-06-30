@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 
-use sea_query::{Expr, ExprTrait, Order, Query};
+use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
-use crate::state::db::schema::{SourceManifests, SourceSecretKeys, SourceVariables, Sources};
+use crate::state::db::schema::{
+    CredentialDocuments, SourceManifests, SourceSecretKeys, SourceVariables, Sources,
+};
 use crate::state::db::{DbError, DbSession, DbWriteSession};
 use crate::workspaces::WorkspaceName;
 
@@ -194,15 +196,18 @@ where
         source: &InstalledSource,
         now_unix_nanos: i64,
     ) -> Result<(), DbError> {
-        let existing_created_at = self.source_created_at(workspace_name, &source.name).await?;
-        if existing_created_at.is_some() {
-            self.update_source(workspace_name, source, now_unix_nanos)
-                .await?;
-        } else {
-            self.insert_source(workspace_name, source, now_unix_nanos, now_unix_nanos)
-                .await?;
-        }
-        self.delete_source_detail_rows(workspace_name, &source.name)
+        let created_at_unix_nanos = self
+            .source_created_at(workspace_name, &source.name)
+            .await?
+            .unwrap_or(now_unix_nanos);
+        self.upsert_source_row(
+            workspace_name,
+            source,
+            created_at_unix_nanos,
+            now_unix_nanos,
+        )
+        .await?;
+        self.delete_source_child_rows(workspace_name, &source.name)
             .await?;
         self.delete_imported_manifest_for_non_imported_source(workspace_name, source)
             .await?;
@@ -218,6 +223,22 @@ where
         let removed = self.get_source(workspace_name, source_name).await?;
         self.delete_source_rows(workspace_name, source_name).await?;
         Ok(removed)
+    }
+
+    async fn upsert_source_row(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        created_at_unix_nanos: i64,
+        updated_at_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        self.insert_source(
+            workspace_name,
+            source,
+            created_at_unix_nanos,
+            updated_at_unix_nanos,
+        )
+        .await
     }
 
     async fn source_created_at(
@@ -266,40 +287,18 @@ where
                 Expr::val(created_at_unix_nanos),
                 Expr::val(updated_at_unix_nanos),
             ])
+            .on_conflict(
+                OnConflict::columns([Sources::WorkspaceId, Sources::Name])
+                    .update_columns([
+                        Sources::Version,
+                        Sources::OriginKind,
+                        Sources::CredentialStorage,
+                        Sources::UpdatedAtUnixNanos,
+                    ])
+                    .to_owned(),
+            )
             .to_owned();
         self.session.execute(statement).await
-    }
-
-    async fn update_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source: &InstalledSource,
-        updated_at_unix_nanos: i64,
-    ) -> Result<(), DbError> {
-        let statement = Query::update()
-            .table(Sources::Table)
-            .value(Sources::Version, Expr::val(source.version.clone()))
-            .value(
-                Sources::OriginKind,
-                Expr::val(source.origin.as_config_value()),
-            )
-            .value(
-                Sources::CredentialStorage,
-                Expr::val(
-                    source
-                        .credential_storage
-                        .map(CredentialStorageKind::as_config_value),
-                ),
-            )
-            .value(
-                Sources::UpdatedAtUnixNanos,
-                Expr::val(updated_at_unix_nanos),
-            )
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source.name.as_str()))
-            .to_owned();
-        self.session.execute_update(statement).await?;
-        Ok(())
     }
 
     async fn insert_source_variables(
@@ -376,23 +375,7 @@ where
         self.session.execute_delete(statement).await
     }
 
-    async fn delete_source_rows(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<(), DbError> {
-        self.delete_source_detail_rows(workspace_name, source_name)
-            .await?;
-
-        let source = Query::delete()
-            .from_table(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        self.session.execute_delete(source).await
-    }
-
-    async fn delete_source_detail_rows(
+    async fn delete_source_child_rows(
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
@@ -410,6 +393,36 @@ where
             .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
             .to_owned();
         self.session.execute_delete(variables).await
+    }
+
+    async fn delete_source_rows(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), DbError> {
+        self.delete_source_child_rows(workspace_name, source_name)
+            .await?;
+        self.delete_source_credential_document(workspace_name, source_name)
+            .await?;
+        let source = Query::delete()
+            .from_table(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
+            .to_owned();
+        self.session.execute_delete(source).await
+    }
+
+    async fn delete_source_credential_document(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), DbError> {
+        let statement = Query::delete()
+            .from_table(CredentialDocuments::Table)
+            .and_where(Expr::col(CredentialDocuments::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(CredentialDocuments::SourceName).eq(source_name.as_str()))
+            .to_owned();
+        self.session.execute_delete(statement).await
     }
 }
 
@@ -452,6 +465,7 @@ mod tests {
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
+    use crate::state::db::CredentialDocumentWrite;
     use crate::state::db::schema::Sources;
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, DbError, ResolvedDatabaseConfig};
@@ -485,6 +499,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_upsert_preserves_dependent_records_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        assert_source_upsert_preserves_dependent_records(&db).await;
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
@@ -496,6 +518,7 @@ mod tests {
         db.migrate().await.expect("migrate postgres");
 
         assert_source_repository_round_trip(&db).await;
+        assert_source_upsert_preserves_dependent_records(&db).await;
     }
 
     #[tokio::test]
@@ -601,7 +624,7 @@ mod tests {
             Some(alpha_replacement.clone())
         );
         assert_eq!(
-            source_manifest_yaml(db, &workspace, &alpha_replacement.name).await,
+            source_manifest(db, &workspace, &alpha_replacement.name).await,
             Some(alpha_manifest.to_string())
         );
 
@@ -617,7 +640,7 @@ mod tests {
             Some(alpha_bundled.clone())
         );
         assert_eq!(
-            source_manifest_yaml(db, &workspace, &alpha_bundled.name).await,
+            source_manifest(db, &workspace, &alpha_bundled.name).await,
             None
         );
 
@@ -640,6 +663,70 @@ mod tests {
         let zeta_name = zeta.name.clone();
         assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
+    }
+
+    async fn assert_source_upsert_preserves_dependent_records(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let original = source(
+            "imported",
+            Some("1.0.0"),
+            [("API_BASE", "https://api.example.test")],
+            ["API_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        let manifest_yaml = "name: imported\ndsl_version: 3\nbackend: http\nbase_url: https://api.example.test\ntables: []\n";
+
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &original, 20)
+            .await
+            .expect("upsert source");
+        tx.source_manifests()
+            .upsert(&workspace, &original.name, manifest_yaml, 30)
+            .await
+            .expect("upsert manifest");
+        tx.credential_documents()
+            .upsert(&workspace, &original.name, &credential_document_write(), 31)
+            .await
+            .expect("upsert credential document");
+        tx.commit().await.expect("commit source");
+
+        let replacement = source(
+            "imported",
+            Some("1.0.1"),
+            [("API_BASE", "https://api2.example.test")],
+            ["API_TOKEN", "SECOND_TOKEN"],
+            Some(CredentialStorageKind::Database),
+            SourceOrigin::Imported,
+        );
+        let mut tx = db.begin().await.expect("begin replacement");
+        tx.sources()
+            .upsert_source(&workspace, &replacement, 40)
+            .await
+            .expect("replace source");
+        tx.commit().await.expect("commit replacement");
+
+        assert_eq!(
+            get_source(db, &workspace, &replacement.name).await,
+            Some(replacement.clone())
+        );
+        assert_eq!(
+            source_manifest(db, &workspace, &original.name).await,
+            Some(manifest_yaml.to_string())
+        );
+        assert!(credential_document(db, &workspace, &original.name).await);
+
+        assert_eq!(
+            remove_source(db, &workspace, &replacement.name).await,
+            Some(replacement)
+        );
+        assert_eq!(source_manifest(db, &workspace, &original.name).await, None);
+        assert!(!credential_document(db, &workspace, &original.name).await);
     }
 
     async fn assert_source_repository_rejects_source_without_workspace(db: &CoralDb) {
@@ -742,7 +829,7 @@ mod tests {
             .expect("get source")
     }
 
-    async fn source_manifest_yaml(
+    async fn source_manifest(
         db: &CoralDb,
         workspace: &WorkspaceName,
         source_name: &SourceName,
@@ -754,6 +841,20 @@ mod tests {
             .await
             .expect("get source manifest")
             .map(|record| record.manifest_yaml)
+    }
+
+    async fn credential_document(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> bool {
+        let mut session = db;
+        session
+            .credential_documents()
+            .get(workspace, source_name)
+            .await
+            .expect("get credential document")
+            .is_some()
     }
 
     async fn remove_source(
@@ -789,6 +890,18 @@ mod tests {
             secrets: secrets.into_iter().map(str::to_string).collect(),
             credential_storage,
             origin,
+        }
+    }
+
+    fn credential_document_write() -> CredentialDocumentWrite {
+        CredentialDocumentWrite {
+            ciphertext: b"ciphertext".to_vec(),
+            nonce: b"nonce".to_vec(),
+            wrapped_dek: b"wrapped-dek".to_vec(),
+            wrapped_dek_nonce: b"wrapped-dek-nonce".to_vec(),
+            key_id: "key-id".to_string(),
+            algorithm: "xchacha20poly1305".to_string(),
+            aad_version: 1,
         }
     }
 

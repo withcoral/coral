@@ -516,6 +516,79 @@ async fn import_duplicate_source_overwrites_existing_source() {
 }
 
 #[tokio::test]
+async fn import_duplicate_source_preserves_database_credentials() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_with_inputs_yaml();
+    let variables = || {
+        vec![SourceVariable {
+            key: "API_BASE".to_string(),
+            value: "https://example.com".to_string(),
+        }]
+    };
+
+    let imported = harness
+        .import_source(
+            manifest_yaml.clone(),
+            variables(),
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
+            }],
+        )
+        .await;
+    assert_eq!(
+        imported.credential_storage,
+        SourceCredentialStorage::Database as i32
+    );
+
+    let reimported = harness
+        .import_source(
+            manifest_yaml.replace("0.1.0", "0.2.0"),
+            variables(),
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(reimported.version, "0.2.0");
+    assert_eq!(
+        reimported.credential_storage,
+        SourceCredentialStorage::Database as i32
+    );
+    assert_eq!(reimported.secrets.len(), 1);
+    assert_eq!(reimported.secrets[0].key, "API_TOKEN");
+
+    let reimported_again = harness
+        .import_source(
+            fixture_manifest_with_inputs_yaml().replace("0.1.0", "0.3.0"),
+            variables(),
+            Vec::new(),
+        )
+        .await;
+    assert_eq!(reimported_again.version, "0.3.0");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("get duplicate imported source")
+        .into_inner()
+        .source
+        .expect("get source response");
+    assert_eq!(fetched.version, "0.3.0");
+    assert_eq!(
+        fetched.credential_storage,
+        SourceCredentialStorage::Database as i32
+    );
+    assert_eq!(fetched.secrets.len(), 1);
+    assert_eq!(fetched.secrets[0].key, "API_TOKEN");
+
+    let validated = harness.validate_source("secured_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+}
+
+#[tokio::test]
 async fn import_invalid_manifest_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
