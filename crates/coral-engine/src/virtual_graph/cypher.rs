@@ -23139,6 +23139,7 @@ fn compile_exists_regular_query_predicate(
         context,
         "EXISTS subqueries",
         "EXISTS subqueries with scoped WHERE predicates currently require an explicit MATCH clause",
+        true,
     )
     .map(PredicateExpression::ExistsPattern)
 }
@@ -23198,6 +23199,7 @@ fn compile_regular_query_scoped_pattern(
     context: &CypherCompileContext,
     feature_name: &'static str,
     missing_match_message: &'static str,
+    allow_distinct_noop_return: bool,
 ) -> Result<ExistsPatternPredicate, CoreError> {
     let path = path.into();
     let Some(plan) = plan else {
@@ -23213,6 +23215,7 @@ fn compile_regular_query_scoped_pattern(
         context,
         feature_name,
         missing_match_message,
+        allow_distinct_noop_return,
     )?;
     compile_scoped_plan_delta_pattern(scoped.plan, plan, scoped.delta, path, feature_name)
 }
@@ -23239,6 +23242,7 @@ fn compile_regular_query_count_subquery_pattern(
         context,
         feature_name,
         missing_match_message,
+        false,
     )?;
     compile_scoped_plan_delta_count_subquery(scoped.plan, scoped.delta, path, feature_name)
 }
@@ -23336,6 +23340,7 @@ fn compile_regular_query_scoped_plan(
     context: &CypherCompileContext,
     feature_name: &'static str,
     missing_match_message: &'static str,
+    allow_distinct_noop_return: bool,
 ) -> Result<CompiledScopedPlan, CoreError> {
     let path = path.to_string();
     if !query.unions.is_empty() {
@@ -23357,7 +23362,12 @@ fn compile_regular_query_scoped_plan(
     match &single_part.body {
         SinglePartBody::Finish(_) => {}
         SinglePartBody::Return(return_clause) => {
-            validate_scoped_subquery_noop_return(return_clause, &path, feature_name)?;
+            validate_scoped_subquery_noop_return(
+                return_clause,
+                &path,
+                feature_name,
+                allow_distinct_noop_return,
+            )?;
         }
         SinglePartBody::Updating {
             updating,
@@ -23370,7 +23380,12 @@ fn compile_regular_query_scoped_plan(
             let Some(return_clause) = return_clause else {
                 unreachable!("return_clause.is_some() was checked above");
             };
-            validate_scoped_subquery_noop_return(return_clause, &path, feature_name)?;
+            validate_scoped_subquery_noop_return(
+                return_clause,
+                &path,
+                feature_name,
+                allow_distinct_noop_return,
+            )?;
         }
         SinglePartBody::Updating { .. } => {
             return Err(unsupported(
@@ -23421,8 +23436,9 @@ fn validate_scoped_subquery_noop_return(
     return_clause: &Return,
     path: &str,
     feature_name: &'static str,
+    allow_distinct_noop_return: bool,
 ) -> Result<(), CoreError> {
-    if return_clause.distinct {
+    if return_clause.distinct && !allow_distinct_noop_return {
         return Err(unsupported(
             format!("{path}.return.distinct"),
             format!(
@@ -40209,7 +40225,7 @@ relationships:
     fn compiles_noop_returns_inside_scoped_exists_and_count_subqueries() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
-             WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN 1 } \
+             WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1 } \
              RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN * } AS dependencies",
         )
         .expect("row-preserving scoped subquery RETURN clauses should compile");
@@ -40232,9 +40248,8 @@ relationships:
         for (cypher, expected) in [
             (
                 "MATCH (service:Service) \
-                 WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN DISTINCT 1 } \
-                 RETURN service.name AS service",
-                "RETURN DISTINCT inside EXISTS subqueries requires scoped projection planning",
+                 RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1 } AS dependencies",
+                "RETURN DISTINCT inside COUNT subqueries requires scoped projection planning",
             ),
             (
                 "MATCH (service:Service) \
