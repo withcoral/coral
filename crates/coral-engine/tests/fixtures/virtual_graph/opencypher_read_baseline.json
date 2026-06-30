@@ -23,7 +23,7 @@
     "ReturnDistinct": 3,
     "ReturnProjection": 12,
     "RowModifiers": 24,
-    "ScalarExpressions": 70,
+    "ScalarExpressions": 82,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -9509,6 +9509,214 @@
       "expected": {
         "kind": "error",
         "contains": "literal list projections require all non-null elements to have the same type"
+      }
+    },
+    {
+      "id": "split-multi-character-delimiter-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN split('Alice::Bob::Carol', '::') AS names, size(split('Alice::Bob::Carol', '::')) AS name_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "names": [
+              "Alice",
+              "Bob",
+              "Carol"
+            ],
+            "name_count": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "split-no-match-delimiter-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN split('Alice', '::') AS pieces, head(split('Alice', '::')) AS first_piece, size(split('Alice', '::')) AS piece_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "pieces": [
+              "Alice"
+            ],
+            "first_piece": "Alice",
+            "piece_count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "split-empty-field-preserves-empty-string",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN split('Alice,,Carol', ',') AS pieces, size(split('Alice,,Carol', ',')) AS piece_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "pieces": [
+              "Alice",
+              "",
+              "Carol"
+            ],
+            "piece_count": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "substring-length-beyond-end-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, substring(p.name, 2, 99) AS tail_from_two ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "tail_from_two": "ice"
+          },
+          {
+            "name": "Bob",
+            "tail_from_two": "b"
+          },
+          {
+            "name": "Carol",
+            "tail_from_two": "rol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "substring-start-beyond-end-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, substring(p.name, 99, 2) AS beyond_name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "beyond_name": ""
+          },
+          {
+            "name": "Bob",
+            "beyond_name": ""
+          },
+          {
+            "name": "Carol",
+            "beyond_name": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "size-empty-and-multibyte-string-literals",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN size('') AS empty_size, size('\u00c5lice') AS multibyte_size",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "empty_size": 0,
+            "multibyte_size": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "reverse-empty-and-multibyte-string-literals",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN reverse('') AS empty_reversed, reverse('\u00c5b') AS multibyte_reversed",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "empty_reversed": "",
+            "multibyte_reversed": "b\u00c5"
+          }
+        ]
+      }
+    },
+    {
+      "id": "case-normalized-string-search-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE toLower(p.name) STARTS WITH 'a' OR toUpper(p.city) CONTAINS 'RIS' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "left-right-zero-length-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, left(p.name, 0) AS no_prefix, right(p.city, 0) AS no_suffix ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "no_prefix": "",
+            "no_suffix": ""
+          },
+          {
+            "name": "Bob",
+            "no_prefix": "",
+            "no_suffix": ""
+          },
+          {
+            "name": "Carol",
+            "no_prefix": "",
+            "no_suffix": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "replace-overlapping-literal-search-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN replace('aaaa', 'aa', 'b') AS doubled, replace('aaa', 'aa', 'b') AS leading_only",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "doubled": "bb",
+            "leading_only": "ba"
+          }
+        ]
+      }
+    },
+    {
+      "id": "split-empty-delimiter-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN split('Alice', '') AS pieces",
+      "expected": {
+        "kind": "error",
+        "contains": "split()"
+      }
+    },
+    {
+      "id": "string-concatenation-plus-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name + p.city AS combined",
+      "expected": {
+        "kind": "error",
+        "contains": "arithmetic requires a numeric scalar expression"
       }
     }
   ]
