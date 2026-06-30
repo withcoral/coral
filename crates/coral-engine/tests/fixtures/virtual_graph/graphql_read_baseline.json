@@ -8,7 +8,7 @@
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
     "NestedRelationships": 5,
-    "RelationshipExistence": 1,
+    "RelationshipExistence": 5,
     "RootSelection": 2,
     "RowModifiers": 5,
     "ScalarFilters": 8
@@ -505,6 +505,57 @@
         "rows": [
           { "name": "Alice" },
           { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "existence-incoming-relationship-filter",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { in_KNOWS: { relationshipWhere: { since: { gte: 2021 } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "existence-incoming-node-filter",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { in_KNOWS: { where: { city: { eq: \"London\" } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "existence-undirected-node-filter",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { any_KNOWS: { where: { city: { eq: \"Paris\" } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "existence-negated-outgoing",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { not: { out_KNOWS: { relationshipWhere: { since: { gte: 2022 } } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
         ]
       }
     },
