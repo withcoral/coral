@@ -20,8 +20,8 @@ use crate::credentials::{
 use crate::search::observed::SearchObservationHandle;
 use crate::search::sqlite_store::SqliteSearchStore;
 use crate::sources::catalog::{
-    describe_manifest, list_bundled_sources, load_bundled_source, resolve_installed_manifest,
-    validate_imported_manifest_database_persistence,
+    InstalledSourceManifest, describe_manifest, list_bundled_sources, load_bundled_source,
+    resolve_installed_manifest_from_yaml, validate_imported_manifest_database_persistence,
     validate_imported_manifest_database_persistence_shape,
 };
 use crate::sources::materialization::{
@@ -281,11 +281,12 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        Ok(self
-            .load_workspace_sources(workspace_name)?
-            .into_iter()
-            .map(|source| self.populate_source_version_or_keep(workspace_name, source))
-            .collect())
+        let sources = self.load_workspace_sources(workspace_name)?;
+        let mut populated = Vec::with_capacity(sources.len());
+        for source in sources {
+            populated.push(self.populate_source_version_or_keep(workspace_name, source));
+        }
+        Ok(populated)
     }
 
     pub(crate) fn get_source(
@@ -306,9 +307,9 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         match self.get_source(workspace_name, source_name) {
             Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
+                return Ok(self
+                    .resolve_source_manifest(workspace_name, &source)?
+                    .candidate);
             }
             Err(AppError::SourceNotFound(_)) => {}
             Err(error) => return Err(error),
@@ -696,12 +697,8 @@ impl SourceManager {
             .transpose()?;
         let previous = SourceRollbackState {
             credential_revision: stored.credential_revision,
-            manifest_yaml: match removed.origin {
-                SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
-            },
+            manifest_yaml: self
+                .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &removed)?,
             credential_material,
         };
         let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
@@ -936,8 +933,11 @@ impl SourceManager {
             },
             origin: request.origin,
         };
-        if let Err(error) = self.upsert_source_with_state_lock_held(workspace_name, stored.clone())
-        {
+        if let Err(error) = self.upsert_source_with_state_lock_held(
+            workspace_name,
+            stored.clone(),
+            request.manifest_yaml,
+        ) {
             let restore_result = restore_materialization_backup(
                 &self.layout,
                 workspace_name,
@@ -1085,7 +1085,7 @@ impl SourceManager {
                 continue;
             }
             let installed_manifest =
-                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+                self.resolve_source_manifest_with_state_lock_held(workspace_name, &installed)?;
             let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
             if let Some(schema_name) = candidate_schema_names
                 .intersection(&installed_schema_names)
@@ -1268,7 +1268,21 @@ impl SourceManager {
         &self,
         workspace_name: &WorkspaceName,
         source: InstalledSource,
+        manifest_yaml: Option<&str>,
     ) -> Result<(), AppError> {
+        let manifest_yaml = match source.origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => {
+                let manifest_yaml = manifest_yaml.ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "imported source '{}' is missing manifest YAML for database persistence",
+                        source.name
+                    ))
+                })?;
+                validate_imported_manifest_database_persistence(manifest_yaml, &source.variables)?;
+                Some(manifest_yaml.to_string())
+            }
+        };
         let db = Arc::clone(&self.db);
         let db_workspace_name = workspace_name.clone();
         let db_source = source;
@@ -1286,6 +1300,16 @@ impl SourceManager {
             tx.sources()
                 .upsert_source(&db_workspace_name, &db_source, now_unix_nanos)
                 .await?;
+            if let Some(manifest_yaml) = manifest_yaml.as_deref() {
+                tx.source_manifests()
+                    .upsert(
+                        &db_workspace_name,
+                        &db_source.name,
+                        manifest_yaml,
+                        now_unix_nanos,
+                    )
+                    .await?;
+            }
             tx.commit().await?;
             Ok(())
         })?;
@@ -1308,6 +1332,70 @@ impl SourceManager {
             tx.commit().await?;
             Ok(())
         })
+    }
+
+    fn resolve_source_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<InstalledSourceManifest, AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        self.resolve_source_manifest_with_state_lock_held(workspace_name, source)
+    }
+
+    fn resolve_source_manifest_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<InstalledSourceManifest, AppError> {
+        let manifest_yaml =
+            self.source_manifest_yaml_with_state_lock_held(workspace_name, source)?;
+        resolve_installed_manifest_from_yaml(source, &manifest_yaml)
+    }
+
+    fn source_manifest_yaml_for_rollback_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<Option<String>, AppError> {
+        match source.origin {
+            SourceOrigin::Bundled => Ok(None),
+            SourceOrigin::Imported => {
+                match self.source_manifest_yaml_with_state_lock_held(workspace_name, source) {
+                    Ok(manifest_yaml) => Ok(Some(manifest_yaml)),
+                    Err(AppError::SourceNotFound(_)) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+
+    fn source_manifest_yaml_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<String, AppError> {
+        match source.origin {
+            SourceOrigin::Bundled => Ok(load_bundled_source(&source.name)?.manifest_yaml),
+            SourceOrigin::Imported => {
+                let db = Arc::clone(&self.db);
+                let workspace_name = workspace_name.clone();
+                let source_name = source.name.clone();
+                run_source_db_operation(async move {
+                    let mut session = db.as_ref();
+                    session
+                        .source_manifests()
+                        .get(&workspace_name, &source_name)
+                        .await?
+                        .map(|record| record.manifest_yaml)
+                        .ok_or_else(|| {
+                            AppError::SourceNotFound(format!(
+                                "manifest for imported source '{workspace_name}:{source_name}'"
+                            ))
+                        })
+                })
+            }
+        }
     }
 
     fn validate_oauth_import_preflight(
@@ -1457,12 +1545,8 @@ impl SourceManager {
             .transpose()?;
         Ok(Some(SourceRollbackState {
             credential_revision: source.credential_revision,
-            manifest_yaml: match source.origin {
-                SourceOrigin::Bundled => None,
-                SourceOrigin::Imported => Some(std::fs::read_to_string(
-                    self.layout.manifest_file(workspace_name, source_name),
-                )?),
-            },
+            manifest_yaml: self
+                .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &source)?,
             credential_material,
         }))
     }
@@ -1555,7 +1639,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
+        source.version = self
+            .resolve_source_manifest_with_state_lock_held(workspace_name, &source)?
             .candidate
             .version;
         Ok(source)

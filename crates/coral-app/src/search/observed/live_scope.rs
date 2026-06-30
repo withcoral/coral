@@ -6,9 +6,9 @@ use std::sync::Arc;
 use crate::bootstrap::AppError;
 use crate::search::observed::source_scope::{SourceScopeSeed, source_surface_scopes};
 use crate::search::observed::{ObservedValuesLiveScope, ObservedValuesLiveScopeLoadFailure};
-use crate::sources::catalog::resolve_installed_manifest;
+use crate::sources::catalog::{load_bundled_source, resolve_installed_manifest_from_yaml};
 use crate::sources::materialization::SourceDiagnosticReporter;
-use crate::sources::model::InstalledSource;
+use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::sources::runtime_package::query_source_from_installed_manifest;
 use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppStateLayout, ConfigStore};
@@ -59,10 +59,10 @@ impl ObservedValuesLiveScopeLoader {
                 .list_workspace_sources(workspace_name)
                 .await?
         };
-        Ok(self.load_sources(workspace_name, sources))
+        Ok(self.load_sources(workspace_name, sources).await)
     }
 
-    fn load_sources(
+    async fn load_sources(
         &self,
         workspace_name: &WorkspaceName,
         sources: Vec<InstalledSource>,
@@ -71,7 +71,7 @@ impl ObservedValuesLiveScopeLoader {
         let mut failed_sources = Vec::new();
         for source in sources {
             let source_name = source.name.as_str().to_string();
-            match self.load_source_scopes(workspace_name, &source) {
+            match self.load_source_scopes(workspace_name, &source).await {
                 Ok(source_scopes) => live_scopes.extend(source_scopes),
                 Err(error) => {
                     tracing::debug!(
@@ -93,12 +93,29 @@ impl ObservedValuesLiveScopeLoader {
         }
     }
 
-    fn load_source_scopes(
+    async fn load_source_scopes(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
     ) -> Result<Vec<ObservedValuesLiveScope>, AppError> {
-        let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
+        let manifest_yaml = match source.origin {
+            SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
+            SourceOrigin::Imported => {
+                let mut session = self.db.as_ref();
+                session
+                    .source_manifests()
+                    .get(workspace_name, &source.name)
+                    .await?
+                    .map(|record| record.manifest_yaml)
+                    .ok_or_else(|| {
+                        AppError::SourceNotFound(format!(
+                            "manifest for imported source '{workspace_name}:{}'",
+                            source.name
+                        ))
+                    })?
+            }
+        };
+        let installed = resolve_installed_manifest_from_yaml(source, &manifest_yaml)?;
         let loaded_runtime = query_source_from_installed_manifest(
             &self.layout,
             workspace_name,
@@ -155,6 +172,8 @@ mod tests {
             "/search/issues",
         );
         let db = test_db(&layout, &config_store).await;
+        std::fs::remove_file(layout.manifest_file(&workspace, &source))
+            .expect("remove legacy manifest");
         config_store
             .remove_source(&workspace, &source)
             .expect("remove legacy config source");
@@ -179,20 +198,29 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("work").expect("workspace");
         let source = SourceName::parse("github").expect("source");
-        install_source(&layout, &config_store, &workspace, &source, "/repos/issues");
+        let installed =
+            install_source(&layout, &config_store, &workspace, &source, "/repos/issues");
         let db = test_db(&layout, &config_store).await;
+        std::fs::remove_file(layout.manifest_file(&workspace, &source))
+            .expect("remove legacy manifest");
         config_store
             .remove_source(&workspace, &source)
             .expect("remove legacy config source");
         let loader = ObservedValuesLiveScopeLoader::new(
             layout.clone(),
             config_store,
-            db,
+            Arc::clone(&db),
             SourceDiagnosticReporter::default(),
         );
 
         let first = loader.load(&workspace).await.expect("first live scope");
-        write_source_manifest(&layout, &workspace, &source, "/search/issues");
+        upsert_test_source_with_manifest(
+            &db,
+            &workspace,
+            &installed,
+            &source_manifest_yaml(&source, "/search/issues"),
+        )
+        .await;
         let second = loader.load(&workspace).await.expect("second live scope");
 
         assert!(first.failed_sources.is_empty());
@@ -331,14 +359,20 @@ mod tests {
             &github,
             "/search/issues",
         );
-        install_broken_source(&layout, &config_store, &workspace, &broken);
         let db = test_db(&layout, &config_store).await;
+        let broken_source = InstalledSource {
+            name: broken.clone(),
+            version: None,
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            credential_revision: Uuid::default(),
+            origin: SourceOrigin::Imported,
+        };
+        upsert_test_source_with_manifest(&db, &workspace, &broken_source, "name: [").await;
         config_store
             .remove_source(&workspace, &github)
             .expect("remove healthy legacy config source");
-        config_store
-            .remove_source(&workspace, &broken)
-            .expect("remove broken legacy config source");
         let loader = ObservedValuesLiveScopeLoader::new(
             layout,
             config_store,
@@ -388,8 +422,14 @@ mod tests {
         std::fs::create_dir_all(layout.source_dir(workspace, source)).expect("source dir");
         std::fs::write(
             layout.manifest_file(workspace, source),
-            format!(
-                r"
+            source_manifest_yaml(source, path),
+        )
+        .expect("write manifest");
+    }
+
+    fn source_manifest_yaml(source: &SourceName, path: &str) -> String {
+        format!(
+            r"
 name: {source}
 version: 1.0.0
 dsl_version: 3
@@ -405,33 +445,7 @@ tables:
       - name: title
         type: Utf8
 "
-            ),
         )
-        .expect("write manifest");
-    }
-
-    fn install_broken_source(
-        layout: &AppStateLayout,
-        config_store: &ConfigStore,
-        workspace: &WorkspaceName,
-        source: &SourceName,
-    ) {
-        std::fs::create_dir_all(layout.source_dir(workspace, source)).expect("source dir");
-        std::fs::write(layout.manifest_file(workspace, source), "name: [").expect("write manifest");
-        config_store
-            .upsert_source(
-                workspace,
-                InstalledSource {
-                    name: source.clone(),
-                    version: None,
-                    variables: BTreeMap::new(),
-                    secrets: Vec::new(),
-                    credential_storage: None,
-                    credential_revision: Uuid::default(),
-                    origin: SourceOrigin::Imported,
-                },
-            )
-            .expect("upsert source");
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {
@@ -458,6 +472,28 @@ tables:
             .upsert_source(workspace, source, 11)
             .await
             .expect("upsert test source");
+        tx.commit().await.expect("commit test source");
+    }
+
+    async fn upsert_test_source_with_manifest(
+        db: &Arc<CoralDb>,
+        workspace: &WorkspaceName,
+        source: &InstalledSource,
+        manifest_yaml: &str,
+    ) {
+        let mut tx = db.begin().await.expect("begin test source tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 11)
+            .await
+            .expect("ensure test workspace");
+        tx.sources()
+            .upsert_source(workspace, source, 11)
+            .await
+            .expect("upsert test source");
+        tx.source_manifests()
+            .upsert(workspace, &source.name, manifest_yaml, 11)
+            .await
+            .expect("upsert test source manifest");
         tx.commit().await.expect("commit test source");
     }
 

@@ -88,8 +88,12 @@ async fn import_source_persists_and_lists() {
 
     let installed_manifest =
         source_dir(harness.config_dir(), "local_messages").join("manifest.yaml");
+    assert!(
+        installed_manifest.exists(),
+        "DB-backed imports should keep a legacy manifest for rollback compatibility"
+    );
     assert_eq!(
-        fs::read_to_string(&installed_manifest).expect("read installed manifest"),
+        fs::read_to_string(&installed_manifest).expect("read legacy manifest"),
         manifest_yaml
     );
 
@@ -1547,7 +1551,7 @@ origin = "imported"
             name: "demo".to_string(),
         }))
         .await
-        .expect_err("missing manifest file should fail");
+        .expect_err("missing manifest file should fail at source resolution");
     assert_eq!(error.code(), tonic::Code::NotFound);
 }
 
@@ -1574,6 +1578,13 @@ enabled = false
         harness
             .import_source(manifest_yaml, Vec::new(), Vec::new())
             .await;
+        let installed_manifest =
+            source_dir(harness.config_dir(), "local_messages").join("manifest.yaml");
+        fs::remove_file(&installed_manifest).expect("remove compatibility manifest");
+        assert!(
+            !installed_manifest.exists(),
+            "restart coverage must not rely on a legacy manifest file"
+        );
         let rows = harness
             .execute_sql_rows("SELECT COUNT(*) AS n FROM local_messages.messages")
             .await;
@@ -1655,6 +1666,108 @@ async fn import_rolls_back_on_config_write_failure() {
     assert_eq!(error.code(), tonic::Code::Internal);
     assert!(!source_dir(harness.config_dir(), "secured_messages").exists());
     assert!(harness.list_sources().await.is_empty());
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(!config_raw.contains("[workspaces.default.sources.secured_messages]"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn overwrite_restores_previous_source_on_config_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let original_manifest = fixture_manifest_with_inputs_yaml();
+    harness
+        .import_source(
+            original_manifest.clone(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "old-token".to_string(),
+            }],
+        )
+        .await;
+    let updated_manifest = original_manifest.replace("0.1.0", "0.2.0");
+
+    fs::set_permissions(harness.config_dir(), fs::Permissions::from_mode(0o500))
+        .expect("make config dir read-only");
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: updated_manifest,
+            variables: vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "new-token".to_string(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("config write should fail");
+
+    fs::set_permissions(harness.config_dir(), fs::Permissions::from_mode(0o700))
+        .expect("restore config dir permissions");
+
+    assert_eq!(error.code(), tonic::Code::Internal);
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "secured_messages");
+    assert_eq!(listed[0].version, "0.1.0");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("get source after rollback")
+        .into_inner()
+        .source
+        .expect("source after rollback");
+    assert_eq!(fetched.version, "0.1.0");
+
+    let installed_manifest =
+        source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
+    assert!(
+        installed_manifest.exists(),
+        "DB-backed rollback should restore legacy manifest files"
+    );
+    assert_eq!(
+        fs::read_to_string(&installed_manifest).expect("read restored manifest"),
+        original_manifest
+    );
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("source should validate after rollback")
+        .into_inner();
+    assert_eq!(validated.tables.len(), 1);
+    let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
+    let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
+    assert!(
+        secret_material.contains("API_TOKEN=old-token"),
+        "{secret_material}"
+    );
+    assert!(
+        !secret_material.contains("API_TOKEN=new-token"),
+        "{secret_material}"
+    );
 }
 
 #[cfg(unix)]
@@ -1696,18 +1809,31 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
             name: "secured_messages".to_string(),
         }))
         .await
-        .expect_err("manifest cleanup should fail");
+        .expect_err("source directory cleanup should fail");
 
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o700))
         .expect("restore sources dir permissions");
 
     assert_eq!(error.code(), tonic::Code::Internal);
-    assert!(manifest_path.exists(), "manifest should be restored");
+    assert!(
+        manifest_path.exists(),
+        "DB-backed rollback should restore legacy manifest files"
+    );
     assert!(secret_path.exists(), "secret file should be restored");
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "secured_messages");
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("source should still validate from DB manifest")
+        .into_inner();
+    assert_eq!(validated.tables.len(), 1);
 }
 
 #[tokio::test]

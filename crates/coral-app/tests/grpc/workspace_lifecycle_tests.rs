@@ -5,7 +5,7 @@ use coral_api::v1::{
     CreateWorkspaceRequest, DeleteWorkspaceRequest, DeleteWorkspaceResponse, GetCurrentUserRequest,
     ImportSourceRequest, ListSourcesRequest, ListUsersRequest, ListWorkspaceMembersRequest,
     ListWorkspaceMembersResponse, ListWorkspacesRequest, Source, SourceSecret, SourceVariable,
-    WorkspaceRole, import_source_response,
+    ValidateSourceRequest, WorkspaceRole, import_source_response,
 };
 use coral_client::AppClient;
 use prost::Message as _;
@@ -347,13 +347,11 @@ async fn delete_workspace_removes_config_entry_and_workspace_artifacts() {
     .await;
     assert_eq!(imported.name, "local_messages");
 
-    let source_dir = harness
-        .config_dir()
-        .join("workspaces")
-        .join("work")
-        .join("sources")
-        .join("local_messages");
-    assert!(source_dir.exists(), "import should create source artifacts");
+    let workspace_dir = harness.config_dir().join("workspaces").join("work");
+    let artifact = workspace_dir.join("artifacts").join("marker");
+    fs::create_dir_all(artifact.parent().expect("artifact parent")).expect("create artifact dir");
+    fs::write(&artifact, "workspace artifact").expect("write workspace artifact");
+    assert!(artifact.exists(), "test should create a workspace artifact");
 
     let deleted = harness
         .workspace_client()
@@ -372,8 +370,8 @@ async fn delete_workspace_removes_config_entry_and_workspace_artifacts() {
         "deleting the only workspace leaves the deployment with none",
     );
     assert!(
-        !source_dir.exists(),
-        "delete should remove workspace artifacts"
+        !workspace_dir.exists(),
+        "delete should remove workspace artifact directory"
     );
     assert_eq!(
         workspace_root_entries(harness.config_dir()),
@@ -462,6 +460,100 @@ async fn delete_workspace_restores_db_sources_when_config_delete_fails() {
         .into_inner()
         .sources;
     assert!(sources.iter().any(|source| source.name == "local_messages"));
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(workspace("work")),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("restored source should validate")
+        .into_inner();
+    assert_eq!(validated.tables.len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn delete_workspace_handles_imported_source_without_manifest_row() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let db_path = temp.path().join("db").join("coral.db");
+    fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"
+[database]
+backend = "sqlite"
+path = "{}"
+
+[workspaces.work.sources.demo]
+version = "0.1.0"
+origin = "imported"
+"#,
+            db_path.display()
+        ),
+    )
+    .expect("write database config");
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    let sources = harness
+        .source_client()
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("list degraded imported source")
+        .into_inner()
+        .sources;
+    assert!(sources.iter().any(|source| source.name == "demo"));
+
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o500))
+        .expect("make config dir read-only");
+    let result = harness
+        .workspace_client()
+        .delete_workspace(Request::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await;
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700))
+        .expect("restore config dir permissions");
+
+    result.expect_err("config delete should fail");
+    let sources = harness
+        .source_client()
+        .list_sources(Request::new(ListSourcesRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("list restored degraded source")
+        .into_inner()
+        .sources;
+    assert!(sources.iter().any(|source| source.name == "demo"));
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(workspace("work")),
+            name: "demo".to_string(),
+        }))
+        .await
+        .expect_err("restored degraded source should still report missing manifest");
+    assert_eq!(error.code(), tonic::Code::NotFound);
+
+    let deleted = harness
+        .workspace_client()
+        .delete_workspace(Request::new(DeleteWorkspaceRequest {
+            workspace: Some(workspace("work")),
+        }))
+        .await
+        .expect("delete degraded workspace")
+        .into_inner()
+        .workspace
+        .expect("delete workspace response");
+    assert_eq!(deleted.name, "work");
+    assert_eq!(workspace_names(&harness).await, vec!["default"]);
 }
 
 #[tokio::test]
@@ -789,13 +881,15 @@ async fn delete_workspace_succeeds_when_backup_cleanup_fails_after_config_delete
 
     let workspace_dir = harness.config_dir().join("workspaces").join("work");
     let sources_root = workspace_dir.join("sources");
-    assert!(
+    fs::create_dir_all(sources_root.join("secured_messages"))
+        .expect("create legacy source artifact dir");
+    fs::write(
         sources_root
             .join("secured_messages")
-            .join("secrets.env")
-            .exists(),
-        "import should persist file-backed credential material"
-    );
+            .join("legacy-artifact"),
+        "legacy",
+    )
+    .expect("write legacy source artifact");
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o500))
         .expect("make nested sources dir read-only");
 
