@@ -14,13 +14,16 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coral_api::CORAL_EPISODE_INTENT_MAX_CHARS;
 use serde::{Deserialize, Serialize};
 
 use super::EpisodeId;
+use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
+use crate::state::db::{CoralDb, DbRepos, EpisodeRecord};
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
@@ -83,6 +86,9 @@ pub(crate) enum EpisodeStoreError {
     /// JSON (de)serialization error.
     #[error("episode store serialization: {0}")]
     Serde(#[from] serde_json::Error),
+    /// Durable database persistence failed.
+    #[error("episode store persistence: {0}")]
+    Persistence(#[from] AppError),
     /// The `episode_id` is already registered with a different intent/parent.
     #[error("episode {episode_id:?} is already open with a different intent/parent")]
     Conflict {
@@ -97,6 +103,12 @@ pub(crate) enum EpisodeStoreError {
     },
 }
 
+impl From<crate::state::db::DbError> for EpisodeStoreError {
+    fn from(error: crate::state::db::DbError) -> Self {
+        Self::Persistence(AppError::from(error))
+    }
+}
+
 /// Append-only, per-workspace JSONL episode store, bounded by a byte ceiling with
 /// oldest-out eviction. Paths and the shared state lock are resolved through
 /// [`AppStateLayout`].
@@ -104,6 +116,7 @@ pub(crate) enum EpisodeStoreError {
 pub(crate) struct EpisodeStore {
     layout: AppStateLayout,
     max_bytes: u64,
+    catalog_db: Option<Arc<CoralDb>>,
 }
 
 impl EpisodeStore {
@@ -112,6 +125,22 @@ impl EpisodeStore {
         Self {
             layout,
             max_bytes: MAX_EPISODE_BYTES_PER_WORKSPACE,
+            catalog_db: None,
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "DB-backed episode writes are exercised by tests here and wired to production after legacy episode import in the next stack PR."
+        )
+    )]
+    pub(crate) fn with_db(layout: AppStateLayout, catalog_db: Arc<CoralDb>) -> Self {
+        Self {
+            layout,
+            max_bytes: MAX_EPISODE_BYTES_PER_WORKSPACE,
+            catalog_db: Some(catalog_db),
         }
     }
 
@@ -154,6 +183,9 @@ impl EpisodeStore {
             });
         }
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
+        if let Some(db) = self.catalog_db.clone() {
+            return open_episode_in_db(db, episode, intent, self.max_bytes);
+        }
         let path = self.layout.episodes_file(&episode.workspace);
 
         // One read serves both the idempotency check and eviction (file order is
@@ -182,6 +214,173 @@ impl EpisodeStore {
             self.max_bytes,
         )
     }
+}
+
+fn open_episode_in_db(
+    db: Arc<CoralDb>,
+    episode: &Episode,
+    intent: &str,
+    max_bytes: u64,
+) -> Result<(), EpisodeStoreError> {
+    let workspace = episode.workspace.clone();
+    let id = episode.id.as_str().to_string();
+    let parent_episode_id = episode
+        .parent_episode_id
+        .as_ref()
+        .map(EpisodeId::as_str)
+        .map(str::to_string);
+    let intent = intent.to_string();
+    let workspace_created_at_unix_nanos = db_timestamp_from_unix_nanos(now_unix_nanos())?;
+
+    run_episode_db_operation(async move {
+        let mut tx = db.begin().await?;
+        tx.workspaces()
+            .ensure_write_locked(workspace.as_str(), workspace_created_at_unix_nanos)
+            .await?;
+        let mut episodes = tx.episodes().list_workspace_episodes(&workspace).await?;
+        let (created_at_unix_nanos_raw, created_at_unix_nanos) =
+            next_db_episode_created_at(&episodes)?;
+        let record_bytes = episode_record_bytes(
+            &workspace,
+            &id,
+            intent.as_str(),
+            parent_episode_id.as_deref(),
+            created_at_unix_nanos_raw,
+        )?;
+        let episode_record = EpisodeRecord {
+            id: id.clone(),
+            intent,
+            parent_episode_id,
+            created_at_unix_nanos,
+            record_bytes,
+        };
+        if let Some(existing) = episodes.iter().find(|existing| existing.id == id) {
+            return if existing.intent == episode_record.intent
+                && existing.parent_episode_id == episode_record.parent_episode_id
+            {
+                tx.commit().await?;
+                Ok(())
+            } else {
+                Err(EpisodeStoreError::Conflict {
+                    episode_id: id.clone(),
+                })
+            };
+        }
+        episodes.push(episode_record);
+        let kept = retain_episode_records_within_budget(episodes, max_bytes);
+        tx.episodes()
+            .replace_workspace_episodes(&workspace, &kept)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    })
+}
+
+fn next_db_episode_created_at(
+    episodes: &[EpisodeRecord],
+) -> Result<(u128, i64), EpisodeStoreError> {
+    let now = db_timestamp_from_unix_nanos(now_unix_nanos())?;
+    let created_at_unix_nanos = match episodes
+        .iter()
+        .map(|episode| episode.created_at_unix_nanos)
+        .max()
+    {
+        Some(max_existing) => now.max(max_existing.checked_add(1).ok_or_else(|| {
+            EpisodeStoreError::Persistence(AppError::FailedPrecondition(
+                "episode timestamp space exhausted".to_string(),
+            ))
+        })?),
+        None => now,
+    };
+    let raw = u128::try_from(created_at_unix_nanos).map_err(|error| {
+        EpisodeStoreError::Persistence(AppError::FailedPrecondition(format!(
+            "episode timestamp is negative: {error}"
+        )))
+    })?;
+    Ok((raw, created_at_unix_nanos))
+}
+
+fn db_timestamp_from_unix_nanos(nanos: u128) -> Result<i64, EpisodeStoreError> {
+    i64::try_from(nanos).map_err(|error| {
+        EpisodeStoreError::Persistence(AppError::FailedPrecondition(format!(
+            "episode timestamp exceeds i64 nanoseconds: {error}"
+        )))
+    })
+}
+
+fn retain_episode_records_within_budget(
+    mut episodes: Vec<EpisodeRecord>,
+    max_bytes: u64,
+) -> Vec<EpisodeRecord> {
+    episodes.sort_by(|left, right| {
+        left.created_at_unix_nanos
+            .cmp(&right.created_at_unix_nanos)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut total: u64 = episodes
+        .iter()
+        .map(|episode| u64::try_from(episode.record_bytes).unwrap_or(u64::MAX))
+        .sum();
+    while episodes.len() > 1 && total > max_bytes {
+        let removed = episodes.remove(0);
+        total = total.saturating_sub(u64::try_from(removed.record_bytes).unwrap_or(u64::MAX));
+    }
+    episodes
+}
+
+fn episode_record_bytes(
+    workspace: &WorkspaceName,
+    id: &str,
+    intent: &str,
+    parent_episode_id: Option<&str>,
+    created_at_unix_nanos: u128,
+) -> Result<i64, EpisodeStoreError> {
+    let record = PersistedEpisode {
+        id: id.to_string(),
+        workspace: workspace.as_str().to_string(),
+        intent: intent.to_string(),
+        parent_episode_id: parent_episode_id.map(str::to_string),
+        created_at_unix_nanos,
+    };
+    let bytes = serde_json::to_vec(&record)?.len() + 1;
+    i64::try_from(bytes).map_err(|error| {
+        EpisodeStoreError::Persistence(AppError::FailedPrecondition(format!(
+            "episode record size exceeds i64 bytes: {error}"
+        )))
+    })
+}
+
+fn run_episode_db_operation<T, F>(operation: F) -> Result<T, EpisodeStoreError>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, EpisodeStoreError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, EpisodeStoreError>
+    where
+        F: std::future::Future<Output = Result<T, EpisodeStoreError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                EpisodeStoreError::Persistence(AppError::FailedPrecondition(format!(
+                    "failed to create episode database runtime: {error}"
+                )))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                EpisodeStoreError::Persistence(AppError::FailedPrecondition(
+                    "episode database operation thread panicked".to_string(),
+                ))
+            })?;
+    }
+
+    run_on_runtime(operation)
 }
 
 /// Unix-nanoseconds timestamp for `created_at_unix_nanos`.
@@ -344,7 +543,7 @@ fn file_needs_leading_newline(path: &Path) -> Result<bool, EpisodeStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Arc, time::Duration};
 
     use tempfile::TempDir;
 
@@ -352,7 +551,9 @@ mod tests {
         CORAL_EPISODE_INTENT_MAX_CHARS, Episode, EpisodeId, EpisodeStore, EpisodeStoreError,
         PersistedEpisode, now_unix_nanos, read_episode,
     };
+    use crate::bootstrap;
     use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
 
     /// On-disk byte size of one record (serialized JSON + newline), for sizing the
@@ -377,6 +578,11 @@ mod tests {
             parent_episode_id: parent.map(|parent| EpisodeId::parse(parent).expect("valid parent")),
             created_at_unix_nanos: now_unix_nanos(),
         }
+    }
+
+    fn unique_workspace(prefix: &str) -> WorkspaceName {
+        WorkspaceName::parse(&format!("{prefix}{}", uuid::Uuid::new_v4().simple()))
+            .expect("workspace")
     }
 
     #[test]
@@ -653,6 +859,286 @@ mod tests {
             fs::metadata(&path).unwrap().len() <= one * 2,
             "the log must stay within the byte ceiling"
         );
+    }
+
+    #[tokio::test]
+    async fn db_store_round_trips_idempotency_and_conflict() {
+        let (_dir, layout) = layout();
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default episode test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let store = EpisodeStore::with_db(layout.clone(), Arc::clone(&db));
+        let ep = episode(&workspace, "ep_1", " same intent ", Some("root_ep"));
+
+        store.open_episode(&ep).expect("open");
+        store.open_episode(&ep).expect("idempotent reopen");
+        let conflict = store
+            .open_episode(&episode(&workspace, "ep_1", "different", Some("root_ep")))
+            .expect_err("changed intent should conflict");
+
+        assert!(matches!(conflict, EpisodeStoreError::Conflict { .. }));
+        let mut session = db.as_ref();
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 1);
+        let episode = episodes.first().expect("episode");
+        assert_eq!(episode.intent, "same intent");
+        assert_eq!(episode.parent_episode_id.as_deref(), Some("root_ep"));
+        assert!(
+            !layout.episodes_file(&workspace).exists(),
+            "DB-backed episode store should not append legacy JSONL"
+        );
+    }
+
+    #[tokio::test]
+    async fn db_store_reopen_same_intent_different_parent_conflicts() {
+        let (_dir, layout) = layout();
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default episode test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let store = EpisodeStore::with_db(layout, Arc::clone(&db));
+
+        store
+            .open_episode(&episode(
+                &workspace,
+                "child_ep",
+                "sub task",
+                Some("parent_a"),
+            ))
+            .expect("first open");
+        let error = store
+            .open_episode(&episode(
+                &workspace,
+                "child_ep",
+                "sub task",
+                Some("parent_b"),
+            ))
+            .expect_err("changed parent must conflict");
+
+        assert!(matches!(error, EpisodeStoreError::Conflict { .. }));
+        let mut session = db.as_ref();
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(
+            episodes
+                .first()
+                .expect("episode")
+                .parent_episode_id
+                .as_deref(),
+            Some("parent_a")
+        );
+    }
+
+    #[tokio::test]
+    async fn db_store_evicts_oldest_to_stay_under_byte_ceiling() {
+        let (_dir, layout) = layout();
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default episode test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let store = EpisodeStore::with_db(layout, Arc::clone(&db)).with_max_bytes(1);
+        let mut first = episode(&workspace, "ep_1", "task", None);
+        first.created_at_unix_nanos = now_unix_nanos() + 1_000_000_000;
+        let mut second = episode(&workspace, "ep_2", "task", None);
+        second.created_at_unix_nanos = 1;
+
+        store.open_episode(&first).expect("open first");
+        store.open_episode(&second).expect("open second");
+
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .episodes()
+                .get(&workspace, "ep_1")
+                .await
+                .expect("get ep_1")
+                .is_none(),
+            "the oldest DB episode should be evicted"
+        );
+        assert!(
+            session
+                .episodes()
+                .get(&workspace, "ep_2")
+                .await
+                .expect("get ep_2")
+                .is_some()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn db_store_concurrent_opens_do_not_drop_each_other() {
+        let (_dir, layout) = layout();
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default episode test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("acme").expect("workspace");
+        let store = Arc::new(EpisodeStore::with_db(layout, Arc::clone(&db)));
+
+        let mut handles = Vec::new();
+        for index in 0..16 {
+            let store = Arc::clone(&store);
+            let workspace = workspace.clone();
+            handles.push(tokio::task::spawn_blocking(move || {
+                store
+                    .open_episode(&episode(
+                        &workspace,
+                        &format!("ep_{index}"),
+                        &format!("task {index}"),
+                        None,
+                    ))
+                    .expect("open episode");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("join open task");
+        }
+
+        let mut session = db.as_ref();
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(
+            episodes.len(),
+            16,
+            "concurrent DB opens must not lose episodes"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the DB-backed episode runtime path against Postgres"]
+    async fn open_episode_in_db_runtime_path_against_postgres() {
+        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+                .await
+                .expect("open postgres"),
+        );
+        db.migrate().await.expect("migrate postgres");
+        let (_dir, store_layout) = layout();
+        let workspace = unique_workspace("episodepg");
+        let store = EpisodeStore::with_db(store_layout, Arc::clone(&db)).with_max_bytes(1);
+
+        store
+            .open_episode(&episode(&workspace, "ep_old", "task", None))
+            .expect("open first");
+        store
+            .open_episode(&episode(&workspace, "ep_new", "task", None))
+            .expect("open second");
+        store
+            .open_episode(&episode(&workspace, "ep_new", "task", None))
+            .expect("idempotent reopen");
+        let conflict = store
+            .open_episode(&episode(&workspace, "ep_new", "different", None))
+            .expect_err("changed intent should conflict");
+        assert!(matches!(conflict, EpisodeStoreError::Conflict { .. }));
+        let episodes = {
+            let mut session = db.as_ref();
+            session
+                .episodes()
+                .list_workspace_episodes(&workspace)
+                .await
+                .expect("list retained episodes")
+        };
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes.first().expect("episode").id, "ep_new");
+
+        let race_workspace = unique_workspace("episodepgrace");
+        let (_first_dir, first_layout) = layout();
+        let (_second_dir, second_layout) = layout();
+        let first_store = Arc::new(EpisodeStore::with_db(first_layout, Arc::clone(&db)));
+        let second_store = Arc::new(EpisodeStore::with_db(second_layout, Arc::clone(&db)));
+        let mut tx = db.begin().await.expect("begin lock tx");
+        tx.workspaces()
+            .ensure_write_locked(race_workspace.as_str(), 7)
+            .await
+            .expect("hold workspace lock");
+        let (first_started, first) =
+            spawn_open(first_store, race_workspace.clone(), "ep_a", "task a");
+        let (second_started, second) =
+            spawn_open(second_store, race_workspace.clone(), "ep_b", "task b");
+        first_started.await.expect("first open started");
+        second_started.await.expect("second open started");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert!(
+            !first.is_finished(),
+            "first open should wait on the row lock"
+        );
+        assert!(
+            !second.is_finished(),
+            "second open should wait on the row lock"
+        );
+        tx.commit().await.expect("release workspace lock");
+        first.await.expect("join first").expect("open first");
+        second.await.expect("join second").expect("open second");
+
+        let mut session = db.as_ref();
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&race_workspace)
+            .await
+            .expect("list raced episodes");
+        let ids: Vec<_> = episodes.iter().map(|episode| episode.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"ep_a"));
+        assert!(ids.contains(&"ep_b"));
+    }
+
+    fn spawn_open(
+        store: Arc<EpisodeStore>,
+        workspace: WorkspaceName,
+        id: &'static str,
+        intent: &'static str,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::task::JoinHandle<Result<(), EpisodeStoreError>>,
+    ) {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::task::spawn_blocking(move || {
+            let _receiver_waiting = started_tx.send(()).is_ok();
+            store.open_episode(&episode(&workspace, id, intent, None))
+        });
+        (started_rx, handle)
     }
 
     #[test]

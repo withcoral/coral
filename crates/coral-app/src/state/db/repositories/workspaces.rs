@@ -75,6 +75,23 @@ impl<S> WorkspacesRepo<'_, S>
 where
     S: DbWriteSession,
 {
+    pub(crate) async fn ensure_write_locked(
+        &mut self,
+        id: &str,
+        created_at_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        self.ensure(id, created_at_unix_nanos).await?;
+        let statement = Query::update()
+            .table(Workspaces::Table)
+            .value(
+                Workspaces::CreatedAtUnixNanos,
+                Expr::col(Workspaces::CreatedAtUnixNanos),
+            )
+            .and_where(Expr::col(Workspaces::Id).eq(id))
+            .to_owned();
+        self.session.execute_update(statement).await
+    }
+
     pub(crate) async fn remove(&mut self, id: &str) -> Result<(), DbError> {
         let statement = Query::delete()
             .from_table(Workspaces::Table)
@@ -103,6 +120,41 @@ mod tests {
         let db = open_sqlite(&layout).await;
 
         assert_workspace_repository_round_trip(&db).await;
+    }
+
+    #[tokio::test]
+    async fn workspace_repository_write_lock_preserves_created_at() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let workspace_id = unique_workspace_id();
+
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure_write_locked(&workspace_id, 42)
+            .await
+            .expect("ensure locked workspace");
+        tx.commit().await.expect("commit first lock");
+
+        let mut tx = db.begin().await.expect("begin second tx");
+        tx.workspaces()
+            .ensure_write_locked(&workspace_id, 99)
+            .await
+            .expect("lock existing workspace");
+        tx.commit().await.expect("commit second lock");
+
+        let mut session = &db;
+        assert_eq!(
+            session
+                .workspaces()
+                .get(&workspace_id)
+                .await
+                .expect("get workspace"),
+            Some(WorkspaceRecord {
+                id: workspace_id,
+                created_at_unix_nanos: 42,
+            })
+        );
     }
 
     #[tokio::test]
