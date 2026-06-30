@@ -8,7 +8,7 @@
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "ListExpressions": 26,
-    "LiteralExpressions": 2,
+    "LiteralExpressions": 15,
     "MapExpressions": 19,
     "Match": 15,
     "MathematicalFunctions": 18,
@@ -5623,6 +5623,180 @@
             "name": "Bob"
           }
         ]
+      }
+    },
+    {
+      "id": "literal-uppercase-boolean-null-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN TRUE AS upper_true, FALSE AS upper_false, NULL AS upper_missing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "upper_true": true,
+            "upper_false": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-decimal-integer-boundaries",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 9223372036854775807 AS max_i64, -372036854 AS negative_value, -0 AS negative_zero",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "max_i64": 9223372036854775807,
+            "negative_value": -372036854,
+            "negative_zero": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-hex-integer-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 0x1A AS hex_small, -0x162CD4F6 AS negative_hex, 0x0 AS hex_zero",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "hex_small": 26,
+            "negative_hex": -372036854,
+            "hex_zero": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-octal-prefix-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 0o17 AS octal_value",
+      "expected": {
+        "kind": "error",
+        "contains": "invalid number"
+      }
+    },
+    {
+      "id": "literal-float-exponent-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 1.2e3 AS positive_exp, -1e-5 AS negative_exp, 1E9 AS upper_exp",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "positive_exp": 1200.0,
+            "negative_exp": -1e-05,
+            "upper_exp": 1000000000.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-leading-dot-float-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN .1 AS leading_dot",
+      "expected": {
+        "kind": "error",
+        "contains": "CYPHER_PARSE_ERROR"
+      }
+    },
+    {
+      "id": "literal-trailing-dot-float-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 1. AS trailing_dot",
+      "expected": {
+        "kind": "error",
+        "contains": "CYPHER_PARSE_ERROR"
+      }
+    },
+    {
+      "id": "literal-string-escape-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 'Alice\\'s friend' AS escaped_single, \"double\" AS double_quoted, '\\u01FF' AS unicode_char",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "escaped_single": "Alice's friend",
+            "double_quoted": "double",
+            "unicode_char": "\u01ff"
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-list-with-null-elements",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [1, null, 3] AS nullable_ints, ['a', null, 'c'] AS nullable_strings",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "nullable_ints": [
+              1,
+              null,
+              3
+            ],
+            "nullable_strings": [
+              "a",
+              null,
+              "c"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-float-list-return-projection",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [1.0, 2.5e1, -3.5] AS floats",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "floats": [
+              1.0,
+              25.0,
+              -3.5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-empty-list-projection-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [] AS empty_list",
+      "expected": {
+        "kind": "error",
+        "contains": "literal list projections require at least one element"
+      }
+    },
+    {
+      "id": "literal-all-null-list-projection-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [null] AS nulls",
+      "expected": {
+        "kind": "error",
+        "contains": "literal list projections require at least one non-null element"
+      }
+    },
+    {
+      "id": "literal-mixed-list-projection-rejected",
+      "feature": "LiteralExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [1, 'a', true, null] AS mixed_values",
+      "expected": {
+        "kind": "error",
+        "contains": "literal list projections require all non-null elements to have the same type"
       }
     }
   ]
