@@ -9,7 +9,7 @@
     "GraphMetadata": 5,
     "ListExpressions": 26,
     "LiteralExpressions": 2,
-    "MapExpressions": 5,
+    "MapExpressions": 19,
     "Match": 15,
     "MathematicalFunctions": 18,
     "NullSemantics": 14,
@@ -2485,6 +2485,243 @@
             "city": "London"
           }
         ]
+      }
+    },
+    {
+      "id": "literal-map-mixed-value-access",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({answer: 42, label: 'ready', flag: true}).answer AS answer, ({answer: 42, label: 'ready', flag: true}).label AS label, ({answer: 42, label: 'ready', flag: true}).flag AS flag",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "answer": 42,
+            "label": "ready",
+            "flag": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-missing-key-coalesce",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN coalesce({existing: p.city}.missing, 'missing') AS missing_value, {existing: p.city}.missing IS NULL AS missing_is_null",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing_value": "missing",
+            "missing_is_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-null-value-key-presence",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN {known: null}.known IS NULL AS explicit_null, 'known' IN keys({known: null}) AS known_key, 'missing' IN keys({known: null}) AS missing_key",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "explicit_null": true,
+            "known_key": true,
+            "missing_key": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-map-keys-with-nested-value",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN keys({name: 'Alice', age: 38, address: {city: 'London', residential: true}}) AS map_keys",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "map_keys": [
+              "name",
+              "age",
+              "address"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-map-empty-and-null-value-keys",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN keys({}) AS empty_keys, keys({k: null, l: 1}) AS nullable_keys",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "empty_keys": [],
+            "nullable_keys": [
+              "k",
+              "l"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-map-key-size-composition-rejected",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN size(keys({name: p.name, age: p.age, city: p.city, active: p.active})) AS key_count",
+      "expected": {
+        "kind": "error",
+        "contains": "keys() supports exactly one graph variable argument"
+      }
+    },
+    {
+      "id": "map-built-from-node-properties",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) RETURN ({name: p.name, active: p.active}).name AS name, ({age: p.age}).age AS age_from_map, ({city: p.city}).city AS city_from_map ORDER BY ({sort: p.id}).sort",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age_from_map": 34,
+            "city_from_map": "London"
+          },
+          {
+            "name": "Bob",
+            "age_from_map": 29,
+            "city_from_map": ""
+          },
+          {
+            "name": "Carol",
+            "age_from_map": 41,
+            "city_from_map": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "map-built-from-relationship-properties",
+      "feature": "MapExpressions",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN ({source: a.name}).source AS source, ({target: b.name}).target AS target, ({since: r.since}).since AS since_from_map, ({strength: r.strength}).strength AS strength_from_map ORDER BY since_from_map",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "since_from_map": 2020,
+            "strength_from_map": 0.9
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "since_from_map": 2021,
+            "strength_from_map": 0.7
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "since_from_map": 2022,
+            "strength_from_map": 0.3
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-properties-map-index-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE properties(r)['since'] >= 2021 RETURN a.name AS source, b.name AS target, r['strength'] AS strength ORDER BY properties(r)['since']",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "strength": 0.7
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "strength": 0.3
+          }
+        ]
+      }
+    },
+    {
+      "id": "endpoint-properties-map-index-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE properties(startNode(r))['active'] = true RETURN properties(startNode(r))['name'] AS source, properties(endNode(r))['name'] AS target ORDER BY properties(r)['since']",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob"
+          },
+          {
+            "source": "Alice",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-dotted-access-case-sensitive",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({name: 'Mats', Name: 'Pontus'}).name AS lower_name, ({name: 'Mats', Name: 'Pontus'}).Name AS upper_name, ({name: 'Mats', Name: 'Pontus'}).nAMe IS NULL AS mixed_missing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "lower_name": "Mats",
+            "upper_name": "Pontus",
+            "mixed_missing": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-index-access-case-sensitive",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN {name: 'Mats', Name: 'Pontus'}['name'] AS lower_name, {name: 'Mats', Name: 'Pontus'}['Name'] AS upper_name, coalesce({name: 'Mats', Name: 'Pontus'}['nAMe'], 'missing') AS mixed_name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "lower_name": "Mats",
+            "upper_name": "Pontus",
+            "mixed_name": "missing"
+          }
+        ]
+      }
+    },
+    {
+      "id": "nested-map-value-access-rejected",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({outer: {inner: 5}}).outer.inner AS nested_value",
+      "expected": {
+        "kind": "error",
+        "contains": "property references must be variable.property or startNode()/endNode() relationship endpoint properties"
+      }
+    },
+    {
+      "id": "list-valued-map-entry-access-rejected",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({items: ['Alice', 'Bob']}).items AS items",
+      "expected": {
+        "kind": "error",
+        "contains": "scalar expressions must be variable.property expressions"
       }
     },
     {
