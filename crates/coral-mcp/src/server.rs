@@ -30,14 +30,14 @@ use tonic::{
 use crate::{
     McpOptions, McpQueryExample,
     surface::{
-        CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-        describe_table_tool, describe_table_value, feedback_tool, guide_resource,
-        guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_tool,
-        list_catalog_value, list_columns_arguments, list_columns_tool, list_columns_value,
-        open_episode_arguments, open_episode_tool, optional_episode_id_argument,
-        required_string_argument, search_catalog_arguments, search_catalog_tool,
-        search_catalog_value, sql_tool, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        CatalogToolKind, SqlBatchValue, SqlQueryResultValue, ToolDescriptionContext,
+        build_tool_result, describe_table_arguments, describe_table_tool, describe_table_value,
+        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
+        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
+        list_columns_tool, list_columns_value, open_episode_arguments, open_episode_tool,
+        optional_episode_id_argument, required_string_argument, search_catalog_arguments,
+        search_catalog_tool, search_catalog_value, sql_arguments, sql_tool, status_to_error_data,
+        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
         with_episode_id_argument,
     },
     telemetry,
@@ -51,16 +51,12 @@ const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::
 const MAX_INITIAL_QUERY_EXAMPLES: usize = 5;
 
 enum ToolCallOutcome {
-    Success(Value),
+    Payload(Value),
+    SqlBatch(SqlBatchValue),
     ToolError {
         operation: &'static str,
         status: tonic::Status,
     },
-}
-
-#[derive(Serialize)]
-struct SqlRowsValue {
-    rows: Vec<Value>,
 }
 
 #[derive(Serialize)]
@@ -83,9 +79,13 @@ fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
 }
 
 impl ToolCallOutcome {
+    fn success(value: Value) -> Self {
+        Self::Payload(value)
+    }
+
     fn from_value_result(operation: &'static str, result: Result<Value, tonic::Status>) -> Self {
         match result {
-            Ok(value) => Self::Success(value),
+            Ok(value) => Self::Payload(value),
             Err(status) => Self::ToolError { operation, status },
         }
     }
@@ -336,13 +336,43 @@ impl CoralMcpServer {
             .map_err(|error| tonic::Status::internal(error.to_string()))
     }
 
-    async fn execute_sql_value(
+    async fn execute_one_sql_query(&self, index: usize, sql: String) -> SqlQueryResultValue {
+        let request = Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql,
+        });
+        match self.query_rows(request).await {
+            Ok(rows) => SqlQueryResultValue::Success { index, rows },
+            Err(status) => SqlQueryResultValue::Error {
+                index,
+                error: tool_error_from_status("Query", &status),
+            },
+        }
+    }
+
+    async fn execute_sql_batch(
         &self,
-        request: Request<ExecuteSqlRequest>,
-    ) -> Result<Value, tonic::Status> {
-        serialize_tool_value(SqlRowsValue {
-            rows: self.query_rows(request).await?,
-        })
+        queries: Vec<String>,
+        episode_id_metadata: Option<MetadataValue<Ascii>>,
+    ) -> Result<SqlBatchValue, tonic::Status> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, sql) in queries.into_iter().enumerate() {
+            let server = self.clone();
+            let episode_id_metadata = episode_id_metadata.clone();
+            tasks.spawn(async move {
+                with_episode_metadata(
+                    episode_id_metadata,
+                    server.execute_one_sql_query(index, sql),
+                )
+                .await
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            results.push(joined.map_err(|error| tonic::Status::internal(error.to_string()))?);
+        }
+        Ok(SqlBatchValue::from_unordered(results))
     }
 
     async fn open_episode(
@@ -415,7 +445,7 @@ impl CoralMcpServer {
             .await
             .map(|response| search_catalog_value(&response.into_inner()))
         {
-            Ok(value) => Ok(ToolCallOutcome::Success(value)),
+            Ok(value) => Ok(ToolCallOutcome::success(value)),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
@@ -459,7 +489,7 @@ impl CoralMcpServer {
             .load_table_description(&arguments.schema, &arguments.table)
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+            Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                 &arguments.schema,
                 &arguments.table,
                 &response,
@@ -475,18 +505,21 @@ impl CoralMcpServer {
         &self,
         request: CallToolRequestParams,
         span: &tracing::Span,
+        episode_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref() {
             "sql" => {
-                let sql = required_string_argument(request.arguments.as_ref(), "sql")?;
-                let request = Request::new(ExecuteSqlRequest {
-                    workspace: Some(default_workspace()),
-                    sql,
-                });
-                Ok(ToolCallOutcome::from_value_result(
-                    "Query",
-                    self.execute_sql_value(request).await,
-                ))
+                let arguments = sql_arguments(request.arguments.as_ref())?;
+                match self
+                    .execute_sql_batch(arguments.queries, episode_id_metadata)
+                    .await
+                {
+                    Ok(batch) => Ok(ToolCallOutcome::SqlBatch(batch)),
+                    Err(status) => Ok(ToolCallOutcome::ToolError {
+                        operation: "Query",
+                        status,
+                    }),
+                }
             }
             "list_catalog" => {
                 self.list_catalog_tool_result(request.arguments.as_ref())
@@ -513,7 +546,7 @@ impl CoralMcpServer {
                         telemetry::record_episode_id(span, &episode.episode_id);
                         serialize_tool_value(episode)
                     }) {
-                    Ok(value) => Ok(ToolCallOutcome::Success(value)),
+                    Ok(value) => Ok(ToolCallOutcome::success(value)),
                     Err(status) if status.code() == tonic::Code::InvalidArgument => {
                         Err(status_to_error_data(&status))
                     }
@@ -562,7 +595,7 @@ impl CoralMcpServer {
             }))
             .await
         {
-            Ok(response) => Ok(ToolCallOutcome::Success(list_columns_value(
+            Ok(response) => Ok(ToolCallOutcome::success(list_columns_value(
                 &arguments.schema,
                 &arguments.table,
                 &response.into_inner(),
@@ -575,7 +608,7 @@ impl CoralMcpServer {
                     .load_table_description(&arguments.schema, &arguments.table)
                     .await
                 {
-                    Ok(response) => Ok(ToolCallOutcome::Success(describe_table_value(
+                    Ok(response) => Ok(ToolCallOutcome::success(describe_table_value(
                         &arguments.schema,
                         &arguments.table,
                         &response,
@@ -675,9 +708,13 @@ impl ServerHandler for CoralMcpServer {
                 let episode_id_metadata = inject_episode_metadata
                     .then(|| episode_tag.into_metadata())
                     .flatten();
+                let dispatch_episode_id_metadata = episode_id_metadata.clone();
                 telemetry::instrument(
                     span.clone(),
-                    with_episode_metadata(episode_id_metadata, self.dispatch_tool(request, &span)),
+                    with_episode_metadata(
+                        episode_id_metadata,
+                        self.dispatch_tool(request, &span, dispatch_episode_id_metadata),
+                    ),
                 )
                 .await
             }
@@ -756,16 +793,38 @@ fn finish_tool_call(
     outcome: Result<ToolCallOutcome, ErrorData>,
 ) -> Result<CallToolResult, ErrorData> {
     match outcome {
-        Ok(ToolCallOutcome::Success(value)) => {
-            let result = build_tool_result(value);
-            telemetry::record_protocol_result(span, &result);
-            result
+        Ok(ToolCallOutcome::Payload(value)) => {
+            telemetry::record_success(span);
+            Ok(build_tool_result(value))
+        }
+        Ok(ToolCallOutcome::SqlBatch(batch)) => {
+            let serialized = match serialize_tool_value(&batch) {
+                Ok(value) => value,
+                Err(status) => {
+                    telemetry::record_tonic_status(span, &status);
+                    return Ok(tool_error_result(
+                        tool_error_from_status("Query", &status),
+                        None,
+                    ));
+                }
+            };
+            if batch.has_errors() {
+                telemetry::record_sql_batch_partial_failure(span);
+                Ok(tool_error_result(
+                    batch.partial_failure_error(),
+                    Some(serialized),
+                ))
+            } else {
+                telemetry::record_success(span);
+                Ok(build_tool_result(serialized))
+            }
         }
         Ok(ToolCallOutcome::ToolError { operation, status }) => {
             telemetry::record_tonic_status(span, &status);
-            Ok(tool_error_result(tool_error_from_status(
-                operation, &status,
-            )))
+            Ok(tool_error_result(
+                tool_error_from_status(operation, &status),
+                None,
+            ))
         }
         Err(error) => {
             telemetry::record_protocol_error(span, &error);
