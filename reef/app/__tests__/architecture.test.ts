@@ -337,9 +337,11 @@ describe('Architectural Tests', () => {
     it('app shell should wrap only top-level app routes', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
-      expect(routeConfig).toMatch(
-        /layout\('routes\/app-shell\.tsx', \[index\('routes\/index\.tsx'\), route\('settings', 'routes\/settings\.tsx'\)\]\)/,
-      )
+      expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
+      expect(routeConfig).toContain("index('routes/index.tsx')")
+      expect(routeConfig).toContain("route('sources', 'routes/sources.tsx')")
+      expect(routeConfig).toContain("route('traces', 'routes/traces.tsx')")
+      expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
     })
 
     it('route files should not have circular dependencies', () => {

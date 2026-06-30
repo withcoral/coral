@@ -6,6 +6,7 @@ import { IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
 import { Typography } from '@/wax/components/typography'
+import type { IconName } from '@/wax/components/icon'
 
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
@@ -13,6 +14,11 @@ import { useSidebarState } from './use-sidebar-state'
 interface SidebarProps {
   initialIsMinimized: boolean
 }
+
+const NAV_ITEMS = [
+  { icon: 'Plug', label: 'Sources', paths: ['/', '/sources'], to: '/sources' },
+  { icon: 'Activity', label: 'Traces', paths: ['/traces'], to: '/traces' },
+] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
 
 export function Sidebar({ initialIsMinimized }: SidebarProps) {
   const location = useLocation()
@@ -77,7 +83,25 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
         </div>
       </div>
 
-      <div className={styles.nav} />
+      <div className={styles.nav}>
+        {NAV_ITEMS.map((item) => {
+          const isActive = item.paths.includes(location.pathname)
+
+          return (
+            <SidebarButton
+              aria-label={item.label}
+              as={NavLink}
+              icon={item.icon}
+              isActive={isActive}
+              isMinimized={isMinimized}
+              key={item.label}
+              to={item.to}
+            >
+              {item.label}
+            </SidebarButton>
+          )
+        })}
+      </div>
 
       <div className={styles.footer}>
         <SidebarButton

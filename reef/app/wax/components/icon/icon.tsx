@@ -13,7 +13,7 @@ export interface IconProps {
   className?: string
   color?: IconColor
   name: IconName
-  size?: '14' | '16' | '18' | '20' | '30'
+  size?: '14' | '16' | '18' | '20' | '22' | '24' | '30'
 }
 export type IconSize = NonNullable<IconContainerVariants>['size']
 export type LucideIconName = keyof typeof icons
