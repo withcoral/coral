@@ -4,7 +4,7 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::fs;
+use std::{fs, path::Path};
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
@@ -17,6 +17,8 @@ use coral_api::v1::{
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::default_workspace;
+use sqlx::Row as _;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use toml_edit::DocumentMut;
 use tonic::Request;
@@ -25,7 +27,8 @@ use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_yaml, fixture_v4_openapi_manifest_yaml, invalid_manifest_yaml,
+    issues_http_fixture, source_dir,
 };
 
 fn auth_manifest_yaml(inputs: &str, auth: &str) -> String {
@@ -57,6 +60,13 @@ fn secret_auth_manifest_yaml_at(base_url: &str) -> String {
         base_url,
         "inputs:\n  API_TOKEN:\n    kind: secret\n",
         "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n",
+    )
+}
+
+fn v4_secret_auth_manifest(manifest_yaml: &str) -> String {
+    manifest_yaml.replace(
+        "type: openapi",
+        "type: openapi\n  inputs:\n    API_TOKEN:\n      kind: secret\n  auth:\n    type: BasicAuth\n    username: bot\n    password: \"{{input.API_TOKEN}}\"",
     )
 }
 
@@ -253,6 +263,104 @@ async fn startup_import_lists_non_default_legacy_config_source() {
 }
 
 #[tokio::test]
+async fn startup_import_backfills_legacy_v4_materialization() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
+    let (manifest_yaml, openapi_file) =
+        fixture_v4_openapi_manifest_yaml(temp.path(), &issues_http.uri());
+    let manifest_yaml = v4_secret_auth_manifest(&manifest_yaml);
+
+    {
+        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness
+            .import_source(
+                manifest_yaml,
+                Vec::new(),
+                vec![SourceSecret {
+                    key: "API_TOKEN".into(),
+                    value: "secret-token".into(),
+                }],
+            )
+            .await;
+        harness.shutdown().await;
+    }
+    write_legacy_github_v4_materialization_from_db(&config_dir).await;
+    fs::remove_file(openapi_file).expect("remove authored descriptor");
+
+    let pool = sqlite_pool(&config_dir).await;
+    sqlx::query("DELETE FROM materializations WHERE workspace_id = ? AND source_name = ?")
+        .bind("default")
+        .bind("github_v4_query")
+        .execute(&pool)
+        .await
+        .expect("delete materialization row");
+    pool.close().await;
+
+    {
+        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        assert_github_v4_query_works(&harness).await;
+        assert!(
+            !source_dir(&config_dir, "github_v4_query")
+                .join("materialized/v4")
+                .exists()
+        );
+        harness.shutdown().await;
+    }
+    write_legacy_github_v4_materialization_from_db(&config_dir).await;
+
+    let pool = sqlite_pool(&config_dir).await;
+    sqlx::query("DELETE FROM sources WHERE workspace_id = ? AND name = ?")
+        .bind("default")
+        .bind("github_v4_query")
+        .execute(&pool)
+        .await
+        .expect("delete source row");
+    pool.close().await;
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 1
+
+[credentials]
+storage = "file"
+
+[workspaces.default.sources.github_v4_query]
+variables = {}
+secrets = ["API_TOKEN"]
+origin = "imported"
+"#,
+    )
+    .expect("write legacy source config");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+    assert_github_v4_query_works(&harness).await;
+    assert!(
+        !source_dir(&config_dir, "github_v4_query")
+            .join("materialized/v4")
+            .exists()
+    );
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()).replace("local_messages", "github_v4_query"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    let pool = sqlite_pool(&config_dir).await;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM materializations WHERE workspace_id = ? AND source_name = ?",
+    )
+    .bind("default")
+    .bind("github_v4_query")
+    .fetch_one(&pool)
+    .await
+    .expect("count materializations after non-v4 reimport");
+    assert_eq!(count, 0);
+    pool.close().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 
@@ -424,6 +532,22 @@ async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
         .expect_err("cleartext credential endpoint should fail");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
     assert!(error.message().contains("base_url"));
+    harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: v4_secret_auth_manifest(
+                &fixture_v4_openapi_manifest_yaml(harness.temp_path(), "http://api.example.com").0,
+            ),
+            variables: Vec::new(),
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("cleartext derived credential endpoint should fail");
     assert!(harness.list_sources().await.is_empty());
 }
 
@@ -937,6 +1061,92 @@ fn remove_config_source_section(config_dir: &std::path::Path, source_name: &str)
         sources.remove(source_name);
     }
     fs::write(&config_path, doc.to_string()).expect("write config without source section");
+}
+
+async fn assert_github_v4_query_works(harness: &GrpcHarness) {
+    let validated = harness.validate_source("github_v4_query").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.tables[0].schema_name, "github_v4_query");
+    assert_eq!(validated.tables[0].name, "issues");
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
+            .await,
+        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
+    );
+}
+
+async fn write_legacy_github_v4_materialization_from_db(config_dir: &Path) {
+    let pool = sqlite_pool(config_dir).await;
+    let row = sqlx::query(
+        "SELECT fingerprint_yaml, projections_yaml, diagnostics_yaml \
+         FROM materializations WHERE workspace_id = ? AND source_name = ?",
+    )
+    .bind("default")
+    .bind("github_v4_query")
+    .fetch_one(&pool)
+    .await
+    .expect("load materialization row");
+    let materialized_dir = source_dir(config_dir, "github_v4_query").join("materialized/v4");
+    fs::create_dir_all(&materialized_dir).expect("create legacy materialized dir");
+    fs::write(
+        materialized_dir.join("fingerprint.yaml"),
+        row.get::<String, _>("fingerprint_yaml"),
+    )
+    .expect("write legacy fingerprint");
+    fs::write(
+        materialized_dir.join("projections.yaml"),
+        row.get::<String, _>("projections_yaml"),
+    )
+    .expect("write legacy projections");
+    fs::write(
+        materialized_dir.join("diagnostics.yaml"),
+        row.get::<String, _>("diagnostics_yaml"),
+    )
+    .expect("write legacy diagnostics");
+
+    let surfaces = sqlx::query(
+        "SELECT surface_id, source_document_raw, source_document_yaml, semantic_ir_yaml \
+         FROM materialization_surfaces WHERE workspace_id = ? AND source_name = ? \
+         ORDER BY surface_id",
+    )
+    .bind("default")
+    .bind("github_v4_query")
+    .fetch_all(&pool)
+    .await
+    .expect("load materialization surfaces");
+    for surface in surfaces {
+        let surface_dir = materialized_dir
+            .join("surfaces")
+            .join(surface.get::<String, _>("surface_id"));
+        fs::create_dir_all(&surface_dir).expect("create legacy surface dir");
+        fs::write(
+            surface_dir.join("source-document.raw"),
+            surface.get::<Vec<u8>, _>("source_document_raw"),
+        )
+        .expect("write legacy raw source document");
+        fs::write(
+            surface_dir.join("source-document.yaml"),
+            surface.get::<String, _>("source_document_yaml"),
+        )
+        .expect("write legacy source document");
+        fs::write(
+            surface_dir.join("semantic-ir.yaml"),
+            surface.get::<String, _>("semantic_ir_yaml"),
+        )
+        .expect("write legacy semantic IR");
+    }
+    pool.close().await;
+}
+
+async fn sqlite_pool(config_dir: &Path) -> sqlx::SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .filename(config_dir.join("coral.db"))
+        .foreign_keys(true);
+    SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open sqlite db")
 }
 
 #[tokio::test]

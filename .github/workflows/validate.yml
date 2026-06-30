@@ -214,6 +214,9 @@ jobs:
             state::db::migrations::tests::source_catalog_migration_contract_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
+            state::db::import::tests::concurrent_v4_materialization_backfill_race_is_benign_postgres \
+            -- --ignored
+          cargo test --locked -p coral-app \
             --test grpc server_lifecycle_can_start_with_postgres_database_config \
             -- --ignored
 

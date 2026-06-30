@@ -19,7 +19,9 @@ use coral_spec::{
 };
 
 use crate::bootstrap::AppError;
-use crate::sources::materialization::LoadedV4Materialization;
+use crate::sources::materialization::{
+    LoadedV4Materialization, validate_materialized_surface_base_url,
+};
 
 #[cfg(test)]
 pub(crate) fn runtime_components_for_v4_source(
@@ -383,6 +385,7 @@ fn surface_base_url(
             ))
         })?,
     };
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface '{}': {error}",
