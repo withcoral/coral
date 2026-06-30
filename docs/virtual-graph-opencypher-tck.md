@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-252 scenarios, which is 15.60% of the full upstream scenario-definition inventory
-and 19.47% of the read-candidate inventory.
+263 scenarios, which is 16.28% of the full upstream scenario-definition inventory
+and 20.32% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 252 representative read-only scenarios:
+The baseline currently contains 263 representative read-only scenarios:
 
 - `Match`: 15 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -208,12 +208,12 @@ The baseline currently contains 252 representative read-only scenarios:
   including bare string predicate functions in `WHERE` / `CASE WHEN`,
   `reverse(...)`, comparison operators over numeric, string, boolean, node
   property, and relationship property scalar expressions, chained numeric and
-  string ranges, boolean `AND` / `OR` / `XOR` / `NOT` operator projections,
-  precedence, and grouping, numeric `abs(...)`, `ceil(...)`, `floor(...)`,
-  `round(...)`, `sqrt(...)`, `sign(...)`, and adjacent rejection coverage.
-- `NullSemantics`: 3 scenarios for literal-only null predicate folding,
-  `coalesce(...)` / `nullIf(...)` null normalization, and unsafe literal-only
-  null comparison rejection.
+  string ranges, numeric `abs(...)`, `ceil(...)`, `floor(...)`, `round(...)`,
+  `sqrt(...)`, `sign(...)`, and adjacent rejection coverage.
+- `NullSemantics`: 14 scenarios for literal, property, static-map, optional,
+  arithmetic, and function null propagation; `coalesce(...)` / `nullIf(...)`
+  null normalization; null-aware `IN`; and adjacent null comparison / list
+  membership rejection coverage.
 - `MathematicalFunctions`: 18 scenarios for arithmetic operators, unary
   negation, precedence, `sqrt(...)`, rounding aliases, `exp(...)`, `log(...)` /
   `ln(...)`, `log10(...)`, `pow(...)` / `power(...)`, `pi()`, `e()`,

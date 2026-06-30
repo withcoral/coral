@@ -12,7 +12,7 @@
     "MapExpressions": 5,
     "Match": 15,
     "MathematicalFunctions": 18,
-    "NullSemantics": 3,
+    "NullSemantics": 14,
     "OptionalMatch": 4,
     "Parameters": 3,
     "PathMetadata": 1,
@@ -1922,6 +1922,189 @@
           {
             "name": "Bob",
             "normalized_city": "missing"
+          }
+        ]
+      }
+    },
+    {
+      "id": "null-property-predicate-projection",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.city IS NULL AS city_is_null, p.city IS NOT NULL AS city_is_not_null ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "city_is_null": false,
+            "city_is_not_null": true
+          },
+          {
+            "name": "Bob",
+            "city_is_null": false,
+            "city_is_not_null": true
+          },
+          {
+            "name": "Carol",
+            "city_is_null": false,
+            "city_is_not_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-null-predicate-projection",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN null IS NULL AS literal_is_null, null IS NOT NULL AS literal_is_not_null",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "literal_is_null": true,
+            "literal_is_not_null": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-null-predicate-projection",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN {known: true}.missing IS NULL AS missing_is_null, {known: null}.known IS NULL AS explicit_is_null, {known: true}.known IS NOT NULL AS known_is_not_null",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing_is_null": true,
+            "explicit_is_null": true,
+            "known_is_not_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "coalesce-multiple-null-fallbacks",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) RETURN p.name AS name, coalesce(null, nullIf(p.city, ''), nullIf(p.name, p.name), 'missing') AS city_or_missing ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "city_or_missing": "London"
+          },
+          {
+            "name": "Bob",
+            "city_or_missing": "missing"
+          },
+          {
+            "name": "Carol",
+            "city_or_missing": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "coalesce-empty-string-preserves-value",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Bob' RETURN coalesce(null, p.city, 'missing') AS city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "arithmetic-null-propagates",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name, null + 1 AS null_plus_one, p.age + null AS age_plus_null, null * p.age AS null_times_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "function-null-propagates",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name, toString(null) AS null_text, abs(null) AS null_abs, sqrt(null) AS null_sqrt",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ordered-null-comparison-rejected",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.age > null AS age_gt_null",
+      "expected": {
+        "kind": "error",
+        "contains": "null can only be compared with equality or inequality"
+      }
+    },
+    {
+      "id": "in-list-match-despite-leading-null",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 1 IN [null, 1] AS result",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "result": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "null-left-in-list-rejected",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN null IN [1, 2] AS result",
+      "expected": {
+        "kind": "error",
+        "contains": "literal IN predicates with a null left-hand side"
+      }
+    },
+    {
+      "id": "optional-unmatched-null-predicates",
+      "feature": "NullSemantics",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(friend:Person) WHERE friend.name = 'Nobody' RETURN p.name AS name, r IS NULL AS rel_is_null, friend.name IS NULL AS friend_name_is_null, friend.name IS NOT NULL AS friend_name_is_not_null ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "rel_is_null": true,
+            "friend_name_is_null": true,
+            "friend_name_is_not_null": false
+          },
+          {
+            "name": "Bob",
+            "rel_is_null": true,
+            "friend_name_is_null": true,
+            "friend_name_is_not_null": false
+          },
+          {
+            "name": "Carol",
+            "rel_is_null": true,
+            "friend_name_is_null": true,
+            "friend_name_is_not_null": false
           }
         ]
       }
