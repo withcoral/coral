@@ -11,17 +11,18 @@ use serde_json::{Map, Value, json};
 use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{
-    CatalogToolKind, DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT, Pagination,
-    connected_source_names_text, describe_table_output_schema, list_catalog_output_schema,
-    list_columns_output_schema, parse_pagination, parse_pagination_with_limits,
-    schema::json_schema_value, schema::tool_input_schema, schema::tool_output_schema,
-    search_catalog_output_schema, sql_input_schema, sql_output_schema,
+    CatalogToolKind, DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET,
+    DEFAULT_SEARCH_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT, MAX_SEARCH_PAGINATION_LIMIT,
+    MIN_PAGINATION_LIMIT, Pagination, connected_source_names_text, describe_table_output_schema,
+    list_catalog_output_schema, list_columns_output_schema, parse_pagination,
+    parse_search_pagination, schema::json_schema_value, schema::tool_input_schema,
+    schema::tool_output_schema, search_catalog_output_schema, sql_input_schema, sql_output_schema,
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
-const DEFAULT_SEARCH_LIMIT: u32 = 20;
-const MAX_SEARCH_LIMIT: u32 = 100;
+const DEFAULT_IGNORE_CASE: bool = true;
+const DEFAULT_REQUIRED_ONLY: bool = false;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -79,7 +80,7 @@ pub(crate) struct SearchCatalogArguments {
         description = "Optional item kind to search. Omit or pass null to search all catalog items."
     )]
     pub(crate) kind: Option<CatalogToolKind>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_ignore_case")]
     #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
     pub(crate) ignore_case: bool,
     #[schemars(flatten, with = "SearchPaginationInput")]
@@ -122,10 +123,10 @@ pub(crate) struct ListColumnsArguments {
         description = "Optional Rust regex matched against column names, descriptions, and data types."
     )]
     pub(crate) pattern: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_ignore_case")]
     #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
     pub(crate) ignore_case: bool,
-    #[serde(default)]
+    #[serde(default = "default_required_only")]
     #[schemars(description = "Only return columns that are required filters. Defaults to false.")]
     pub(crate) required_only: bool,
     #[schemars(flatten, with = "DefaultPaginationInput")]
@@ -177,13 +178,13 @@ pub(crate) struct OpenEpisodeArguments {
 struct DefaultPaginationInput {
     #[serde(default = "default_pagination_limit")]
     #[schemars(
-        range(min = 1, max = MAX_PAGINATION_LIMIT),
+        range(min = MIN_PAGINATION_LIMIT, max = MAX_PAGINATION_LIMIT),
         description = "Maximum items to return, from 1 to 200. Defaults to 50."
     )]
     limit: u32,
-    #[serde(default)]
+    #[serde(default = "default_pagination_offset")]
     #[schemars(
-        range(min = 0, max = u32::MAX),
+        range(min = DEFAULT_PAGINATION_OFFSET, max = u32::MAX),
         description = "Number of matching items to skip. Defaults to 0."
     )]
     offset: u32,
@@ -195,15 +196,15 @@ struct DefaultPaginationInput {
     reason = "schema-only struct for flattened search pagination inputs"
 )]
 struct SearchPaginationInput {
-    #[serde(default = "default_search_limit")]
+    #[serde(default = "default_search_pagination_limit")]
     #[schemars(
-        range(min = 1, max = MAX_SEARCH_LIMIT),
+        range(min = MIN_PAGINATION_LIMIT, max = MAX_SEARCH_PAGINATION_LIMIT),
         description = "Maximum catalog items to return, from 1 to 100. Defaults to 20."
     )]
     limit: u32,
-    #[serde(default)]
+    #[serde(default = "default_pagination_offset")]
     #[schemars(
-        range(min = 0, max = u32::MAX),
+        range(min = DEFAULT_PAGINATION_OFFSET, max = u32::MAX),
         description = "Number of matching catalog items to skip. Defaults to 0."
     )]
     offset: u32,
@@ -403,12 +404,8 @@ pub(crate) fn search_catalog_arguments(
         pattern: required_string_argument(arguments, "pattern")?,
         schema: optional_string_argument(arguments, "schema")?,
         kind: optional_catalog_kind_argument(arguments)?,
-        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        pagination: parse_pagination_with_limits(
-            arguments,
-            DEFAULT_SEARCH_LIMIT,
-            MAX_SEARCH_LIMIT,
-        )?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", DEFAULT_IGNORE_CASE)?,
+        pagination: parse_search_pagination(arguments)?,
     })
 }
 
@@ -441,8 +438,8 @@ pub(crate) fn list_columns_arguments(
         schema: required_string_argument(arguments, "schema")?,
         table: required_string_argument(arguments, "table")?,
         pattern: optional_non_empty_string_argument(arguments, "pattern")?,
-        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        required_only: optional_bool_argument(arguments, "required_only", false)?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", DEFAULT_IGNORE_CASE)?,
+        required_only: optional_bool_argument(arguments, "required_only", DEFAULT_REQUIRED_ONLY)?,
         pagination: parse_pagination(arguments)?,
     })
 }
@@ -511,16 +508,24 @@ fn search_catalog_description(context: &ToolDescriptionContext) -> String {
     )
 }
 
-fn default_true() -> bool {
-    true
+fn default_ignore_case() -> bool {
+    DEFAULT_IGNORE_CASE
+}
+
+fn default_required_only() -> bool {
+    DEFAULT_REQUIRED_ONLY
 }
 
 fn default_pagination_limit() -> u32 {
     DEFAULT_PAGINATION_LIMIT
 }
 
-fn default_search_limit() -> u32 {
-    DEFAULT_SEARCH_LIMIT
+fn default_search_pagination_limit() -> u32 {
+    DEFAULT_SEARCH_PAGINATION_LIMIT
+}
+
+fn default_pagination_offset() -> u32 {
+    DEFAULT_PAGINATION_OFFSET
 }
 
 pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
@@ -622,9 +627,11 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::{
-        EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
-        connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
-        search_catalog_tool, sql_tool, with_episode_id_argument,
+        DEFAULT_IGNORE_CASE, DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET,
+        DEFAULT_REQUIRED_ONLY, DEFAULT_SEARCH_PAGINATION_LIMIT, EPISODE_ID_ARGUMENT_DESCRIPTION,
+        ToolDescriptionContext, build_tool_result, connected_source_names_text,
+        list_catalog_arguments, search_catalog_arguments, search_catalog_tool, sql_tool,
+        with_episode_id_argument,
     };
 
     #[test]
@@ -674,6 +681,31 @@ mod tests {
         let parsed = super::list_columns_arguments(Some(&arguments)).expect("list columns args");
 
         assert_eq!(parsed.pattern, None);
+    }
+
+    #[test]
+    fn catalog_argument_defaults_use_shared_constants() {
+        let search_arguments =
+            Map::from_iter([("pattern".to_string(), Value::String("issue".to_string()))]);
+
+        let search = search_catalog_arguments(Some(&search_arguments)).expect("search args");
+
+        assert_eq!(search.ignore_case, DEFAULT_IGNORE_CASE);
+        assert_eq!(search.pagination.limit, DEFAULT_SEARCH_PAGINATION_LIMIT);
+        assert_eq!(search.pagination.offset, DEFAULT_PAGINATION_OFFSET);
+
+        let list_columns_arguments = Map::from_iter([
+            ("schema".to_string(), Value::String("github".to_string())),
+            ("table".to_string(), Value::String("issues".to_string())),
+        ]);
+
+        let list_columns = super::list_columns_arguments(Some(&list_columns_arguments))
+            .expect("list columns args");
+
+        assert_eq!(list_columns.ignore_case, DEFAULT_IGNORE_CASE);
+        assert_eq!(list_columns.required_only, DEFAULT_REQUIRED_ONLY);
+        assert_eq!(list_columns.pagination.limit, DEFAULT_PAGINATION_LIMIT);
+        assert_eq!(list_columns.pagination.offset, DEFAULT_PAGINATION_OFFSET);
     }
 
     #[test]

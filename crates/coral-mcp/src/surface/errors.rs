@@ -20,8 +20,13 @@ pub(crate) struct ToolError {
 }
 
 pub(crate) fn tool_error_result(error: ToolError, data: Option<Value>) -> CallToolResult {
-    let structured = serde_json::to_value(StructuredToolErrorValue { error, data })
-        .expect("tool error value serializes");
+    let structured = match data {
+        Some(data) => serde_json::to_value(ToolErrorWithData { error, data })
+            .expect("tool error value with data serializes"),
+        None => {
+            serde_json::to_value(ToolErrorValue { error }).expect("tool error value serializes")
+        }
+    };
     let mut result = CallToolResult::structured_error(structured);
     result.content = Vec::new();
     result
@@ -112,11 +117,16 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     }
 }
 
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ToolErrorWithData<T> {
+    pub(crate) error: ToolError,
+    pub(crate) data: T,
+}
+
 #[derive(Serialize)]
-struct StructuredToolErrorValue {
+struct ToolErrorValue {
     error: ToolError,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
 }
 
 #[derive(Serialize)]

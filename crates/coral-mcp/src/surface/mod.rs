@@ -16,11 +16,12 @@ pub(crate) use catalog::{
     search_catalog_output_schema, search_catalog_value,
 };
 pub(crate) use discovery::{
-    DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT, Pagination, parse_pagination,
-    parse_pagination_with_limits,
+    DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET, DEFAULT_SEARCH_PAGINATION_LIMIT,
+    MAX_PAGINATION_LIMIT, MAX_SEARCH_PAGINATION_LIMIT, MIN_PAGINATION_LIMIT, Pagination,
+    parse_pagination, parse_search_pagination,
 };
 pub(crate) use errors::{
-    ToolError, status_to_error_data, tool_error_from_status, tool_error_result,
+    ToolError, ToolErrorWithData, status_to_error_data, tool_error_from_status, tool_error_result,
 };
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,

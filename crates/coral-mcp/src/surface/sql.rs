@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{ToolError, schema::tool_input_schema, schema::tool_output_schema};
+use super::{ToolError, ToolErrorWithData, schema::tool_input_schema, schema::tool_output_schema};
 
 pub(crate) const MAX_SQL_BATCH_QUERIES: usize = 10;
 const MAX_SQL_BATCH_RESULT_INDEX: usize = MAX_SQL_BATCH_QUERIES - 1;
@@ -60,18 +60,7 @@ pub(crate) enum SqlQueryResultValue {
 )]
 enum SqlToolOutputSchema {
     Success(SqlBatchValue),
-    PartialFailure(SqlPartialFailureOutput),
-}
-
-#[derive(JsonSchema)]
-#[schemars(deny_unknown_fields)]
-#[expect(
-    dead_code,
-    reason = "schema-only struct for the SQL partial-failure envelope"
-)]
-struct SqlPartialFailureOutput {
-    error: ToolError,
-    data: SqlBatchValue,
+    PartialFailure(ToolErrorWithData<SqlBatchValue>),
 }
 
 impl SqlBatchValue {
