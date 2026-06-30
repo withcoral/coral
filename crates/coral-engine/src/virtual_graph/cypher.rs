@@ -4118,11 +4118,11 @@ fn label_expression_alternatives(
         LabelExpression::Group { inner, .. } => label_expression_alternatives(inner, path, context),
         LabelExpression::Static(_) => Ok(vec![expression.clone()]),
         LabelExpression::Dynamic { expression, span } => {
-            let name = compile_dynamic_label_expression(expression, path, context)?;
-            Ok(vec![LabelExpression::Static(SymbolicName {
-                name,
-                span: *span,
-            })])
+            let names = compile_dynamic_label_expressions(expression, path, context)?;
+            Ok(names
+                .into_iter()
+                .map(|name| LabelExpression::Static(SymbolicName { name, span: *span }))
+                .collect())
         }
         LabelExpression::Not { .. } => Ok(vec![resolve_compile_time_label_expression(
             expression, path, context,
@@ -29647,6 +29647,22 @@ impl LabelExpressionResolver<'_> {
             }
         }
     }
+
+    fn resolve_dynamic_labels(
+        self,
+        expression: &Expression,
+        path: impl Into<String>,
+    ) -> Result<Vec<String>, CoreError> {
+        match self {
+            LabelExpressionResolver::StaticOnly => Err(unsupported(
+                path,
+                "dynamic label expressions are not supported yet",
+            )),
+            LabelExpressionResolver::CompileTimeDynamic { context } => {
+                compile_dynamic_label_expressions(expression, path, context)
+            }
+        }
+    }
 }
 
 fn evaluate_label_predicate_expression(
@@ -29672,9 +29688,10 @@ fn evaluate_label_expression(
     let path = path.into();
     match expression {
         LabelExpression::Static(label) => Ok(label.name == mapped_label),
-        LabelExpression::Dynamic { expression, .. } => {
-            Ok(resolver.resolve_dynamic(expression, path)? == mapped_label)
-        }
+        LabelExpression::Dynamic { expression, .. } => Ok(resolver
+            .resolve_dynamic_labels(expression, path)?
+            .iter()
+            .any(|label| label == mapped_label)),
         LabelExpression::Or { lhs, rhs, .. } => {
             Ok(
                 evaluate_label_expression(lhs, mapped_label, format!("{path}.lhs"), resolver)?
@@ -29715,13 +29732,35 @@ fn compile_dynamic_label_expression(
     context: &CypherCompileContext,
 ) -> Result<String, CoreError> {
     let path = path.into();
+    let labels = compile_dynamic_label_expressions(expression, path.clone(), context)?;
+    match labels.as_slice() {
+        [label] => Ok(label.clone()),
+        [] => Err(CoreError::internal(
+            "dynamic label expression resolver returned an empty label set",
+        )),
+        _ => Err(unsupported(
+            path,
+            "dynamic label expressions require exactly one label in this context",
+        )),
+    }
+}
+
+fn compile_dynamic_label_expressions(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
     match expression {
-        Expression::Parenthesized(inner) => compile_dynamic_label_expression(inner, path, context),
-        Expression::Literal(CypherLiteral::String(label)) => Ok(label.value.clone()),
+        Expression::Parenthesized(inner) => compile_dynamic_label_expressions(inner, path, context),
+        Expression::Literal(CypherLiteral::String(label)) => Ok(vec![label.value.clone()]),
         Expression::Parameter(parameter) => {
             match context.parameter_value(parameter, path.clone())? {
-                CypherParameterValue::Literal(Literal::String(label)) => Ok(label.clone()),
-                CypherParameterValue::Literal(_) | CypherParameterValue::List(_) => {
+                CypherParameterValue::Literal(Literal::String(label)) => Ok(vec![label.clone()]),
+                CypherParameterValue::List(labels) => {
+                    compile_dynamic_label_list_parameter(labels, path)
+                }
+                CypherParameterValue::Literal(_) => {
                     Err(unsupported(path, DYNAMIC_LABEL_EXPRESSION_MESSAGE))
                 }
             }
@@ -29730,8 +29769,31 @@ fn compile_dynamic_label_expression(
     }
 }
 
-const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str =
-    "dynamic label expressions require a string literal or scalar string parameter";
+const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str = "dynamic label expressions require a string literal, scalar string parameter, or non-empty list string parameter";
+
+fn compile_dynamic_label_list_parameter(
+    labels: &[Literal],
+    path: impl Into<String>,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
+    if labels.is_empty() {
+        return Err(unsupported(
+            path,
+            "dynamic label list parameters require at least one string",
+        ));
+    }
+    labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| match label {
+            Literal::String(label) => Ok(label.clone()),
+            _ => Err(unsupported(
+                format!("{path}[{index}]"),
+                "dynamic label list parameters require only strings",
+            )),
+        })
+        .collect()
+}
 
 fn compile_optional_keys_ref(
     expression: &Expression,
@@ -41483,45 +41545,70 @@ relationships:
     }
 
     #[test]
-    fn rejects_dynamic_label_predicate_list_parameters() {
-        let parameters = BTreeMap::from([(
-            "labels".to_string(),
-            CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
-        )]);
-        let error = compile_cypher_with_parameters(
+    fn compiles_parameterized_dynamic_label_predicate_list_parameters() {
+        let parameters = BTreeMap::from([
+            (
+                "labels".to_string(),
+                CypherParameterValue::List(vec![
+                    Literal::String("Team".to_string()),
+                    Literal::String("Service".to_string()),
+                ]),
+            ),
+            (
+                "excluded".to_string(),
+                CypherParameterValue::List(vec![Literal::String("Team".to_string())]),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
             "MATCH (service:Service) \
-             WHERE service:$($labels) \
+             WHERE service:$($labels) AND NOT service:$($excluded) \
              RETURN service.name AS service",
             &parameters,
         )
-        .expect_err("dynamic label predicate list parameter should be rejected");
+        .expect("dynamic label predicate list parameters should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("dynamic label expressions require a string literal"),
-            "{error:?}"
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
         );
     }
 
     #[test]
-    fn rejects_dynamic_label_pattern_list_parameters() {
+    fn compiles_parameterized_dynamic_label_pattern_list_parameters() {
         let parameters = BTreeMap::from([(
             "labels".to_string(),
-            CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
+            CypherParameterValue::List(vec![
+                Literal::String("Team".to_string()),
+                Literal::String("Service".to_string()),
+            ]),
         )]);
-        let error = compile_cypher_with_parameters(
-            "MATCH (service:$($labels)) \
-             RETURN service.name AS service",
+        let query = compile_cypher_query_with_parameters(
+            "MATCH (entity:$($labels)) \
+             RETURN entity.name AS name",
             &parameters,
         )
-        .expect_err("dynamic label pattern list parameter should be rejected");
+        .expect("dynamic label pattern list parameters should compile");
 
-        assert!(
-            error
-                .to_string()
-                .contains("dynamic label expressions require a string literal"),
-            "{error:?}"
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic label list parameters should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
         );
     }
 
@@ -41593,22 +41680,114 @@ relationships:
     }
 
     #[test]
-    fn rejects_dynamic_label_alternative_list_parameters() {
+    fn compiles_parameterized_dynamic_label_alternative_list_parameters() {
         let parameters = BTreeMap::from([(
             "labels".to_string(),
-            CypherParameterValue::List(vec![Literal::String("Service".to_string())]),
+            CypherParameterValue::List(vec![
+                Literal::String("Service".to_string()),
+                Literal::String("Team".to_string()),
+            ]),
         )]);
-        let error = compile_cypher_query_with_parameters(
+        let query = compile_cypher_query_with_parameters(
             "MATCH (service:Team|$($labels)) \
              RETURN service.name AS service",
             &parameters,
         )
-        .expect_err("dynamic label alternative list parameter should be rejected");
+        .expect("dynamic label alternative list parameters should compile and deduplicate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic label alternatives should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
+        );
+    }
+
+    #[test]
+    fn compiles_parameterized_dynamic_relationship_type_alternative_list_parameters() {
+        let parameters = BTreeMap::from([(
+            "types".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("OWNS".to_string()),
+                Literal::String("DEPENDS_ON".to_string()),
+            ]),
+        )]);
+        let query = compile_cypher_query_with_parameters(
+            "MATCH (source:Service)-[:DEPENDS_ON|$($types)]->(target:Service) \
+             RETURN target.name AS target",
+            &parameters,
+        )
+        .expect("dynamic relationship type list parameters should compile and deduplicate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic relationship type alternatives should expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("DEPENDS_ON")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.relationships.first())
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("OWNS")
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_label_list_parameters_without_string_values() {
+        let parameters = BTreeMap::from([(
+            "labels".to_string(),
+            CypherParameterValue::List(vec![
+                Literal::String("Service".to_string()),
+                Literal::Integer(1),
+            ]),
+        )]);
+        let error = compile_cypher_query_with_parameters(
+            "MATCH (service:$($labels)) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect_err("dynamic label list parameters with non-string values should be rejected");
 
         assert!(
             error
                 .to_string()
-                .contains("dynamic label expressions require a string literal"),
+                .contains("dynamic label list parameters require only strings"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_dynamic_label_list_parameters() {
+        let parameters =
+            BTreeMap::from([("labels".to_string(), CypherParameterValue::List(Vec::new()))]);
+        let error = compile_cypher_query_with_parameters(
+            "MATCH (service:$($labels)) \
+             RETURN service.name AS service",
+            &parameters,
+        )
+        .expect_err("empty dynamic label list parameters should be rejected");
+
+        assert!(
+            error.to_string().contains("require at least one string"),
             "{error:?}"
         );
     }

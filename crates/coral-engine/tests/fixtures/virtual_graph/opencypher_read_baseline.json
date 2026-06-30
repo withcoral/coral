@@ -14,7 +14,7 @@
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
     "OptionalMatch": 4,
-    "Parameters": 2,
+    "Parameters": 3,
     "PathMetadata": 1,
     "PathValues": 4,
     "RelationshipProperties": 1,
@@ -1348,6 +1348,24 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-dynamic-label-lists",
+      "feature": "Parameters",
+      "query": "MATCH (p:$($pattern_labels)) WHERE p:$($predicate_labels) RETURN p.name AS name ORDER BY name",
+      "parameters": {
+        "pattern_labels": ["Person"],
+        "predicate_labels": ["Employee", "Person"]
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
         ]
       }
     },
