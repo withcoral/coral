@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
@@ -54,10 +54,19 @@ function escapeHtml(value: string): string {
   })
 }
 
-function desktopIconPath(): string {
+function desktopIconPath(appearance: 'light' | 'dark' = 'light'): string {
+  const iconName = appearance === 'dark' ? 'icon-dark.png' : 'icon.png'
   return app.isPackaged
-    ? join(process.resourcesPath, 'icons', 'icon.png')
-    : join(currentDir(), '..', '..', 'resources', 'icons', 'icon.png')
+    ? join(process.resourcesPath, 'icons', iconName)
+    : join(currentDir(), '..', '..', 'resources', 'icons', iconName)
+}
+
+function currentDesktopIconPath(): string {
+  return desktopIconPath(nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+}
+
+function updateDockIcon() {
+  if (process.platform === 'darwin' && app.dock) app.dock.setIcon(currentDesktopIconPath())
 }
 
 function createMainWindow(): BrowserWindow {
@@ -69,7 +78,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 520,
     title: 'Coral',
-    icon: desktopIconPath(),
+    icon: currentDesktopIconPath(),
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: preloadPath,
@@ -213,7 +222,8 @@ if (!gotLock) {
 }
 
 app.whenReady().then(() => {
-  if (process.platform === 'darwin' && app.dock) app.dock.setIcon(desktopIconPath())
+  updateDockIcon()
+  nativeTheme.on('updated', updateDockIcon)
   registerIpcHandlers()
   installMenu()
   sidecarPromise = ensureSidecar()
