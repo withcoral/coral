@@ -10555,6 +10555,16 @@ fn compile_order_expression_fallback(
     )? {
         return compile_scalar_order_expression(expression, projections, path);
     }
+    if !is_direct_metadata_list_function(expression)
+        && let Some(expression) = compile_optional_static_list_scalar_expression(
+            expression,
+            path.clone(),
+            Some(plan),
+            context,
+        )?
+    {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
     if is_list_slice_expression(expression)
         && let Some(value) =
             compile_optional_metadata_list_value(expression, path.clone(), plan, context)?
@@ -10565,38 +10575,6 @@ fn compile_order_expression_fallback(
             path,
         );
     }
-    if is_non_literal_static_list_slice_expression(expression)
-        && let Some(expression) = compile_optional_static_list_scalar_expression(
-            expression,
-            path.clone(),
-            Some(plan),
-            context,
-        )?
-    {
-        return compile_scalar_order_expression(expression, projections, path);
-    }
-    if matches!(expression, Expression::ListComprehension(_))
-        && let Some(expression) = compile_optional_static_list_scalar_expression(
-            expression,
-            path.clone(),
-            Some(plan),
-            context,
-        )?
-    {
-        return compile_scalar_order_expression(expression, projections, path);
-    }
-    if matches!(
-        expression,
-        Expression::FunctionCall(function)
-            if is_filter_function(function) || is_extract_function(function)
-    ) && let Some(expression) = compile_optional_static_list_scalar_expression(
-        expression,
-        path.clone(),
-        Some(plan),
-        context,
-    )? {
-        return compile_scalar_order_expression(expression, projections, path);
-    }
     compile_order_expression_after_metadata_list_index(
         expression,
         projections,
@@ -10605,6 +10583,16 @@ fn compile_order_expression_fallback(
         context,
         path,
     )
+}
+
+fn is_direct_metadata_list_function(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_direct_metadata_list_function(inner),
+        Expression::FunctionCall(function) => {
+            is_labels_function(function) || is_keys_function(function)
+        }
+        _ => false,
+    }
 }
 
 fn compile_optional_path_list_index_order_expression(
@@ -28278,14 +28266,6 @@ fn static_list_value_index_scalar_expression(
     ))
 }
 
-fn is_non_literal_static_list_slice_expression(expression: &Expression) -> bool {
-    match expression {
-        Expression::Parenthesized(inner) => is_non_literal_static_list_slice_expression(inner),
-        Expression::ListSlice { list, .. } => !is_literal_list_source_expression(list),
-        _ => false,
-    }
-}
-
 fn is_literal_list_source_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_list_source_expression(inner),
@@ -42083,6 +42063,54 @@ relationships:
                 && tail == &vec![Literal::Integer(3), Literal::Integer(5)]
                 && scaled_alias == "scaled"
                 && scaled == &vec![Literal::Integer(10), Literal::Integer(20), Literal::Integer(30)]
+        ));
+    }
+
+    #[test]
+    fn compiles_static_list_expressions_as_direct_order_keys() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.name AS name \
+             ORDER BY range(1, 2), split('prod,dev', ','), toStringList([1, 2]) DESC",
+        )
+        .expect("folded static list expressions should compile as direct order keys");
+
+        assert!(matches!(
+            plan.order_by.as_slice(),
+            [
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                        literals: range,
+                        element_type: LiteralListElementType::Integer,
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                        literals: split,
+                        element_type: LiteralListElementType::String,
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                        literals: cast,
+                        element_type: LiteralListElementType::String,
+                    }),
+                    direction: OrderDirection::Descending,
+                    nulls: None,
+                },
+            ] if range == &vec![Literal::Integer(1), Literal::Integer(2)]
+                && split == &vec![
+                    Literal::String("prod".to_string()),
+                    Literal::String("dev".to_string()),
+                ]
+                && cast == &vec![
+                    Literal::String("1".to_string()),
+                    Literal::String("2".to_string()),
+                ]
         ));
     }
 

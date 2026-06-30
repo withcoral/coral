@@ -8,7 +8,7 @@
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 11,
+    "ListExpressions": 12,
     "MapExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 5,
@@ -737,6 +737,18 @@
         "ordered": true,
         "rows": [
           { "numbers": [1, 2, 3], "colors": ["red", "blue"], "number_count": 3 }
+        ]
+      }
+    },
+    {
+      "id": "static-list-direct-order-keys",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name ORDER BY range(1, 2), split('red,blue', ','), toStringList([1, 2]) DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
         ]
       }
     },
