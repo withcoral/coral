@@ -1,9 +1,11 @@
 import type { Config } from '@react-router/dev/config'
 
+const isDesktopBuild = process.env.CORAL_DESKTOP_REEF === '1'
+
 export default {
   future: {
     v8_middleware: true,
   },
-  // Server-side render by default, to enable SPA mode set this to `false`
-  ssr: true,
+  // Desktop needs static renderer assets that Electron can load from the app bundle.
+  ssr: !isDesktopBuild,
 } satisfies Config

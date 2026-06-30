@@ -1,6 +1,7 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
 
 import type { Route } from './+types/root'
+import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
 import './styles/globals.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
@@ -41,6 +42,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </body>
     </html>
   )
+}
+
+export async function loader({ request }: Route.LoaderArgs) {
+  return {
+    sidebarIsMinimized: readSidebarCollapsedCookie(request),
+  }
 }
 
 export default function App() {

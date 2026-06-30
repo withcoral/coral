@@ -1,0 +1,31 @@
+{
+  "name": "@withcoral/desktop",
+  "private": true,
+  "version": "0.4.4",
+  "description": "Coral desktop app",
+  "author": "With Coral",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "node ./scripts/dev.mjs",
+    "prebuild": "node ./scripts/stage-coral.mjs",
+    "build": "electron-vite build --ignoreConfigWarning",
+    "type-check": "tsc --noEmit",
+    "check": "npm run type-check",
+    "package": "electron-builder --config electron-builder.config.ts",
+    "package:dir": "electron-builder --dir --config electron-builder.config.ts",
+    "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
+    "stage:coral": "node ./scripts/stage-coral.mjs"
+  },
+  "dependencies": {
+    "add-mcp": "^1.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.2",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.15.2",
+    "electron-vite": "^5.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.2.7"
+  }
+}
