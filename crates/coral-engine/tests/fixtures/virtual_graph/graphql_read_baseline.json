@@ -6,7 +6,7 @@
     "BooleanFilters": 6,
     "ErrorHandling": 7,
     "GeneratedClientShape": 5,
-    "IdentityFields": 1,
+    "IdentityFields": 6,
     "NestedRelationships": 5,
     "RelationshipExistence": 1,
     "RootSelection": 2,
@@ -365,6 +365,70 @@
         "ordered": true,
         "rows": [
           { "id": 1, "element": "1", "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-equality-filter",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { eq: 2 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-range-filter",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { gte: 2 } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-list-filter",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { in: [1, 3] } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "identity-order-by-id-desc",
+      "feature": "IdentityFields",
+      "query": "query { Person(orderBy: [{ field: _id, direction: DESC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" },
+          { "name": "Bob" },
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "identity-elementid-equality-filter",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { eq: \"2\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" }
         ]
       }
     },
