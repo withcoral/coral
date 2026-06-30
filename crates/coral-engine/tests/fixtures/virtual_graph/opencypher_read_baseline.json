@@ -10,7 +10,7 @@
     "ListExpressions": 36,
     "LiteralExpressions": 15,
     "MapExpressions": 19,
-    "Match": 15,
+    "Match": 27,
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
     "OptionalMatch": 15,
@@ -807,6 +807,208 @@
       }
     },
     {
+      "id": "match-inline-node-property-map",
+      "feature": "Match",
+      "query": "MATCH (p:Person {name: 'Alice'}) RETURN p.name AS name, p.age AS age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-inline-relationship-property-map",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[r:KNOWS {since: 2021}]->(b:Person) RETURN a.name AS source, b.name AS target, r.strength AS strength",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "strength": 0.7
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-inline-endpoint-property-maps",
+      "feature": "Match",
+      "query": "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {city: 'Paris'}) RETURN a.name AS source, b.name AS target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-anonymous-end-node",
+      "feature": "Match",
+      "query": "MATCH (source:Person)-[r:KNOWS]->(:Person) RETURN source.name AS source, r.since AS since ORDER BY source, since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "since": 2020
+          },
+          {
+            "source": "Alice",
+            "since": 2022
+          },
+          {
+            "source": "Bob",
+            "since": 2021
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-unlabeled-anonymous-relationship-count",
+      "feature": "Match",
+      "query": "MATCH ()-[:KNOWS]->() RETURN count(*) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationships": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-directed-self-loop-no-rows",
+      "feature": "Match",
+      "query": "MATCH (p:Person)-[:KNOWS]->(p) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "match-bound-node-reuse-across-clauses",
+      "feature": "Match",
+      "query": "MATCH (a:Person {name: 'Alice'}) MATCH (a)-[:KNOWS]->(b:Person) RETURN b.name AS friend ORDER BY friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "friend": "Bob"
+          },
+          {
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-bound-node-reuse-comma-patterns",
+      "feature": "Match",
+      "query": "MATCH (a:Person {name: 'Alice'}), (a)-[:KNOWS]->(b:Person) RETURN a.name AS person, b.name AS friend ORDER BY friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob"
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-grouped-outgoing-counts",
+      "feature": "Match",
+      "query": "MATCH (p:Person)-[:KNOWS]->(:Person) RETURN p.name AS person, count(*) AS outgoing ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "outgoing": 2
+          },
+          {
+            "person": "Bob",
+            "outgoing": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-grouped-incoming-counts",
+      "feature": "Match",
+      "query": "MATCH (:Person)-[:KNOWS]->(p:Person) RETURN p.name AS person, count(*) AS incoming ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob",
+            "incoming": 1
+          },
+          {
+            "person": "Carol",
+            "incoming": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-disconnected-relationship-patterns-cross-product",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) MATCH (c:Person)-[:KNOWS]->(d:Person) RETURN count(*) AS pairs",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "pairs": 9
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-return-bound-node-outside-later-pattern",
+      "feature": "Match",
+      "query": "MATCH (a:Person {name: 'Alice'}), (c:Person {name: 'Carol'}) MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS friend, c.name AS bystander ORDER BY friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "friend": "Bob",
+            "bystander": "Carol"
+          },
+          {
+            "source": "Alice",
+            "friend": "Carol",
+            "bystander": "Carol"
+          }
+        ]
+      }
+    },
+    {
       "id": "match-duplicate-relationship-variable-rejected",
       "feature": "Match",
       "query": "MATCH (a:Person)-[r:KNOWS]->(:Person)-[r:KNOWS]->(a) RETURN a.name AS name",
@@ -1244,7 +1446,7 @@
         "rows": [
           {
             "average_age": 34.666666666666664,
-            "median_age": 34,
+            "median_age": 34.0,
             "sample_age_stdev": 6.027713773341709,
             "population_age_stdev": 4.921607686744467
           }
