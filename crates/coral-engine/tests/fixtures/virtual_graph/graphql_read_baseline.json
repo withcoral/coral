@@ -4,12 +4,12 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "BooleanFilters": 6,
-    "ErrorHandling": 7,
+    "ErrorHandling": 8,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
     "NestedRelationships": 5,
     "RelationshipExistence": 5,
-    "RootSelection": 2,
+    "RootSelection": 4,
     "RowModifiers": 5,
     "ScalarFilters": 12
   },
@@ -37,6 +37,31 @@
         "rows": [
           { "person": "Alice", "active": true },
           { "person": "Bob", "active": false }
+        ]
+      }
+    },
+    {
+      "id": "root-alias-lowercase-singular",
+      "feature": "RootSelection",
+      "query": "query { person(where: { _id: { eq: 3 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "root-alias-capitalized-plural",
+      "feature": "RootSelection",
+      "query": "query { Persons(orderBy: [{ field: age, direction: DESC }], limit: 2) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "age": 41 },
+          { "name": "Alice", "age": 34 }
         ]
       }
     },
@@ -676,6 +701,15 @@
       "expected": {
         "kind": "error",
         "contains": "UNKNOWN_PROPERTY"
+      }
+    },
+    {
+      "id": "root-unknown-field-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { People { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "unknown GraphQL root node field"
       }
     },
     {
