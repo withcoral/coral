@@ -4,10 +4,10 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "BooleanFilters": 6,
-    "ErrorHandling": 6,
+    "ErrorHandling": 7,
     "GeneratedClientShape": 5,
     "IdentityFields": 1,
-    "NestedRelationships": 1,
+    "NestedRelationships": 5,
     "RelationshipExistence": 1,
     "RootSelection": 2,
     "RowModifiers": 5,
@@ -381,6 +381,57 @@
       }
     },
     {
+      "id": "incoming-relationship-traversal",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name in_KNOWS(from: Person) { knower: name _edge { since: since } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Carol", "knower": "Bob", "since": 2021 },
+          { "name": "Carol", "knower": "Alice", "since": 2022 }
+        ]
+      }
+    },
+    {
+      "id": "incoming-relationship-with-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name in_KNOWS(from: Person, relationshipWhere: { since: { gte: 2022 } }) { knower: name } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Carol", "knower": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "undirected-relationship-traversal",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Bob\" } }) { name any_KNOWS(label: Person) { contact: name } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Bob", "contact": "Alice" },
+          { "name": "Bob", "contact": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "undirected-relationship-with-edge",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name any_KNOWS(label: Person) { contact: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Alice", "contact": "Bob", "strength": 0.9 },
+          { "name": "Alice", "contact": "Carol", "strength": 0.3 }
+        ]
+      }
+    },
+    {
       "id": "relationship-existence-filter",
       "feature": "RelationshipExistence",
       "query": "query { Person(where: { out_KNOWS: { where: { city: { eq: \"Paris\" } }, relationshipWhere: { since: { gte: 2021 } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
@@ -505,6 +556,15 @@
       "expected": {
         "kind": "error",
         "contains": "requires exactly two objects"
+      }
+    },
+    {
+      "id": "nested-row-modifier-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name in_KNOWS(from: Person, limit: 1) { knower: name } } }",
+      "expected": {
+        "kind": "error",
+        "contains": "do not support row modifiers"
       }
     }
   ]

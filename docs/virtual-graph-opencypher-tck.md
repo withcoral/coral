@@ -267,7 +267,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 41 representative read-only scenarios:
+The GraphQL baseline currently contains 46 representative read-only scenarios:
 
 - `RootSelection`: 2 scenarios for exact-label and generated root aliases.
 - `ScalarFilters`: 8 scenarios for scalar operator objects, shorthand equality,
@@ -280,12 +280,12 @@ The GraphQL baseline currently contains 41 representative read-only scenarios:
 - `Aggregation`: 6 scenarios for grouped `_count`, numeric property
   aggregates, distinct counts, and exact `_percentileCont(field:, percentile:)`.
 - `IdentityFields`: 1 scenario for `_id` and `_elementId`.
-- `NestedRelationships`: 1 scenario for relationship traversal with endpoint
-  and relationship-property filters.
+- `NestedRelationships`: 5 scenarios for out/in/any relationship traversal with
+  endpoint, relationship-property, and `_edge` projections.
 - `RelationshipExistence`: 1 scenario for `EXISTS`-style relationship filters.
 - `GeneratedClientShape`: 5 scenarios for fragments, `__typename`, and
   `@skip`/`@include` directives.
-- `ErrorHandling`: 6 expected rejections for unknown graph-declared properties,
+- `ErrorHandling`: 7 expected rejections for unknown graph-declared properties,
   `_id` string predicates, and aggregate argument misuse.
 
 The same fixture-level contract applies: ids must be unique, every feature
