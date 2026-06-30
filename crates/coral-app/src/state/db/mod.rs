@@ -12,6 +12,7 @@ mod backend;
 mod config;
 mod coral_db;
 mod error;
+mod import;
 mod migrations;
 mod repositories;
 mod schema;
