@@ -1,15 +1,9 @@
 //! Function lifecycle and inventory workflow.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "function lifecycle service and CLI callers land upstack in the split stack"
-    )
-)]
 
 pub(crate) mod manager;
 pub(crate) mod model;
 mod runtime;
+pub(crate) mod service;
 mod store;
 mod validation;
 

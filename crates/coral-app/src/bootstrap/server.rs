@@ -16,6 +16,7 @@ use axum::extract::Request as AxumRequest;
 use axum::response::Response as AxumResponse;
 use coral_api::v1::catalog_service_server::CatalogServiceServer;
 use coral_api::v1::feedback_service_server::FeedbackServiceServer;
+use coral_api::v1::function_service_server::FunctionServiceServer;
 use coral_api::v1::query_service_server::QueryServiceServer;
 use coral_api::v1::search_service_server::SearchServiceServer;
 use coral_api::v1::source_service_server::SourceServiceServer;
@@ -49,6 +50,7 @@ use crate::feedback::publisher::{
     FeedbackPublisher, HostedFeedbackPublisher, NoopFeedbackPublisher,
 };
 use crate::feedback::service::FeedbackService;
+use crate::functions::service::FunctionService;
 use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
@@ -499,6 +501,7 @@ async fn start_server(
     let source_service = SourceService::new(source, query.clone(), workspace.clone());
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
+    let function_service = FunctionService::new(query.function_manager(), query.clone());
     let query_service = QueryService::new(query);
     let search_service = SearchService::new(search);
     let feedback_service = FeedbackService::new(feedback);
@@ -514,6 +517,10 @@ async fn start_server(
                 .max_encoding_message_size(CATALOG_RESPONSE_MAX_MESSAGE_SIZE),
         )
         .add_service(FeedbackServiceServer::new(feedback_service))
+        .add_service(
+            FunctionServiceServer::new(function_service)
+                .max_encoding_message_size(QUERY_RESPONSE_MAX_MESSAGE_SIZE),
+        )
         .add_service(TaskServiceServer::new(task_service))
         .add_service(
             QueryServiceServer::new(query_service)

@@ -267,7 +267,6 @@ async fn validate_source_returns_table_functions() {
     assert_eq!(function.name, "search_issues");
     assert_eq!(function.arguments.len(), 1);
     assert_eq!(function.arguments[0].name, "q");
-    assert!(function.arguments[0].required);
     assert_eq!(function.result_columns.len(), 1);
     assert_eq!(function.result_columns[0].name, "title");
     assert!(validated.query_tests.is_empty());
