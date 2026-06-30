@@ -1,5 +1,9 @@
 //! Implements the gRPC `TraceService` for local trace inspection.
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use coral_api::v1::trace_service_server::TraceService as TraceServiceApi;
 use coral_api::v1::{
     GetTraceRequest, GetTraceResponse, ListTracesRequest, ListTracesResponse, TraceInvocationKind,
@@ -9,12 +13,13 @@ use tonic::{Code, Request, Response, Status};
 
 use crate::bootstrap::{AppError, app_status};
 use crate::identity::{Principal, PrincipalKind};
+use crate::state::db::{CoralDb, DbError, DbRepos};
 use crate::telemetry::local_store::{
     StoredTraceInvocationKind, StoredTraceOperationKind, StoredTraceStatus, TraceDetailRecord,
-    TraceScope, TraceSpanRecord, TraceSummaryRecord,
+    TraceScope, TraceSpanRecord, TraceStore, TraceStoreError, TraceSummaryRecord,
 };
 use crate::telemetry::manager::{
-    GetTraceQuery, ListTracesQuery, TraceListView, TraceManager, TraceManagerError,
+    GetTraceQuery, ListTracesQuery, TraceListPage, TraceListView, TraceManager, TraceManagerError,
 };
 use crate::transport::{grpc_span, instrument_grpc, request_context};
 use crate::workspaces::authorization::{WorkspaceAction, WorkspaceAuthorizer};
@@ -30,15 +35,26 @@ const MAX_TRACE_PAGE_SIZE: usize = 200;
 /// this is 200 pages of scrolling — and pagination stops advertising a token
 /// before it, so an honest client never meets the refusal.
 const MAX_TRACE_PAGE_OFFSET: usize = 10_000;
+const TRACE_SUMMARY_INDEX_PAGE_SIZE: usize = 200;
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum TraceSummaryIndexError {
+    #[error(transparent)]
+    Store(#[from] TraceStoreError),
+    #[error(transparent)]
+    Database(#[from] DbError),
+}
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
     traces: TraceManager,
     workspaces: WorkspaceManager,
     authorizer: WorkspaceAuthorizer,
+    db: Option<Arc<CoralDb>>,
 }
 
 impl TraceService {
+    #[cfg(test)]
     pub(crate) const fn new(
         trace_manager: TraceManager,
         workspaces: WorkspaceManager,
@@ -48,6 +64,7 @@ impl TraceService {
             traces: trace_manager,
             workspaces,
             authorizer,
+            db: None,
         }
     }
 
@@ -102,6 +119,30 @@ impl TraceService {
             owned.iter().map(WorkspaceName::as_str),
         ))
     }
+
+    pub(crate) fn with_db(
+        trace_store_file: PathBuf,
+        retention: Duration,
+        db: Arc<CoralDb>,
+        workspaces: WorkspaceManager,
+        authorizer: WorkspaceAuthorizer,
+    ) -> Self {
+        Self {
+            traces: TraceManager::new(trace_store_file, retention),
+            workspaces,
+            authorizer,
+            db: Some(db),
+        }
+    }
+
+    pub(crate) async fn sync_summaries(
+        trace_store_file: PathBuf,
+        retention: Duration,
+        db: &CoralDb,
+    ) -> Result<usize, TraceSummaryIndexError> {
+        let traces = TraceStore::with_retention(trace_store_file, retention);
+        sync_trace_summaries(db, &traces).await
+    }
 }
 
 #[tonic::async_trait]
@@ -116,6 +157,9 @@ impl TraceServiceApi for TraceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace = workspace_filter_from_proto(request.workspace.as_ref())?;
+            let workspace_name = workspace
+                .as_ref()
+                .map(|workspace| workspace.as_str().to_string());
             // Settled before the rest of the request is parsed, so a caller who
             // may not read these traces cannot learn anything from the
             // request's own validation.
@@ -123,16 +167,35 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let view = trace_list_view_from_proto(request.view)?;
-            let page = service
-                .traces
-                .list_traces(ListTracesQuery {
-                    view,
-                    scope,
-                    page_size,
-                    offset,
-                })
-                .await
-                .map_err(trace_manager_status)?;
+            let page = match (view, service.db.as_ref(), workspace_name.as_deref()) {
+                (TraceListView::All, Some(db), Some(workspace_name)) => {
+                    let mut session = db.as_ref();
+                    let mut summaries = session
+                        .trace_summaries()
+                        .list_for_workspace(workspace_name, page_size.saturating_add(1), offset)
+                        .await
+                        .map_err(trace_database_status)?;
+                    let next_offset =
+                        (summaries.len() > page_size).then(|| offset.saturating_add(page_size));
+                    if next_offset.is_some() {
+                        summaries.truncate(page_size);
+                    }
+                    TraceListPage {
+                        traces: summaries,
+                        next_offset,
+                    }
+                }
+                (view, _, _) => service
+                    .traces
+                    .list_traces(ListTracesQuery {
+                        view,
+                        scope,
+                        page_size,
+                        offset,
+                    })
+                    .await
+                    .map_err(trace_manager_status)?,
+            };
             Ok(Response::new(ListTracesResponse {
                 traces: page
                     .traces
@@ -183,6 +246,46 @@ impl TraceServiceApi for TraceService {
     }
 }
 
+async fn sync_trace_summaries(
+    db: &CoralDb,
+    traces: &TraceStore,
+) -> Result<usize, TraceSummaryIndexError> {
+    let mut session = db;
+    let workspaces = session.workspaces().list().await?;
+    let mut summaries = Vec::new();
+    for workspace in workspaces {
+        let scope = TraceScope::workspaces([workspace.id.as_str()]);
+        summaries.extend(current_trace_summaries(traces, &scope).await?);
+    }
+    let imported = summaries.len();
+    let mut tx = db.begin().await?;
+    tx.trace_summaries().replace_all(&summaries).await?;
+    tx.commit().await?;
+    Ok(imported)
+}
+
+async fn current_trace_summaries(
+    traces: &TraceStore,
+    scope: &TraceScope,
+) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+    let mut summaries = Vec::new();
+    loop {
+        let page = traces
+            .list_traces(
+                TRACE_SUMMARY_INDEX_PAGE_SIZE,
+                summaries.len(),
+                scope.clone(),
+            )
+            .await?;
+        let page_len = page.len();
+        summaries.extend(page);
+        if page_len < TRACE_SUMMARY_INDEX_PAGE_SIZE {
+            break;
+        }
+    }
+    Ok(summaries)
+}
+
 fn normalize_page_size(page_size: i32) -> usize {
     if page_size <= 0 {
         DEFAULT_TRACE_PAGE_SIZE
@@ -229,6 +332,14 @@ fn workspace_filter_from_proto(
     workspace
         .map(|workspace| WorkspaceName::parse(&workspace.name).map_err(app_status))
         .transpose()
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used directly as a map_err adapter across tonic service handlers"
+)]
+fn trace_database_status(error: DbError) -> Status {
+    Status::new(Code::Internal, error.to_string())
 }
 
 fn trace_manager_status(error: TraceManagerError) -> Status {
@@ -321,6 +432,7 @@ fn trace_invocation_kind_to_proto(kind: StoredTraceInvocationKind) -> TraceInvoc
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
@@ -331,17 +443,18 @@ mod tests {
         TraceOperationKind, TraceView, Workspace,
     };
     use serde_json::json;
-    use tempfile::TempDir;
+    use tempfile::{TempDir, tempdir};
     use tonic::{Code, Request};
 
     use super::{
-        TraceService, normalize_page_size, parse_page_token, trace_invocation_kind_to_proto,
+        TraceService, TraceStore, normalize_page_size, parse_page_token, sync_trace_summaries,
+        trace_invocation_kind_to_proto,
     };
     use crate::credentials::{CredentialManager, CredentialStore};
     use crate::identity::{Principal, PrincipalKind};
     use crate::request_context::RequestContext;
     use crate::state::db::{
-        CoralDb, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
+        CoralDb, DatabaseConfig, DbRepos, LoginIdentity, LoginProvisioning, ResolvedDatabaseConfig,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::{TraceManager, local_store::StoredTraceInvocationKind};
@@ -960,5 +1073,87 @@ mod tests {
             "trace_state": "",
             "is_remote": false
         })
+    }
+
+    #[tokio::test]
+    async fn sync_summaries_rebuilds_database_index_from_jsonl() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin workspace tx");
+        tx.workspaces()
+            .ensure("default", 1)
+            .await
+            .expect("ensure default workspace");
+        tx.commit().await.expect("commit default workspace");
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, "trace-1", 1, 2);
+
+        let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
+        assert_eq!(
+            sync_trace_summaries(&db, &traces)
+                .await
+                .expect("sync trace summaries"),
+            1
+        );
+        let mut session = &db;
+        let summaries = session
+            .trace_summaries()
+            .list(10, 0)
+            .await
+            .expect("list trace summaries");
+        assert_eq!(summaries.len(), 1);
+        let summary = summaries.first().expect("trace summary");
+        assert_eq!(summary.trace_id, "trace-1");
+        assert_eq!(summary.query, "SELECT 1");
+        assert_eq!(summary.row_count, 1);
+        assert!(summary.row_count_recorded);
+
+        fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
+        assert_eq!(
+            sync_trace_summaries(&db, &traces)
+                .await
+                .expect("resync empty trace store"),
+            0
+        );
+        assert!(
+            session
+                .trace_summaries()
+                .list(10, 0)
+                .await
+                .expect("list empty trace summaries")
+                .is_empty()
+        );
+    }
+
+    async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        db
+    }
+
+    fn write_trace(dir: &std::path::Path, trace_id: &str, start: i64, end: i64) {
+        fs::create_dir_all(dir).expect("create trace dir");
+        let record = json!({
+            "trace_id": trace_id,
+            "span_id": "span-1",
+            "parent_span_id": null,
+            "name": "coral.query",
+            "status": "ok",
+            "start_time_unix_nanos": start,
+            "end_time_unix_nanos": end,
+            "attributes_json": r#"{"sql":"SELECT 1","row_count":1,"workspace":"default"}"#,
+        });
+        fs::write(
+            dir.join(format!("spans-{start:020}-test-{trace_id}.jsonl")),
+            format!("{record}\n"),
+        )
+        .expect("write trace");
     }
 }

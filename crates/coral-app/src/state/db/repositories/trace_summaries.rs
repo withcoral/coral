@@ -132,12 +132,52 @@ where
         let rows: Vec<TraceSummaryRow> = self.session.fetch_all(statement).await?;
         rows.into_iter().map(TryInto::try_into).collect()
     }
+
+    pub(crate) async fn list_for_workspace(
+        &mut self,
+        workspace_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<TraceSummaryRecord>, DbError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let statement = Query::select()
+            .columns(record_columns())
+            .from(TraceSummaries::Table)
+            .and_where(Expr::col(TraceSummaries::WorkspaceId).eq(workspace_id))
+            .order_by(TraceSummaries::EndTimeUnixNanos, Order::Desc)
+            .order_by(TraceSummaries::TraceId, Order::Asc)
+            .limit(limit_to_u64(limit)?)
+            .offset(limit_to_u64(offset)?)
+            .to_owned();
+        let rows: Vec<TraceSummaryRow> = self.session.fetch_all(statement).await?;
+        rows.into_iter().map(TryInto::try_into).collect()
+    }
 }
 
 impl<S> TraceSummariesRepo<'_, S>
 where
     S: DbSession,
 {
+    pub(crate) async fn replace_all(
+        &mut self,
+        summaries: &[TraceSummaryRecord],
+    ) -> Result<(), DbError> {
+        for summary in summaries {
+            row_count_to_db(summary)?;
+            summary_workspace_id(summary)?;
+        }
+
+        let statement = Query::delete().from_table(TraceSummaries::Table).to_owned();
+        self.session.execute(statement).await?;
+        for summary in summaries {
+            self.upsert(summary).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn upsert(&mut self, summary: &TraceSummaryRecord) -> Result<(), DbError> {
         let row_count = row_count_to_db(summary)?;
         let workspace_id = summary_workspace_id(summary)?;
@@ -409,6 +449,7 @@ mod tests {
 
         let updated = update_first_summary(first);
         assert_update_and_failed_replacement(db, &updated).await;
+        assert_replace_all_validates_before_delete(db, &updated, &second).await;
         cleanup_workspace(
             db,
             updated.workspace_id.as_deref().expect("first workspace"),
@@ -519,6 +560,33 @@ mod tests {
                 .await
                 .expect("get updated summary"),
             Some(updated.clone())
+        );
+    }
+
+    async fn assert_replace_all_validates_before_delete(
+        db: &CoralDb,
+        existing: &TraceSummaryRecord,
+        other: &TraceSummaryRecord,
+    ) {
+        let invalid = TraceSummaryRecord {
+            trace_id: "trace-invalid".to_string(),
+            row_count: i64::MAX as u64 + 1,
+            ..existing.clone()
+        };
+        let mut tx = db.begin().await.expect("begin replace all failure tx");
+        assert!(
+            matches!(
+                tx.trace_summaries().replace_all(&[invalid]).await,
+                Err(DbError::CorruptData(_))
+            ),
+            "replace_all should validate summaries before deleting existing index rows"
+        );
+        tx.commit().await.expect("commit failed replacement no-op");
+
+        let mut session = db;
+        assert_eq!(
+            fixture_summaries(&mut session, existing, other).await,
+            vec![other.clone(), existing.clone()]
         );
     }
 

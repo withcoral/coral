@@ -72,8 +72,10 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
+use crate::telemetry::TelemetryConfig;
+#[cfg(test)]
+use crate::telemetry::TraceManager;
 use crate::telemetry::service::TraceService;
-use crate::telemetry::{TelemetryConfig, TraceManager};
 use crate::transport::GrpcRequestContextLayer;
 use crate::users::manager::UserManager;
 use crate::users::service::UserService;
@@ -392,9 +394,17 @@ impl ServerBuilder {
             bootstrap_database(&layout, &config_store, session_auth).await?;
         let (telemetry_config, active_trace_store) =
             init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
+        let sync_trace_store = active_trace_store.clone();
         apply_local_principal_policy(&coral_db, local_principal).await?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         import_filesystem_feedback_reports(&coral_db, &layout).await?;
+        if let Some(store) = sync_trace_store.as_ref() {
+            TraceService::sync_summaries(store.dir.clone(), store.retention, coral_db.as_ref())
+                .await
+                .map_err(|error| {
+                    AppError::Database(format!("trace summary import failed: {error}"))
+                })?;
+        }
         let credential_store = init_credential_store(&layout, &coral_db)?;
         import_legacy_credential_material(coral_db.as_ref(), &layout, &credential_store).await?;
         let credential_manager = CredentialManager::new(credential_store);
@@ -468,6 +478,7 @@ impl ServerBuilder {
             active_trace_store,
             workspace_manager.clone(),
             workspace_authorizer.clone(),
+            &coral_db,
         );
         let mut server = start_server(
             ServerDependencies {
@@ -639,12 +650,15 @@ fn trace_components_for_store(
     active_trace_store: Option<crate::telemetry::InstalledLocalTraceStore>,
     workspaces: WorkspaceManager,
     workspace_authorizer: WorkspaceAuthorizer,
+    db: &Arc<CoralDb>,
 ) -> TraceServerComponents {
     active_trace_store.map_or_else(TraceServerComponents::default, |store| {
         TraceServerComponents {
             local_trace_store_dir: Some(store.dir.clone()),
-            service: Some(TraceService::new(
-                TraceManager::new(store.dir, store.retention),
+            service: Some(TraceService::with_db(
+                store.dir,
+                store.retention,
+                Arc::clone(db),
                 workspaces,
                 workspace_authorizer,
             )),

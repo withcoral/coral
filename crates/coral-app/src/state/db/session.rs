@@ -117,13 +117,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         CredentialDocumentsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "trace summary repository lands before runtime wiring in the stacked PR sequence"
-        )
-    )]
     fn trace_summaries(&mut self) -> TraceSummariesRepo<'_, Self> {
         TraceSummariesRepo::new(self)
     }
