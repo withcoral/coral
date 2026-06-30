@@ -7,7 +7,7 @@
     "CountSubquery": 10,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
-    "ListExpressions": 26,
+    "ListExpressions": 36,
     "LiteralExpressions": 15,
     "MapExpressions": 19,
     "Match": 15,
@@ -5387,6 +5387,179 @@
         "rows": [
           {
             "match_despite_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-list-index-and-slice",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN $names[$name_index] AS selected_name, range(10, 14)[$from..$to] AS window",
+      "parameters": {
+        "from": 1,
+        "name_index": 1,
+        "names": [
+          "Carol",
+          "Alice",
+          "Bob"
+        ],
+        "to": 4
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "selected_name": "Alice",
+            "window": [
+              11,
+              12,
+              13
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "in-over-sliced-list-expression",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN 3 IN [1, 2, 3][0..1] AS missing_from_prefix, 3 IN [1, 2, 3][1..] AS present_in_suffix",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing_from_prefix": false,
+            "present_in_suffix": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "collection-predicates-over-empty-range",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(x IN range(1, 0) WHERE x > 0) AS all_empty, any(x IN range(1, 0) WHERE x > 0) AS any_empty, none(x IN range(1, 0) WHERE x > 0) AS none_empty, single(x IN range(1, 0) WHERE x > 0) AS single_empty",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_empty": true,
+            "any_empty": false,
+            "none_empty": true,
+            "single_empty": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "none-and-single-collection-predicates",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN none(x IN [1, 2, 3] WHERE x < 0) AS none_negative, single(city IN ['London', 'Paris', 'London'] WHERE city = 'Paris') AS single_paris",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "none_negative": true,
+            "single_paris": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "range-comprehension-filter-transform",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN range(0, 6) WHERE x > 1 AND x < 5 | x * x] AS squares",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "squares": [
+              4,
+              9,
+              16
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "nontrivial-static-reduce-accumulator",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN reduce(total = 0, x IN range(1, 4) | total + (x * x)) AS square_sum, reduce(product = 1, x IN range(2, 4) | product * x) AS product",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "square_sum": 30,
+            "product": 24
+          }
+        ]
+      }
+    },
+    {
+      "id": "mixed-source-list-concatenation",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN range(1, 2) + [3] + tail(range(4, 5)) AS numbers, split('red,blue', ',') + reverse(['green', 'yellow']) AS colors",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "numbers": [
+              1,
+              2,
+              3,
+              5
+            ],
+            "colors": [
+              "red",
+              "blue",
+              "yellow",
+              "green"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "in-expression-list-rejected",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.age IN [29 + 5, 41, 100] RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "error",
+        "contains": "only string, numeric, boolean, and null literals are supported"
+      }
+    },
+    {
+      "id": "composed-list-function-indexing",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN head(tail(split('Alice,Bob,Carol', ','))) AS middle_name, last(reverse(split('east,west,north', ','))[1..]) AS reversed_tail_last",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "middle_name": "Bob",
+            "reversed_tail_last": "east"
+          }
+        ]
+      }
+    },
+    {
+      "id": "list-equality-null-edge-booleans",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [1, 2] = [null, 3] AS different_after_null, [1, 2] <> [null, 3] AS not_different_after_null",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "different_after_null": false,
+            "not_different_after_null": true
           }
         ]
       }
