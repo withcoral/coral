@@ -235,7 +235,7 @@ postgres-clean:
 # containing $(MAKE) even under -n/-t/-q, and the postgres-tests recipe is a
 # single continued line, so an inline sub-make would make
 # `make -n postgres-tests` execute the real suite.
-POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- --test-threads=1 && cargo test --locked -p coral-app --lib 'telemetry::service::tests::' && cargo test --locked -p coral-app --test grpc 'source_lifecycle_tests::' && cargo test --locked -p coral-app --test postgres_database_tests && cargo test --locked -p xtask --features admin --bin xtask -- --ignored
+POSTGRES_SUITE_CARGO = cargo test --locked -p coral-app --lib 'state::db::' -- --test-threads=1 && cargo test --locked -p coral-app --lib 'telemetry::service::tests::' && cargo test --locked -p coral-app --test grpc 'source_lifecycle_tests::' && CORAL_TEST_POSTGRES_URL="$${CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL:-$${CORAL_TEST_POSTGRES_URL}}" cargo test --locked -p coral-app --test postgres_database_tests && cargo test --locked -p xtask --features admin --bin xtask -- --ignored
 
 postgres-test-suite:
 	@test -n "$${CORAL_TEST_POSTGRES_URL:-}" || \
@@ -254,6 +254,7 @@ endif
 postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	@set -eu; \
 	url="$${CORAL_TEST_POSTGRES_URL:-}"; \
+	lifecycle_url="$${CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL:-}"; \
 	cleanup() { :; }; \
 	if [ -z "$$url" ]; then \
 	  host_port=$$(docker port "$(LOCAL_POSTGRES_CONTAINER)" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$$/\1/p' | head -n 1); \
@@ -262,13 +263,20 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	    exit 1; \
 	  fi; \
 	  db_name="coral_test_$$(date +%s)_$$$$"; \
+	  lifecycle_db_name="$${db_name}_lifecycle"; \
 	  docker exec "$(LOCAL_POSTGRES_CONTAINER)" createdb -U postgres "$$db_name"; \
-	  cleanup() { docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$db_name" >/dev/null 2>&1 || true; }; \
+	  docker exec "$(LOCAL_POSTGRES_CONTAINER)" createdb -U postgres "$$lifecycle_db_name"; \
+	  cleanup() { \
+	    docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$lifecycle_db_name" >/dev/null 2>&1 || true; \
+	    docker exec "$(LOCAL_POSTGRES_CONTAINER)" dropdb -U postgres --if-exists "$$db_name" >/dev/null 2>&1 || true; \
+	  }; \
 	  url="postgres://postgres:postgres@127.0.0.1:$$host_port/$$db_name"; \
+	  lifecycle_url="postgres://postgres:postgres@127.0.0.1:$$host_port/$$lifecycle_db_name"; \
 	fi; \
 	trap cleanup EXIT INT TERM; \
 	echo "Running Postgres tests against $$url"; \
 	export CORAL_TEST_POSTGRES_URL="$$url"; \
+	export CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL="$${lifecycle_url:-$$url}"; \
 	$(POSTGRES_SUITE_CARGO)
 
 # ----------------------------------------------------------------------------

@@ -7,9 +7,17 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 
 ## Managed state
 
-Coral stores source installation state in its local database when you run commands such as `coral source add` and `coral source remove`.
+Coral writes runtime configuration to `config.toml` and durable app state to
+the local database.
 
-This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
+The database stores installed-source metadata, imported source specs, DSL v4
+materialization metadata, feedback reports, trace summaries, and non-secret
+source variables. New source secrets are stored as encrypted
+database documents within the same local trust boundary.
+
+Raw trace span JSONL and optional HTTP/MCP body captures remain outside the
+database. Trace summaries are indexed in the database from the local trace span
+store.
 
 <Note>
   Prefer the `coral source` commands for source state instead of editing
