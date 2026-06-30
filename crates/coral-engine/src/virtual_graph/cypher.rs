@@ -29754,6 +29754,9 @@ fn compile_dynamic_label_expressions(
     match expression {
         Expression::Parenthesized(inner) => compile_dynamic_label_expressions(inner, path, context),
         Expression::Literal(CypherLiteral::String(label)) => Ok(vec![label.value.clone()]),
+        Expression::Literal(CypherLiteral::List(list)) => {
+            compile_dynamic_label_literal_list(&list.elements, path, context)
+        }
         Expression::Parameter(parameter) => {
             match context.parameter_value(parameter, path.clone())? {
                 CypherParameterValue::Literal(Literal::String(label)) => Ok(vec![label.clone()]),
@@ -29769,7 +29772,34 @@ fn compile_dynamic_label_expressions(
     }
 }
 
-const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str = "dynamic label expressions require a string literal, scalar string parameter, or non-empty list string parameter";
+const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str = "dynamic label expressions require a string literal, scalar string parameter, non-empty literal string list, or non-empty list string parameter";
+
+fn compile_dynamic_label_literal_list(
+    expressions: &[Expression],
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
+    if expressions.is_empty() {
+        return Err(unsupported(
+            path,
+            "dynamic label literal lists require at least one string",
+        ));
+    }
+    expressions
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| {
+            match compile_literal(expression, format!("{path}[{index}]"), context)? {
+                Literal::String(label) => Ok(label),
+                _ => Err(unsupported(
+                    format!("{path}[{index}]"),
+                    "dynamic label literal lists require only strings",
+                )),
+            }
+        })
+        .collect()
+}
 
 fn compile_dynamic_label_list_parameter(
     labels: &[Literal],
@@ -41613,6 +41643,82 @@ relationships:
     }
 
     #[test]
+    fn compiles_literal_dynamic_label_pattern_lists() {
+        let query = compile_cypher_query(
+            "MATCH (entity:$(['Team', 'Service'])) \
+             RETURN entity.name AS name",
+        )
+        .expect("literal dynamic label pattern lists should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic label literal lists should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
+        );
+    }
+
+    #[test]
+    fn compiles_literal_dynamic_label_predicate_lists() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:$(['Team', 'Service']) AND NOT service:$(['Team']) \
+             RETURN service.name AS service",
+        )
+        .expect("dynamic label predicate literal lists should compile");
+
+        assert_eq!(
+            plan.predicate,
+            Some(PredicateExpression::And {
+                left: Box::new(PredicateExpression::Boolean(true)),
+                right: Box::new(PredicateExpression::Not {
+                    expression: Box::new(PredicateExpression::Boolean(false)),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn compiles_literal_dynamic_relationship_type_lists() {
+        let query = compile_cypher_query(
+            "MATCH (source:Service)-[:DEPENDS_ON|$(['OWNS', 'DEPENDS_ON'])]->(target:Service) \
+             RETURN target.name AS target",
+        )
+        .expect("dynamic relationship type literal lists should compile and deduplicate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("dynamic relationship type literal lists should expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("DEPENDS_ON")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.relationships.first())
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("OWNS")
+        );
+    }
+
+    #[test]
     fn compiles_parameterized_dynamic_node_label_pattern_alternatives() {
         let parameters = BTreeMap::from([(
             "label".to_string(),
@@ -41771,6 +41877,38 @@ relationships:
             error
                 .to_string()
                 .contains("dynamic label list parameters require only strings"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_literal_dynamic_label_lists_without_string_values() {
+        let error = compile_cypher_query(
+            "MATCH (service:$(['Service', 1])) \
+             RETURN service.name AS service",
+        )
+        .expect_err("dynamic label literal lists with non-string values should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic label literal lists require only strings"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_literal_dynamic_label_lists() {
+        let error = compile_cypher_query(
+            "MATCH (service:$([])) \
+             RETURN service.name AS service",
+        )
+        .expect_err("empty dynamic label literal lists should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic label literal lists require at least one string"),
             "{error:?}"
         );
     }

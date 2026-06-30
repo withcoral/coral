@@ -8,7 +8,7 @@
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
-    "ListExpressions": 12,
+    "ListExpressions": 13,
     "MapExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 5,
@@ -1359,6 +1359,20 @@
         "pattern_labels": ["Person"],
         "predicate_labels": ["Employee", "Person"]
       },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "literal-dynamic-label-lists",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:$(['Person'])) WHERE p:$(['Employee', 'Person']) RETURN p.name AS name ORDER BY name",
       "expected": {
         "kind": "rows",
         "ordered": true,
