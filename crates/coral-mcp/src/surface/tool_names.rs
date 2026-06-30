@@ -1,3 +1,5 @@
+use std::{fmt, str::FromStr};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolName {
     Sql,
@@ -21,17 +23,30 @@ impl ToolName {
             Self::Feedback => "feedback",
         }
     }
+}
 
-    pub(crate) fn from_str(value: &str) -> Option<Self> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct UnknownToolName;
+
+impl FromStr for ToolName {
+    type Err = UnknownToolName;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "sql" => Some(Self::Sql),
-            "list_catalog" => Some(Self::ListCatalog),
-            "search_catalog" => Some(Self::SearchCatalog),
-            "describe_table" => Some(Self::DescribeTable),
-            "list_columns" => Some(Self::ListColumns),
-            "open_episode" => Some(Self::OpenEpisode),
-            "feedback" => Some(Self::Feedback),
-            _ => None,
+            "sql" => Ok(Self::Sql),
+            "list_catalog" => Ok(Self::ListCatalog),
+            "search_catalog" => Ok(Self::SearchCatalog),
+            "describe_table" => Ok(Self::DescribeTable),
+            "list_columns" => Ok(Self::ListColumns),
+            "open_episode" => Ok(Self::OpenEpisode),
+            "feedback" => Ok(Self::Feedback),
+            _ => Err(UnknownToolName),
         }
+    }
+}
+
+impl fmt::Display for ToolName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str((*self).as_str())
     }
 }

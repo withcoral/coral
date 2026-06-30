@@ -743,6 +743,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     let updated_tools = client.list_all_tools().await.expect("updated tools");
     let list_catalog_tool = tool_by_name(&updated_tools, "list_catalog");
     let search_catalog_tool = tool_by_name(&updated_tools, "search_catalog");
+    let describe_table_tool = tool_by_name(&updated_tools, "describe_table");
     let list_columns_tool = tool_by_name(&updated_tools, "list_columns");
     assert!(
         updated_tools[0]
@@ -974,7 +975,7 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
     assert_eq!(described["column_count"], 3);
     assert!(described["columns_hint"].as_str().is_some());
     assert!(described["columns"].is_null());
-    assert_matches_output_schema(list_columns_tool, &described);
+    assert_matches_output_schema(describe_table_tool, &described);
 
     let missing_table = client
         .call_tool(

@@ -495,7 +495,7 @@ impl CoralMcpServer {
         span: &tracing::Span,
         episode_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        match ToolName::from_str(request.name.as_ref()) {
+        match request.name.as_ref().parse::<ToolName>().ok() {
             Some(ToolName::Sql) => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
                 match self
@@ -676,7 +676,7 @@ impl ServerHandler for CoralMcpServer {
         let span =
             telemetry::call_tool_span(request.name.as_ref(), self.options.trace_parent.as_deref());
         let inject_episode_metadata =
-            ToolName::from_str(request.name.as_ref()) != Some(ToolName::OpenEpisode);
+            request.name.as_ref().parse::<ToolName>().ok() != Some(ToolName::OpenEpisode);
         let episode_tag = EpisodeTag::from_tool_request(&self.options, request.arguments.as_ref());
         let outcome = match episode_tag {
             Ok(episode_tag) => {
