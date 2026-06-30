@@ -17,7 +17,7 @@
     "Parameters": 3,
     "PathMetadata": 1,
     "PathValues": 16,
-    "PatternComprehension": 2,
+    "PatternComprehension": 15,
     "Quantifiers": 12,
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
@@ -3426,6 +3426,291 @@
             "friend_count": 0
           }
         ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-neighbor-names",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [(p)-[:KNOWS]->(friend:Person) WHERE friend.active = false | friend.name] AS friend_names ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend_names": [
+              "Bob"
+            ]
+          },
+          {
+            "person": "Bob",
+            "friend_names": []
+          },
+          {
+            "person": "Carol",
+            "friend_names": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-relationship-since",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [(p)-[r:KNOWS]->(:Person) WHERE r.since >= 2021 | r.since] AS since_years ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "since_years": [
+              2022
+            ]
+          },
+          {
+            "person": "Bob",
+            "since_years": [
+              2021
+            ]
+          },
+          {
+            "person": "Carol",
+            "since_years": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-neighbor-age-filter",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [(p)-[:KNOWS]->(friend:Person) WHERE friend.age > 30 | friend.name] AS older_friends ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "older_friends": [
+              "Carol"
+            ]
+          },
+          {
+            "person": "Bob",
+            "older_friends": [
+              "Carol"
+            ]
+          },
+          {
+            "person": "Carol",
+            "older_friends": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-relationship-strength-filter",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [(p)-[r:KNOWS]->(friend:Person) WHERE r.strength >= 0.7 | friend.name] AS strong_friends ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "strong_friends": [
+              "Bob"
+            ]
+          },
+          {
+            "person": "Bob",
+            "strong_friends": [
+              "Carol"
+            ]
+          },
+          {
+            "person": "Carol",
+            "strong_friends": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-path-lengths",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [path = (p)-[:KNOWS]->(friend:Person) | length(path)] AS hop_lengths ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "hop_lengths": [
+              1,
+              1
+            ]
+          },
+          {
+            "person": "Bob",
+            "hop_lengths": [
+              1
+            ]
+          },
+          {
+            "person": "Carol",
+            "hop_lengths": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-outgoing-degree-size",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, size([(p)-[:KNOWS]->(friend:Person) | friend.name]) AS outgoing_count ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "outgoing_count": 2
+          },
+          {
+            "person": "Bob",
+            "outgoing_count": 1
+          },
+          {
+            "person": "Carol",
+            "outgoing_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-is-empty-no-outgoing",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) WHERE isEmpty([(p)-[:KNOWS]->(:Person) | 1]) RETURN p.name AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-filtered-size",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, size([(p)-[r:KNOWS]->(:Person) WHERE r.since >= 2021 | r.since]) AS recent_count ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "recent_count": 1
+          },
+          {
+            "person": "Bob",
+            "recent_count": 1
+          },
+          {
+            "person": "Carol",
+            "recent_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-size-aggregate",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN sum(size([(p)-[:KNOWS]->(friend:Person) | friend.name])) AS total_outgoing",
+      "expected": {
+        "kind": "error",
+        "contains": "aggregate expression targets do not support correlated COUNT"
+      }
+    },
+    {
+      "id": "pattern-comprehension-order-by-size",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, size([(p)-[:KNOWS]->(friend:Person) | friend.name]) AS outgoing_count ORDER BY outgoing_count DESC, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "outgoing_count": 2
+          },
+          {
+            "person": "Bob",
+            "outgoing_count": 1
+          },
+          {
+            "person": "Carol",
+            "outgoing_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-incoming-filtered-names",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, [(source:Person)-[r:KNOWS]->(p) WHERE r.since < 2022 | source.name] AS earlier_incoming ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "earlier_incoming": []
+          },
+          {
+            "person": "Bob",
+            "earlier_incoming": [
+              "Alice"
+            ]
+          },
+          {
+            "person": "Carol",
+            "earlier_incoming": [
+              "Bob"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-undirected-degree-size",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN p.name AS person, size([(p)-[:KNOWS]-(other:Person) | other.name]) AS degree ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "degree": 2
+          },
+          {
+            "person": "Bob",
+            "degree": 2
+          },
+          {
+            "person": "Carol",
+            "degree": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-graph-object-projection-rejection",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) RETURN [(p)-[:KNOWS]->(friend:Person) | friend] AS friends",
+      "expected": {
+        "kind": "error",
+        "contains": "scalar alias"
       }
     },
     {
