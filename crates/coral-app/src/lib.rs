@@ -41,12 +41,6 @@
     )
 )]
 
-// Kept only so the dependency-bootstrap PR passes workspace unused-dependency
-// lints before the DB modules that use these crates land upstack.
-use sea_query as _;
-use sea_query_sqlx as _;
-use sqlx as _;
-
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
