@@ -25,6 +25,7 @@ use crate::hash::sha256_hex;
 use crate::sources::catalog::InstalledSourceManifest;
 use crate::sources::materialization::{
     LoadedV4Materialization, SourceDiagnosticReporter, incompatible_materialization_error,
+    validate_materialized_surface_base_url,
 };
 use crate::sources::model::InstalledSource;
 use crate::workspaces::WorkspaceName;
@@ -536,6 +537,7 @@ fn surface_base_url(
             ))
         })?,
     };
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface: {error}"
