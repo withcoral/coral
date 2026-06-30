@@ -16,7 +16,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
-use crate::state::db::{CoralTx, DbError, DbSession};
+use crate::state::db::{DbError, DbSession, DbWriteSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -96,52 +96,6 @@ where
         self.session
             .fetch_all(source_aggregate_statement(workspace_name, source_name))
             .await
-    }
-}
-
-impl SourcesRepo<'_, CoralTx<'_>> {
-    pub(crate) async fn upsert_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source: &InstalledSource,
-        now_unix_nanos: i64,
-    ) -> Result<(), DbError> {
-        let created_at_unix_nanos = self
-            .source_created_at(workspace_name, &source.name)
-            .await?
-            .unwrap_or(now_unix_nanos);
-        self.delete_source_rows(workspace_name, &source.name)
-            .await?;
-        self.insert_source(
-            workspace_name,
-            source,
-            created_at_unix_nanos,
-            now_unix_nanos,
-        )
-        .await?;
-        self.insert_source_variables(workspace_name, source).await?;
-        self.insert_source_secret_keys(workspace_name, source).await
-    }
-
-    pub(crate) async fn remove_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<InstalledSource>, DbError> {
-        let removed = self.get_source(workspace_name, source_name).await?;
-        self.delete_source_rows(workspace_name, source_name).await?;
-        Ok(removed)
-    }
-
-    async fn source_created_at(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<i64>, DbError> {
-        Ok(self
-            .source_row(workspace_name, source_name)
-            .await?
-            .map(|row| row.created_at_unix_nanos))
     }
 
     async fn source_created_at(
@@ -356,7 +310,10 @@ impl SourceAggregate {
     }
 }
 
-impl SourcesRepo<'_, CoralTx<'_>> {
+impl<S> SourcesRepo<'_, S>
+where
+    S: DbWriteSession,
+{
     pub(crate) async fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -524,14 +481,14 @@ async fn delete_source_secret_keys<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbSession,
+    S: DbWriteSession,
 {
     let statement = Query::delete()
         .from_table(SourceSecretKeys::Table)
         .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
         .to_owned();
-    session.execute(statement).await
+    session.execute_delete(statement).await
 }
 
 async fn delete_source_variables<S>(
@@ -540,14 +497,14 @@ async fn delete_source_variables<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbSession,
+    S: DbWriteSession,
 {
     let statement = Query::delete()
         .from_table(SourceVariables::Table)
         .and_where(Expr::col(SourceVariables::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(SourceVariables::SourceName).eq(source_name.as_str()))
         .to_owned();
-    session.execute(statement).await
+    session.execute_delete(statement).await
 }
 
 async fn delete_source<S>(
@@ -556,14 +513,14 @@ async fn delete_source<S>(
     source_name: &SourceName,
 ) -> Result<(), DbError>
 where
-    S: DbSession,
+    S: DbWriteSession,
 {
     let statement = Query::delete()
         .from_table(Sources::Table)
         .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
         .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
         .to_owned();
-    session.execute(statement).await
+    session.execute_delete(statement).await
 }
 
 fn parse_source_name(name: &str) -> Result<SourceName, DbError> {
@@ -836,6 +793,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_repository_rejects_source_without_workspace_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let workspace = unique_workspace();
+        let source = source("orphan", None, [], [], None, SourceOrigin::Bundled);
+        let mut tx = db.begin().await.expect("begin tx");
+
+        let error = tx
+            .sources()
+            .upsert_source(&workspace, &source, 10)
+            .await
+            .expect_err("source rows must require an existing workspace");
+
+        assert!(
+            error.to_string().to_lowercase().contains("foreign key"),
+            "unexpected error: {error}"
+        );
+        tx.rollback().await.expect("rollback failed tx");
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
         let Some(url) = postgres_test_url() else {
@@ -935,15 +914,7 @@ mod tests {
         assert_eq!(get_source(db, &workspace, &rolled_back.name).await, None);
 
         let zeta_name = zeta.name.clone();
-        let mut tx = db.begin().await.expect("begin remove tx");
-        assert_eq!(
-            tx.sources()
-                .remove_source(&workspace, &zeta_name)
-                .await
-                .expect("remove source"),
-            Some(zeta)
-        );
-        tx.commit().await.expect("commit remove");
+        assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
 
         assert_source_get_is_coherent_during_replacement(db).await;
@@ -1115,6 +1086,21 @@ mod tests {
             .get_source(workspace, source_name)
             .await
             .expect("get source")
+    }
+
+    async fn remove_source(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        let mut tx = db.begin().await.expect("begin remove tx");
+        let removed = tx
+            .sources()
+            .remove_source(workspace, source_name)
+            .await
+            .expect("remove source");
+        tx.commit().await.expect("commit remove tx");
+        removed
     }
 
     fn source<const VARIABLES: usize, const SECRETS: usize>(

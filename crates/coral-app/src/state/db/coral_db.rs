@@ -61,7 +61,8 @@ async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {
 
     let options = SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(false);
+        .create_if_missing(false)
+        .foreign_keys(true);
     let pool = SqlitePoolOptions::new().connect_with(options).await?;
     Ok(CoralDb {
         backend: CoralDbBackend::Sqlite(SqliteCoralDb { pool }),
