@@ -277,11 +277,20 @@ impl ServerBuilder {
         let active_trace_store = telemetry_config
             .trace_history
             .enabled
-            .then_some(installed_trace_store)
+            .then(|| installed_trace_store.clone())
             .flatten();
+        let sync_trace_store = active_trace_store.clone();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         import_filesystem_feedback_reports(&coral_db, &layout).await?;
         import_filesystem_episodes(&coral_db, &layout).await?;
+        let coral_db = Arc::new(coral_db);
+        if let Some(store) = sync_trace_store.as_ref() {
+            TraceService::sync_summaries(store.dir.clone(), store.retention, &coral_db)
+                .await
+                .map_err(|error| {
+                    AppError::Database(format!("trace summary import failed: {error}"))
+                })?;
+        }
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let key_provider = Arc::new(LocalFileCredentialKeyProvider::new(&layout));
         let key_origin = key_provider.active_key_origin()?;
@@ -291,7 +300,6 @@ impl ServerBuilder {
                 "database-backed credentials are using a locally generated credential encryption key with Postgres; multiple servers can create split key domains and unreadable credential documents; set [credentials].encryption_key_env or pre-seed the OS keychain with the same KEK on every server"
             );
         }
-        let coral_db = Arc::new(coral_db);
         let credential_store = CredentialStore::with_database(
             layout.clone(),
             credential_config.storage,
@@ -340,7 +348,11 @@ impl ServerBuilder {
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
                 TraceServerComponents {
                     local_trace_store_dir: Some(store.dir.clone()),
-                    service: Some(TraceService::new(store.dir, store.retention)),
+                    service: Some(TraceService::with_db(
+                        store.dir,
+                        store.retention,
+                        Arc::clone(&coral_db),
+                    )),
                 }
             });
         start_server(
