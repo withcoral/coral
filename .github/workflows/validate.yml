@@ -229,6 +229,9 @@ jobs:
             state::db::repositories::credential_documents::tests::credential_document_repository_round_trips_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
+            state::db::repositories::trace_summaries::tests::trace_summary_repository_round_trips_against_postgres \
+            -- --ignored
+          cargo test --locked -p coral-app \
             state::db::import::tests::concurrent_credential_import_race_is_benign_postgres \
             -- --ignored
           cargo test --locked -p coral-app \

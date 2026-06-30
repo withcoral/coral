@@ -36,7 +36,8 @@ use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 pub(crate) use local_store::{
-    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+    StoredTraceStatus, TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage,
+    TraceStoreError, TraceSummaryRecord,
 };
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();

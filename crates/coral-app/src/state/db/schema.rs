@@ -113,6 +113,22 @@ pub(in crate::state::db) enum CredentialDocuments {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum TraceSummaries {
+    Table,
+    TraceId,
+    WorkspaceId,
+    RootSpanId,
+    Name,
+    Query,
+    Status,
+    StartTimeUnixNanos,
+    EndTimeUnixNanos,
+    DurationNanos,
+    SpanCount,
+    RowCount,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum AppStateMarkers {
     Table,
     Key,

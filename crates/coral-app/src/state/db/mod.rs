@@ -19,6 +19,7 @@ mod schema;
 mod session;
 mod transaction;
 
+pub(crate) use crate::telemetry::TraceSummaryRecord;
 pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;

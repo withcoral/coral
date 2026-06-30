@@ -429,6 +429,7 @@ pub(crate) enum StoredTraceStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TraceSummaryRecord {
     pub(crate) trace_id: String,
+    pub(crate) workspace_id: Option<String>,
     pub(crate) root_span_id: String,
     pub(crate) name: String,
     pub(crate) query: String,
@@ -508,6 +509,7 @@ pub(crate) struct TraceQueryTableFunctionUsage {
 
 struct TraceAggregate {
     trace_id: String,
+    workspace_id: Option<String>,
     start_time_unix_nanos: i64,
     end_time_unix_nanos: i64,
     span_count: u32,
@@ -540,6 +542,7 @@ struct TracePrimaryCandidate {
 #[derive(Debug, Clone)]
 struct TraceListAggregate {
     trace_id: String,
+    workspace_id: Option<String>,
     start_time_unix_nanos: i64,
     end_time_unix_nanos: i64,
     span_count: u32,
@@ -896,6 +899,7 @@ impl TraceListAggregate {
     fn new(span: &TraceListSpanRecord) -> Self {
         let mut aggregate = Self {
             trace_id: span.trace_id.clone(),
+            workspace_id: None,
             start_time_unix_nanos: span.start_time_unix_nanos,
             end_time_unix_nanos: span.end_time_unix_nanos,
             span_count: 0,
@@ -914,6 +918,9 @@ impl TraceListAggregate {
         if span.status == StoredTraceStatus::Error {
             self.error_count = self.error_count.saturating_add(1);
         }
+        if self.workspace_id.is_none() {
+            self.workspace_id = workspace_attribute(&span.attributes_json);
+        }
         self.found_root_span |= is_root_span_parent(span.parent_span_id.as_deref());
 
         let primary = TracePrimaryCandidate::from_span(span);
@@ -929,6 +936,7 @@ impl TraceListAggregate {
     fn into_summary(self) -> TraceSummaryRecord {
         let aggregate = TraceAggregate {
             trace_id: self.trace_id,
+            workspace_id: self.workspace_id,
             start_time_unix_nanos: self.start_time_unix_nanos,
             end_time_unix_nanos: self.end_time_unix_nanos,
             span_count: self.span_count,
@@ -1428,6 +1436,9 @@ fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummary
         .count();
     let aggregate = TraceAggregate {
         trace_id: trace_id.to_string(),
+        workspace_id: spans
+            .iter()
+            .find_map(|span| workspace_attribute(&span.attributes_json)),
         start_time_unix_nanos,
         end_time_unix_nanos,
         span_count: usize_to_u32(spans.len()),
@@ -1459,6 +1470,7 @@ fn summary_from_list_aggregate(
     primary.map_or_else(
         || TraceSummaryRecord {
             trace_id: aggregate.trace_id.clone(),
+            workspace_id: aggregate.workspace_id.clone(),
             root_span_id: String::new(),
             name: "trace".to_string(),
             query: String::new(),
@@ -1485,6 +1497,10 @@ fn summary_from_list_aggregate(
 
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
+                workspace_id: attributes
+                    .as_ref()
+                    .and_then(|attrs| attr_string(attrs, WORKSPACE_SPAN_ATTRIBUTE))
+                    .or_else(|| aggregate.workspace_id.clone()),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
                 query: attributes
@@ -1519,6 +1535,7 @@ fn summary_from_aggregate(
     primary.map_or_else(
         || TraceSummaryRecord {
             trace_id: aggregate.trace_id.clone(),
+            workspace_id: aggregate.workspace_id.clone(),
             root_span_id: String::new(),
             name: "trace".to_string(),
             query: String::new(),
@@ -1545,6 +1562,10 @@ fn summary_from_aggregate(
 
             TraceSummaryRecord {
                 trace_id: aggregate.trace_id.clone(),
+                workspace_id: attributes
+                    .as_ref()
+                    .and_then(|attrs| attr_string(attrs, WORKSPACE_SPAN_ATTRIBUTE))
+                    .or_else(|| aggregate.workspace_id.clone()),
                 root_span_id: primary.span_id.clone(),
                 name: primary.name.clone(),
                 query: attributes
