@@ -496,6 +496,14 @@ The supported foundation subset is intentionally narrow:
   counted pattern syntax without depending on parser-private AST recovery. The
   normalized form then lowers through the same scoped count-subquery planner as
   explicit `COUNT { MATCH ... }`;
+- `COLLECT { MATCH ... RETURN scalar }` lowers as a list-valued scalar subquery
+  over the same scoped pattern delta used by `COUNT { ... }`. The compiler
+  validates exactly one scalar return item after introducing scoped node and
+  relationship aliases, then SQL rendering emits `ARRAY_AGG` over that scoped
+  target with an empty-list fallback. Unlike aggregate `collect(...)`, the
+  subquery form preserves null returned values. Inner `DISTINCT`, row
+  modifiers, `WITH`, `UNION`, `OPTIONAL MATCH`, aggregates, and graph-object
+  returns remain staged row-source or scoped aggregation work;
 - hidden `ORDER BY` scalar subqueries are lifted out of sort expressions before
   SQL planning. Outer-independent node-only counts, relationship counts, and
   existential patterns become single-row `CROSS JOIN` precomputes; correlated

@@ -5330,6 +5330,80 @@ async fn cypher_count_subqueries_execute_as_precomputed_correlated_counts() {
 }
 
 #[tokio::test]
+async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.name AS service, \
+                COLLECT { \
+                  MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+                  RETURN dependency.name \
+                } AS dependency_names, \
+                COLLECT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+                  RETURN CASE WHEN dependency.criticality = 'optional' THEN null ELSE dependency.criticality END \
+                } AS non_optional_criticalities \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher COLLECT subquery projections should execute");
+
+    assert!(
+        execution.translated_sql().contains("COALESCE(ARRAY_AGG("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        !execution.translated_sql().contains("FILTER (WHERE"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    for row in &mut rows {
+        row["dependency_names"]
+            .as_array_mut()
+            .expect("dependency_names should be an array")
+            .sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        row["non_optional_criticalities"]
+            .as_array_mut()
+            .expect("non_optional_criticalities should be an array")
+            .sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+    }
+    assert_eq!(
+        rows,
+        vec![
+            json!({
+                "service": "billing-api",
+                "dependency_names": ["deployments", "experiments"],
+                "non_optional_criticalities": [null, "runtime"]
+            }),
+            json!({
+                "service": "deployments",
+                "dependency_names": ["experiments"],
+                "non_optional_criticalities": ["dev"]
+            }),
+            json!({
+                "service": "experiments",
+                "dependency_names": [],
+                "non_optional_criticalities": []
+            }),
+            json!({
+                "service": "legacy-sync",
+                "dependency_names": [],
+                "non_optional_criticalities": []
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_noop_return_inside_scoped_subqueries_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

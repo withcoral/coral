@@ -6,7 +6,7 @@ use decypher::ast::clause::{
     Match, Order, ProjectionItem, Return, SortDirection, SortItem, Unwind, With,
 };
 use decypher::ast::expr::{
-    BinaryOperator as CypherBinaryOperator, CaseExpression,
+    BinaryOperator as CypherBinaryOperator, CaseExpression, CollectSubqueryExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
     ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension,
     Literal as CypherLiteral, MapLiteral, NumberLiteral, Parameter as CypherParameter,
@@ -7226,6 +7226,18 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::CountSubquery { pattern } => {
             reject_ignored_path_variable_references_in_count_subquery(pattern, state, path)
         }
+        ScalarExpression::CollectSubquery { pattern, target } => {
+            reject_ignored_path_variable_references_in_count_subquery(
+                pattern,
+                state,
+                format!("{path}.pattern"),
+            )?;
+            reject_ignored_path_variable_references_in_scalar_expression(
+                target,
+                state,
+                format!("{path}.target"),
+            )
+        }
         ScalarExpression::Key { variable }
         | ScalarExpression::ElementId { variable }
         | ScalarExpression::GraphIdentity { variable }
@@ -7362,6 +7374,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::TypedLiteralList { .. }
         | ScalarExpression::Predicate(_)
         | ScalarExpression::CountSubquery { .. }
+        | ScalarExpression::CollectSubquery { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -10734,6 +10747,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         ScalarExpression::CountSubquery { pattern } => Some(match pattern.as_ref() {
             CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => true,
         }),
+        ScalarExpression::CollectSubquery { .. } => Some(false),
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::UndirectedEndpointKey { .. }
@@ -11036,6 +11050,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         ScalarExpression::CountSubquery { pattern } => {
             usize::from(pattern.references_outer_variables())
         }
+        ScalarExpression::CollectSubquery { .. } => 1,
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -16239,6 +16254,9 @@ fn compile_projection(
                 .as_ref()
                 .map_or_else(|| "count".to_string(), variable_name),
         }),
+        Expression::CollectSubquery(collect) => {
+            compile_collect_subquery_projection(collect, item, path, plan, context)
+        }
         expression if is_literal_projection_expression(expression) => {
             compile_literal_projection(expression, item, path, context)
         }
@@ -16309,6 +16327,28 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_collect_subquery_projection(
+    collect: &CollectSubqueryExpression,
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<Projection, CoreError> {
+    let path = path.into();
+    Ok(Projection::Expression {
+        expression: compile_collect_subquery_scalar_expression(
+            collect,
+            format!("{path}.expression"),
+            Some(plan),
+            context,
+        )?,
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| "collect".to_string(), variable_name),
+    })
 }
 
 fn compile_keys_or_static_map_keys_projection(
@@ -19123,6 +19163,9 @@ fn compile_scalar_expression_in_predicate_mode(
         Expression::Case(case) => compile_case_scalar_expression_in_mode(case, path, mode, context),
         Expression::CountSubquery(count) => {
             compile_count_subquery_scalar_expression(count, path, plan, context)
+        }
+        Expression::CollectSubquery(collect) => {
+            compile_collect_subquery_scalar_expression(collect, path, plan, context)
         }
         Expression::FunctionCall(function) => {
             if let Some(expression) = compile_optional_path_length_scalar_expression(
@@ -23118,6 +23161,27 @@ fn compile_count_subquery_scalar_expression(
     })
 }
 
+fn compile_collect_subquery_scalar_expression(
+    collect: &CollectSubqueryExpression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let (pattern, target) = compile_regular_query_collect_subquery(
+        &collect.query,
+        format!("{path}.query"),
+        plan,
+        context,
+        "COLLECT subqueries",
+        "COLLECT subqueries require an explicit MATCH clause",
+    )?;
+    Ok(ScalarExpression::CollectSubquery {
+        pattern: Box::new(pattern),
+        target: Box::new(target),
+    })
+}
+
 #[derive(Debug)]
 struct CompiledScopedPlan {
     plan: GraphPlan,
@@ -23174,6 +23238,91 @@ fn compile_regular_query_count_subquery_pattern(
         missing_match_message,
     )?;
     compile_scoped_plan_delta_count_subquery(scoped.plan, scoped.delta, path, feature_name)
+}
+
+fn compile_regular_query_collect_subquery(
+    query: &RegularQuery,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+    feature_name: &'static str,
+    missing_match_message: &'static str,
+) -> Result<(CountSubqueryPattern, ScalarExpression), CoreError> {
+    let path = path.into();
+    let Some(plan) = plan else {
+        return Err(unsupported(
+            path,
+            format!("{feature_name} require graph context"),
+        ));
+    };
+    if !query.unions.is_empty() {
+        return Err(unsupported(
+            format!("{path}.unions"),
+            format!(
+                "{feature_name} with UNION require staged subquery planning and are not supported yet"
+            ),
+        ));
+    }
+    let SingleQueryKind::SinglePart(single_part) = &query.single_query.kind else {
+        return Err(unsupported(
+            format!("{path}.single_query"),
+            format!(
+                "{feature_name} with WITH require staged subquery planning and are not supported yet"
+            ),
+        ));
+    };
+    let return_clause = scoped_collect_subquery_return_clause(&single_part.body, &path)?;
+    let return_item = validate_scoped_collect_subquery_return(return_clause, &path, feature_name)?;
+    if single_part.reading_clauses.is_empty() {
+        return Err(unsupported(format!("{path}.match"), missing_match_message));
+    }
+
+    let mut collect_plan = plan.clone();
+    collect_plan.predicate = None;
+    let mut collect_state = CypherCompileState::default();
+    let node_start = collect_plan.nodes.len();
+    let relationship_start = collect_plan.relationships.len();
+    let predicate_start = collect_plan.predicates.len();
+    let optional_relationship_start = collect_plan.optional_relationships.len();
+    let optional_match_start = collect_plan.optional_matches.len();
+    compile_reading_clauses_into(
+        &single_part.reading_clauses,
+        format!("{path}.match"),
+        &mut collect_plan,
+        &mut collect_state,
+        context,
+    )?;
+    if collect_plan.optional_relationships.len() > optional_relationship_start
+        || collect_plan.optional_matches.len() > optional_match_start
+    {
+        return Err(unsupported(
+            format!("{path}.match"),
+            format!(
+                "OPTIONAL MATCH inside {feature_name} requires nullable scoped row-source planning and is not supported yet"
+            ),
+        ));
+    }
+
+    let target = compile_scalar_expression_in_predicate_mode(
+        &return_item.expression,
+        format!("{path}.return.items[0].expression"),
+        PredicateCompileMode::Graph {
+            plan: &collect_plan,
+            path_state: Some(&collect_state),
+        },
+        context,
+    )?;
+    let pattern = compile_scoped_plan_delta_count_subquery(
+        collect_plan,
+        ScopedPlanDelta {
+            nodes_before: node_start,
+            relationship_base: relationship_start,
+            predicate_offset: predicate_start,
+        },
+        path,
+        feature_name,
+    )?;
+    Ok((pattern, target))
 }
 
 fn compile_regular_query_scoped_plan(
@@ -23308,6 +23457,81 @@ fn validate_scoped_subquery_noop_return(
         }
     }
     Ok(())
+}
+
+fn scoped_collect_subquery_return_clause<'a>(
+    body: &'a SinglePartBody,
+    path: &str,
+) -> Result<&'a Return, CoreError> {
+    match body {
+        SinglePartBody::Return(return_clause) => Ok(return_clause),
+        SinglePartBody::Updating {
+            updating,
+            return_clause: Some(return_clause),
+        } if updating.is_empty() => Ok(return_clause),
+        SinglePartBody::Updating {
+            updating,
+            return_clause: None,
+        } if updating.is_empty() => Err(unsupported(
+            format!("{path}.return"),
+            "COLLECT subqueries require one scalar RETURN projection",
+        )),
+        SinglePartBody::Finish(_) => Err(unsupported(
+            format!("{path}.return"),
+            "COLLECT subqueries require one scalar RETURN projection",
+        )),
+        SinglePartBody::Updating { .. } => Err(unsupported(
+            format!("{path}.updating"),
+            "write clauses are not supported by Coral virtual graphs",
+        )),
+    }
+}
+
+fn validate_scoped_collect_subquery_return<'a>(
+    return_clause: &'a Return,
+    path: &str,
+    feature_name: &'static str,
+) -> Result<&'a ProjectionItem, CoreError> {
+    if return_clause.distinct {
+        return Err(unsupported(
+            format!("{path}.return.distinct"),
+            format!(
+                "RETURN DISTINCT inside {feature_name} requires scoped projection planning and is not supported yet"
+            ),
+        ));
+    }
+    if return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Err(unsupported(
+            format!("{path}.return"),
+            format!(
+                "RETURN ORDER BY, SKIP, or LIMIT inside {feature_name} requires scoped row-source planning and is not supported yet"
+            ),
+        ));
+    }
+    if return_clause.star || return_clause.items.len() != 1 {
+        return Err(unsupported(
+            format!("{path}.return.items"),
+            "COLLECT subqueries require exactly one scalar RETURN projection",
+        ));
+    }
+    let item = return_clause.items.first().ok_or_else(|| {
+        unsupported(
+            format!("{path}.return.items"),
+            "COLLECT subqueries require exactly one scalar RETURN projection",
+        )
+    })?;
+    if matches!(item.expression, Expression::CountStar { .. })
+        || expression_contains_aggregate(&item.expression)
+    {
+        return Err(unsupported(
+            format!("{path}.return.items[0].expression"),
+            "aggregate projections inside COLLECT subqueries require scoped aggregation planning and are not supported yet",
+        ));
+    }
+    Ok(item)
 }
 
 fn scoped_subquery_return_item_is_noop_literal(item: &ProjectionItem) -> bool {
@@ -39828,6 +40052,64 @@ relationships:
             }] if alias == "dependency_paths"
                 && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
         ));
+    }
+
+    #[test]
+    fn compiles_collect_subquery_scalar_projections() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN COLLECT { \
+               MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+               RETURN dependency.name \
+             } AS dependency_names",
+        )
+        .expect("COLLECT subquery scalar projection should compile");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression: ScalarExpression::CollectSubquery { pattern, target },
+                alias,
+            }] if alias == "dependency_names"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
+                && matches!(
+                    target.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "dependency" && property == "name"
+                )
+        ));
+    }
+
+    #[test]
+    fn rejects_collect_subqueries_without_single_scalar_return() {
+        for (cypher, expected) in [
+            (
+                "MATCH (service:Service) \
+                 RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN * } AS dependencies",
+                "COLLECT subqueries require exactly one scalar RETURN projection",
+            ),
+            (
+                "MATCH (service:Service) \
+                 RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN DISTINCT dependency.name } AS dependencies",
+                "RETURN DISTINCT inside COLLECT subqueries requires scoped projection planning",
+            ),
+            (
+                "MATCH (service:Service) \
+                 RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN dependency.name ORDER BY dependency.name } AS dependencies",
+                "RETURN ORDER BY, SKIP, or LIMIT inside COLLECT subqueries requires scoped row-source planning",
+            ),
+            (
+                "MATCH (service:Service) \
+                 RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN count(*) } AS dependencies",
+                "aggregate projections inside COLLECT subqueries require scoped aggregation planning",
+            ),
+        ] {
+            let error = compile_cypher(cypher).expect_err("unsupported COLLECT shape should fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+        }
     }
 
     #[test]

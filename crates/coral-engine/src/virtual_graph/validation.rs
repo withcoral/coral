@@ -1188,6 +1188,33 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn count_subquery_pattern_local_variables(pattern: &CountSubqueryPattern) -> BTreeSet<&str> {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                Self::exists_pattern_local_variables(predicate)
+            }
+            CountSubqueryPattern::Nodes { nodes, .. } => {
+                Self::count_subquery_node_local_variables(nodes)
+            }
+        }
+    }
+
+    fn collect_collect_subquery_outer_variables<'b>(
+        pattern: &'b CountSubqueryPattern,
+        target: &'b ScalarExpression,
+        variables: &mut BTreeSet<&'b str>,
+    ) {
+        Self::collect_count_subquery_outer_variables(pattern, variables);
+        let local_variables = Self::count_subquery_pattern_local_variables(pattern);
+        let mut target_variables = BTreeSet::new();
+        Self::collect_scalar_expression_variables(target, &mut target_variables);
+        variables.extend(
+            target_variables
+                .into_iter()
+                .filter(|variable| !local_variables.contains(*variable)),
+        );
+    }
+
     fn collect_property_predicate_variables<'b>(
         predicate: &'b PropertyPredicate,
         variables: &mut BTreeSet<&'b str>,
@@ -1257,6 +1284,9 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::CountSubquery { pattern } => {
                 Self::collect_count_subquery_outer_variables(pattern, variables);
+            }
+            ScalarExpression::CollectSubquery { pattern, target } => {
+                Self::collect_collect_subquery_outer_variables(pattern, target, variables);
             }
             ScalarExpression::PresenceGated {
                 presence_variable,
@@ -1829,6 +1859,91 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(())
             }
         }
+    }
+
+    fn validate_collect_subquery_pattern(
+        &self,
+        pattern: &CountSubqueryPattern,
+        target: &ScalarExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                self.validate_collect_relationship_pattern(predicate, target, path)
+            }
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => {
+                if nodes.is_empty() {
+                    return Err(Diagnostic::new(
+                        "UNSUPPORTED_COLLECT_SUBQUERY",
+                        format!("{path}.nodes"),
+                        "COLLECT subqueries without relationship patterns must bind at least one local node",
+                    )
+                    .into_core_error());
+                }
+                let local_nodes =
+                    self.validate_scoped_node_patterns(nodes, &path, "COLLECT subquery")?;
+                let relationships = Vec::new();
+                let scope = ExistsPredicateValidationContext {
+                    relationships: &relationships,
+                    local_nodes: &local_nodes,
+                };
+                for (index, property_predicate) in predicates.iter().enumerate() {
+                    self.validate_exists_property_predicate(
+                        property_predicate,
+                        scope,
+                        format!("{path}.predicates[{index}]"),
+                    )?;
+                }
+                if let Some(predicate) = predicate {
+                    self.validate_scoped_predicate_expression(
+                        predicate,
+                        scope,
+                        format!("{path}.predicate"),
+                    )?;
+                }
+                self.infer_scoped_scalar_expression_type(target, scope, format!("{path}.target"))?;
+                Ok(())
+            }
+        }
+    }
+
+    fn validate_collect_relationship_pattern(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        target: &ScalarExpression,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let path = path.into();
+        let local_nodes = self.validate_exists_pattern_nodes(predicate, &path)?;
+        self.validate_exists_relationship_variables(predicate, &local_nodes, &path)?;
+        let relationships =
+            self.resolve_exists_relationship_mappings(predicate, &local_nodes, &path)?;
+        Self::validate_exists_pattern_not_empty(predicate, &path)?;
+        let scope = ExistsPredicateValidationContext {
+            relationships: &relationships,
+            local_nodes: &local_nodes,
+        };
+        for (index, property_predicate) in predicate.predicates.iter().enumerate() {
+            self.validate_exists_property_predicate(
+                property_predicate,
+                scope,
+                format!("{path}.predicates[{index}]"),
+            )?;
+        }
+        if let Some(predicate) = &predicate.predicate {
+            self.validate_scoped_predicate_expression(
+                predicate,
+                scope,
+                format!("{path}.predicate"),
+            )?;
+        }
+        self.infer_scoped_scalar_expression_type(target, scope, format!("{path}.target"))?;
+        Ok(())
     }
 
     fn validate_count_relationship_pattern(
@@ -2728,6 +2843,12 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Integer)
             }
+            ScalarExpression::CollectSubquery { .. } => Err(Diagnostic::new(
+                "UNSUPPORTED_COLLECT_SUBQUERY",
+                path,
+                "nested COLLECT subqueries require scoped list-value planning and are not supported yet",
+            )
+            .into_core_error()),
             ScalarExpression::Key { variable } => {
                 self.validate_exists_key_ref(
                     variable,
@@ -4359,7 +4480,6 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::TypedLiteralList { .. }
             | ScalarExpression::GraphKeyList { .. }
             | ScalarExpression::Predicate(_)
-            | ScalarExpression::CountSubquery { .. }
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }
@@ -4372,6 +4492,14 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::Coalesce { expressions } => {
                 self.infer_coalesce_scalar_type(expressions, &path)
+            }
+            ScalarExpression::CountSubquery { pattern } => {
+                self.validate_count_subquery_pattern(pattern, format!("{path}.pattern"))?;
+                Ok(ScalarType::Integer)
+            }
+            ScalarExpression::CollectSubquery { pattern, target } => {
+                self.validate_collect_subquery_pattern(pattern, target, format!("{path}.pattern"))?;
+                Ok(ScalarType::Other)
             }
             ScalarExpression::NullIf { expression, value } => {
                 self.infer_null_if_scalar_type(expression, value, &path)
@@ -4444,10 +4572,6 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Predicate(predicate) => {
                 self.validate_predicate_expression(predicate, path)?;
                 Ok(ScalarType::Boolean)
-            }
-            ScalarExpression::CountSubquery { pattern } => {
-                self.validate_count_subquery_pattern(pattern, format!("{path}.pattern"))?;
-                Ok(ScalarType::Integer)
             }
             ScalarExpression::Key { variable } => {
                 self.validate_key_projection(variable, path)?;

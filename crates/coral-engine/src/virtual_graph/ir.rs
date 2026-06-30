@@ -245,6 +245,13 @@ pub enum ScalarExpression {
         /// Scoped graph pattern counted by the subquery.
         pattern: Box<CountSubqueryPattern>,
     },
+    /// Collect scalar values produced by a read-only graph subquery.
+    CollectSubquery {
+        /// Scoped graph pattern that produces rows for the collection.
+        pattern: Box<CountSubqueryPattern>,
+        /// Scalar expression returned by each scoped subquery row.
+        target: Box<ScalarExpression>,
+    },
     /// Stable mapped key for a graph variable.
     Key {
         /// Graph variable.
@@ -886,6 +893,35 @@ fn count_subquery_pattern_references_outside_scope(
     }
 }
 
+fn collect_subquery_references_outside_scope(
+    pattern: &CountSubqueryPattern,
+    target: &ScalarExpression,
+    scope: &BTreeSet<String>,
+) -> bool {
+    if count_subquery_pattern_references_outside_scope(pattern, scope) {
+        return true;
+    }
+    let mut local_scope = scope.clone();
+    match pattern {
+        CountSubqueryPattern::Relationships(predicate) => {
+            for node in &predicate.nodes {
+                local_scope.insert(node.variable.clone());
+            }
+            for relationship in &predicate.relationships {
+                if let Some(variable) = &relationship.variable {
+                    local_scope.insert(variable.clone());
+                }
+            }
+        }
+        CountSubqueryPattern::Nodes { nodes, .. } => {
+            for node in nodes {
+                local_scope.insert(node.variable.clone());
+            }
+        }
+    }
+    scalar_expression_references_outside_scope(target, &local_scope)
+}
+
 fn exists_pattern_references_outside_scope(
     predicate: &ExistsPatternPredicate,
     scope: &BTreeSet<String>,
@@ -1019,6 +1055,9 @@ fn scalar_expression_references_outside_scope(
         }
         ScalarExpression::CountSubquery { pattern } => {
             count_subquery_pattern_references_outside_scope(pattern, scope)
+        }
+        ScalarExpression::CollectSubquery { pattern, target } => {
+            collect_subquery_references_outside_scope(pattern, target, scope)
         }
         ScalarExpression::PresenceGated { .. }
         | ScalarExpression::Coalesce { .. }

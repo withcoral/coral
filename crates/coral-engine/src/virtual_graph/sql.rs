@@ -140,6 +140,10 @@ struct UndirectedEndpointSelection {
 enum ScalarSubqueryCandidate {
     Count(CountSubqueryPattern),
     Exists(ExistsPatternPredicate),
+    Collect {
+        pattern: ExistsPatternPredicate,
+        target: ScalarExpression,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +364,19 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => {}
             },
+            ScalarExpression::CollectSubquery { pattern, target } => {
+                if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
+                    && predicate.references_outer_variables()
+                {
+                    candidates.push(ScalarSubqueryCandidateUse {
+                        candidate: ScalarSubqueryCandidate::Collect {
+                            pattern: predicate.clone(),
+                            target: target.as_ref().clone(),
+                        },
+                        required,
+                    });
+                }
+            }
             ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::UndirectedEndpointKey { .. }
@@ -630,6 +647,9 @@ impl<'a> Lowerer<'a> {
                     .map(Some)
                 }
             }
+            ScalarSubqueryCandidate::Collect { pattern, .. } => {
+                self.render_precomputed_relationship_scalar_subquery_join(pattern, precomputed)
+            }
             ScalarSubqueryCandidate::Count(pattern @ CountSubqueryPattern::Nodes { .. }) => {
                 self.render_precomputed_node_count_scalar_subquery_join(pattern, precomputed)
             }
@@ -644,6 +664,11 @@ impl<'a> Lowerer<'a> {
         let value_expression = match &precomputed.candidate {
             ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0",
             ScalarSubqueryCandidate::Count(_) => "COUNT(*)",
+            ScalarSubqueryCandidate::Collect { .. } => {
+                return Err(CoreError::internal(
+                    "uncorrelated collect subqueries are not precomputed",
+                ));
+            }
         };
         let select_expression = format!(
             "{value_expression} AS {}",
@@ -1006,6 +1031,24 @@ impl<'a> Lowerer<'a> {
             return Ok(None);
         }
         let local_aliases = Self::exists_local_node_aliases(predicate);
+        let collect_target_sql = match &precomputed.candidate {
+            ScalarSubqueryCandidate::Collect { target, .. } => {
+                if !Self::scoped_scalar_expression_is_inner(
+                    target,
+                    &relationship_bindings,
+                    &local_nodes,
+                ) {
+                    return Ok(None);
+                }
+                Some(self.render_scoped_scalar_expression(
+                    target,
+                    &relationship_bindings,
+                    &local_nodes,
+                    &local_aliases,
+                )?)
+            }
+            _ => None,
+        };
         let Some((outer_key_ref, mut conditions)) = self
             .render_precomputed_relationship_conditions(
                 &relationship_bindings,
@@ -1035,8 +1078,14 @@ impl<'a> Lowerer<'a> {
             format!(" WHERE {}", conditions.join(" AND "))
         };
         let value_expression = match &precomputed.candidate {
-            ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0",
-            ScalarSubqueryCandidate::Count(_) => "COUNT(*)",
+            ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0".to_string(),
+            ScalarSubqueryCandidate::Count(_) => "COUNT(*)".to_string(),
+            ScalarSubqueryCandidate::Collect { .. } => {
+                let target_sql = collect_target_sql.as_deref().ok_or_else(|| {
+                    CoreError::internal("precomputed collect target SQL was not rendered")
+                })?;
+                Self::render_collect_target_select_expression(target_sql)
+            }
         };
         let subquery = format!(
             "SELECT {outer_key_ref} AS {}, {value_expression} AS {} FROM {from_clause}{where_clause} GROUP BY {outer_key_ref}",
@@ -1433,7 +1482,9 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. } => true,
-            ScalarExpression::CountSubquery { .. } => false,
+            ScalarExpression::CountSubquery { .. } | ScalarExpression::CollectSubquery { .. } => {
+                false
+            }
             ScalarExpression::ToString { .. }
             | ScalarExpression::ToInteger { .. }
             | ScalarExpression::ToFloat { .. }
@@ -2957,6 +3008,23 @@ impl<'a> Lowerer<'a> {
             .map(Self::render_precomputed_exists_ref)
     }
 
+    fn render_precomputed_collect_subquery_ref(
+        &self,
+        pattern: &ExistsPatternPredicate,
+        target: &ScalarExpression,
+    ) -> Option<String> {
+        self.precomputed_scalar_subqueries
+            .iter()
+            .find(|precomputed| {
+                precomputed.candidate
+                    == ScalarSubqueryCandidate::Collect {
+                        pattern: pattern.clone(),
+                        target: target.clone(),
+                    }
+            })
+            .map(Self::render_precomputed_collect_ref)
+    }
+
     fn render_precomputed_count_ref(precomputed: &PrecomputedScalarSubquery) -> String {
         format!(
             "COALESCE({}.{}, 0)",
@@ -2968,6 +3036,14 @@ impl<'a> Lowerer<'a> {
     fn render_precomputed_exists_ref(precomputed: &PrecomputedScalarSubquery) -> String {
         format!(
             "COALESCE({}.{}, FALSE)",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.value_alias)
+        )
+    }
+
+    fn render_precomputed_collect_ref(precomputed: &PrecomputedScalarSubquery) -> String {
+        format!(
+            "COALESCE({}.{}, make_array())",
             quote_ident(&precomputed.table_alias),
             quote_ident(&precomputed.value_alias)
         )
@@ -3443,6 +3519,32 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn render_collect_subquery_expression(
+        &self,
+        pattern: &CountSubqueryPattern,
+        target: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        match pattern {
+            CountSubqueryPattern::Relationships(predicate) => {
+                if let Some(rendered) =
+                    self.render_precomputed_collect_subquery_ref(predicate, target)
+                {
+                    return Ok(rendered);
+                }
+                self.render_collect_scoped_pattern_select(predicate, target)
+            }
+            CountSubqueryPattern::Nodes {
+                nodes,
+                predicates,
+                predicate,
+            } => self.render_collect_node_subquery(nodes, predicates, predicate.as_deref(), target),
+        }
+    }
+
+    fn render_collect_target_select_expression(target_sql: &str) -> String {
+        format!("COALESCE(ARRAY_AGG({target_sql}), make_array())")
+    }
+
     fn render_projection_scalar_expression(
         &self,
         expression: &ScalarExpression,
@@ -3472,6 +3574,9 @@ impl<'a> Lowerer<'a> {
                             .to_string(),
                     ));
                 }
+            }
+            ScalarExpression::CollectSubquery { pattern, target } => {
+                self.reject_unprecomputed_projection_collect_subquery(pattern, target)?;
             }
             ScalarExpression::Predicate(predicate) => {
                 self.reject_unprecomputed_projection_predicate_subqueries(predicate)?;
@@ -3634,6 +3739,25 @@ impl<'a> Lowerer<'a> {
             _ => {
                 unreachable!("projection subquery dispatcher called structural helper incorrectly")
             }
+        }
+        Ok(())
+    }
+
+    fn reject_unprecomputed_projection_collect_subquery(
+        &self,
+        pattern: &CountSubqueryPattern,
+        target: &ScalarExpression,
+    ) -> Result<(), CoreError> {
+        if let CountSubqueryPattern::Relationships(predicate) = pattern
+            && predicate.references_outer_variables()
+            && self
+                .render_precomputed_collect_subquery_ref(predicate, target)
+                .is_none()
+        {
+            return Err(CoreError::InvalidInput(
+                "correlated relationship COLLECT subqueries in projections must be precomputable through a single outer node anchor and an inner-only return target; move complex outer-dependent logic to the scoped WHERE predicate or simplify the COLLECT pattern"
+                    .to_string(),
+            ));
         }
         Ok(())
     }
@@ -3806,6 +3930,93 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
+    fn render_collect_scoped_pattern_select(
+        &self,
+        predicate: &ExistsPatternPredicate,
+        target: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        let local_nodes = self.exists_local_node_map(predicate)?;
+        let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
+        let local_aliases = Self::exists_local_node_aliases(predicate);
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?;
+        let select_expression = Self::render_collect_target_select_expression(&target_sql);
+        if relationship_bindings.is_empty() {
+            return self.render_scoped_node_select(
+                &predicate.nodes,
+                &predicate.predicates,
+                predicate.predicate.as_deref(),
+                &select_expression,
+                &local_nodes,
+                &local_aliases,
+                "COLLECT",
+            );
+        }
+
+        let mut from_clause = relationship_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let table_ref = format!(
+                    "{} AS {}",
+                    render_table_ref(&binding.relationship.table),
+                    quote_ident(&binding.alias)
+                );
+                if index == 0 {
+                    table_ref
+                } else {
+                    format!("JOIN {table_ref} ON TRUE")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for node in &predicate.nodes {
+            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COLLECT local node mapping was missing")
+            })?;
+            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
+                CoreError::internal("validated COLLECT local node alias was missing")
+            })?;
+            write!(
+                from_clause,
+                " JOIN {} AS {} ON TRUE",
+                render_table_ref(&node_mapping.table),
+                quote_ident(alias)
+            )
+            .map_err(|_| CoreError::internal("failed to render COLLECT pattern SQL"))?;
+        }
+
+        let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
+            relationship_bindings.len(),
+            predicate.predicates.len(),
+            predicate.predicate.as_deref(),
+        ));
+        for binding in &relationship_bindings {
+            conditions.push(self.exists_relationship_condition(
+                binding.pattern,
+                binding.relationship,
+                &binding.alias,
+                &local_nodes,
+                &local_aliases,
+            )?);
+        }
+        conditions.extend(self.render_scoped_conditions(
+            &predicate.predicates,
+            predicate.predicate.as_deref(),
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+        )?);
+        Ok(format!(
+            "(SELECT {select_expression} FROM {from_clause} WHERE {})",
+            conditions.join(" AND ")
+        ))
+    }
+
     fn render_count_node_subquery(
         &self,
         nodes: &[NodePattern],
@@ -3813,6 +4024,39 @@ impl<'a> Lowerer<'a> {
         predicate: Option<&PredicateExpression>,
     ) -> Result<String, CoreError> {
         self.render_count_node_select(nodes, predicates, predicate, "COUNT(*)")
+    }
+
+    fn render_collect_node_subquery(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        target: &ScalarExpression,
+    ) -> Result<String, CoreError> {
+        if nodes.is_empty() {
+            return Err(CoreError::internal(
+                "validated COLLECT node subquery had no node bindings",
+            ));
+        }
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let local_aliases = Self::count_local_node_aliases(nodes);
+        let relationships = Vec::new();
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &relationships,
+            &local_nodes,
+            &local_aliases,
+        )?;
+        let select_expression = Self::render_collect_target_select_expression(&target_sql);
+        self.render_scoped_node_select(
+            nodes,
+            predicates,
+            predicate,
+            &select_expression,
+            &local_nodes,
+            &local_aliases,
+            "COLLECT",
+        )
     }
 
     fn render_count_node_select(
@@ -5109,6 +5353,10 @@ impl<'a> Lowerer<'a> {
                     local_nodes,
                     local_aliases,
                 ),
+            ScalarExpression::CollectSubquery { .. } => Err(CoreError::InvalidInput(
+                "nested COLLECT subqueries require scoped list-value planning and are not supported yet"
+                    .to_string(),
+            )),
             ScalarExpression::PresenceGated {
                 presence_variable,
                 expression,
@@ -6643,6 +6891,9 @@ impl<'a> Lowerer<'a> {
             }
             ScalarExpression::CountSubquery { pattern } => {
                 self.render_count_subquery_expression(pattern)
+            }
+            ScalarExpression::CollectSubquery { pattern, target } => {
+                self.render_collect_subquery_expression(pattern, target)
             }
             ScalarExpression::PresenceGated {
                 presence_variable,
