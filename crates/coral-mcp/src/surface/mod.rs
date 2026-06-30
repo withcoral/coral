@@ -11,12 +11,16 @@ mod tools;
 mod values;
 
 pub(crate) use catalog::{
-    describe_table_value, list_catalog_value, list_columns_value, search_catalog_value,
+    CatalogToolKind, describe_table_output_schema, describe_table_value,
+    list_catalog_output_schema, list_catalog_value, list_columns_output_schema, list_columns_value,
+    search_catalog_output_schema, search_catalog_value,
 };
-pub(crate) use discovery::{Pagination, parse_pagination, parse_pagination_with_limits};
+pub(crate) use discovery::{
+    DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT, Pagination, parse_pagination,
+    parse_pagination_with_limits,
+};
 pub(crate) use errors::{
-    ToolError, status_to_error_data, tool_error_from_status, tool_error_output_schema,
-    tool_error_result,
+    ToolError, status_to_error_data, tool_error_from_status, tool_error_result,
 };
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
@@ -27,9 +31,9 @@ pub(crate) use sql::{
     SqlBatchValue, SqlQueryResultValue, sql_arguments, sql_input_schema, sql_output_schema,
 };
 pub(crate) use tools::{
-    CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
-    describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,
-    list_columns_arguments, list_columns_tool, open_episode_arguments, open_episode_tool,
-    optional_episode_id_argument, required_string_argument, search_catalog_arguments,
-    search_catalog_tool, sql_tool, with_episode_id_argument,
+    EpisodeOpenedValue, FeedbackStoredValue, ToolDescriptionContext, build_tool_result,
+    describe_table_arguments, describe_table_tool, feedback_arguments, feedback_tool,
+    list_catalog_arguments, list_catalog_tool, list_columns_arguments, list_columns_tool,
+    open_episode_arguments, open_episode_tool, optional_episode_id_argument,
+    search_catalog_arguments, search_catalog_tool, sql_tool, with_episode_id_argument,
 };

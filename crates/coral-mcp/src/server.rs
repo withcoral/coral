@@ -30,14 +30,15 @@ use tonic::{
 use crate::{
     McpOptions, McpQueryExample,
     surface::{
-        CatalogToolKind, SqlBatchValue, SqlQueryResultValue, ToolDescriptionContext,
-        build_tool_result, describe_table_arguments, describe_table_tool, describe_table_value,
-        feedback_tool, guide_resource, guide_resource_content, initial_instructions,
-        list_catalog_arguments, list_catalog_tool, list_catalog_value, list_columns_arguments,
-        list_columns_tool, list_columns_value, open_episode_arguments, open_episode_tool,
-        optional_episode_id_argument, required_string_argument, search_catalog_arguments,
-        search_catalog_tool, search_catalog_value, sql_arguments, sql_tool, status_to_error_data,
-        tables_resource, tables_resource_content, tool_error_from_status, tool_error_result,
+        CatalogToolKind, EpisodeOpenedValue, FeedbackStoredValue, SqlBatchValue,
+        SqlQueryResultValue, ToolDescriptionContext, build_tool_result, describe_table_arguments,
+        describe_table_tool, describe_table_value, feedback_arguments, feedback_tool,
+        guide_resource, guide_resource_content, initial_instructions, list_catalog_arguments,
+        list_catalog_tool, list_catalog_value, list_columns_arguments, list_columns_tool,
+        list_columns_value, open_episode_arguments, open_episode_tool,
+        optional_episode_id_argument, search_catalog_arguments, search_catalog_tool,
+        search_catalog_value, sql_arguments, sql_tool, status_to_error_data, tables_resource,
+        tables_resource_content, tool_error_from_status, tool_error_result,
         with_episode_id_argument,
     },
     telemetry,
@@ -57,21 +58,6 @@ enum ToolCallOutcome {
         operation: &'static str,
         status: tonic::Status,
     },
-}
-
-#[derive(Serialize)]
-struct FeedbackStoredValue {
-    feedback_id: String,
-    created_at: String,
-    message: &'static str,
-}
-
-#[derive(Serialize)]
-struct EpisodeOpenedValue {
-    episode_id: String,
-    parent_episode_id: Option<String>,
-    message: &'static str,
-    instructions: &'static str,
 }
 
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
@@ -557,14 +543,15 @@ impl CoralMcpServer {
                 }
             }
             "feedback" if self.options.feedback_enabled => {
-                let trying_to_do =
-                    required_string_argument(request.arguments.as_ref(), "trying_to_do")?;
-                let tried = required_string_argument(request.arguments.as_ref(), "tried")?;
-                let stuck = required_string_argument(request.arguments.as_ref(), "stuck")?;
+                let arguments = feedback_arguments(request.arguments.as_ref())?;
                 Ok(ToolCallOutcome::from_value_result(
                     "Feedback submission",
-                    self.submit_feedback_value(&trying_to_do, &tried, &stuck)
-                        .await,
+                    self.submit_feedback_value(
+                        &arguments.trying_to_do,
+                        &arguments.tried,
+                        &arguments.stuck,
+                    )
+                    .await,
                 ))
             }
             _ => Err(ErrorData::invalid_params(

@@ -1,17 +1,26 @@
 use coral_api::v1::{
     ColumnSearchResult, DescribeTableResponse, ListCatalogResponse, ListColumnsResponse,
-    SearchCatalogResponse, Table as ProtoTable, TableFunction as ProtoTableFunction,
-    TableFunctionArgument as ProtoTableFunctionArgument,
+    PaginationResponse, SearchCatalogResponse, Table as ProtoTable,
+    TableFunction as ProtoTableFunction, TableFunctionArgument as ProtoTableFunctionArgument,
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
 };
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
+use super::schema::tool_output_schema;
 use super::values::{
-    format_schema_table_equivalent, format_sql_identifier, insert_pagination_fields,
-    missing_table_summary_value, paged_collection_value,
+    MissingTableSummaryValue, format_schema_table_equivalent, format_sql_identifier,
 };
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CatalogToolKind {
+    Table,
+    TableFunction,
+}
 
 pub(crate) fn describe_table_value(
     schema: &str,
@@ -43,39 +52,39 @@ fn describe_missing_table_value(
 ) -> Value {
     let same_schema_tables = same_schema_tables
         .iter()
-        .map(missing_table_summary_value)
+        .map(MissingTableSummaryValue::from)
         .collect::<Vec<_>>();
     let suggestions = suggestions
         .iter()
-        .map(missing_table_summary_value)
+        .map(MissingTableSummaryValue::from)
         .collect::<Vec<_>>();
     let escaped_table = regex::escape(table);
     let search_arguments = if same_schema_tables.is_empty() {
         SuggestedCallArguments {
             pattern: Some(escaped_table),
             schema: None,
-            kind: Some("table"),
+            kind: Some(CatalogToolKind::Table),
             limit: None,
         }
     } else {
         SuggestedCallArguments {
             pattern: Some(escaped_table),
             schema: Some(schema),
-            kind: Some("table"),
+            kind: Some(CatalogToolKind::Table),
             limit: None,
         }
     };
     let mut suggested_calls = vec![SuggestedCall {
-        tool: "search_catalog",
+        tool: SuggestedCallTool::SearchCatalog,
         arguments: search_arguments,
     }];
     if !same_schema_tables.is_empty() {
         suggested_calls.push(SuggestedCall {
-            tool: "list_catalog",
+            tool: SuggestedCallTool::ListCatalog,
             arguments: SuggestedCallArguments {
                 pattern: None,
                 schema: Some(schema),
-                kind: Some("table"),
+                kind: Some(CatalogToolKind::Table),
                 limit: Some(10),
             },
         });
@@ -91,6 +100,10 @@ fn describe_missing_table_value(
     .expect("missing table value serializes")
 }
 
+pub(crate) fn describe_table_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<DescribeTableOutputValue<'static>>()
+}
+
 pub(crate) fn search_catalog_value(response: &SearchCatalogResponse) -> Value {
     let pagination = response.pagination.unwrap_or_default();
     let items = response
@@ -98,7 +111,12 @@ pub(crate) fn search_catalog_value(response: &SearchCatalogResponse) -> Value {
         .iter()
         .filter_map(catalog_search_result_value)
         .collect::<Vec<_>>();
-    paged_collection_value("items", items, &pagination)
+    serde_json::to_value(CatalogSearchPageValue::new(items, &pagination))
+        .expect("catalog search page value serializes")
+}
+
+pub(crate) fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<CatalogSearchPageValue<'static>>()
 }
 
 pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
@@ -108,16 +126,19 @@ pub(crate) fn list_catalog_value(response: &ListCatalogResponse) -> Value {
         .iter()
         .filter_map(catalog_item_value)
         .collect::<Vec<_>>();
-    paged_collection_value("items", items, &pagination)
+    serde_json::to_value(CatalogPageValue::new(items, &pagination))
+        .expect("catalog page value serializes")
 }
 
-fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<Value> {
+pub(crate) fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<CatalogPageValue<'static>>()
+}
+
+fn catalog_item_value(item: &coral_api::v1::CatalogItem) -> Option<CatalogItemValue<'_>> {
     match item.item.as_ref()? {
-        catalog_item::Item::Table(table) => {
-            serde_json::to_value(CatalogTableItemValue::from(table)).ok()
-        }
+        catalog_item::Item::Table(table) => Some(CatalogItemValue::Table(table.into())),
         catalog_item::Item::TableFunction(function) => {
-            serde_json::to_value(CatalogTableFunctionItemValue::from(function)).ok()
+            Some(CatalogItemValue::TableFunction(function.into()))
         }
     }
 }
@@ -134,13 +155,23 @@ fn minimal_table_function_call_example(function: &ProtoTableFunction) -> String 
     format!("{reference}({required_arguments})")
 }
 
-fn catalog_search_result_value(result: &coral_api::v1::CatalogSearchResult) -> Option<Value> {
-    let mut value = catalog_item_value(result.item.as_ref()?)?;
-    value.as_object_mut()?.insert(
-        "matched_fields".to_string(),
-        serde_json::to_value(&result.matched_fields).ok()?,
-    );
-    Some(value)
+fn catalog_search_result_value(
+    result: &coral_api::v1::CatalogSearchResult,
+) -> Option<CatalogSearchItemValue<'_>> {
+    match result.item.as_ref()?.item.as_ref()? {
+        catalog_item::Item::Table(table) => {
+            Some(CatalogSearchItemValue::Table(CatalogTableSearchItemValue {
+                item: table.into(),
+                matched_fields: &result.matched_fields,
+            }))
+        }
+        catalog_item::Item::TableFunction(function) => Some(CatalogSearchItemValue::TableFunction(
+            CatalogTableFunctionSearchItemValue {
+                item: function.into(),
+                matched_fields: &result.matched_fields,
+            },
+        )),
+    }
 }
 
 pub(crate) fn list_columns_value(
@@ -154,30 +185,183 @@ pub(crate) fn list_columns_value(
         .iter()
         .filter_map(column_search_result_value)
         .collect::<Vec<_>>();
-    let mut value = Map::from_iter([
-        ("schema_name".to_string(), Value::from(schema)),
-        ("table_name".to_string(), Value::from(table)),
-        ("columns".to_string(), Value::Array(columns)),
-    ]);
-    insert_pagination_fields(&mut value, &pagination);
-    Value::Object(value)
+    serde_json::to_value(ListColumnsPageValue::new(
+        schema,
+        table,
+        columns,
+        &pagination,
+    ))
+    .expect("list columns page value serializes")
 }
 
-fn column_search_result_value(result: &ColumnSearchResult) -> Option<Value> {
+pub(crate) fn list_columns_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<ListColumnsOutputValue<'static>>()
+}
+
+fn column_search_result_value(result: &ColumnSearchResult) -> Option<ColumnSearchValue<'_>> {
     let column = result.column.as_ref()?;
-    let Value::Object(mut value) = serde_json::to_value(ColumnValue::from(column)).ok()? else {
-        return None;
-    };
-    if !result.matched_fields.is_empty() {
-        value.insert(
-            "matched_fields".to_string(),
-            serde_json::to_value(&result.matched_fields).ok()?,
-        );
-    }
-    Some(Value::Object(value))
+    Some(ColumnSearchValue {
+        column_name: &column.name,
+        data_type: &column.data_type,
+        is_nullable: column.nullable,
+        is_virtual: column.is_virtual,
+        is_required_filter: column.is_required_filter,
+        description: &column.description,
+        ordinal_position: column.ordinal_position,
+        matched_fields: (!result.matched_fields.is_empty())
+            .then_some(result.matched_fields.as_slice()),
+    })
 }
 
-#[derive(Serialize)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[schemars(extend("type" = "object"))]
+#[expect(
+    dead_code,
+    reason = "schema-only enum for the describe_table output contract"
+)]
+enum DescribeTableOutputValue<'a> {
+    Found(FoundTableValue<'a>),
+    Missing(MissingTableValue<'a>),
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[schemars(extend("type" = "object"))]
+#[expect(
+    dead_code,
+    reason = "schema-only enum for the list_columns output contract"
+)]
+enum ListColumnsOutputValue<'a> {
+    Page(ListColumnsPageValue<'a>),
+    Missing(MissingTableValue<'a>),
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct CatalogPageValue<'a> {
+    items: Vec<CatalogItemValue<'a>>,
+    #[schemars(range(min = 0))]
+    total: u32,
+    #[schemars(range(min = 1))]
+    limit: u32,
+    #[schemars(range(min = 0))]
+    offset: u32,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<u32>,
+}
+
+impl<'a> CatalogPageValue<'a> {
+    fn new(items: Vec<CatalogItemValue<'a>>, pagination: &PaginationResponse) -> Self {
+        Self {
+            items,
+            total: pagination.total_count,
+            limit: pagination.limit,
+            offset: pagination.offset,
+            has_more: pagination.has_more,
+            next_offset: pagination.has_more.then_some(pagination.next_offset),
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct CatalogSearchPageValue<'a> {
+    items: Vec<CatalogSearchItemValue<'a>>,
+    #[schemars(range(min = 0))]
+    total: u32,
+    #[schemars(range(min = 1))]
+    limit: u32,
+    #[schemars(range(min = 0))]
+    offset: u32,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<u32>,
+}
+
+impl<'a> CatalogSearchPageValue<'a> {
+    fn new(items: Vec<CatalogSearchItemValue<'a>>, pagination: &PaginationResponse) -> Self {
+        Self {
+            items,
+            total: pagination.total_count,
+            limit: pagination.limit,
+            offset: pagination.offset,
+            has_more: pagination.has_more,
+            next_offset: pagination.has_more.then_some(pagination.next_offset),
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct ListColumnsPageValue<'a> {
+    schema_name: &'a str,
+    table_name: &'a str,
+    columns: Vec<ColumnSearchValue<'a>>,
+    #[schemars(range(min = 0))]
+    total: u32,
+    #[schemars(range(min = 1))]
+    limit: u32,
+    #[schemars(range(min = 0))]
+    offset: u32,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<u32>,
+}
+
+impl<'a> ListColumnsPageValue<'a> {
+    fn new(
+        schema_name: &'a str,
+        table_name: &'a str,
+        columns: Vec<ColumnSearchValue<'a>>,
+        pagination: &PaginationResponse,
+    ) -> Self {
+        Self {
+            schema_name,
+            table_name,
+            columns,
+            total: pagination.total_count,
+            limit: pagination.limit,
+            offset: pagination.offset,
+            has_more: pagination.has_more,
+            next_offset: pagination.has_more.then_some(pagination.next_offset),
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum CatalogItemValue<'a> {
+    Table(CatalogTableItemValue<'a>),
+    TableFunction(CatalogTableFunctionItemValue<'a>),
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum CatalogSearchItemValue<'a> {
+    Table(CatalogTableSearchItemValue<'a>),
+    TableFunction(CatalogTableFunctionSearchItemValue<'a>),
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct CatalogTableSearchItemValue<'a> {
+    #[serde(flatten)]
+    item: CatalogTableItemValue<'a>,
+    matched_fields: &'a [String],
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct CatalogTableFunctionSearchItemValue<'a> {
+    #[serde(flatten)]
+    item: CatalogTableFunctionItemValue<'a>,
+    matched_fields: &'a [String],
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct FoundTableValue<'a> {
     found: bool,
     schema_name: &'a str,
@@ -206,43 +390,55 @@ impl<'a> From<&'a ProtoTable> for FoundTableValue<'a> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct MissingTableValue<'a> {
     found: bool,
     requested: RequestedTable<'a>,
     available_schemas: &'a [String],
-    same_schema_tables: Vec<Value>,
-    suggestions: Vec<Value>,
+    same_schema_tables: Vec<MissingTableSummaryValue<'a>>,
+    suggestions: Vec<MissingTableSummaryValue<'a>>,
     suggested_calls: Vec<SuggestedCall<'a>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct RequestedTable<'a> {
     schema: &'a str,
     table: &'a str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct SuggestedCall<'a> {
-    tool: &'static str,
+    tool: SuggestedCallTool,
     arguments: SuggestedCallArguments<'a>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum SuggestedCallTool {
+    SearchCatalog,
+    ListCatalog,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct SuggestedCallArguments<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pattern: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<&'static str>,
+    kind: Option<CatalogToolKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct CatalogTableItemValue<'a> {
-    kind: &'static str,
+    kind: CatalogTableKind,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -253,7 +449,7 @@ struct CatalogTableItemValue<'a> {
 impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
     fn from(table: &'a ProtoTableSummary) -> Self {
         Self {
-            kind: "table",
+            kind: CatalogTableKind::Table,
             schema_name: &table.schema_name,
             name: format!("{}.{}", table.schema_name, table.name),
             sql_reference: format_schema_table_equivalent(&table.schema_name, &table.name),
@@ -267,16 +463,24 @@ impl<'a> From<&'a ProtoTableSummary> for CatalogTableItemValue<'a> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CatalogTableKind {
+    Table,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct CatalogTableValue<'a> {
     table_name: &'a str,
     guide: &'a str,
     required_filters: &'a [String],
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct CatalogTableFunctionItemValue<'a> {
-    kind: &'static str,
+    kind: CatalogTableFunctionKind,
     schema_name: &'a str,
     name: String,
     sql_reference: String,
@@ -288,7 +492,7 @@ struct CatalogTableFunctionItemValue<'a> {
 impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
     fn from(function: &'a ProtoTableFunction) -> Self {
         Self {
-            kind: "table_function",
+            kind: CatalogTableFunctionKind::TableFunction,
             schema_name: &function.schema_name,
             name: format!("{}.{}", function.schema_name, function.name),
             sql_reference: format_schema_table_equivalent(&function.schema_name, &function.name),
@@ -311,14 +515,22 @@ impl<'a> From<&'a ProtoTableFunction> for CatalogTableFunctionItemValue<'a> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CatalogTableFunctionKind {
+    TableFunction,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct CatalogTableFunctionValue<'a> {
     function_name: &'a str,
     arguments: Vec<TableFunctionArgumentValue<'a>>,
     result_columns: Vec<TableFunctionResultColumnValue<'a>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct TableFunctionArgumentValue<'a> {
     name: &'a str,
     required: bool,
@@ -335,7 +547,8 @@ impl<'a> From<&'a ProtoTableFunctionArgument> for TableFunctionArgumentValue<'a>
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct TableFunctionResultColumnValue<'a> {
     column_name: &'a str,
     data_type: &'a str,
@@ -354,27 +567,17 @@ impl<'a> From<&'a ProtoTableFunctionResultColumn> for TableFunctionResultColumnV
     }
 }
 
-#[derive(Serialize)]
-struct ColumnValue<'a> {
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct ColumnSearchValue<'a> {
     column_name: &'a str,
     data_type: &'a str,
     is_nullable: bool,
     is_virtual: bool,
     is_required_filter: bool,
     description: &'a str,
+    #[schemars(range(min = 0))]
     ordinal_position: u32,
-}
-
-impl<'a> From<&'a coral_api::v1::Column> for ColumnValue<'a> {
-    fn from(column: &'a coral_api::v1::Column) -> Self {
-        Self {
-            column_name: &column.name,
-            data_type: &column.data_type,
-            is_nullable: column.nullable,
-            is_virtual: column.is_virtual,
-            is_required_filter: column.is_required_filter,
-            description: &column.description,
-            ordinal_position: column.ordinal_position,
-        }
-    }
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matched_fields: Option<&'a [String]>,
 }

@@ -4,17 +4,24 @@ use rmcp::{
     ErrorData,
     model::{CallToolResult, Tool, ToolAnnotations},
 };
+use schemars::JsonSchema;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
 
 use super::{
-    Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
-    schema::json_object_schema, sql_input_schema, sql_output_schema,
+    CatalogToolKind, DEFAULT_PAGINATION_LIMIT, MAX_PAGINATION_LIMIT, Pagination,
+    connected_source_names_text, describe_table_output_schema, list_catalog_output_schema,
+    list_columns_output_schema, parse_pagination, parse_pagination_with_limits,
+    schema::json_schema_value, schema::tool_input_schema, schema::tool_output_schema,
+    search_catalog_output_schema, sql_input_schema, sql_output_schema,
 };
 
 const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
 const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
+const DEFAULT_SEARCH_LIMIT: u32 = 20;
+const MAX_SEARCH_LIMIT: u32 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolDescriptionContext {
@@ -46,43 +53,190 @@ impl ToolDescriptionContext {
     }
 }
 
+#[derive(JsonSchema)]
 pub(crate) struct ListCatalogArguments {
+    #[schemars(description = "Optional exact SQL schema name to list.")]
     pub(crate) schema: Option<String>,
+    #[schemars(
+        description = "Optional item kind to list. Omit or pass null to list all catalog items."
+    )]
     pub(crate) kind: Option<CatalogToolKind>,
+    #[schemars(flatten, with = "DefaultPaginationInput")]
     pub(crate) pagination: Pagination,
 }
 
+#[derive(JsonSchema)]
 pub(crate) struct SearchCatalogArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Rust regex pattern to match database catalog metadata."
+    )]
     pub(crate) pattern: String,
+    #[schemars(description = "Optional exact SQL schema name to search.")]
     pub(crate) schema: Option<String>,
+    #[schemars(
+        description = "Optional item kind to search. Omit or pass null to search all catalog items."
+    )]
     pub(crate) kind: Option<CatalogToolKind>,
+    #[serde(default = "default_true")]
+    #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
     pub(crate) ignore_case: bool,
+    #[schemars(flatten, with = "SearchPaginationInput")]
     pub(crate) pagination: Pagination,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CatalogToolKind {
-    Table,
-    TableFunction,
-}
-
+#[derive(JsonSchema)]
 pub(crate) struct DescribeTableArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact SQL schema name."
+    )]
     pub(crate) schema: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact table name within the SQL schema."
+    )]
     pub(crate) table: String,
 }
 
+#[derive(JsonSchema)]
 pub(crate) struct ListColumnsArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact SQL schema name."
+    )]
     pub(crate) schema: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact table name within the SQL schema."
+    )]
     pub(crate) table: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Optional Rust regex matched against column names, descriptions, and data types."
+    )]
     pub(crate) pattern: Option<String>,
+    #[serde(default = "default_true")]
+    #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
     pub(crate) ignore_case: bool,
+    #[serde(default)]
+    #[schemars(description = "Only return columns that are required filters. Defaults to false.")]
     pub(crate) required_only: bool,
+    #[schemars(flatten, with = "DefaultPaginationInput")]
     pub(crate) pagination: Pagination,
 }
 
+#[derive(JsonSchema)]
+pub(crate) struct FeedbackArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "What you were trying to do."
+    )]
+    pub(crate) trying_to_do: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "What you already tried."
+    )]
+    pub(crate) tried: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Where you got blocked."
+    )]
+    pub(crate) stuck: String,
+}
+
+#[derive(JsonSchema)]
 pub(crate) struct OpenEpisodeArguments {
+    #[schemars(
+        length(min = 1, max = CORAL_EPISODE_INTENT_MAX_CHARS),
+        pattern(r"\S"),
+        description = "Natural-language description of the task this episode should group."
+    )]
     pub(crate) intent: String,
+    #[schemars(
+        with = "Option<EpisodeIdSchema>",
+        description = "Optional parent episode id when this task is a child of an existing episode."
+    )]
     pub(crate) parent_episode_id: Option<String>,
+}
+
+#[derive(JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "schema-only struct for flattened default pagination inputs"
+)]
+struct DefaultPaginationInput {
+    #[serde(default = "default_pagination_limit")]
+    #[schemars(
+        range(min = 1, max = MAX_PAGINATION_LIMIT),
+        description = "Maximum items to return, from 1 to 200. Defaults to 50."
+    )]
+    limit: u32,
+    #[serde(default)]
+    #[schemars(
+        range(min = 0, max = u32::MAX),
+        description = "Number of matching items to skip. Defaults to 0."
+    )]
+    offset: u32,
+}
+
+#[derive(JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "schema-only struct for flattened search pagination inputs"
+)]
+struct SearchPaginationInput {
+    #[serde(default = "default_search_limit")]
+    #[schemars(
+        range(min = 1, max = MAX_SEARCH_LIMIT),
+        description = "Maximum catalog items to return, from 1 to 100. Defaults to 20."
+    )]
+    limit: u32,
+    #[serde(default)]
+    #[schemars(
+        range(min = 0, max = u32::MAX),
+        description = "Number of matching catalog items to skip. Defaults to 0."
+    )]
+    offset: u32,
+}
+
+#[derive(JsonSchema)]
+#[schemars(transparent, inline)]
+#[expect(dead_code, reason = "schema-only type for episode id constraints")]
+struct EpisodeIdSchema(
+    #[schemars(
+        length(min = 1, max = CORAL_EPISODE_ID_MAX_LEN),
+        regex(pattern = EPISODE_ID_JSON_SCHEMA_PATTERN)
+    )]
+    String,
+);
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct FeedbackStoredValue {
+    pub(crate) feedback_id: String,
+    pub(crate) created_at: String,
+    pub(crate) message: &'static str,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct EpisodeOpenedValue {
+    #[schemars(with = "EpisodeIdSchema")]
+    pub(crate) episode_id: String,
+    #[schemars(with = "Option<EpisodeIdSchema>")]
+    pub(crate) parent_episode_id: Option<String>,
+    pub(crate) message: &'static str,
+    pub(crate) instructions: &'static str,
 }
 
 pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
@@ -106,41 +260,7 @@ pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
             context.visible_table_count,
             context.visible_function_count
         ),
-        json_object_schema(&json!({
-            "type": "object",
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Optional exact SQL schema name to list."
-                },
-                "kind": {
-                    "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "enum": ["table", "table_function"]
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
+        tool_input_schema::<ListCatalogArguments>(),
     )
     .with_raw_output_schema(list_catalog_output_schema())
     .with_annotations(
@@ -156,50 +276,7 @@ pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
     Tool::new(
         "search_catalog",
         search_catalog_description(context),
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["pattern"],
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Rust regex pattern to match database catalog metadata."
-                },
-                "schema": {
-                    "type": "string",
-                    "description": "Optional exact SQL schema name to search."
-                },
-                "kind": {
-                    "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "enum": ["table", "table_function"]
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Whether regex matching is case-insensitive. Defaults to true."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 100. Defaults to 20.",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 20
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
+        tool_input_schema::<SearchCatalogArguments>(),
     )
     .with_raw_output_schema(search_catalog_output_schema())
     .with_annotations(
@@ -215,21 +292,9 @@ pub(crate) fn describe_table_tool() -> Tool {
     Tool::new(
         "describe_table",
         "Describe one database table without returning full column definitions.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["schema", "table"],
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Exact SQL schema name."
-                },
-                "table": {
-                    "type": "string",
-                    "description": "Exact table name within the SQL schema."
-                }
-            }
-        })),
+        tool_input_schema::<DescribeTableArguments>(),
     )
+    .with_raw_output_schema(describe_table_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("Describe Table")
             .read_only(true)
@@ -243,46 +308,7 @@ pub(crate) fn list_columns_tool() -> Tool {
     Tool::new(
         "list_columns",
         "List columns for one database table with optional regex and required-filter narrowing.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["schema", "table"],
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Exact SQL schema name."
-                },
-                "table": {
-                    "type": "string",
-                    "description": "Exact table name within the SQL schema."
-                },
-                "pattern": {
-                    "type": "string",
-                    "description": "Optional Rust regex matched against column names, descriptions, and data types."
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Whether regex matching is case-insensitive. Defaults to true."
-                },
-                "required_only": {
-                    "type": "boolean",
-                    "description": "Only return columns that are required filters. Defaults to false."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum columns to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching columns to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
+        tool_input_schema::<ListColumnsArguments>(),
     )
     .with_raw_output_schema(list_columns_output_schema())
     .with_annotations(
@@ -298,25 +324,9 @@ pub(crate) fn feedback_tool() -> Tool {
     Tool::new(
         "feedback",
         "Submit feedback when you are blocked. Coral stores the report locally and uploads an anonymous copy, without user identifiers, to Coral's hosted feedback service to improve Coral's performance.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["trying_to_do", "tried", "stuck"],
-            "properties": {
-                "trying_to_do": {
-                    "type": "string",
-                    "description": "What you were trying to do."
-                },
-                "tried": {
-                    "type": "string",
-                    "description": "What you already tried."
-                },
-                "stuck": {
-                    "type": "string",
-                    "description": "Where you got blocked."
-                }
-            }
-        })),
+        tool_input_schema::<FeedbackArguments>(),
     )
+    .with_raw_output_schema(feedback_output_schema())
     .with_annotations(
         ToolAnnotations::with_title("Store Feedback Report")
             .read_only(false)
@@ -330,21 +340,7 @@ pub(crate) fn open_episode_tool() -> Tool {
     Tool::new(
         "open_episode",
         "Open a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["intent"],
-            "properties": {
-                "intent": {
-                    "type": "string",
-                    "description": "Natural-language description of the task this episode should group.",
-                    "minLength": 1,
-                    "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
-                },
-                "parent_episode_id": nullable_episode_id_schema(Some(
-                    "Optional parent episode id when this task is a child of an existing episode."
-                ))
-            }
-        })),
+        tool_input_schema::<OpenEpisodeArguments>(),
     )
     .with_raw_output_schema(open_episode_output_schema())
     .with_annotations(
@@ -380,6 +376,16 @@ pub(crate) fn open_episode_arguments(
     })
 }
 
+pub(crate) fn feedback_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<FeedbackArguments, ErrorData> {
+    Ok(FeedbackArguments {
+        trying_to_do: required_string_argument(arguments, "trying_to_do")?,
+        tried: required_string_argument(arguments, "tried")?,
+        stuck: required_string_argument(arguments, "stuck")?,
+    })
+}
+
 pub(crate) fn list_catalog_arguments(
     arguments: Option<&Map<String, Value>>,
 ) -> Result<ListCatalogArguments, ErrorData> {
@@ -398,7 +404,11 @@ pub(crate) fn search_catalog_arguments(
         schema: optional_string_argument(arguments, "schema")?,
         kind: optional_catalog_kind_argument(arguments)?,
         ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        pagination: parse_pagination_with_limits(arguments, 20, 100)?,
+        pagination: parse_pagination_with_limits(
+            arguments,
+            DEFAULT_SEARCH_LIMIT,
+            MAX_SEARCH_LIMIT,
+        )?,
     })
 }
 
@@ -408,14 +418,11 @@ fn optional_catalog_kind_argument(
     let Some(kind) = optional_string_argument(arguments, "kind")? else {
         return Ok(None);
     };
-    match kind.as_str() {
-        "table" => Ok(Some(CatalogToolKind::Table)),
-        "table_function" => Ok(Some(CatalogToolKind::TableFunction)),
-        _ => Err(ErrorData::invalid_params(
-            "argument 'kind' must be 'table' or 'table_function'",
-            None,
-        )),
-    }
+    serde_json::from_value(Value::String(kind))
+        .map(Some)
+        .map_err(|error| {
+            ErrorData::invalid_params(format!("invalid argument 'kind': {error}"), None)
+        })
 }
 
 pub(crate) fn describe_table_arguments(
@@ -504,6 +511,18 @@ fn search_catalog_description(context: &ToolDescriptionContext) -> String {
     )
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_pagination_limit() -> u32 {
+    DEFAULT_PAGINATION_LIMIT
+}
+
+fn default_search_limit() -> u32 {
+    DEFAULT_SEARCH_LIMIT
+}
+
 pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
     add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
     tool
@@ -522,14 +541,7 @@ fn add_episode_id_property(schema: &mut Map<String, Value>) {
 }
 
 fn nullable_episode_id_schema(description: Option<&str>) -> Value {
-    let mut schema = json!({
-        "anyOf": [
-            episode_id_string_schema(),
-            {
-                "type": "null"
-            }
-        ]
-    });
+    let mut schema = json_schema_value::<Option<EpisodeIdSchema>>();
     if let Some(description) = description {
         schema
             .as_object_mut()
@@ -539,365 +551,12 @@ fn nullable_episode_id_schema(description: Option<&str>) -> Value {
     schema
 }
 
-fn episode_id_string_schema() -> Value {
-    json!({
-        "type": "string",
-        "minLength": 1,
-        "maxLength": CORAL_EPISODE_ID_MAX_LEN,
-        "pattern": EPISODE_ID_JSON_SCHEMA_PATTERN
-    })
+fn feedback_output_schema() -> Arc<Map<String, Value>> {
+    tool_output_schema::<FeedbackStoredValue>()
 }
 
 fn open_episode_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["episode_id", "parent_episode_id", "message", "instructions"],
-        "additionalProperties": false,
-        "properties": {
-            "episode_id": episode_id_string_schema(),
-            "parent_episode_id": nullable_episode_id_schema(None),
-            "message": { "type": "string" },
-            "instructions": { "type": "string" }
-        }
-    }))
-}
-
-fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_table_item_output_schema(),
-                        catalog_table_function_item_output_schema()
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
-fn catalog_table_item_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["kind", "schema_name", "name", "sql_reference", "description", "table"],
-        "additionalProperties": false,
-        "properties": {
-            "kind": { "enum": ["table"] },
-            "schema_name": { "type": "string" },
-            "name": { "type": "string" },
-            "sql_reference": { "type": "string" },
-            "description": { "type": "string" },
-            "table": {
-                "type": "object",
-                "required": ["table_name", "guide", "required_filters"],
-                "additionalProperties": false,
-                "properties": {
-                    "table_name": { "type": "string" },
-                    "guide": { "type": "string" },
-                    "required_filters": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn catalog_table_function_item_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": [
-            "kind",
-            "schema_name",
-            "name",
-            "sql_reference",
-            "sql_call_example",
-            "description",
-            "table_function"
-        ],
-        "additionalProperties": false,
-        "properties": {
-            "kind": { "enum": ["table_function"] },
-            "schema_name": { "type": "string" },
-            "name": { "type": "string" },
-            "sql_reference": { "type": "string" },
-            "sql_call_example": { "type": "string" },
-            "description": { "type": "string" },
-            "table_function": {
-                "type": "object",
-                "required": ["function_name", "arguments", "result_columns"],
-                "additionalProperties": false,
-                "properties": {
-                    "function_name": { "type": "string" },
-                    "arguments": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["name", "required", "values"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "name": { "type": "string" },
-                                "required": { "type": "boolean" },
-                                "values": {
-                                    "type": "array",
-                                    "items": { "type": "string" }
-                                }
-                            }
-                        }
-                    },
-                    "result_columns": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["column_name", "data_type", "is_nullable", "description"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "column_name": { "type": "string" },
-                                "data_type": { "type": "string" },
-                                "is_nullable": { "type": "boolean" },
-                                "description": { "type": "string" }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
-                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
-fn catalog_search_item_output_schema(mut schema: Value) -> Value {
-    let object = schema
-        .as_object_mut()
-        .expect("catalog item schema is an object");
-    object
-        .get_mut("required")
-        .and_then(Value::as_array_mut)
-        .expect("catalog item schema has required array")
-        .push(json!("matched_fields"));
-    object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .expect("catalog item schema has properties object")
-        .insert(
-            "matched_fields".to_string(),
-            json!({
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": [
-                        "schema_name",
-                        "table_name",
-                        "function_name",
-                        "name",
-                        "description",
-                        "guide",
-                        "required_filters",
-                        "arguments",
-                        "result_columns"
-                    ]
-                }
-            }),
-        );
-    schema
-}
-
-fn list_columns_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "oneOf": [
-            list_columns_page_output_schema(),
-            missing_table_output_schema()
-        ]
-    }))
-}
-
-fn list_columns_page_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["schema_name", "table_name", "columns", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "columns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "column_name",
-                        "data_type",
-                        "is_nullable",
-                        "is_virtual",
-                        "is_required_filter",
-                        "description",
-                        "ordinal_position"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                        "column_name": { "type": "string" },
-                        "data_type": { "type": "string" },
-                        "is_nullable": { "type": "boolean" },
-                        "is_virtual": { "type": "boolean" },
-                        "is_required_filter": { "type": "boolean" },
-                        "description": { "type": "string" },
-                        "ordinal_position": {
-                            "type": "integer",
-                            "minimum": 0
-                        },
-                        "matched_fields": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "string",
-                                "enum": ["column_name", "description", "data_type"]
-                            }
-                        }
-                    }
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    })
-}
-
-fn missing_table_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggestions", "suggested_calls"],
-        "additionalProperties": false,
-        "properties": {
-            "found": { "enum": [false] },
-            "requested": {
-                "type": "object",
-                "required": ["schema", "table"],
-                "additionalProperties": false,
-                "properties": {
-                    "schema": { "type": "string" },
-                    "table": { "type": "string" }
-                }
-            },
-            "available_schemas": {
-                "type": "array",
-                "items": { "type": "string" }
-            },
-            "same_schema_tables": {
-                "type": "array",
-                "items": missing_table_summary_output_schema()
-            },
-            "suggestions": {
-                "type": "array",
-                "items": missing_table_summary_output_schema()
-            },
-            "suggested_calls": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["tool", "arguments"],
-                    "additionalProperties": false,
-                    "properties": {
-                        "tool": {
-                            "type": "string",
-                            "enum": ["search_catalog", "list_catalog"]
-                        },
-                        "arguments": { "type": "object" }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn missing_table_summary_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["schema_name", "table_name", "name", "description", "required_filters"],
-        "additionalProperties": false,
-        "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "name": { "type": "string" },
-            "description": { "type": "string" },
-            "required_filters": {
-                "type": "array",
-                "items": { "type": "string" }
-            }
-        }
-    })
+    tool_output_schema::<EpisodeOpenedValue>()
 }
 
 pub(crate) fn optional_string_argument(
@@ -928,6 +587,9 @@ fn optional_non_empty_string_argument(
     let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
         return Ok(None);
     };
+    if value.is_null() {
+        return Ok(None);
+    }
     let value = value.as_str().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
     })?;
@@ -999,6 +661,19 @@ mod tests {
         arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
         let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
         assert_eq!(search.kind, None);
+    }
+
+    #[test]
+    fn list_columns_pattern_accepts_null_as_omitted() {
+        let arguments = Map::from_iter([
+            ("schema".to_string(), Value::String("github".to_string())),
+            ("table".to_string(), Value::String("issues".to_string())),
+            ("pattern".to_string(), Value::Null),
+        ]);
+
+        let parsed = super::list_columns_arguments(Some(&arguments)).expect("list columns args");
+
+        assert_eq!(parsed.pattern, None);
     }
 
     #[test]

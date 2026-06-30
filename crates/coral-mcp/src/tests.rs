@@ -276,23 +276,27 @@ fn assert_tool_advertises_episode_id(tool: &Tool) {
 }
 
 fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
-    let any_of = schema
-        .get("anyOf")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("{label} episode id schema should use anyOf"));
-    let string_schema = any_of
-        .iter()
-        .find(|schema| schema.get("type") == Some(&json!("string")))
-        .unwrap_or_else(|| panic!("{label} episode id schema should accept strings"));
-    assert!(
-        any_of
-            .iter()
-            .any(|schema| schema.get("type") == Some(&json!("null"))),
-        "{label} episode id schema should accept null"
-    );
-    assert_eq!(string_schema["minLength"], json!(1));
-    assert_eq!(string_schema["maxLength"], json!(CORAL_EPISODE_ID_MAX_LEN));
-    assert_eq!(string_schema["pattern"], json!("^[!-~]+$"));
+    let compiled = JSONSchema::compile(schema)
+        .unwrap_or_else(|error| panic!("{label} episode id schema should compile: {error}"));
+    for valid in [json!(null), json!("episode-1")] {
+        if let Err(errors) = compiled.validate(&valid) {
+            let details = errors
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
+            panic!("{label} episode id schema rejected valid value {valid}: {details}");
+        }
+    }
+    for invalid in [
+        json!(""),
+        json!("episode with space"),
+        json!("x".repeat(CORAL_EPISODE_ID_MAX_LEN + 1)),
+    ] {
+        assert!(
+            compiled.validate(&invalid).is_err(),
+            "{label} episode id schema accepted invalid value {invalid}"
+        );
+    }
 }
 
 fn assert_tool_omits_episode_id(tool: &Tool) {

@@ -1,33 +1,77 @@
 use std::{collections::HashMap, sync::Arc};
 
 use rmcp::ErrorData;
+use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-use super::{ToolError, schema::json_object_schema, tool_error_output_schema};
+use super::{ToolError, schema::tool_input_schema, schema::tool_output_schema};
 
 pub(crate) const MAX_SQL_BATCH_QUERIES: usize = 10;
 const MAX_SQL_BATCH_RESULT_INDEX: usize = MAX_SQL_BATCH_QUERIES - 1;
 
+#[derive(JsonSchema)]
 pub(crate) struct SqlArguments {
+    #[schemars(
+        length(min = 1, max = MAX_SQL_BATCH_QUERIES),
+        inner(length(min = 1), pattern(r"\S")),
+        description = "One to ten independent read-only SQL statements to execute against Coral. Entries must not depend on one another's rows, errors, or side effects."
+    )]
     pub(crate) queries: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct SqlBatchValue {
+    #[schemars(range(min = 1, max = MAX_SQL_BATCH_QUERIES))]
     total_count: usize,
+    #[schemars(range(min = 0, max = MAX_SQL_BATCH_QUERIES))]
     success_count: usize,
+    #[schemars(range(min = 0, max = MAX_SQL_BATCH_QUERIES))]
     error_count: usize,
+    #[schemars(length(min = 1, max = MAX_SQL_BATCH_QUERIES))]
     results: Vec<SqlQueryResultValue>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 #[serde(tag = "status")]
 pub(crate) enum SqlQueryResultValue {
     #[serde(rename = "success")]
-    Success { index: usize, rows: Vec<Value> },
+    Success {
+        #[schemars(range(min = 0, max = MAX_SQL_BATCH_RESULT_INDEX))]
+        index: usize,
+        #[schemars(schema_with = "json_object_array_schema")]
+        rows: Vec<Value>,
+    },
     #[serde(rename = "error")]
-    Error { index: usize, error: ToolError },
+    Error {
+        #[schemars(range(min = 0, max = MAX_SQL_BATCH_RESULT_INDEX))]
+        index: usize,
+        error: ToolError,
+    },
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[schemars(extend("type" = "object"))]
+#[expect(
+    dead_code,
+    reason = "schema-only enum for the SQL tool output contract"
+)]
+enum SqlToolOutputSchema {
+    Success(SqlBatchValue),
+    PartialFailure(SqlPartialFailureOutput),
+}
+
+#[derive(JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[expect(
+    dead_code,
+    reason = "schema-only struct for the SQL partial-failure envelope"
+)]
+struct SqlPartialFailureOutput {
+    error: ToolError,
+    data: SqlBatchValue,
 }
 
 impl SqlBatchValue {
@@ -129,86 +173,16 @@ pub(crate) fn sql_arguments(
 }
 
 pub(crate) fn sql_input_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["queries"],
-        "properties": {
-            "queries": {
-                "type": "array",
-                "description": "One to ten independent read-only SQL statements to execute against Coral. Entries must not depend on one another's rows, errors, or side effects.",
-                "minItems": 1,
-                "maxItems": MAX_SQL_BATCH_QUERIES,
-                "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": r"\S"
-                }
-            }
-        }
-    }))
+    tool_input_schema::<SqlArguments>()
 }
 
 pub(crate) fn sql_output_schema() -> Arc<Map<String, Value>> {
-    let result_index_max = MAX_SQL_BATCH_RESULT_INDEX;
-    json_object_schema(&json!({
-        "type": "object",
-        "oneOf": [
-            { "$ref": "#/$defs/sql_batch" },
-            {
-                "type": "object",
-                "required": ["error", "data"],
-                "additionalProperties": false,
-                "properties": {
-                    "error": { "$ref": "#/$defs/tool_error" },
-                    "data": { "$ref": "#/$defs/sql_batch" }
-                }
-            }
-        ],
-        "$defs": {
-            "sql_batch": sql_batch_output_schema(result_index_max),
-            "tool_error": tool_error_output_schema()
-        }
-    }))
+    tool_output_schema::<SqlToolOutputSchema>()
 }
 
-fn sql_batch_output_schema(result_index_max: usize) -> Value {
-    json!({
-        "type": "object",
-        "required": ["total_count", "success_count", "error_count", "results"],
-        "additionalProperties": false,
-        "properties": {
-            "total_count": { "type": "integer", "minimum": 1, "maximum": MAX_SQL_BATCH_QUERIES },
-            "success_count": { "type": "integer", "minimum": 0, "maximum": MAX_SQL_BATCH_QUERIES },
-            "error_count": { "type": "integer", "minimum": 0, "maximum": MAX_SQL_BATCH_QUERIES },
-            "results": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": MAX_SQL_BATCH_QUERIES,
-                "items": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "required": ["index", "status", "rows"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "index": { "type": "integer", "minimum": 0, "maximum": result_index_max },
-                                "status": { "const": "success" },
-                                "rows": { "type": "array", "items": { "type": "object" } }
-                            }
-                        },
-                        {
-                            "type": "object",
-                            "required": ["index", "status", "error"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "index": { "type": "integer", "minimum": 0, "maximum": result_index_max },
-                                "status": { "const": "error" },
-                                "error": { "$ref": "#/$defs/tool_error" }
-                            }
-                        }
-                    ]
-                }
-            }
-        },
+fn json_object_array_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": { "type": "object" }
     })
 }
