@@ -24,6 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 82,
+    "Temporal": 8,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -9919,6 +9920,78 @@
       "expected": {
         "kind": "error",
         "contains": "arithmetic requires a numeric scalar expression"
+      }
+    },
+    {
+      "id": "temporal-date-string-constructor-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'date' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-datetime-string-constructor-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-01-01T12:34:56Z') AS dt",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'datetime' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-time-string-constructor-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN time('12:34:56Z') AS t",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'time' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-duration-string-constructor-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1Y2M3DT4H') AS dur",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'duration' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-map-constructor-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date({year: 2020, month: 1, day: 1}) AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'date' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-component-access-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01').year AS year",
+      "expected": {
+        "kind": "error",
+        "contains": "property references must be variable.property or startNode()/endNode() relationship endpoint properties"
+      }
+    },
+    {
+      "id": "temporal-date-duration-arithmetic-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') AS shifted",
+      "expected": {
+        "kind": "error",
+        "contains": "scalar function 'date' is not supported here"
+      }
+    },
+    {
+      "id": "temporal-duration-between-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-01'), date('2020-01-02')) AS gap",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'duration.between' is not supported yet"
       }
     }
   ]
