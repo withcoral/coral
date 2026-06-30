@@ -8,7 +8,7 @@
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
     "ListExpressions": 9,
-    "MapExpressions": 4,
+    "MapExpressions": 5,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -492,6 +492,19 @@
         "rows": [
           { "dotted": "static", "indexed": 7 },
           { "dotted": "static", "indexed": 7 }
+        ]
+      }
+    },
+    {
+      "id": "static-map-selected-expression-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE {active: p.active}['active'] = true RETURN ({name: p.name}).name AS name, {city: p.city}['city'] AS city, ({upper_city: toUpper(p.city)}).upper_city AS upper_city ORDER BY ({sort: p.age}).sort DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "city": "Paris", "upper_city": "PARIS" },
+          { "name": "Alice", "city": "London", "upper_city": "LONDON" }
         ]
       }
     },

@@ -10666,6 +10666,28 @@ fn compile_optional_graph_property_order_expression(
         return compile_scalar_order_expression(expression, projections, path.to_string())
             .map(Some);
     }
+    if let Some(literal) =
+        compile_optional_static_map_lookup_literal(expression, path.to_string(), context)
+            .ok()
+            .flatten()
+    {
+        return Ok(Some(OrderExpression::Literal(literal)));
+    }
+    if let Some(expression) = compile_optional_non_literal_static_map_lookup_scalar_expression(
+        expression,
+        path.to_string(),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: None,
+        },
+        context,
+    )? {
+        if let ScalarExpression::Property(property) = expression {
+            return Ok(Some(OrderExpression::Property(property)));
+        }
+        return compile_scalar_order_expression(expression, projections, path.to_string())
+            .map(Some);
+    }
     Ok(
         compile_optional_property_ref(expression, path.to_string(), Some(plan), context)?
             .map(OrderExpression::Property),
@@ -16441,6 +16463,11 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map_or(output_name, variable_name),
         }));
     }
+    if let Some(projection) =
+        compile_optional_static_map_lookup_projection(item, path.clone(), plan, state, context)?
+    {
+        return Ok(Some(projection));
+    }
     if let Some(property) = compile_optional_property_ref(
         &item.expression,
         format!("{path}.expression"),
@@ -16452,6 +16479,22 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map(variable_name),
         }));
     }
+    if let Some(projection) =
+        compile_optional_graph_list_scalar_projection(item, path.clone(), plan, state, context)?
+    {
+        return Ok(Some(projection));
+    }
+    Ok(None)
+}
+
+fn compile_optional_graph_list_scalar_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
     if let Some(expression) = compile_optional_path_list_index_scalar_expression(
         &item.expression,
         format!("{path}.expression"),
@@ -16525,6 +16568,61 @@ fn compile_optional_graph_scalar_projection(
         return Ok(Some(projection));
     }
     Ok(None)
+}
+
+fn compile_optional_static_map_lookup_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    if let Some(literal) = compile_optional_static_map_lookup_literal(
+        &item.expression,
+        format!("{path}.expression"),
+        context,
+    )
+    .ok()
+    .flatten()
+    {
+        let alias = item.alias.as_ref().map_or_else(
+            || {
+                static_map_lookup_output_name(&item.expression, context)
+                    .unwrap_or_else(|| "literal".to_string())
+            },
+            variable_name,
+        );
+        return Ok(Some(Projection::Literal { literal, alias }));
+    }
+
+    let mode = PredicateCompileMode::Graph {
+        plan,
+        path_state: Some(state),
+    };
+    let Some(expression) = compile_optional_non_literal_static_map_lookup_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        mode,
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    let alias = item.alias.as_ref().map_or_else(
+        || {
+            static_map_lookup_output_name(&item.expression, context)
+                .unwrap_or_else(|| "expression".to_string())
+        },
+        variable_name,
+    );
+    if let ScalarExpression::Property(property) = expression {
+        return Ok(Some(Projection::Property {
+            property,
+            alias: Some(alias),
+        }));
+    }
+    Ok(Some(Projection::Expression { expression, alias }))
 }
 
 fn compile_optional_non_literal_static_list_slice_projection(
@@ -18971,7 +19069,7 @@ fn compile_scalar_expression_in_predicate_mode(
             compile_scalar_expression_in_predicate_mode(inner, path, mode, context)
         }
         Expression::PropertyLookup { .. } => {
-            compile_property_lookup_scalar_expression_in_mode(expression, path, plan, context)
+            compile_property_lookup_scalar_expression_in_mode(expression, path, mode, context)
         }
         Expression::ListIndex { .. } => compile_list_index_scalar_or_property_expression_in_mode(
             expression, path, mode, context,
@@ -19056,9 +19154,10 @@ fn compile_scalar_expression_in_predicate_mode(
 fn compile_property_lookup_scalar_expression_in_mode(
     expression: &Expression,
     path: String,
-    plan: Option<&GraphPlan>,
+    mode: PredicateCompileMode<'_>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
+    let plan = mode.static_metadata_plan();
     if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
         expression,
         path.clone(),
@@ -19067,10 +19166,13 @@ fn compile_property_lookup_scalar_expression_in_mode(
     )? {
         return Ok(expression);
     }
-    if let Some(literal) =
-        compile_optional_static_map_lookup_literal(expression, path.clone(), context)?
-    {
-        return Ok(ScalarExpression::Literal(literal));
+    if let Some(expression) = compile_optional_static_map_lookup_scalar_expression(
+        expression,
+        path.clone(),
+        mode,
+        context,
+    )? {
+        return Ok(expression);
     }
     Ok(ScalarExpression::Property(compile_property_ref(
         expression, path, plan, context,
@@ -19619,37 +19721,18 @@ fn compile_optional_predicate_scalar_expression(
 ) -> Result<Option<ScalarExpression>, CoreError> {
     let path = path.into();
     let plan = mode.static_metadata_plan();
+    if let Some(expression) =
+        compile_optional_static_map_lookup_predicate_scalar(expression, &path, mode, context)?
+    {
+        return Ok(Some(expression));
+    }
     match expression {
         Expression::Parenthesized(inner) => {
             compile_optional_predicate_scalar_expression(inner, path, mode, context)
         }
-        Expression::ListIndex { .. } => match plan {
-            Some(plan) => {
-                if let Some(expression) = compile_optional_path_list_index_scalar_expression(
-                    expression,
-                    path.clone(),
-                    mode,
-                    context,
-                )? {
-                    return Ok(Some(expression));
-                }
-                if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
-                    expression,
-                    path.clone(),
-                    plan,
-                    context,
-                )? {
-                    return Ok(Some(expression));
-                }
-                compile_optional_static_list_index_scalar_expression(
-                    expression,
-                    path,
-                    Some(plan),
-                    context,
-                )
-            }
-            None => Ok(None),
-        },
+        Expression::ListIndex { .. } => {
+            compile_optional_predicate_list_index_scalar_expression(expression, path, mode, context)
+        }
         Expression::ListSlice { .. } => {
             compile_optional_predicate_list_slice_scalar_expression(expression, path, mode, context)
         }
@@ -19717,6 +19800,46 @@ fn compile_optional_predicate_scalar_expression(
         }
         _ => Ok(None),
     }
+}
+
+fn compile_optional_predicate_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Some(plan) = mode.static_metadata_plan() else {
+        return Ok(None);
+    };
+    if let Some(expression) =
+        compile_optional_path_list_index_scalar_expression(expression, path.clone(), mode, context)?
+    {
+        return Ok(Some(expression));
+    }
+    if let Some(expression) = compile_optional_metadata_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        plan,
+        context,
+    )? {
+        return Ok(Some(expression));
+    }
+    compile_optional_static_list_index_scalar_expression(expression, path, Some(plan), context)
+}
+
+fn compile_optional_static_map_lookup_predicate_scalar(
+    expression: &Expression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    compile_optional_non_literal_static_map_lookup_scalar_expression(
+        expression,
+        path.to_string(),
+        mode,
+        context,
+    )
 }
 
 fn compile_optional_predicate_list_slice_scalar_expression(
@@ -29284,6 +29407,11 @@ fn compile_optional_property_ref(
     context: &CypherCompileContext,
 ) -> Result<Option<PropertyRef>, CoreError> {
     let path = path.into();
+    if let Some(property) =
+        compile_optional_static_map_lookup_property_ref(expression, path.clone(), plan, context)?
+    {
+        return Ok(Some(property));
+    }
     match expression {
         Expression::Parenthesized(inner) => {
             compile_optional_property_ref(inner, path, plan, context)
@@ -30132,6 +30260,131 @@ fn compile_optional_static_map_lookup_literal(
     compile_static_map_lookup_literal(expression, path, context).map(Some)
 }
 
+fn compile_optional_static_map_lookup_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    if !is_static_map_lookup_expression(expression) {
+        return Ok(None);
+    }
+    compile_static_map_lookup_scalar_expression(expression, path, mode, context).map(Some)
+}
+
+fn compile_optional_non_literal_static_map_lookup_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    if !is_static_map_lookup_expression(expression) {
+        return Ok(None);
+    }
+    if compile_static_map_lookup_literal(expression, path.clone(), context).is_ok() {
+        return Ok(None);
+    }
+    compile_static_map_lookup_scalar_expression(expression, path, mode, context).map(Some)
+}
+
+fn compile_optional_static_map_lookup_property_ref(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<PropertyRef>, CoreError> {
+    let Some(expression) = compile_optional_non_literal_static_map_lookup_scalar_expression(
+        expression,
+        path,
+        PredicateCompileMode::CaseWhen { plan },
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    match expression {
+        ScalarExpression::Property(property) => Ok(Some(property)),
+        _ => Ok(None),
+    }
+}
+
+fn compile_static_map_lookup_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_static_map_lookup_scalar_expression(inner, path, mode, context)
+        }
+        Expression::PropertyLookup { base, property, .. } => {
+            let Some(map) = literal_map_expression(base) else {
+                return Err(unsupported(
+                    path,
+                    "static map property lookups require a literal map base",
+                ));
+            };
+            compile_static_map_key_scalar_expression(map, &property.name.name, path, mode, context)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(map) = literal_map_expression(list) else {
+                return Err(unsupported(
+                    path,
+                    "static map index lookups require a literal map base",
+                ));
+            };
+            let key = compile_property_index_name(index, format!("{path}.index"), context)?;
+            compile_static_map_key_scalar_expression(map, &key, path, mode, context)
+        }
+        _ => Err(unsupported(
+            path,
+            "static map lookups must be map.property or map['property'] expressions",
+        )),
+    }
+}
+
+fn compile_static_map_key_scalar_expression(
+    map: &MapLiteral,
+    key: &str,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let Some((_, value)) = map
+        .entries
+        .iter()
+        .rev()
+        .find(|(entry_key, _)| entry_key.name.name == key)
+    else {
+        return Ok(ScalarExpression::Literal(Literal::Null));
+    };
+    compile_static_map_value_scalar_expression(value, format!("{path}.value"), mode, context)
+}
+
+fn compile_static_map_value_scalar_expression(
+    value: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    if let Some(source) = context.truncated_inline_property_value_source(value) {
+        let (expression, fragment_context) =
+            parse_cypher_expression_fragment(&source.source, path.clone(), context)?;
+        return compile_scalar_expression_in_predicate_mode(
+            &expression,
+            path,
+            mode,
+            &fragment_context,
+        );
+    }
+    compile_scalar_expression_in_predicate_mode(value, path, mode, context)
+}
+
 fn compile_static_map_lookup_literal(
     expression: &Expression,
     path: impl Into<String>,
@@ -30181,7 +30434,21 @@ fn compile_static_map_key_literal(
     else {
         return Ok(Literal::Null);
     };
-    compile_literal(value, format!("{path}.value"), context)
+    compile_static_map_value_literal(value, format!("{path}.value"), context)
+}
+
+fn compile_static_map_value_literal(
+    value: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    if let Some(source) = context.truncated_inline_property_value_source(value) {
+        let (expression, fragment_context) =
+            parse_cypher_expression_fragment(&source.source, path.clone(), context)?;
+        return compile_literal(&expression, path, &fragment_context);
+    }
+    compile_literal(value, path, context)
 }
 
 fn literal_map_expression(expression: &Expression) -> Option<&MapLiteral> {
@@ -30198,6 +30465,24 @@ fn is_static_map_lookup_expression(expression: &Expression) -> bool {
         Expression::PropertyLookup { base, .. } => literal_map_expression(base).is_some(),
         Expression::ListIndex { list, .. } => literal_map_expression(list).is_some(),
         _ => false,
+    }
+}
+
+fn static_map_lookup_output_name(
+    expression: &Expression,
+    context: &CypherCompileContext,
+) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => static_map_lookup_output_name(inner, context),
+        Expression::PropertyLookup { base, property, .. }
+            if literal_map_expression(base).is_some() =>
+        {
+            Some(property.name.name.clone())
+        }
+        Expression::ListIndex { list, index, .. } if literal_map_expression(list).is_some() => {
+            compile_property_index_name(index, "projection.alias", context).ok()
+        }
+        _ => None,
     }
 }
 
@@ -40430,18 +40715,58 @@ relationships:
     }
 
     #[test]
-    fn rejects_dynamic_literal_map_value_lookups() {
-        let error = compile_cypher(
+    fn compiles_static_map_value_lookups_over_graph_scalars() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
-             RETURN {name: service.name}['name'] AS name",
+             WHERE {tier: service.tier}['tier'] = 'prod' \
+             RETURN {name: service.name}['name'] AS name, \
+                    ({tier_upper: toUpper(service.tier)}).tier_upper AS tier_upper \
+             ORDER BY ({sort: service.name}).sort",
         )
-        .expect_err("dynamic map values should still require a map-value IR");
+        .expect("static map value lookups should compile selected graph scalar expressions");
 
-        assert!(
-            error
-                .to_string()
-                .contains("only string, numeric, boolean, and null literals are supported"),
-            "{error}"
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("name".to_string()),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::ToUpper {
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "tier".to_string(),
+                        })),
+                    },
+                    alias: "tier_upper".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
         );
     }
 
