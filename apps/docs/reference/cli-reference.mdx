@@ -83,8 +83,9 @@ List sources currently installed.
 coral source list
 ```
 
-The output includes the source's secret storage route: `keychain` or
-`file (plaintext)`.
+The output includes the source's stored-secret route, such as
+`database (encrypted)`, `keychain` for legacy keychain-backed sources, or
+`none`.
 
 ### `coral source info <NAME>`
 
@@ -147,11 +148,9 @@ coral source add --interactive github
 
 If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
-Sources use OS credential storage by default when Coral can write, read, and
-delete a keychain probe item. If the keychain is unavailable in `auto` mode,
-Coral stores the source secrets in plaintext file storage and shows
-`file (plaintext)` in source output. Sources with no stored secret material show
-`none`.
+New sources with stored secret material show `database (encrypted)` in source
+output. Legacy keychain-backed sources may still show `keychain`, and sources
+with no stored secret material show `none`.
 
 ### `coral source lint <FILE>`
 
@@ -180,9 +179,9 @@ coral source remove github
 
 ## `coral workspace`
 
-Manage local workspaces. Workspaces isolate installed source metadata and
-workspace-scoped artifacts such as source manifests, local credential material,
-feedback reports, episode logs, and workspace-attributed local trace history.
+Manage local workspaces. Workspaces isolate installed source metadata,
+source-scoped credential material, feedback reports, episode records, and
+workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
 installation in that workspace. Reusable global source specs and reusable

@@ -97,9 +97,7 @@ impl AppStateLayout {
         self.config_dir.join("credentials").join("encryption.key")
     }
 
-    /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
-    /// episode store appends `OpenEpisode` records here; indexing and retrieval
-    /// land in a later PR.
+    /// Legacy per-workspace episode log imported into the database at startup.
     pub(crate) fn episodes_file(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name)
             .join("episodes")

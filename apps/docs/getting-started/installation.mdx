@@ -221,9 +221,10 @@ On Windows, the default local state path is
 
 Important files include:
 
-- `config.toml` for installed-source metadata, non-secret variables, and runtime settings. See [Configuration](/reference/configuration).
-- imported source specs under `workspaces/<workspace>/sources/<source>/manifest.yaml`
-- source secrets stored separately within the same local trust boundary
+- `config.toml` for runtime settings such as feature flags, tracing, and database bootstrap configuration. See [Configuration](/reference/configuration).
+- `coral.db`, the default local Coral database for installed-source metadata, imported source specs, DSL v4 materialization metadata, feedback reports, episode records, trace summaries, and non-secret variables
+- `credentials/encryption.key`, the local key material used to protect encrypted credential documents
+- `telemetry/traces`, the local raw trace span store when trace history is enabled
 
 <Note>
   [Bundled source](/reference/bundled-sources) specs are not copied into the config directory. Coral resolves them from the current binary when you validate or query a bundled source, so upgrades pick up newer bundled manifests without re-adding the source.

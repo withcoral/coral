@@ -41,14 +41,21 @@ root.
   `catalog/` as the main internal boundaries. Do not create new sub-boundaries
   unless they own durable, independent behavior.
 - Keep RDBMS-backed durable app-state infrastructure under `state/db`. The
-  initial DB bootstrap may coexist with filesystem-backed source behavior, but
   repository wiring must keep SQLx pools, transactions, SeaQuery schema
   identifiers, and row structs inside that module.
 - DB repository behavior should have shared tests that run against SQLite
   locally and Postgres in CI through the repository harness.
-- Until the RDBMS migration phases replace the relevant stores, persist
-  imported manifests as files under app-owned state; do not inline them into
-  `config.toml`.
+- Treat the local database as the durable store for source catalog metadata,
+  imported manifests, DSL v4 materialization records, encrypted credential
+  documents, feedback reports, episodes, and trace summaries. Legacy filesystem
+  artifacts are migration inputs only unless a test explicitly constructs a
+  filesystem-backed manager.
+- Legacy file-backed source credential material migrates into encrypted
+  database documents. Legacy keychain-backed source credential material remains
+  keychain-routed until the source credentials are replaced.
+- Keep raw trace spans and optional HTTP/MCP body captures out of the database.
+  The database may index trace summaries derived from the local trace span
+  store.
 - Persist DSL v4 imported manifests as authored intent plus durability
   normalization only. Descriptor hashes, generated OpenAPI metadata, semantic
   IR, projections, and package fingerprints belong in materialized artifacts

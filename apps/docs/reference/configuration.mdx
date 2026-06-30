@@ -7,9 +7,13 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 
 ## Managed state
 
-Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
+Coral writes runtime configuration to `config.toml` and durable app state to
+the local database.
 
-This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
+The database stores installed-source metadata, imported source specs, DSL v4
+materialization metadata, feedback reports, episode records, trace summaries,
+and non-secret source variables. New source secrets are stored as encrypted
+database documents within the same local trust boundary.
 
 <Note>
   Prefer the `coral source` commands for source state instead of editing workspace entries manually.
@@ -25,23 +29,62 @@ exists automatically, and additional workspaces can be managed with
 [workspaces.default]
 
 [workspaces.work]
-
-[workspaces.work.sources.github]
-version = "1.0.0"
-variables = {}
-secrets = ["GITHUB_TOKEN"]
-origin = "bundled"
 ```
 
 An empty workspace is represented by an explicit `[workspaces.<name>]` table.
-Installed sources for that workspace live under
-`[workspaces.<name>.sources.<source>]`.
+Current builds persist installed sources in the database. Older
+`[workspaces.<name>.sources.<source>]` entries are legacy source-catalog inputs
+that Coral imports into the database on startup and removes from `config.toml`
+after the import is validated. This source-catalog migration is one-way for
+current releases: downgrading to an older config-backed Coral build does not
+automatically restore those config entries.
 
 There is no separate active-workspace key in `config.toml`; use
 `CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
-Source specs imported from files and source credential material remain scoped
-to the source installation in a workspace. Reusable global source specs and
-reusable credential references are not config objects today.
+Installed source specs and source credential material remain scoped to the
+source installation in a workspace. Reusable global source specs and reusable
+credential references are not config objects today.
+
+If you need to run an older build after this migration, re-add bundled sources
+with `coral source add <NAME>`. Re-add imported sources with
+`coral source add --file <PATH>`, using the original source-spec file you used
+for installation.
+
+Raw trace span JSONL and optional HTTP/MCP body captures remain outside the
+database. Trace summaries are indexed in the database from the local trace span
+store.
+
+## Database
+
+By default, Coral uses a local SQLite database at `coral.db` in the local state
+directory.
+
+Use `[database]` to choose a different SQLite path:
+
+```toml
+[database]
+backend = "sqlite"
+path = "state/custom.db"
+```
+
+Relative SQLite paths are resolved under the local state directory. Absolute
+paths are used as-is.
+
+Use Postgres by pointing Coral at an environment variable containing the
+connection URL:
+
+```toml
+[database]
+backend = "postgres"
+url_env = "CORAL_DATABASE_URL"
+```
+
+When you use Postgres, that server becomes part of Coral's local-state trust
+boundary. Coral writes installed-source metadata, imported source specs,
+non-secret variables, trace summaries, and encrypted credential documents to
+the configured database. Keep the connection URL secret, use a Postgres host
+and network path you trust, and use hostname-verified TLS for non-loopback
+servers.
 
 ## Runtime features
 

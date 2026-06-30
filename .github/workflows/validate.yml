@@ -194,13 +194,18 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Install Postgres client
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
       - name: Run Postgres database tests
         env:
           CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+          CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL: postgres://postgres:postgres@localhost:5432/coral_server_lifecycle
+          PGPASSWORD: postgres
         run: |
           cargo test --locked -p coral-app \
-            state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
-            -- --ignored
+            state::db::repositories \
+            -- --ignored --test-threads=1
           cargo test --locked -p coral-app \
             state::db::repositories::sources::tests::source_repository_round_trips_against_postgres \
             -- --ignored
@@ -249,7 +254,18 @@ jobs:
           cargo test --locked -p coral-app \
             state::db::import::tests::concurrent_v4_materialization_backfill_race_is_benign_postgres \
             -- --ignored
-          cargo test --locked -p coral-app \
+
+          cleanup_lifecycle_db() {
+            psql --host localhost --username postgres --dbname postgres \
+              --command 'DROP DATABASE IF EXISTS coral_server_lifecycle WITH (FORCE);'
+          }
+          trap cleanup_lifecycle_db EXIT
+          cleanup_lifecycle_db
+          psql --host localhost --username postgres --dbname postgres \
+            --command 'CREATE DATABASE coral_server_lifecycle;'
+
+          CORAL_TEST_POSTGRES_URL="${CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL}" \
+            cargo test --locked -p coral-app \
             --test grpc server_lifecycle_can_start_with_postgres_database_config \
             -- --ignored
 

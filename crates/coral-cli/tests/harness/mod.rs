@@ -374,6 +374,15 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Imported as i32,
             credential_storage: SourceCredentialStorage::File as i32,
         }),
+        "database_source" => Ok(SourceInfo {
+            name: "database_source".to_string(),
+            description: "Database-backed source".to_string(),
+            version: "3.0.0".to_string(),
+            inputs: Vec::new(),
+            installed: true,
+            origin: SourceOrigin::Imported as i32,
+            credential_storage: SourceCredentialStorage::Database as i32,
+        }),
         "versionless" => Ok(SourceInfo {
             name: "versionless".to_string(),
             description: String::new(),
