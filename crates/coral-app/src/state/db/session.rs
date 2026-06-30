@@ -12,8 +12,6 @@ use crate::state::db::repositories::workspaces::WorkspacesRepo;
 pub(crate) trait DbSession {
     async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError>;
 
-    async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
-
     async fn fetch_optional<T>(&mut self, statement: SelectStatement) -> Result<Option<T>, DbError>
     where
         T: Send + Unpin,
@@ -25,6 +23,10 @@ pub(crate) trait DbSession {
         T: Send + Unpin,
         for<'r> T: FromRow<'r, SqliteRow>,
         for<'r> T: FromRow<'r, PgRow>;
+}
+
+pub(crate) trait DbWriteSession: DbSession {
+    async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
@@ -42,10 +44,6 @@ impl<T> DbRepos for T where T: DbSession + Sized {}
 impl DbSession for &CoralDb {
     async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError> {
         execute_statement(&self.backend, statement).await
-    }
-
-    async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError> {
-        execute_delete_statement(&self.backend, statement).await
     }
 
     async fn fetch_optional<T>(&mut self, statement: SelectStatement) -> Result<Option<T>, DbError>
@@ -67,13 +65,15 @@ impl DbSession for &CoralDb {
     }
 }
 
+impl DbWriteSession for CoralTx<'_> {
+    async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError> {
+        self.execute_delete(statement).await
+    }
+}
+
 impl DbSession for CoralTx<'_> {
     async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError> {
         self.execute(statement).await
-    }
-
-    async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError> {
-        self.execute_delete(statement).await
     }
 
     async fn fetch_optional<T>(&mut self, statement: SelectStatement) -> Result<Option<T>, DbError>
@@ -98,27 +98,6 @@ impl DbSession for CoralTx<'_> {
 pub(super) async fn execute_statement(
     backend: &CoralDbBackend,
     statement: InsertStatement,
-) -> Result<(), DbError> {
-    match backend {
-        CoralDbBackend::Sqlite(db) => {
-            let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
-            sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
-                .execute(&db.pool)
-                .await?;
-        }
-        CoralDbBackend::Postgres(db) => {
-            let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
-            sqlx::query_with::<Postgres, _>(sqlx::AssertSqlSafe(sql), values)
-                .execute(&db.pool)
-                .await?;
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn execute_delete_statement(
-    backend: &CoralDbBackend,
-    statement: DeleteStatement,
 ) -> Result<(), DbError> {
     match backend {
         CoralDbBackend::Sqlite(db) => {
