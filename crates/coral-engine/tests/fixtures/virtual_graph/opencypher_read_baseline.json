@@ -11,7 +11,7 @@
     "LiteralExpressions": 2,
     "MapExpressions": 5,
     "Match": 3,
-    "MathematicalFunctions": 6,
+    "MathematicalFunctions": 18,
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 3,
@@ -1994,6 +1994,206 @@
             "age_is_nan": false
           }
         ]
+      }
+    },
+    {
+      "id": "age-addition-return-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age + 5 AS age_plus_five ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age_plus_five": 39
+          },
+          {
+            "name": "Bob",
+            "age_plus_five": 34
+          },
+          {
+            "name": "Carol",
+            "age_plus_five": 46
+          }
+        ]
+      }
+    },
+    {
+      "id": "arithmetic-precedence-predicate",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' AND 12 / 4 * 3 - 2 * 4 = 1 AND 12 / 4 * (3 - 2 * 4) = -15 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "multiplication-division-modulo-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age * 2 AS doubled_age, p.age % 5 AS age_mod_five, round(p.age / 10.0, 1) AS age_decade ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "doubled_age": 68,
+            "age_mod_five": 4,
+            "age_decade": 3.4
+          },
+          {
+            "name": "Bob",
+            "doubled_age": 58,
+            "age_mod_five": 4,
+            "age_decade": 2.9
+          },
+          {
+            "name": "Carol",
+            "doubled_age": 82,
+            "age_mod_five": 1,
+            "age_decade": 4.1
+          }
+        ]
+      }
+    },
+    {
+      "id": "unary-negation-return-ordering",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, -p.age AS negative_age ORDER BY negative_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "negative_age": -41
+          },
+          {
+            "name": "Alice",
+            "negative_age": -34
+          },
+          {
+            "name": "Bob",
+            "negative_age": -29
+          }
+        ]
+      }
+    },
+    {
+      "id": "power-operator-return-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name <> 'Bob' RETURN p.name AS name, toInteger((p.age - 30) ^ 2) AS offset_squared ORDER BY offset_squared",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "offset_squared": 16
+          },
+          {
+            "name": "Carol",
+            "offset_squared": 121
+          }
+        ]
+      }
+    },
+    {
+      "id": "ceiling-and-ln-aliases",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger(ceiling(p.age / 10.0)) AS decade_ceiling, toInteger(round(ln(e()), 0)) AS natural_log_e",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "decade_ceiling": 4,
+            "natural_log_e": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "sqrt-return-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN sqrt(12.96) AS root",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "root": 3.6
+          }
+        ]
+      }
+    },
+    {
+      "id": "tangent-and-cotangent-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN round(tan(radians(45.0)), 2) AS tangent, round(cot(radians(45.0)), 2) AS cotangent",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "tangent": 1.0,
+            "cotangent": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "inverse-trig-function-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN round(degrees(asin(1.0)), 0) AS asin_degrees, round(degrees(acos(0.0)), 0) AS acos_degrees, round(degrees(atan(1.0)), 0) AS atan_degrees",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "asin_degrees": 90.0,
+            "acos_degrees": 90.0,
+            "atan_degrees": 45.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "atan2-quadrant-projection",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN round(degrees(atan2(1.0, -1.0)), 0) AS angle_degrees",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "angle_degrees": 135.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "rand-function-rejected",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN rand() AS value",
+      "expected": {
+        "kind": "error",
+        "contains": "RETURN function 'rand' is not supported yet"
+      }
+    },
+    {
+      "id": "atan2-wrong-arity-rejected",
+      "feature": "MathematicalFunctions",
+      "query": "MATCH (p:Person) RETURN atan2(p.age) AS angle",
+      "expected": {
+        "kind": "error",
+        "contains": "atan2() requires exactly two arguments"
       }
     },
     {
