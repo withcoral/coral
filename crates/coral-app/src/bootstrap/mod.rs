@@ -26,6 +26,11 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
+#[cfg(test)]
+pub(crate) fn env_var(name: &str) -> Result<Option<String>, std::env::VarError> {
+    env::AppEnvironment::env_var(name)
+}
+
 /// Startup context for one workspace's MCP session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceMcpStartupContext {
