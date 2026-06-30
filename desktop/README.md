@@ -13,12 +13,13 @@ main process serves the built Reef client from an ephemeral loopback HTTP port
 so React Router can run with a normal browser origin. The Coral sidecar remains
 responsible for the local gRPC-Web/API runtime.
 
-The app also exposes desktop actions for installing a `coral` command and
-configuring common MCP clients. The command installer follows the VS Code
-pattern: it creates a PATH-visible symlink to an entrypoint inside the `.app`
-bundle, `Contents/Resources/bin/coral`, which then execs the bundled CLI
-binary. It does not edit shell startup files. MCP config updates are delegated
-to `add-mcp` so client-specific file formats stay out of the Electron shell.
+The app exposes a Settings page for connecting Coral as an MCP server in Codex
+and Claude Code. MCP config updates are delegated to `add-mcp` so
+client-specific file formats stay out of the Electron shell.
+
+This prototype intentionally does not include a CLI alias installer, MCP
+connection tests, Claude Desktop setup, onboarding, auto-update, signing, or
+notarization yet.
 
 ## Development
 

@@ -16,17 +16,10 @@ export interface McpConfigureResult {
   configPath: string
 }
 
-export interface McpTestResult {
-  client: McpClientDescriptor
-  launchUrl: string
-  message: string
-}
-
 export interface CoralDesktopApi {
   awaitInitialization(): Promise<SidecarInfo>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
   listMcpClients(): Promise<McpClientDescriptor[]>
-  testMcp(clientId: McpClientId): Promise<McpTestResult>
 }
 
 declare global {

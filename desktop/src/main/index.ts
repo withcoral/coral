@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
 import { configureMcpClient, mcpClients } from './mcp-config'
-import { openMcpConnectionTest } from './mcp-test'
 import { startReefRendererServer, type ReefRendererServer } from './reef-renderer'
 import { startCoralSidecar, type CoralSidecar } from './sidecar'
 
@@ -145,7 +144,6 @@ function registerIpcHandlers() {
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
-  ipcMain.handle('coral:test-mcp', (_event, clientId: McpClientId) => openMcpConnectionTest(clientId))
 }
 
 function installMenu() {

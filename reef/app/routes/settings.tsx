@@ -13,14 +13,10 @@ import { addToast } from '@/wax/components/toast'
 
 import * as styles from './settings.css'
 
-type PendingAction =
-  | { clientId: McpClientId; kind: 'connect' }
-  | { clientId: McpClientId; kind: 'test' }
-  | null
+type PendingAction = { clientId: McpClientId; kind: 'connect' } | null
 
 type ClientStatus = Partial<Record<McpClientId, string>>
-type PendingKind = 'connect' | 'test'
-const TESTABLE_CLIENT_IDS = new Set<McpClientId>()
+type PendingKind = 'connect'
 
 const CLIENT_ICONS = {
   'claude-code': 'Bot',
@@ -85,26 +81,6 @@ export default function SettingsRoute() {
     }
   }
 
-  async function handleTestMcp(client: McpClientDescriptor) {
-    if (!desktop) return
-
-    setPending({ clientId: client.id, kind: 'test' })
-    try {
-      const result = await desktop.testMcp(client.id)
-      addToast('success', {
-        description: result.message,
-        title: `${client.name} test opened`,
-      })
-    } catch (error) {
-      addToast('error', {
-        description: desktopErrorMessage(error),
-        title: `${client.name} test failed`,
-      })
-    } finally {
-      setPending(null)
-    }
-  }
-
   return (
     <main className={styles.page}>
       <div className={styles.container}>
@@ -128,9 +104,7 @@ export default function SettingsRoute() {
             {clients.map((client) => {
               const connectedPath = clientStatus[client.id]
               const configPath = connectedPath ?? client.configPath
-              const canTest = TESTABLE_CLIENT_IDS.has(client.id)
               const connectPending = isPending(pending, 'connect', client.id)
-              const testPending = isPending(pending, 'test', client.id)
 
               return (
                 <article className={styles.clientCard} key={client.id}>
@@ -149,18 +123,6 @@ export default function SettingsRoute() {
 
                   <div className={styles.cardFooter}>
                     <div className={styles.cardActions}>
-                      {canTest && (
-                        <Button.Container
-                          disabled={!isDesktopAvailable || testPending}
-                          onClick={() => handleTestMcp(client)}
-                          size="32"
-                          variant="bare"
-                        >
-                          <Button.Icon name="Play" />
-                          <Button.Text>{testPending ? 'Opening' : 'Test'}</Button.Text>
-                        </Button.Container>
-                      )}
-
                       <Button.Container
                         disabled={!isDesktopAvailable || connectPending}
                         onClick={() => handleConnectMcp(client)}
