@@ -7,13 +7,17 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
+    "clean:dist": "node ./scripts/clean-dist.mjs",
     "dev": "node ./scripts/dev.mjs",
-    "prebuild": "node ./scripts/stage-coral.mjs",
+    "prebuild": "npm run clean:dist && node ./scripts/stage-coral.mjs",
     "build": "electron-vite build --ignoreConfigWarning",
     "type-check": "tsc --noEmit",
     "check": "npm run type-check",
+    "prepackage": "npm run clean:dist",
     "package": "electron-builder --config electron-builder.config.ts",
+    "prepackage:dir": "npm run clean:dist",
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
+    "prepackage:dmg": "npm run clean:dist",
     "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
