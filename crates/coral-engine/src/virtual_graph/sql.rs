@@ -744,6 +744,12 @@ impl<'a> Lowerer<'a> {
         pattern: &CountSubqueryPattern,
         precomputed: &PrecomputedScalarSubquery,
     ) -> Result<Option<String>, CoreError> {
+        let distinct_target = match &precomputed.candidate {
+            ScalarSubqueryCandidate::Count {
+                distinct_target, ..
+            } => distinct_target.as_ref(),
+            _ => None,
+        };
         let CountSubqueryPattern::Nodes {
             nodes,
             predicates,
@@ -756,6 +762,16 @@ impl<'a> Lowerer<'a> {
         };
         if pattern.references_outer_variables() {
             let local_aliases = Self::count_local_node_aliases(nodes);
+            if let Some(target) = distinct_target {
+                return self.render_precomputed_correlated_node_distinct_count_subquery_join(
+                    nodes,
+                    predicates,
+                    predicate.as_deref(),
+                    &local_aliases,
+                    precomputed,
+                    target,
+                );
+            }
             return self.render_precomputed_correlated_node_scalar_subquery_join(
                 nodes,
                 predicates,
@@ -764,6 +780,22 @@ impl<'a> Lowerer<'a> {
                 precomputed,
                 "COUNT(*)",
             );
+        }
+        if let Some(target) = distinct_target {
+            let value_expression = self.render_count_distinct_node_subquery(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                target,
+            )?;
+            let select_expression = format!(
+                "{value_expression} AS {}",
+                quote_ident(&precomputed.value_alias)
+            );
+            return Ok(Some(format!(
+                "CROSS JOIN (SELECT {select_expression}) AS {}",
+                quote_ident(&precomputed.table_alias)
+            )));
         }
         let select_expression = format!("COUNT(*) AS {}", quote_ident(&precomputed.value_alias));
         Ok(Some(format!(
@@ -799,6 +831,84 @@ impl<'a> Lowerer<'a> {
             );
         }
         self.render_precomputed_relationship_scalar_subquery_join(predicate, precomputed)
+    }
+
+    fn render_precomputed_correlated_node_distinct_count_subquery_join(
+        &self,
+        nodes: &[NodePattern],
+        predicates: &[PropertyPredicate],
+        predicate: Option<&PredicateExpression>,
+        local_aliases: &BTreeMap<&str, String>,
+        precomputed: &PrecomputedScalarSubquery,
+        target: &ScalarExpression,
+    ) -> Result<Option<String>, CoreError> {
+        let local_nodes = self.scoped_local_node_map(nodes)?;
+        let Some(correlation) =
+            self.precomputed_node_correlation(predicates, predicate, &local_nodes, local_aliases)?
+        else {
+            return Ok(None);
+        };
+        let relationship_bindings = Vec::new();
+        if !Self::scoped_scalar_expression_is_inner(target, &relationship_bindings, &local_nodes) {
+            return Ok(None);
+        }
+
+        let mut conditions = Vec::with_capacity(
+            predicates
+                .len()
+                .saturating_sub(1)
+                .saturating_add(usize::from(predicate.is_some())),
+        );
+        for (index, property_predicate) in predicates.iter().enumerate() {
+            if index == correlation.predicate_index {
+                continue;
+            }
+            conditions.push(self.render_exists_property_predicate(
+                property_predicate,
+                &relationship_bindings,
+                &local_nodes,
+                local_aliases,
+            )?);
+        }
+        if let Some(predicate) = predicate {
+            conditions.push(self.render_scoped_predicate_expression(
+                predicate,
+                &relationship_bindings,
+                &local_nodes,
+                local_aliases,
+            )?);
+        }
+        let target_sql = self.render_scoped_scalar_expression(
+            target,
+            &relationship_bindings,
+            &local_nodes,
+            local_aliases,
+        )?;
+        let from_clause =
+            Self::render_precomputed_node_from_clause(nodes, &local_nodes, local_aliases)?;
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+        let outer_key_alias = quote_ident(&precomputed.outer_key_alias);
+        let value_alias = quote_ident(&precomputed.value_alias);
+        let distinct_alias = quote_ident("__coral_count_distinct");
+        let distinct_value_alias = quote_ident("__coral_count_value");
+        let distinct_rows = format!(
+            "SELECT DISTINCT {} AS {outer_key_alias}, {target_sql} AS {distinct_value_alias} FROM {from_clause}{where_clause}",
+            correlation.local_expression
+        );
+        let subquery = format!(
+            "SELECT {outer_key_alias}, COUNT(*) AS {value_alias} FROM ({distinct_rows}) AS {distinct_alias} GROUP BY {outer_key_alias}"
+        );
+        Ok(Some(format!(
+            "LEFT JOIN ({subquery}) AS {} ON {}.{} = {}",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.table_alias),
+            outer_key_alias,
+            correlation.outer_expression
+        )))
     }
 
     fn render_precomputed_correlated_node_scalar_subquery_join(

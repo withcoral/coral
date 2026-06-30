@@ -10772,13 +10772,8 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         ScalarExpression::Predicate(predicate) => Some(
             hidden_subquery_order_predicate_can_be_precomputed(predicate),
         ),
-        ScalarExpression::CountSubquery {
-            pattern,
-            distinct_target,
-        } => Some(match (pattern.as_ref(), distinct_target.as_deref()) {
-            (CountSubqueryPattern::Relationships(_), _)
-            | (CountSubqueryPattern::Nodes { .. }, None) => true,
-            (CountSubqueryPattern::Nodes { .. }, Some(_)) => false,
+        ScalarExpression::CountSubquery { pattern, .. } => Some(match pattern.as_ref() {
+            CountSubqueryPattern::Relationships(_) | CountSubqueryPattern::Nodes { .. } => true,
         }),
         ScalarExpression::CollectSubquery { .. } => Some(false),
         ScalarExpression::Property(_)
@@ -40539,6 +40534,9 @@ relationships:
             "MATCH (service:Service) \
              RETURN service.name AS service \
              ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = 'prod' } + 1 DESC",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) RETURN DISTINCT other.tier } DESC",
         ] {
             let plan = compile_cypher(cypher)
                 .expect("hidden uncorrelated node-count subquery ordering should compile");
@@ -40562,6 +40560,9 @@ relationships:
             "MATCH (service:Service) \
              RETURN service.name AS service \
              ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier } + 1 DESC",
+            "MATCH (service:Service) \
+             RETURN service.name AS service \
+             ORDER BY COUNT { MATCH (other:Service) WHERE other.tier = service.tier RETURN DISTINCT other.team } DESC",
         ] {
             let plan = compile_cypher(cypher)
                 .expect("hidden correlated node-count subquery ordering should compile");
