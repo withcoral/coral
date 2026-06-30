@@ -21,7 +21,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "RowModifiers": 2,
-    "ScalarExpressions": 41,
+    "ScalarExpressions": 50,
     "TypeConversion": 3,
     "Union": 4,
     "Unwind": 3,
@@ -1312,6 +1312,172 @@
           },
           {
             "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-numeric-equality-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.age = 34 AS equals_int, p.age = 34.0 AS equals_float, p.age <> 29 AS not_bob_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "equals_int": true,
+            "equals_float": true,
+            "not_bob_age": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-string-equality-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name = 'Alice' AS name_matches, p.city = 'London' AS city_matches, p.city <> 'Paris' AS city_not_paris",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name_matches": true,
+            "city_matches": true,
+            "city_not_paris": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-numeric-ordering-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.age > 30 AS gt_30, p.age < 40 AS lt_40, p.age >= 34 AS gte_34, p.age <= 34 AS lte_34, p.age < 29 AS lt_29",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "gt_30": true,
+            "lt_40": true,
+            "gte_34": true,
+            "lte_34": true,
+            "lt_29": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-string-ordering-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name < 'Bob' AS name_before_bob, p.city > 'Lisbon' AS city_after_lisbon, p.city <= 'London' AS city_lte_london, p.city >= 'Paris' AS city_gte_paris",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name_before_bob": true,
+            "city_after_lisbon": true,
+            "city_lte_london": true,
+            "city_gte_paris": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-boolean-equality-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.active = true AS active_is_true, p.active <> false AS active_not_false, p.active = false AS active_is_false",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "active_is_true": true,
+            "active_not_false": true,
+            "active_is_false": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-node-property-to-property-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN a.age > b.age AS source_older, a.name < b.name AS name_before_friend, a.active <> b.active AS active_differs",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source_older": true,
+            "name_before_friend": true,
+            "active_differs": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-relationship-property-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) WHERE p.name = 'Alice' RETURN friend.name AS friend, r.since >= 2021 AS since_at_least_2021, r.strength < 0.8 AS strength_below_eight ORDER BY friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "friend": "Bob",
+            "since_at_least_2021": false,
+            "strength_below_eight": false
+          },
+          {
+            "friend": "Carol",
+            "since_at_least_2021": true,
+            "strength_below_eight": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-numeric-chained-range-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, 30 < p.age <= 34 AS in_alice_range ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "in_alice_range": true
+          },
+          {
+            "name": "Bob",
+            "in_alice_range": false
+          },
+          {
+            "name": "Carol",
+            "in_alice_range": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "comparison-string-chained-range-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, 'A' <= p.name < 'Carol' AS before_carol ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "before_carol": true
+          },
+          {
+            "name": "Bob",
+            "before_carol": true
+          },
+          {
+            "name": "Carol",
+            "before_carol": false
           }
         ]
       }
