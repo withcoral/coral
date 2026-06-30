@@ -251,6 +251,8 @@ pub enum ScalarExpression {
         pattern: Box<CountSubqueryPattern>,
         /// Scalar expression returned by each scoped subquery row.
         target: Box<ScalarExpression>,
+        /// Whether the scoped return applies row-level distinctness before collection.
+        distinct: bool,
     },
     /// Stable mapped key for a graph variable.
     Key {
@@ -1056,9 +1058,9 @@ fn scalar_expression_references_outside_scope(
         ScalarExpression::CountSubquery { pattern } => {
             count_subquery_pattern_references_outside_scope(pattern, scope)
         }
-        ScalarExpression::CollectSubquery { pattern, target } => {
-            collect_subquery_references_outside_scope(pattern, target, scope)
-        }
+        ScalarExpression::CollectSubquery {
+            pattern, target, ..
+        } => collect_subquery_references_outside_scope(pattern, target, scope),
         ScalarExpression::PresenceGated { .. }
         | ScalarExpression::Coalesce { .. }
         | ScalarExpression::NullIf { .. }

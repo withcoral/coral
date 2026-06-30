@@ -5349,7 +5349,15 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
                 COLLECT { \
                   MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
                   RETURN CASE WHEN dependency.criticality = 'optional' THEN null ELSE dependency.criticality END \
-                } AS non_optional_criticalities \
+                } AS non_optional_criticalities, \
+                COLLECT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+                  RETURN dependency.source \
+                } AS dependency_sources, \
+                COLLECT { \
+                  MATCH (service)-[dependency:DEPENDS_ON]->(:Service) \
+                  RETURN DISTINCT dependency.source \
+                } AS distinct_dependency_sources \
          ORDER BY service",
     )
     .await
@@ -5357,6 +5365,13 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
 
     assert!(
         execution.translated_sql().contains("COALESCE(ARRAY_AGG("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(ARRAY_AGG(DISTINCT "),
         "{}",
         execution.translated_sql()
     );
@@ -5375,6 +5390,14 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
             .as_array_mut()
             .expect("non_optional_criticalities should be an array")
             .sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        row["dependency_sources"]
+            .as_array_mut()
+            .expect("dependency_sources should be an array")
+            .sort_by(|left, right| left.as_str().cmp(&right.as_str()));
+        row["distinct_dependency_sources"]
+            .as_array_mut()
+            .expect("distinct_dependency_sources should be an array")
+            .sort_by(|left, right| left.as_str().cmp(&right.as_str()));
     }
     assert_eq!(
         rows,
@@ -5382,22 +5405,30 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
             json!({
                 "service": "billing-api",
                 "dependency_names": ["deployments", "experiments"],
-                "non_optional_criticalities": [null, "runtime"]
+                "non_optional_criticalities": [null, "runtime"],
+                "dependency_sources": ["catalog", "catalog"],
+                "distinct_dependency_sources": ["catalog"]
             }),
             json!({
                 "service": "deployments",
                 "dependency_names": ["experiments"],
-                "non_optional_criticalities": ["dev"]
+                "non_optional_criticalities": ["dev"],
+                "dependency_sources": ["deploy"],
+                "distinct_dependency_sources": ["deploy"]
             }),
             json!({
                 "service": "experiments",
                 "dependency_names": [],
-                "non_optional_criticalities": []
+                "non_optional_criticalities": [],
+                "dependency_sources": [],
+                "distinct_dependency_sources": []
             }),
             json!({
                 "service": "legacy-sync",
                 "dependency_names": [],
-                "non_optional_criticalities": []
+                "non_optional_criticalities": [],
+                "dependency_sources": [],
+                "distinct_dependency_sources": []
             }),
         ]
     );

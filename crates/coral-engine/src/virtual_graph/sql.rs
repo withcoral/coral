@@ -143,6 +143,7 @@ enum ScalarSubqueryCandidate {
     Collect {
         pattern: ExistsPatternPredicate,
         target: ScalarExpression,
+        distinct: bool,
     },
 }
 
@@ -364,18 +365,14 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => {}
             },
-            ScalarExpression::CollectSubquery { pattern, target } => {
-                if let CountSubqueryPattern::Relationships(predicate) = pattern.as_ref()
-                    && predicate.references_outer_variables()
-                {
-                    candidates.push(ScalarSubqueryCandidateUse {
-                        candidate: ScalarSubqueryCandidate::Collect {
-                            pattern: predicate.clone(),
-                            target: target.as_ref().clone(),
-                        },
-                        required,
-                    });
-                }
+            ScalarExpression::CollectSubquery {
+                pattern,
+                target,
+                distinct,
+            } => {
+                Self::collect_collect_subquery_candidate(
+                    pattern, target, *distinct, required, candidates,
+                );
             }
             ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -432,6 +429,27 @@ impl<'a> Lowerer<'a> {
             _ => self.collect_structural_scalar_expression_subquery_candidates(
                 expression, required, candidates,
             ),
+        }
+    }
+
+    fn collect_collect_subquery_candidate(
+        pattern: &CountSubqueryPattern,
+        target: &ScalarExpression,
+        distinct: bool,
+        required: bool,
+        candidates: &mut Vec<ScalarSubqueryCandidateUse>,
+    ) {
+        if let CountSubqueryPattern::Relationships(predicate) = pattern
+            && predicate.references_outer_variables()
+        {
+            candidates.push(ScalarSubqueryCandidateUse {
+                candidate: ScalarSubqueryCandidate::Collect {
+                    pattern: predicate.clone(),
+                    target: target.clone(),
+                    distinct,
+                },
+                required,
+            });
         }
     }
 
@@ -1080,11 +1098,11 @@ impl<'a> Lowerer<'a> {
         let value_expression = match &precomputed.candidate {
             ScalarSubqueryCandidate::Exists(_) => "COUNT(*) > 0".to_string(),
             ScalarSubqueryCandidate::Count(_) => "COUNT(*)".to_string(),
-            ScalarSubqueryCandidate::Collect { .. } => {
+            ScalarSubqueryCandidate::Collect { distinct, .. } => {
                 let target_sql = collect_target_sql.as_deref().ok_or_else(|| {
                     CoreError::internal("precomputed collect target SQL was not rendered")
                 })?;
-                Self::render_collect_target_select_expression(target_sql)
+                Self::render_collect_target_select_expression(target_sql, *distinct)
             }
         };
         let subquery = format!(
@@ -3012,6 +3030,7 @@ impl<'a> Lowerer<'a> {
         &self,
         pattern: &ExistsPatternPredicate,
         target: &ScalarExpression,
+        distinct: bool,
     ) -> Option<String> {
         self.precomputed_scalar_subqueries
             .iter()
@@ -3020,6 +3039,7 @@ impl<'a> Lowerer<'a> {
                     == ScalarSubqueryCandidate::Collect {
                         pattern: pattern.clone(),
                         target: target.clone(),
+                        distinct,
                     }
             })
             .map(Self::render_precomputed_collect_ref)
@@ -3523,26 +3543,34 @@ impl<'a> Lowerer<'a> {
         &self,
         pattern: &CountSubqueryPattern,
         target: &ScalarExpression,
+        distinct: bool,
     ) -> Result<String, CoreError> {
         match pattern {
             CountSubqueryPattern::Relationships(predicate) => {
                 if let Some(rendered) =
-                    self.render_precomputed_collect_subquery_ref(predicate, target)
+                    self.render_precomputed_collect_subquery_ref(predicate, target, distinct)
                 {
                     return Ok(rendered);
                 }
-                self.render_collect_scoped_pattern_select(predicate, target)
+                self.render_collect_scoped_pattern_select(predicate, target, distinct)
             }
             CountSubqueryPattern::Nodes {
                 nodes,
                 predicates,
                 predicate,
-            } => self.render_collect_node_subquery(nodes, predicates, predicate.as_deref(), target),
+            } => self.render_collect_node_subquery(
+                nodes,
+                predicates,
+                predicate.as_deref(),
+                target,
+                distinct,
+            ),
         }
     }
 
-    fn render_collect_target_select_expression(target_sql: &str) -> String {
-        format!("COALESCE(ARRAY_AGG({target_sql}), make_array())")
+    fn render_collect_target_select_expression(target_sql: &str, distinct: bool) -> String {
+        let distinct = if distinct { "DISTINCT " } else { "" };
+        format!("COALESCE(ARRAY_AGG({distinct}{target_sql}), make_array())")
     }
 
     fn render_projection_scalar_expression(
@@ -3575,8 +3603,12 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
             }
-            ScalarExpression::CollectSubquery { pattern, target } => {
-                self.reject_unprecomputed_projection_collect_subquery(pattern, target)?;
+            ScalarExpression::CollectSubquery {
+                pattern,
+                target,
+                distinct,
+            } => {
+                self.reject_unprecomputed_projection_collect_subquery(pattern, target, *distinct)?;
             }
             ScalarExpression::Predicate(predicate) => {
                 self.reject_unprecomputed_projection_predicate_subqueries(predicate)?;
@@ -3747,11 +3779,12 @@ impl<'a> Lowerer<'a> {
         &self,
         pattern: &CountSubqueryPattern,
         target: &ScalarExpression,
+        distinct: bool,
     ) -> Result<(), CoreError> {
         if let CountSubqueryPattern::Relationships(predicate) = pattern
             && predicate.references_outer_variables()
             && self
-                .render_precomputed_collect_subquery_ref(predicate, target)
+                .render_precomputed_collect_subquery_ref(predicate, target, distinct)
                 .is_none()
         {
             return Err(CoreError::InvalidInput(
@@ -3934,6 +3967,7 @@ impl<'a> Lowerer<'a> {
         &self,
         predicate: &ExistsPatternPredicate,
         target: &ScalarExpression,
+        distinct: bool,
     ) -> Result<String, CoreError> {
         let local_nodes = self.exists_local_node_map(predicate)?;
         let relationship_bindings = self.exists_relationship_bindings(predicate, &local_nodes)?;
@@ -3944,7 +3978,8 @@ impl<'a> Lowerer<'a> {
             &local_nodes,
             &local_aliases,
         )?;
-        let select_expression = Self::render_collect_target_select_expression(&target_sql);
+        let select_expression =
+            Self::render_collect_target_select_expression(&target_sql, distinct);
         if relationship_bindings.is_empty() {
             return self.render_scoped_node_select(
                 &predicate.nodes,
@@ -4032,6 +4067,7 @@ impl<'a> Lowerer<'a> {
         predicates: &[PropertyPredicate],
         predicate: Option<&PredicateExpression>,
         target: &ScalarExpression,
+        distinct: bool,
     ) -> Result<String, CoreError> {
         if nodes.is_empty() {
             return Err(CoreError::internal(
@@ -4047,7 +4083,8 @@ impl<'a> Lowerer<'a> {
             &local_nodes,
             &local_aliases,
         )?;
-        let select_expression = Self::render_collect_target_select_expression(&target_sql);
+        let select_expression =
+            Self::render_collect_target_select_expression(&target_sql, distinct);
         self.render_scoped_node_select(
             nodes,
             predicates,
@@ -6892,9 +6929,11 @@ impl<'a> Lowerer<'a> {
             ScalarExpression::CountSubquery { pattern } => {
                 self.render_count_subquery_expression(pattern)
             }
-            ScalarExpression::CollectSubquery { pattern, target } => {
-                self.render_collect_subquery_expression(pattern, target)
-            }
+            ScalarExpression::CollectSubquery {
+                pattern,
+                target,
+                distinct,
+            } => self.render_collect_subquery_expression(pattern, target, *distinct),
             ScalarExpression::PresenceGated {
                 presence_variable,
                 expression,

@@ -1285,7 +1285,9 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::CountSubquery { pattern } => {
                 Self::collect_count_subquery_outer_variables(pattern, variables);
             }
-            ScalarExpression::CollectSubquery { pattern, target } => {
+            ScalarExpression::CollectSubquery {
+                pattern, target, ..
+            } => {
                 Self::collect_collect_subquery_outer_variables(pattern, target, variables);
             }
             ScalarExpression::PresenceGated {
@@ -4497,7 +4499,9 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_count_subquery_pattern(pattern, format!("{path}.pattern"))?;
                 Ok(ScalarType::Integer)
             }
-            ScalarExpression::CollectSubquery { pattern, target } => {
+            ScalarExpression::CollectSubquery {
+                pattern, target, ..
+            } => {
                 self.validate_collect_subquery_pattern(pattern, target, format!("{path}.pattern"))?;
                 Ok(ScalarType::Other)
             }

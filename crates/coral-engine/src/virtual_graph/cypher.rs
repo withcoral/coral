@@ -7226,7 +7226,9 @@ fn reject_ignored_path_variable_references_in_scalar_expression(
         ScalarExpression::CountSubquery { pattern } => {
             reject_ignored_path_variable_references_in_count_subquery(pattern, state, path)
         }
-        ScalarExpression::CollectSubquery { pattern, target } => {
+        ScalarExpression::CollectSubquery {
+            pattern, target, ..
+        } => {
             reject_ignored_path_variable_references_in_count_subquery(
                 pattern,
                 state,
@@ -23168,7 +23170,7 @@ fn compile_collect_subquery_scalar_expression(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
-    let (pattern, target) = compile_regular_query_collect_subquery(
+    let (pattern, target, distinct) = compile_regular_query_collect_subquery(
         &collect.query,
         format!("{path}.query"),
         plan,
@@ -23179,6 +23181,7 @@ fn compile_collect_subquery_scalar_expression(
     Ok(ScalarExpression::CollectSubquery {
         pattern: Box::new(pattern),
         target: Box::new(target),
+        distinct,
     })
 }
 
@@ -23247,7 +23250,7 @@ fn compile_regular_query_collect_subquery(
     context: &CypherCompileContext,
     feature_name: &'static str,
     missing_match_message: &'static str,
-) -> Result<(CountSubqueryPattern, ScalarExpression), CoreError> {
+) -> Result<(CountSubqueryPattern, ScalarExpression, bool), CoreError> {
     let path = path.into();
     let Some(plan) = plan else {
         return Err(unsupported(
@@ -23273,6 +23276,7 @@ fn compile_regular_query_collect_subquery(
     };
     let return_clause = scoped_collect_subquery_return_clause(&single_part.body, &path)?;
     let return_item = validate_scoped_collect_subquery_return(return_clause, &path, feature_name)?;
+    let distinct = return_clause.distinct;
     if single_part.reading_clauses.is_empty() {
         return Err(unsupported(format!("{path}.match"), missing_match_message));
     }
@@ -23322,7 +23326,7 @@ fn compile_regular_query_collect_subquery(
         path,
         feature_name,
     )?;
-    Ok((pattern, target))
+    Ok((pattern, target, distinct))
 }
 
 fn compile_regular_query_scoped_plan(
@@ -23492,14 +23496,6 @@ fn validate_scoped_collect_subquery_return<'a>(
     path: &str,
     feature_name: &'static str,
 ) -> Result<&'a ProjectionItem, CoreError> {
-    if return_clause.distinct {
-        return Err(unsupported(
-            format!("{path}.return.distinct"),
-            format!(
-                "RETURN DISTINCT inside {feature_name} requires scoped projection planning and is not supported yet"
-            ),
-        ));
-    }
     if return_clause.order.is_some()
         || return_clause.skip.is_some()
         || return_clause.limit.is_some()
@@ -36779,6 +36775,35 @@ relationships:
                         )
                 )
         ));
+
+        let distinct_plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN COLLECT { \
+               MATCH (service)-[:DEPENDS_ON]->(dependency:Service) \
+               RETURN DISTINCT dependency.name \
+             } AS dependency_names",
+        )
+        .expect("COLLECT subquery DISTINCT scalar projection should compile");
+
+        assert!(matches!(
+            distinct_plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CollectSubquery {
+                        pattern,
+                        target,
+                        distinct,
+                    },
+                alias,
+            }] if alias == "dependency_names"
+                && *distinct
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
+                && matches!(
+                    target.as_ref(),
+                    ScalarExpression::Property(PropertyRef { variable, property })
+                        if variable == "dependency" && property == "name"
+                )
+        ));
     }
 
     #[test]
@@ -40068,9 +40093,15 @@ relationships:
         assert!(matches!(
             plan.projections.as_slice(),
             [Projection::Expression {
-                expression: ScalarExpression::CollectSubquery { pattern, target },
+                expression:
+                    ScalarExpression::CollectSubquery {
+                        pattern,
+                        target,
+                        distinct,
+                    },
                 alias,
             }] if alias == "dependency_names"
+                && !*distinct
                 && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(_))
                 && matches!(
                     target.as_ref(),
@@ -40087,11 +40118,6 @@ relationships:
                 "MATCH (service:Service) \
                  RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN * } AS dependencies",
                 "COLLECT subqueries require exactly one scalar RETURN projection",
-            ),
-            (
-                "MATCH (service:Service) \
-                 RETURN COLLECT { MATCH (service)-[:DEPENDS_ON]->(dependency:Service) RETURN DISTINCT dependency.name } AS dependencies",
-                "RETURN DISTINCT inside COLLECT subqueries requires scoped projection planning",
             ),
             (
                 "MATCH (service:Service) \

@@ -501,9 +501,11 @@ The supported foundation subset is intentionally narrow:
   validates exactly one scalar return item after introducing scoped node and
   relationship aliases, then SQL rendering emits `ARRAY_AGG` over that scoped
   target with an empty-list fallback. Unlike aggregate `collect(...)`, the
-  subquery form preserves null returned values. Inner `DISTINCT`, row
-  modifiers, `WITH`, `UNION`, `OPTIONAL MATCH`, aggregates, and graph-object
-  returns remain staged row-source or scoped aggregation work;
+  subquery form preserves null returned values. `RETURN DISTINCT scalar` emits
+  distinct array aggregation without adding the aggregate `collect(...)`
+  null-filter. Inner row modifiers, `WITH`, `UNION`, `OPTIONAL MATCH`,
+  aggregates, and graph-object returns remain staged row-source or scoped
+  aggregation work;
 - hidden `ORDER BY` scalar subqueries are lifted out of sort expressions before
   SQL planning. Outer-independent node-only counts, relationship counts, and
   existential patterns become single-row `CROSS JOIN` precomputes; correlated
