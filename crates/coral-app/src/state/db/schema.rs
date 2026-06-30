@@ -198,3 +198,20 @@ pub(in crate::state::db) enum FeedbackReports {
     PublishError,
     PublishedAtUnixNanos,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum CredentialDocuments {
+    Table,
+    WorkspaceId,
+    SourceName,
+    DocumentVersion,
+    Ciphertext,
+    Nonce,
+    WrappedDek,
+    WrappedDekNonce,
+    KeyId,
+    Algorithm,
+    AadVersion,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
