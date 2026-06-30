@@ -105,9 +105,11 @@ the selected value is itself a scalar literal or scalar parameter, with missing
 keys folding to `NULL`. Static map lookups may also select supported
 graph-backed scalar expressions such as `{name: service.name}['name']` or
 `({upper: toUpper(service.tier)}).upper`; the compiler lowers only the selected
-entry and does not materialize the map. Runtime map values, map-valued selected
-entries, and broad dynamic map semantics remain unsupported until Coral has a
-dedicated map IR.
+entry and does not materialize the map. Selected property entries keep the same
+IR shape as ordinary graph properties in predicates, projections, order keys,
+and aggregate targets. Runtime map values, map-valued selected entries, and
+broad dynamic map semantics remain unsupported until Coral has a dedicated map
+IR.
 
 For graph-backed map access, `properties(variable).field`,
 `properties(variable)['field']`, `variable['field']`, and endpoint forms such as

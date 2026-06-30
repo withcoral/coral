@@ -2,7 +2,7 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 5,
+    "Aggregation": 6,
     "CountSubquery": 2,
     "ExistsSubquery": 1,
     "GraphMetadata": 5,
@@ -22,7 +22,7 @@
     "ScalarExpressions": 23,
     "TypeConversion": 3,
     "Union": 2,
-    "Unwind": 1,
+    "Unwind": 2,
     "VariableLengthPaths": 4,
     "Where": 11,
     "With": 6
@@ -286,6 +286,18 @@
         "ordered": true,
         "rows": [
           { "people": 3, "age_sum": 104, "youngest": 29, "oldest": 41 }
+        ]
+      }
+    },
+    {
+      "id": "static-map-selected-aggregate-targets",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN count(({kind: 'person'}).kind) AS literal_count, sum(({age: p.age + 1}).age) AS adjusted_age, min(({age: p.age}).age) AS youngest",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "literal_count": 3, "adjusted_age": 107, "youngest": 29 }
         ]
       }
     },
@@ -1140,6 +1152,19 @@
         "rows": [
           { "city": "London", "people": 1 },
           { "city": "Paris", "people": 1 }
+        ]
+      }
+    },
+    {
+      "id": "unwind-sliced-static-case-list",
+      "feature": "Unwind",
+      "query": "UNWIND (CASE WHEN true THEN ['London', 'Paris', ''] ELSE ['Berlin'] END)[0..2] AS city MATCH (p:Person) WHERE p.city = city RETURN city AS city, p.name AS name ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "name": "Alice" },
+          { "city": "Paris", "name": "Carol" }
         ]
       }
     },

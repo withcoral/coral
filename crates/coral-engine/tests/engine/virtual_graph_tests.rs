@@ -13158,7 +13158,10 @@ async fn cypher_aggregate_expression_targets_execute_against_synthetic_sources()
         "MATCH (service:Service) \
          RETURN collect(coalesce(service.tier, 'unknown')) AS tiers, \
                 count(coalesce(service.tier, 'unknown')) AS tier_count, \
-                sum(service.risk + 1) AS adjusted_risk",
+                sum(service.risk + 1) AS adjusted_risk, \
+                collect(({tier: service.tier}).tier) AS selected_tiers, \
+                sum(({risk: service.risk + 1}).risk) AS selected_adjusted_risk, \
+                count(({kind: 'service'}).kind) AS literal_kind_count",
     )
     .await
     .expect("aggregate expression target Cypher query should execute");
@@ -13177,15 +13180,26 @@ async fn cypher_aggregate_expression_targets_execute_against_synthetic_sources()
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ARRAY_AGG(\"n0\".\"tier\") FILTER (WHERE (\"n0\".\"tier\") IS NOT NULL)"),
+        "{}",
+        execution.translated_sql()
+    );
 
     let mut rows = execution_to_rows(execution.execution());
     let row = rows
         .get_mut(0)
         .expect("aggregate expression target query should return one row");
     sort_string_array_field(row, "tiers");
+    sort_string_array_field(row, "selected_tiers");
     assert_eq!(row["tiers"], json!(["dev", "prod", "prod", "unknown"]));
     assert_eq!(row["tier_count"], json!(4));
     assert_close(row["adjusted_risk"].as_f64().unwrap(), 6.6);
+    assert_eq!(row["selected_tiers"], json!(["dev", "prod", "prod"]));
+    assert_close(row["selected_adjusted_risk"].as_f64().unwrap(), 6.6);
+    assert_eq!(row["literal_kind_count"], json!(4));
 }
 
 #[tokio::test]

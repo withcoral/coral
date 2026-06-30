@@ -22101,6 +22101,14 @@ fn compile_aggregate_target(
             })
         }
         Expression::PropertyLookup { .. } => {
+            if let Some(target) = compile_optional_static_map_lookup_aggregate_target(
+                expression,
+                path.clone(),
+                plan,
+                context,
+            )? {
+                return Ok(target);
+            }
             if let Some(plan) = plan
                 && let Some((expression, _)) =
                     compile_optional_same_label_undirected_endpoint_property_scalar_expression(
@@ -22141,6 +22149,29 @@ fn compile_aggregate_target(
             Ok(AggregateTarget::Expression(expression))
         }
     }
+}
+
+fn compile_optional_static_map_lookup_aggregate_target(
+    expression: &Expression,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<Option<AggregateTarget>, CoreError> {
+    let path = path.into();
+    let Some(expression) = compile_optional_static_map_lookup_scalar_expression(
+        expression,
+        path.clone(),
+        PredicateCompileMode::CaseWhen { plan },
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
+    Ok(Some(match expression {
+        ScalarExpression::Property(property) => AggregateTarget::Property(property),
+        expression => AggregateTarget::Expression(expression),
+    }))
 }
 
 fn compile_aggregate_scalar_target_expression(
@@ -47580,11 +47611,14 @@ relationships:
             "MATCH (service:Service) \
              RETURN collect(coalesce(service.tier, 'unknown')) AS tiers, \
                     count(coalesce(service.tier, 'unknown')) AS tier_count, \
-                    sum(service.risk + 1) AS adjusted_risk",
+                    sum(service.risk + 1) AS adjusted_risk, \
+                    collect(({tier: service.tier}).tier) AS selected_tiers, \
+                    sum(({risk: service.risk + 1}).risk) AS selected_adjusted_risk, \
+                    count(({kind: 'service'}).kind) AS literal_kind_count",
         )
         .expect("aggregate expression target query should compile");
 
-        assert_eq!(plan.projections.len(), 3);
+        assert_eq!(plan.projections.len(), 6);
         assert!(matches!(
             plan.projections
                 .first()
@@ -47617,6 +47651,41 @@ relationships:
                 alias,
                 ..
             } if alias == "adjusted_risk"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(3)
+                .expect("selected property collect projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Collect,
+                target: AggregateTarget::Property(PropertyRef { property, .. }),
+                alias,
+                ..
+            } if property == "tier" && alias == "selected_tiers"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(4)
+                .expect("selected expression sum projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Sum,
+                target: AggregateTarget::Expression(ScalarExpression::Arithmetic { .. }),
+                alias,
+                ..
+            } if alias == "selected_adjusted_risk"
+        ));
+        assert!(matches!(
+            plan.projections
+                .get(5)
+                .expect("selected literal count projection should be present"),
+            Projection::Aggregate {
+                function: super::AggregateFunction::Count,
+                target: AggregateTarget::Expression(ScalarExpression::Literal(
+                    Literal::String(value)
+                )),
+                alias,
+                ..
+            } if value == "service" && alias == "literal_kind_count"
         ));
     }
 

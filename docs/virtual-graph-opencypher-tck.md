@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-105 scenarios, which is 6.50% of the full upstream scenario-definition inventory
-and 8.11% of the read-candidate inventory.
+107 scenarios, which is 6.63% of the full upstream scenario-definition inventory
+and 8.27% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 105 representative read-only scenarios:
+The baseline currently contains 107 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -159,8 +159,9 @@ The baseline currently contains 105 representative read-only scenarios:
 - `RelationshipProperties`: 1 scenario for relationship property filtering.
 - `OptionalMatch`: 4 scenarios for null-preserving rows, null filtering,
   `coalesce(...)`, and connected multi-hop optional chains.
-- `Aggregation`: 5 scenarios for grouped counts, `count(*)`, numeric
-  aggregates, statistical aggregates, and `count(DISTINCT ...)`.
+- `Aggregation`: 6 scenarios for grouped counts, `count(*)`, numeric
+  aggregates, statistical aggregates, `count(DISTINCT ...)`, and selected
+  static-map aggregate targets.
 - `With`: 6 scenarios for transparent scope filtering, non-terminal scalar
   aliases carried into a later `MATCH`, bare boolean alias filtering, aggregate
   filtering through terminal `WITH`, terminal `WITH DISTINCT` scalar projection,
@@ -202,7 +203,8 @@ The baseline currently contains 105 representative read-only scenarios:
   `SKIP`, and `LIMIT`.
 - `Parameters`: 2 scenarios for scalar/list/limit parameter binding and missing
   parameter rejection through the public parameterized Cypher execution API.
-- `Unwind`: 1 scenario for `UNWIND` list expansion.
+- `Unwind`: 2 scenarios for `UNWIND` list expansion, including sliced static
+  `CASE` list sources.
 - `ReturnDistinct`: 1 scenario for `RETURN DISTINCT`.
 - `Union`: 2 scenarios for `UNION` duplicate removal and `UNION ALL`
   duplicate preservation.
