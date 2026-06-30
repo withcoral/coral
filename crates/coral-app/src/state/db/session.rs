@@ -7,6 +7,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
 use crate::state::db::repositories::app_state_markers::AppStateMarkersRepo;
+use crate::state::db::repositories::episodes::EpisodesRepo;
 use crate::state::db::repositories::feedback_reports::FeedbackReportsRepo;
 use crate::state::db::repositories::materializations::MaterializationsRepo;
 use crate::state::db::repositories::source_manifests::SourceManifestsRepo;
@@ -54,6 +55,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn feedback_reports(&mut self) -> FeedbackReportsRepo<'_, Self> {
         FeedbackReportsRepo::new(self)
+    }
+
+    fn episodes(&mut self) -> EpisodesRepo<'_, Self> {
+        EpisodesRepo::new(self)
     }
 
     fn app_state_markers(&mut self) -> AppStateMarkersRepo<'_, Self> {

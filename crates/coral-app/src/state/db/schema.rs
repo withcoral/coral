@@ -85,6 +85,17 @@ pub(in crate::state::db) enum FeedbackReports {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum Episodes {
+    Table,
+    WorkspaceId,
+    Id,
+    Intent,
+    ParentEpisodeId,
+    CreatedAtUnixNanos,
+    RecordBytes,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum AppStateMarkers {
     Table,
     Key,
