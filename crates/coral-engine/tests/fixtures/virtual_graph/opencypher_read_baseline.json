@@ -2,7 +2,7 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 9,
+    "Aggregation": 20,
     "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 2,
@@ -1293,6 +1293,219 @@
             "active": false
           }
         ]
+      }
+    },
+    {
+      "id": "aggregate-count-property-by-boolean-group",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN p.active AS active, count(p.city) AS city_values, count(p) AS people ORDER BY active",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "active": false,
+            "city_values": 1,
+            "people": 1
+          },
+          {
+            "active": true,
+            "city_values": 2,
+            "people": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-min-max-string-properties",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN min(p.name) AS first_name, max(p.name) AS last_name, min(p.city) AS first_city, max(p.city) AS last_city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "first_name": "Alice",
+            "last_name": "Carol",
+            "first_city": "",
+            "last_city": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-relationship-property-functions",
+      "feature": "Aggregation",
+      "query": "MATCH (:Person)-[r:KNOWS]->(:Person) RETURN count(r) AS relationships, sum(r.since) AS since_sum, avg(r.strength) AS avg_strength, min(r.strength) AS weakest, max(r.strength) AS strongest",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationships": 3,
+            "since_sum": 6063,
+            "avg_strength": 0.6333333333333333,
+            "weakest": 0.3,
+            "strongest": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-relationship-properties-by-source",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(:Person) RETURN p.name AS person, sum(r.since) AS since_sum, avg(r.strength) AS avg_strength ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "since_sum": 4042,
+            "avg_strength": 0.6
+          },
+          {
+            "person": "Bob",
+            "since_sum": 2021,
+            "avg_strength": 0.7
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-collect-property-values",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN p.name AS person, collect(p.city) AS cities ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "cities": [
+              "London"
+            ]
+          },
+          {
+            "person": "Bob",
+            "cities": [
+              ""
+            ]
+          },
+          {
+            "person": "Carol",
+            "cities": [
+              "Paris"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-collect-optional-property-values",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) WHERE p.name <> 'Alice' OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, collect(friend.name) AS friends ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob",
+            "friends": [
+              "Carol"
+            ]
+          },
+          {
+            "person": "Carol",
+            "friends": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-collect-graph-variable-keys",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN p.name AS person, collect(p) AS person_ids ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "person_ids": [
+              1
+            ]
+          },
+          {
+            "person": "Bob",
+            "person_ids": [
+              2
+            ]
+          },
+          {
+            "person": "Carol",
+            "person_ids": [
+              3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-count-distinct-graph-variable",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN count(friend) AS friend_mentions, count(DISTINCT friend) AS unique_friends",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "friend_mentions": 3,
+            "unique_friends": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-distinct-numeric-functions",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN sum(friend.age) AS age_sum, sum(DISTINCT friend.age) AS distinct_age_sum, avg(friend.age) AS average_age, avg(DISTINCT friend.age) AS distinct_average_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age_sum": 111,
+            "distinct_age_sum": 70,
+            "average_age": 37.0,
+            "distinct_average_age": 35.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-empty-input-defaults",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) WHERE p.age > 100 RETURN count(p) AS people, count(p.age) AS ages, collect(p.name) AS names",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "people": 0,
+            "ages": 0,
+            "names": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-percentile-cont-distinct-rejected",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN percentileCont(DISTINCT p.age, 0.5) AS median_age",
+      "expected": {
+        "kind": "error",
+        "contains": "percentileCont(DISTINCT ...) is not supported"
       }
     },
     {

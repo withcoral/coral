@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-350 scenarios, which is 21.67% of the full upstream scenario-definition inventory
-and 27.05% of the read-candidate inventory.
+361 scenarios, which is 22.35% of the full upstream scenario-definition inventory
+and 27.90% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 350 representative read-only scenarios:
+The baseline currently contains 361 representative read-only scenarios:
 
 - `Match`: 15 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -166,10 +166,13 @@ The baseline currently contains 350 representative read-only scenarios:
   bound-endpoint optional joins, multiple optional clauses, mandatory matches
   after optional scopes, inline relationship property maps, named-path metadata,
   and connected multi-hop optional chains.
-- `Aggregation`: 9 scenarios for grouped counts, `count(*)`, numeric
-  aggregates, statistical aggregates, distinct statistical aggregates,
-  `percentileCont(...)`, `count(DISTINCT ...)`, hidden aggregate ordering, and
-  selected static-map aggregate targets.
+- `Aggregation`: 20 scenarios for grouped counts, `count(*)`, property counts,
+  numeric and relationship-property aggregates, statistical aggregates,
+  distinct numeric/statistical aggregates, `percentileCont(...)`,
+  `count(DISTINCT ...)`, `collect(...)` over properties and graph variables,
+  string `min`/`max`, empty-input aggregate defaults, hidden aggregate
+  ordering, selected static-map aggregate targets, and adjacent unsupported
+  distinct percentile rejection coverage.
 - `With`: 14 scenarios for transparent scope filtering, scalar alias filters,
   `WITH *` filtering, non-terminal scalar aliases carried into a later `MATCH`,
   multi-stage `WITH ... WHERE` pipelines, bare boolean alias filtering,
