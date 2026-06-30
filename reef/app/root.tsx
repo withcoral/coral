@@ -2,9 +2,13 @@ import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration }
 
 import type { Route } from './+types/root'
 import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
+import { readSidebarCollapsedCookieValue } from './components/sidebar/sidebar-state'
+import { ensureCoralRuntime, installCoralRuntimeFetchBridge } from './lib/coral-runtime'
 import './styles/globals.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
+
+installCoralRuntimeFetchBridge()
 
 export const links = () => [
   {
@@ -49,6 +53,16 @@ export async function loader({ request }: Route.LoaderArgs) {
     sidebarIsMinimized: readSidebarCollapsedCookie(request),
   }
 }
+
+export async function clientLoader(_args: Route.ClientLoaderArgs) {
+  await ensureCoralRuntime()
+  return {
+    sidebarIsMinimized:
+      typeof document === 'undefined' ? false : readSidebarCollapsedCookieValue(document.cookie),
+  }
+}
+
+clientLoader.hydrate = true as const
 
 export default function App() {
   return <Outlet />
