@@ -20,13 +20,11 @@ type PendingAction =
 
 type ClientStatus = Partial<Record<McpClientId, string>>
 type PendingKind = 'connect' | 'test'
+const TESTABLE_CLIENT_IDS = new Set<McpClientId>()
 
 const CLIENT_ICONS = {
-  'claude-desktop': 'Bot',
+  'claude-code': 'Bot',
   codex: 'Terminal',
-  cursor: 'MousePointer2',
-  opencode: 'Braces',
-  vscode: 'Code',
 } satisfies Record<McpClientId, IconName>
 
 function isPending(pending: PendingAction, kind: PendingKind, clientId?: McpClientId) {
@@ -130,7 +128,7 @@ export default function SettingsRoute() {
             {clients.map((client) => {
               const connectedPath = clientStatus[client.id]
               const configPath = connectedPath ?? client.configPath
-              const canTest = client.id === 'claude-desktop'
+              const canTest = TESTABLE_CLIENT_IDS.has(client.id)
               const connectPending = isPending(pending, 'connect', client.id)
               const testPending = isPending(pending, 'test', client.id)
 

@@ -2,13 +2,7 @@ import { agents, upsertServer, type AgentType, type McpServerConfig } from 'add-
 import type { McpClientDescriptor, McpClientId, McpConfigureResult } from '../shared/types'
 import { externalCoralPath } from './sidecar'
 
-const MCP_CLIENT_IDS: readonly McpClientId[] = [
-  'codex',
-  'claude-desktop',
-  'cursor',
-  'vscode',
-  'opencode',
-]
+const MCP_CLIENT_IDS: readonly McpClientId[] = ['codex', 'claude-code']
 
 function agentTypeForClient(clientId: McpClientId): AgentType {
   return clientId

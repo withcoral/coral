@@ -1,4 +1,4 @@
-export type McpClientId = 'codex' | 'claude-desktop' | 'cursor' | 'vscode' | 'opencode'
+export type McpClientId = 'codex' | 'claude-code'
 
 export interface SidecarInfo {
   url: string
