@@ -271,7 +271,7 @@ The GraphQL baseline currently contains 20 representative read-only scenarios:
   and relationship-property filters.
 - `RelationshipExistence`: 1 scenario for `EXISTS`-style relationship filters.
 - `GeneratedClientShape`: 1 scenario for fragments and `__typename`.
-- `ErrorHandling`: 1 expected rejection for unknown graph-declared properties.
+- `ErrorHandling`: 2 expected rejections for unknown graph-declared properties and `_id` string predicates.
 
 The same fixture-level contract applies: ids must be unique, every feature
 bucket must be declared, and each bucket must stay at or above its floor.
