@@ -8,7 +8,7 @@
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
     "ListExpressions": 9,
-    "MapExpressions": 2,
+    "MapExpressions": 3,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -486,6 +486,19 @@
       "id": "properties-function-property-lookup",
       "feature": "MapExpressions",
       "query": "MATCH (p:Person) WHERE properties(p).active = true RETURN properties(p).name AS name, properties(p).city AS city ORDER BY properties(p).age DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "city": "Paris" },
+          { "name": "Alice", "city": "London" }
+        ]
+      }
+    },
+    {
+      "id": "string-property-index-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p['active'] = true RETURN p['name'] AS name, properties(p)['city'] AS city ORDER BY p['age'] DESC",
       "expected": {
         "kind": "rows",
         "ordered": true,

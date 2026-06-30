@@ -10509,6 +10509,15 @@ fn compile_order_expression_after_metadata_list_index(
     context: &CypherCompileContext,
     path: String,
 ) -> Result<OrderExpression, CoreError> {
+    if let Some(expression) = compile_optional_graph_property_order_expression(
+        expression,
+        projections,
+        plan,
+        context,
+        &path,
+    )? {
+        return Ok(expression);
+    }
     match expression {
         expression if is_literal_expression(expression) => Ok(OrderExpression::Literal(
             compile_literal(expression, path, context)?,
@@ -10535,67 +10544,16 @@ fn compile_order_expression_after_metadata_list_index(
         Expression::Case(case) => {
             compile_case_order_expression(case, path, projections, plan, state, context)
         }
-        Expression::FunctionCall(function) if is_id_function(function) => {
-            compile_id_order_expression(function, path, plan, context)
-        }
-        Expression::FunctionCall(function) if is_element_id_function(function) => {
-            compile_element_id_order_expression(function, path, plan, context)
-        }
-        Expression::FunctionCall(function) if is_type_function(function) => {
-            compile_type_order_expression(function, path, plan, context)
-        }
-        Expression::FunctionCall(function) if is_labels_function(function) => {
-            compile_labels_order_expression(function, path, plan, context)
-        }
-        Expression::FunctionCall(function) if is_keys_function(function) => {
-            if is_literal_map_keys_function(function)
-                && let Some(expression) = compile_optional_static_list_scalar_expression(
-                    expression,
-                    path.clone(),
-                    Some(plan),
-                    context,
-                )?
-            {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            compile_keys_order_expression(function, path, plan, context)
-        }
-        Expression::FunctionCall(function) if is_length_function(function) => {
-            compile_path_length_order_expression(function, path, state, context)
-        }
         Expression::FunctionCall(function) => {
-            if let Some(expression) = compile_optional_size_path_length_order_expression(
+            compile_function_call_order_expression_after_metadata_list_index(
+                expression,
                 function,
-                path.clone(),
+                projections,
+                plan,
                 state,
                 context,
-            )? {
-                return Ok(expression);
-            }
-            if let Some(expression) = compile_scalar_function_expression_with_path_state(
-                function,
-                path.clone(),
-                plan,
-                Some(state),
-                context,
-            )? {
-                return compile_scalar_order_expression(expression, projections, path);
-            }
-            if compile_aggregate_function(function).is_some() {
-                return aggregate_order_expression_for_projection(
-                    function,
-                    projections,
-                    path,
-                    plan,
-                    context,
-                );
-            }
-            Ok(OrderExpression::Property(compile_property_ref(
-                expression,
                 path,
-                Some(plan),
-                context,
-            )?))
+            )
         }
         _ => Ok(OrderExpression::Property(compile_property_ref(
             expression,
@@ -10604,6 +10562,114 @@ fn compile_order_expression_after_metadata_list_index(
             context,
         )?)),
     }
+}
+
+fn compile_function_call_order_expression_after_metadata_list_index(
+    expression: &Expression,
+    function: &FunctionInvocation,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+    path: String,
+) -> Result<OrderExpression, CoreError> {
+    if is_id_function(function) {
+        return compile_id_order_expression(function, path, plan, context);
+    }
+    if is_element_id_function(function) {
+        return compile_element_id_order_expression(function, path, plan, context);
+    }
+    if is_type_function(function) {
+        return compile_type_order_expression(function, path, plan, context);
+    }
+    if is_labels_function(function) {
+        return compile_labels_order_expression(function, path, plan, context);
+    }
+    if is_keys_function(function) {
+        return compile_keys_order_expression_after_metadata_list_index(
+            expression,
+            function,
+            projections,
+            plan,
+            context,
+            path,
+        );
+    }
+    if is_length_function(function) {
+        return compile_path_length_order_expression(function, path, state, context);
+    }
+    if let Some(expression) =
+        compile_optional_size_path_length_order_expression(function, path.clone(), state, context)?
+    {
+        return Ok(expression);
+    }
+    if let Some(expression) = compile_scalar_function_expression_with_path_state(
+        function,
+        path.clone(),
+        plan,
+        Some(state),
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    if compile_aggregate_function(function).is_some() {
+        return aggregate_order_expression_for_projection(
+            function,
+            projections,
+            path,
+            plan,
+            context,
+        );
+    }
+    Ok(OrderExpression::Property(compile_property_ref(
+        expression,
+        path,
+        Some(plan),
+        context,
+    )?))
+}
+
+fn compile_keys_order_expression_after_metadata_list_index(
+    expression: &Expression,
+    function: &FunctionInvocation,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: String,
+) -> Result<OrderExpression, CoreError> {
+    if is_literal_map_keys_function(function)
+        && let Some(expression) = compile_optional_static_list_scalar_expression(
+            expression,
+            path.clone(),
+            Some(plan),
+            context,
+        )?
+    {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
+    compile_keys_order_expression(function, path, plan, context)
+}
+
+fn compile_optional_graph_property_order_expression(
+    expression: &Expression,
+    projections: &[Projection],
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<OrderExpression>, CoreError> {
+    if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
+        expression,
+        path.to_string(),
+        Some(plan),
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path.to_string())
+            .map(Some);
+    }
+    Ok(
+        compile_optional_property_ref(expression, path.to_string(), Some(plan), context)?
+            .map(OrderExpression::Property),
+    )
 }
 
 fn compile_scalar_order_expression(
@@ -16375,6 +16441,17 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map_or(output_name, variable_name),
         }));
     }
+    if let Some(property) = compile_optional_property_ref(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(plan),
+        context,
+    )? {
+        return Ok(Some(Projection::Property {
+            property,
+            alias: item.alias.as_ref().map(variable_name),
+        }));
+    }
     if let Some(expression) = compile_optional_path_list_index_scalar_expression(
         &item.expression,
         format!("{path}.expression"),
@@ -18894,21 +18971,11 @@ fn compile_scalar_expression_in_predicate_mode(
             compile_scalar_expression_in_predicate_mode(inner, path, mode, context)
         }
         Expression::PropertyLookup { .. } => {
-            if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
-                expression,
-                path.clone(),
-                plan,
-                context,
-            )? {
-                return Ok(expression);
-            }
-            Ok(ScalarExpression::Property(compile_property_ref(
-                expression, path, plan, context,
-            )?))
+            compile_property_lookup_scalar_expression_in_mode(expression, path, plan, context)
         }
-        Expression::ListIndex { .. } => {
-            compile_list_index_scalar_expression_in_mode(expression, path, mode, context)
-        }
+        Expression::ListIndex { .. } => compile_list_index_scalar_or_property_expression_in_mode(
+            expression, path, mode, context,
+        ),
         Expression::ListSlice { .. } => {
             compile_list_slice_scalar_expression_in_mode(expression, path, mode, context)
         }
@@ -18984,6 +19051,47 @@ fn compile_scalar_expression_in_predicate_mode(
             "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
+}
+
+fn compile_property_lookup_scalar_expression_in_mode(
+    expression: &Expression,
+    path: String,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
+        expression,
+        path.clone(),
+        plan,
+        context,
+    )? {
+        return Ok(expression);
+    }
+    Ok(ScalarExpression::Property(compile_property_ref(
+        expression, path, plan, context,
+    )?))
+}
+
+fn compile_list_index_scalar_or_property_expression_in_mode(
+    expression: &Expression,
+    path: String,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let plan = mode.static_metadata_plan();
+    if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
+        expression,
+        path.clone(),
+        plan,
+        context,
+    )? {
+        return Ok(expression);
+    }
+    if let Some(property) = compile_optional_property_ref(expression, path.clone(), plan, context)?
+    {
+        return Ok(ScalarExpression::Property(property));
+    }
+    compile_list_index_scalar_expression_in_mode(expression, path, mode, context)
 }
 
 fn compile_list_slice_scalar_expression_in_mode(
@@ -28604,6 +28712,17 @@ fn compile_predicate_rhs(
             mode.graph_plan(),
             context,
         )?)),
+        Expression::ListIndex { .. } => {
+            if let Some(property) =
+                compile_optional_property_ref(expression, path.clone(), mode.graph_plan(), context)?
+            {
+                Ok(PredicateRhs::Property(property))
+            } else {
+                Ok(PredicateRhs::Literal(compile_predicate_literal_in_mode(
+                    expression, path, mode, context,
+                )?))
+            }
+        }
         Expression::FunctionCall(function) if is_id_function(function) => match mode.graph_plan() {
             Some(plan) => Ok(PredicateRhs::Key {
                 variable: compile_id_variable(function, path, plan, context)?,
@@ -29138,6 +29257,14 @@ fn compile_property_ref(
             variable: compile_property_base_variable(base, format!("{path}.base"), plan, context)?,
             property: property.name.name.clone(),
         }),
+        Expression::ListIndex { list, index, .. } => compile_property_index_ref(
+            list,
+            index,
+            format!("{path}.list"),
+            format!("{path}.index"),
+            plan,
+            context,
+        ),
         _ => Err(unsupported(
             path,
             "only variable.property expressions are supported here",
@@ -29169,7 +29296,63 @@ fn compile_optional_property_ref(
             }
             compile_property_ref(expression, path, plan, context).map(Some)
         }
+        Expression::ListIndex { list, index, .. } => {
+            if !is_property_index_base_expression(list) {
+                return Ok(None);
+            }
+            compile_property_index_ref(
+                list,
+                index,
+                format!("{path}.list"),
+                format!("{path}.index"),
+                plan,
+                context,
+            )
+            .map(Some)
+        }
         _ => Ok(None),
+    }
+}
+
+fn compile_property_index_ref(
+    base: &Expression,
+    index: &Expression,
+    base_path: impl Into<String>,
+    index_path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<PropertyRef, CoreError> {
+    Ok(PropertyRef {
+        variable: compile_property_base_variable(base, base_path, plan, context)?,
+        property: compile_property_index_name(index, index_path, context)?,
+    })
+}
+
+fn compile_property_index_name(
+    index: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match compile_literal(index, path.clone(), context)? {
+        Literal::String(property) => Ok(property),
+        _ => Err(unsupported(
+            path,
+            "property index lookups require a string literal or scalar string parameter",
+        )),
+    }
+}
+
+fn is_property_index_base_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_property_index_base_expression(inner),
+        Expression::Variable(_) => true,
+        Expression::FunctionCall(function) => {
+            is_properties_function(function)
+                || is_start_node_function(function)
+                || is_end_node_function(function)
+        }
+        _ => false,
     }
 }
 
@@ -29241,6 +29424,27 @@ fn compile_optional_same_label_undirected_endpoint_property_scalar_expression(
                 output_name,
             )))
         }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(endpoint_ref) = compile_optional_same_label_undirected_relationship_endpoint(
+                list,
+                format!("{path}.list"),
+                plan,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            let property = compile_property_index_name(index, format!("{path}.index"), context)?;
+            let output_name = format!("{}_{}", endpoint_ref.relationship, property);
+            Ok(Some((
+                ScalarExpression::UndirectedEndpointProperty {
+                    relationship: endpoint_ref.relationship,
+                    endpoint: endpoint_ref.endpoint,
+                    property,
+                },
+                output_name,
+            )))
+        }
         _ => Ok(None),
     }
 }
@@ -29298,6 +29502,17 @@ fn compile_optional_same_label_undirected_relationship_endpoint(
                 label: left_label.to_string(),
             }))
         }
+        Expression::FunctionCall(function) if is_properties_function(function) => {
+            let [argument] = function.arguments.as_slice() else {
+                return Ok(None);
+            };
+            compile_optional_same_label_undirected_relationship_endpoint(
+                argument,
+                format!("{path}.arguments[0]"),
+                plan,
+                context,
+            )
+        }
         _ => Ok(None),
     }
 }
@@ -29354,6 +29569,30 @@ fn compile_optional_endpoint_property_ref(
                 output_name,
             )))
         }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(endpoint) = compile_optional_relationship_endpoint_ref_from_expression(
+                list,
+                format!("{path}.list"),
+                plan,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            let Some(presence_variable) = endpoint.presence_variable else {
+                return Ok(None);
+            };
+            let property = compile_property_index_name(index, format!("{path}.index"), context)?;
+            let output_name = format!("{}_{}", endpoint.variable, property);
+            Ok(Some((
+                PropertyRef {
+                    variable: endpoint.variable,
+                    property,
+                },
+                presence_variable,
+                output_name,
+            )))
+        }
         _ => Ok(None),
     }
 }
@@ -29375,6 +29614,36 @@ fn compile_optional_relationship_endpoint_ref_from_expression(
             Ok(Some(compile_relationship_endpoint_ref(
                 function, path, plan, context,
             )?))
+        }
+        Expression::FunctionCall(function) if is_properties_function(function) => {
+            match function.arguments.as_slice() {
+                [argument] => compile_optional_relationship_endpoint_ref_from_expression(
+                    argument,
+                    format!("{path}.arguments[0]"),
+                    plan,
+                    context,
+                ),
+                [] => {
+                    let Some(sources) = context.function_argument_sources(function) else {
+                        return Ok(None);
+                    };
+                    let [source] = sources.arguments.as_slice() else {
+                        return Ok(None);
+                    };
+                    let (argument, fragment_context) = parse_cypher_expression_fragment(
+                        source,
+                        format!("{path}.arguments[0]"),
+                        context,
+                    )?;
+                    compile_optional_relationship_endpoint_ref_from_expression(
+                        &argument,
+                        format!("{path}.arguments[0]"),
+                        plan,
+                        &fragment_context,
+                    )
+                }
+                _ => Ok(None),
+            }
         }
         _ => Ok(None),
     }
@@ -34412,6 +34681,98 @@ relationships:
     }
 
     #[test]
+    fn compiles_string_property_index_lookups() {
+        let parameters = BTreeMap::from([
+            (
+                "tier_key".to_string(),
+                CypherParameterValue::Literal(Literal::String("tier".to_string())),
+            ),
+            (
+                "order_key".to_string(),
+                CypherParameterValue::Literal(Literal::String("name".to_string())),
+            ),
+        ]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+             WHERE source['tier'] = properties(target)[$tier_key] \
+             RETURN source['name'] AS source_name, \
+                    properties(startNode(dependency))['name'] AS start_name, \
+                    properties(endNode(dependency))['tier'] AS end_tier \
+             ORDER BY target[$order_key]",
+            &parameters,
+        )
+        .expect("string property index lookups should compile as graph properties");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "source".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "tier".to_string(),
+                }),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("source_name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "source".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("start_name".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "target".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("end_tier".to_string()),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "target".to_string(),
+                    property: "name".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_property_indexes() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service[0] AS service_name",
+        )
+        .expect_err("property indexes should require static string keys");
+
+        assert!(
+            error
+                .to_string()
+                .contains("property index lookups require a string literal"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn compiles_reversed_relationship_endpoint_property_projections() {
         let plan = compile_cypher(
             "MATCH (target:Service)<-[dependency:DEPENDS_ON]-(source:Service) \
@@ -34634,6 +34995,58 @@ relationships:
                 },
                 distinct: false,
                 alias: "dependencies".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn compiles_optional_relationship_endpoint_property_indexes() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(dependency_service:Service) \
+             RETURN endNode(dependency)['name'] AS dependency_name, \
+                    properties(startNode(dependency))['name'] AS source_name \
+             ORDER BY properties(endNode(dependency))['risk']",
+        )
+        .expect("optional endpoint property indexes should compile as presence-gated properties");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "dependency_service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                    },
+                    alias: "dependency_name".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::PresenceGated {
+                        presence_variable: "dependency".to_string(),
+                        expression: Box::new(ScalarExpression::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "name".to_string(),
+                        })),
+                    },
+                    alias: "source_name".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::PresenceGated {
+                    presence_variable: "dependency".to_string(),
+                    expression: Box::new(ScalarExpression::Property(PropertyRef {
+                        variable: "dependency_service".to_string(),
+                        property: "risk".to_string(),
+                    })),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
             }]
         );
     }
@@ -34924,6 +35337,66 @@ relationships:
                             relationship: "dependency".to_string(),
                             endpoint: UndirectedRelationshipEndpoint::End,
                             property: "name".to_string(),
+                        },
+                    ),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn compiles_same_label_undirected_relationship_endpoint_property_indexes() {
+        let plan = compile_cypher(
+            "MATCH (left:Service)-[dependency:DEPENDS_ON]-(right:Service) \
+             RETURN startNode(dependency)['name'] AS source, \
+                    properties(endNode(dependency))['tier'] AS target_tier \
+             ORDER BY properties(startNode(dependency))['name'], endNode(dependency)['tier']",
+        )
+        .expect("same-label undirected endpoint property indexes should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointProperty {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::Start,
+                        property: "name".to_string(),
+                    },
+                    alias: "source".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::UndirectedEndpointProperty {
+                        relationship: "dependency".to_string(),
+                        endpoint: UndirectedRelationshipEndpoint::End,
+                        property: "tier".to_string(),
+                    },
+                    alias: "target_tier".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Scalar(
+                        ScalarExpression::UndirectedEndpointProperty {
+                            relationship: "dependency".to_string(),
+                            endpoint: UndirectedRelationshipEndpoint::Start,
+                            property: "name".to_string(),
+                        },
+                    ),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Scalar(
+                        ScalarExpression::UndirectedEndpointProperty {
+                            relationship: "dependency".to_string(),
+                            endpoint: UndirectedRelationshipEndpoint::End,
+                            property: "tier".to_string(),
                         },
                     ),
                     direction: OrderDirection::Ascending,
