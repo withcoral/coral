@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 use super::session::DbRepos;
@@ -13,9 +15,11 @@ use crate::sources::materialization::{
     SourceDiagnosticReporter, load_v4_materialization_from_record, materialization_record_from_dir,
 };
 use crate::sources::model::{InstalledSource, SourceOrigin};
+use crate::state::db::FeedbackReportRecord;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
 use coral_spec::parse_source_manifest_yaml;
+use uuid::Uuid;
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
 const SOURCE_CATALOG_IMPORT_ID: &str = "source_catalog_import_v1";
@@ -557,6 +561,225 @@ fn remove_v4_materialization_dir(materialized_dir: &std::path::Path) {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PersistedFeedbackReport {
+    id: String,
+    workspace: String,
+    created_at: String,
+    trying_to_do: String,
+    tried: String,
+    stuck: String,
+}
+
+pub(crate) async fn import_filesystem_feedback_reports(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+) -> Result<usize, AppError> {
+    let mut imported = 0;
+    for workspace_name in filesystem_feedback_workspaces(layout)? {
+        let path = layout.feedback_reports_file(&workspace_name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    detail = %error,
+                    "skipping legacy feedback JSONL import because the file could not be read"
+                );
+                continue;
+            }
+        };
+        let mut records = Vec::new();
+        let mut has_unimported_rows = false;
+        for (index, line) in raw
+            .lines()
+            .enumerate()
+            .filter(|(_index, line)| !line.trim().is_empty())
+        {
+            if let Some(record) =
+                parse_legacy_feedback_report_line(&path, workspace_name.as_str(), index + 1, line)
+            {
+                records.push(record);
+            } else {
+                has_unimported_rows = true;
+            }
+        }
+        for record in records {
+            if insert_imported_feedback_report(db, &workspace_name, &record).await? {
+                imported += 1;
+            }
+        }
+        if has_unimported_rows {
+            tracing::warn!(
+                path = %path.display(),
+                "legacy feedback JSONL retained because at least one row was not imported"
+            );
+        } else {
+            remove_feedback_reports_file(&path);
+        }
+    }
+    Ok(imported)
+}
+
+async fn insert_imported_feedback_report(
+    db: &CoralDb,
+    workspace_name: &WorkspaceName,
+    record: &FeedbackReportRecord,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+    tx.workspaces()
+        .ensure(workspace_name.as_str(), record.created_at_unix_nanos)
+        .await?;
+    match tx.feedback_reports().append(workspace_name, record).await {
+        Ok(()) => {
+            tx.commit().await?;
+            Ok(true)
+        }
+        Err(error) if is_unique_constraint_error(&error) => {
+            tx.rollback().await?;
+            let mut session = db;
+            if session
+                .feedback_reports()
+                .get(workspace_name, &record.id)
+                .await?
+                .is_some()
+            {
+                Ok(false)
+            } else {
+                Err(error.into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn parse_legacy_feedback_report_line(
+    path: &std::path::Path,
+    file_workspace: &str,
+    line_number: usize,
+    line: &str,
+) -> Option<FeedbackReportRecord> {
+    let record = match serde_json::from_str::<PersistedFeedbackReport>(line) {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving invalid feedback report record in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    let workspace = match WorkspaceName::parse(&record.workspace) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving feedback report with invalid workspace in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    if workspace.as_str() != file_workspace {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            report_workspace = %workspace,
+            file_workspace,
+            "leaving feedback report stored under a different workspace in legacy JSONL"
+        );
+        return None;
+    }
+    let created_at = match DateTime::parse_from_rfc3339(&record.created_at) {
+        Ok(created_at) => created_at.with_timezone(&Utc),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving feedback report with invalid timestamp in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    let Some(created_at_unix_nanos) = created_at.timestamp_nanos_opt() else {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            "leaving feedback report with out-of-range timestamp in legacy JSONL"
+        );
+        return None;
+    };
+    Some(FeedbackReportRecord {
+        id: record.id,
+        created_at_unix_nanos,
+        trying_to_do: record.trying_to_do,
+        tried: record.tried,
+        stuck: record.stuck,
+        publish_status: None,
+        publish_error: None,
+        published_at_unix_nanos: None,
+    })
+}
+
+fn filesystem_feedback_workspaces(layout: &AppStateLayout) -> Result<Vec<WorkspaceName>, AppError> {
+    let root = layout.workspaces_root();
+    let mut workspaces = Vec::new();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(workspaces),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if is_workspace_delete_rollback_dir(&name) {
+            continue;
+        }
+        match WorkspaceName::parse(&name) {
+            Ok(workspace) => workspaces.push(workspace),
+            Err(error) => tracing::warn!(
+                path = %entry.path().display(),
+                detail = %error,
+                "skipping legacy feedback import for invalid workspace directory"
+            ),
+        }
+    }
+    Ok(workspaces)
+}
+
+fn is_workspace_delete_rollback_dir(name: &str) -> bool {
+    let Some((_workspace_name, rollback_id)) = name.split_once(".delete.rollback.") else {
+        return false;
+    };
+    Uuid::parse_str(rollback_id).is_ok()
+}
+
+fn remove_feedback_reports_file(path: &std::path::Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                detail = %error,
+                "feedback reports imported into database but legacy JSONL cleanup failed"
+            );
+        }
+    }
+}
+
 fn read_imported_manifest_file(
     layout: &AppStateLayout,
     workspace_name: &WorkspaceName,
@@ -613,7 +836,8 @@ mod tests {
     use super::{
         SourceCatalogImportReport, WORKSPACE_CATALOG_CUTOVER_ID, WorkspaceCatalogCutoverReport,
         cutover_legacy_workspace_catalog, cutover_legacy_workspace_catalog_at,
-        import_config_source_catalog, run_state_migrations, source_catalog_import_id,
+        import_config_source_catalog, import_filesystem_feedback_reports, run_state_migrations,
+        source_catalog_import_id,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -623,8 +847,8 @@ mod tests {
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::session::DbRepos;
     use crate::state::db::{
-        CoralDb, DatabaseConfig, MaterializationRecord, MaterializationSurfaceRecord,
-        ResolvedDatabaseConfig,
+        CoralDb, DatabaseConfig, FeedbackReportRecord, MaterializationRecord,
+        MaterializationSurfaceRecord, ResolvedDatabaseConfig,
     };
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::storage::fs::DELETION_BACKUP_INFIX;
@@ -1799,7 +2023,7 @@ mod tests {
         );
         assert!(
             tx.state_migrations()
-                .try_claim(SOURCE_CATALOG_IMPORT_ID, 7)
+                .try_claim(&source_catalog_import_id(&layout), 7)
                 .await
                 .expect("mark source import complete")
         );
@@ -1963,6 +2187,111 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn feedback_import_skips_bad_legacy_state_and_imports_healthy_rows() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let default = WorkspaceName::parse("default").expect("workspace");
+        let healthy = WorkspaceName::parse("healthy").expect("workspace");
+        let corrupt = WorkspaceName::parse("corrupt").expect("workspace");
+        let retained_file = layout.feedback_reports_file(&default);
+        let healthy_file = layout.feedback_reports_file(&healthy);
+        write_feedback_reports_file(
+            &retained_file,
+            &format!("{}not json\n", feedback_jsonl("default", "feedback-1")),
+        );
+        write_feedback_reports_file(&healthy_file, &feedback_jsonl("healthy", "feedback-1"));
+        let corrupt_file = layout.feedback_reports_file(&corrupt);
+        fs::create_dir_all(corrupt_file.parent().expect("reports parent"))
+            .expect("create reports parent");
+        fs::write(&corrupt_file, b"{\xff").expect("write invalid UTF-8 JSONL");
+        let invalid_workspace_file = layout
+            .workspaces_root()
+            .join(r"bad\workspace")
+            .join("feedback")
+            .join("reports.jsonl");
+        write_feedback_reports_file(
+            &invalid_workspace_file,
+            &feedback_jsonl(r"bad\workspace", "feedback-1"),
+        );
+        let rollback_file = layout
+            .workspaces_root()
+            .join(format!("rollback.delete.rollback.{}", uuid::Uuid::new_v4()))
+            .join("feedback")
+            .join("reports.jsonl");
+        write_feedback_reports_file(&rollback_file, &feedback_jsonl("rollback", "feedback-1"));
+        let db = open_sqlite(&layout).await;
+
+        let imported = import_filesystem_feedback_reports(&db, &layout)
+            .await
+            .expect("import feedback reports");
+
+        assert_eq!(imported, 2);
+        assert!(retained_file.exists());
+        assert!(!healthy_file.exists());
+        assert!(corrupt_file.exists());
+        assert!(invalid_workspace_file.exists());
+        assert!(rollback_file.exists());
+        let mut session = &db;
+        assert!(
+            session
+                .workspaces()
+                .get("rollback")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_feedback_report_import_race_is_benign_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let workspace = WorkspaceName::parse(&format!("feedback{}", uuid::Uuid::new_v4().simple()))
+            .expect("workspace");
+        let winner = feedback_record("feedback-1", "winner");
+        let mut tx = db.begin().await.expect("begin workspace tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), winner.created_at_unix_nanos)
+            .await
+            .expect("ensure workspace");
+        tx.commit().await.expect("commit workspace");
+        let mut tx = db.begin().await.expect("begin winner tx");
+        tx.feedback_reports()
+            .append(&workspace, &winner)
+            .await
+            .expect("insert uncommitted winner feedback");
+        let mut loser = winner.clone();
+        loser.trying_to_do = "loser".into();
+        let import = super::insert_imported_feedback_report(&db, &workspace, &loser);
+        tokio::pin!(import);
+
+        if tokio::time::timeout(std::time::Duration::from_millis(250), &mut import)
+            .await
+            .is_ok()
+        {
+            panic!("loser feedback import completed before winner commit");
+        }
+        tx.commit().await.expect("commit winner feedback");
+        assert!(!import.await.expect("loser import should recover"));
+        let mut session = &db;
+        assert_eq!(
+            session
+                .feedback_reports()
+                .get(&workspace, &winner.id)
+                .await
+                .expect("get feedback report"),
+            Some(winner)
+        );
+    }
+
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
         let config = DatabaseConfig::load(layout).expect("db config");
         let DatabaseConfig::Sqlite { path } = config else {
@@ -1973,6 +2302,31 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    fn feedback_jsonl(workspace: &str, id: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","workspace":"{workspace}","created_at":"2026-06-30T12:00:00Z","trying_to_do":"trying","tried":"tried","stuck":"stuck"}}
+"#
+        )
+    }
+
+    fn write_feedback_reports_file(path: &std::path::Path, contents: &str) {
+        fs::create_dir_all(path.parent().expect("reports parent")).expect("create reports parent");
+        fs::write(path, contents).expect("write feedback JSONL");
+    }
+
+    fn feedback_record(id: &str, trying_to_do: &str) -> FeedbackReportRecord {
+        FeedbackReportRecord {
+            id: id.to_string(),
+            created_at_unix_nanos: 42,
+            trying_to_do: trying_to_do.to_string(),
+            tried: "tried".to_string(),
+            stuck: "stuck".to_string(),
+            publish_status: None,
+            publish_error: None,
+            published_at_unix_nanos: None,
+        }
     }
 
     fn source<const V: usize, const S: usize>(

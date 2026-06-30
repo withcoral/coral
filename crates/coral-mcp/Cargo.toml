@@ -38,6 +38,7 @@ coral-telemetry.workspace = true
 coral-spec.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tonic-types.workspace = true

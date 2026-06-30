@@ -107,13 +107,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         MaterializationsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "feedback repository lands before runtime wiring in the stacked PR sequence"
-        )
-    )]
     fn feedback_reports(&mut self) -> FeedbackReportsRepo<'_, Self> {
         FeedbackReportsRepo::new(self)
     }
