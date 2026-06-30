@@ -444,7 +444,7 @@ impl<'a> Lowerer<'a> {
             CountSubqueryPattern::Relationships(predicate) => {
                 required || predicate.references_outer_variables()
             }
-            CountSubqueryPattern::Nodes { .. } => required,
+            CountSubqueryPattern::Nodes { .. } => required || pattern.references_outer_variables(),
         };
         if should_precompute {
             candidates.push(ScalarSubqueryCandidateUse {
