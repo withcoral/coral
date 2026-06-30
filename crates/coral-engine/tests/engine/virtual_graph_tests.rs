@@ -13148,6 +13148,38 @@ async fn cypher_order_by_aggregate_expressions_execute_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_hidden_aggregate_order_by_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier IS NOT NULL \
+         RETURN service.tier AS tier \
+         ORDER BY count(*) DESC, avg(service.risk), tier",
+    )
+    .await
+    .expect("hidden aggregate order expressions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("ORDER BY COUNT(*) DESC, AVG(\"n0\".\"risk_score\") ASC"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"tier": "prod"}), json!({"tier": "dev"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_terminal_with_projection_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

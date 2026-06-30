@@ -1438,6 +1438,17 @@ pub enum OrderExpression {
         /// Graph variable.
         variable: String,
     },
+    /// Order by `COUNT(*)` without requiring the count to be projected.
+    CountAll,
+    /// Order by an aggregate expression without requiring it to be projected.
+    Aggregate {
+        /// Aggregate function.
+        function: AggregateFunction,
+        /// Value to aggregate.
+        target: AggregateTarget,
+        /// Whether the aggregate applies distinct semantics.
+        distinct: bool,
+    },
     /// Order by a scalar expression.
     Scalar(ScalarExpression),
     /// Order by a literal value.

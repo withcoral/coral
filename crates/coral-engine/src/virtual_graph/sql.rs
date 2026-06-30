@@ -3056,7 +3056,7 @@ impl<'a> Lowerer<'a> {
 
     fn render_where(&self) -> Result<String, CoreError> {
         let mut predicates = self.render_pre_projection_predicates()?;
-        if !self.plan_has_aggregate_projection()
+        if !self.plan_has_aggregation()
             && let Some(predicate) = &self.validated.plan().post_projection_predicate
         {
             predicates.push(self.render_projection_predicate_expression(predicate)?);
@@ -3082,7 +3082,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn render_having(&self) -> Result<String, CoreError> {
-        if !self.plan_has_aggregate_projection() {
+        if !self.plan_has_aggregation() {
             return Ok(String::new());
         }
         let Some(predicate) = &self.validated.plan().post_projection_predicate else {
@@ -3094,16 +3094,22 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
-    fn plan_has_aggregate_projection(&self) -> bool {
+    fn plan_has_aggregation(&self) -> bool {
         self.validated
             .plan()
             .projections
             .iter()
             .any(Projection::is_aggregate)
+            || self.validated.plan().order_by.iter().any(|key| {
+                matches!(
+                    &key.expression,
+                    OrderExpression::CountAll | OrderExpression::Aggregate { .. }
+                )
+            })
     }
 
     fn render_group_by(&self) -> Result<String, CoreError> {
-        if !self.plan_has_aggregate_projection() {
+        if !self.plan_has_aggregation() {
             return Ok(String::new());
         }
 
@@ -7113,6 +7119,12 @@ impl<'a> Lowerer<'a> {
                 variable,
                 relationship_type,
             } => self.render_relationship_type_ref(variable, relationship_type),
+            OrderExpression::CountAll => Ok("COUNT(*)".to_string()),
+            OrderExpression::Aggregate {
+                function,
+                target,
+                distinct,
+            } => self.render_aggregate_invocation(*function, target, *distinct),
             OrderExpression::Scalar(ScalarExpression::Literal(literal)) => {
                 Ok(render_order_literal(literal))
             }

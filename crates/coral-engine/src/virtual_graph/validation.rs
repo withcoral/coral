@@ -576,19 +576,13 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     fn validate_aggregation(&self) -> Result<(), CoreError> {
-        let aggregate_count = self
-            .plan
-            .projections
-            .iter()
-            .filter(|projection| projection.is_aggregate())
-            .count();
-        if aggregate_count == 0 {
+        if !self.plan_has_aggregation() {
             return Ok(());
         }
         self.validate_distinct_keyless_relationship_counts()?;
         let projected_properties = self.projected_properties();
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
-            if !self.order_expression_is_projected_property_or_alias(
+            if !self.order_expression_is_projected_property_alias_or_aggregate(
                 &order_key.expression,
                 &projected_properties,
             ) {
@@ -603,6 +597,16 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(())
     }
 
+    fn plan_has_aggregation(&self) -> bool {
+        self.plan.projections.iter().any(Projection::is_aggregate)
+            || self.plan.order_by.iter().any(|key| {
+                matches!(
+                    &key.expression,
+                    OrderExpression::CountAll | OrderExpression::Aggregate { .. }
+                )
+            })
+    }
+
     fn validate_distinct_keyless_relationship_counts(&self) -> Result<(), CoreError> {
         for (index, projection) in self.plan.projections.iter().enumerate() {
             let Projection::Aggregate {
@@ -614,24 +618,48 @@ impl<'a> GraphPlanValidator<'a> {
             else {
                 continue;
             };
-            let Some(ValidatedBindingKind::Relationship(relationship)) = self
-                .bindings
-                .get(variable.as_str())
-                .map(ValidatedBinding::kind)
+            self.validate_distinct_keyless_relationship_count_target(
+                variable,
+                format!("projections[{index}].target"),
+            )?;
+        }
+        for (index, key) in self.plan.order_by.iter().enumerate() {
+            let OrderExpression::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey { variable },
+                distinct: true,
+            } = &key.expression
             else {
                 continue;
             };
-            if relationship.key.is_none() {
-                return Err(Diagnostic::new(
-                    "INVALID_AGGREGATE_TARGET",
-                    format!("projections[{index}].target"),
-                    format!(
-                        "count(DISTINCT {variable}) requires relationship mapping '{}' to declare a key",
-                        relationship.relationship_type
-                    ),
-                )
-                .into_core_error());
-            }
+            self.validate_distinct_keyless_relationship_count_target(
+                variable,
+                format!("order_by[{index}].aggregate.target"),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_distinct_keyless_relationship_count_target(
+        &self,
+        variable: &str,
+        path: String,
+    ) -> Result<(), CoreError> {
+        let Some(ValidatedBindingKind::Relationship(relationship)) =
+            self.bindings.get(variable).map(ValidatedBinding::kind)
+        else {
+            return Ok(());
+        };
+        if relationship.key.is_none() {
+            return Err(Diagnostic::new(
+                "INVALID_AGGREGATE_TARGET",
+                path,
+                format!(
+                    "count(DISTINCT {variable}) requires relationship mapping '{}' to declare a key",
+                    relationship.relationship_type
+                ),
+            )
+            .into_core_error());
         }
         Ok(())
     }
@@ -1574,10 +1602,15 @@ impl<'a> GraphPlanValidator<'a> {
                 relationship_type,
                 format!("{path}.variable"),
             ),
+            OrderExpression::CountAll | OrderExpression::Literal(_) => Ok(()),
+            OrderExpression::Aggregate {
+                function, target, ..
+            } => self
+                .infer_aggregate_projection_type(*function, target, &format!("{path}.aggregate"))
+                .map(|_| ()),
             OrderExpression::Scalar(expression) => {
                 self.validate_scalar_expression(expression, format!("{path}.expression"))
             }
-            OrderExpression::Literal(_) => Ok(()),
             OrderExpression::ProjectionAlias(alias) => {
                 if self.projection_alias_exists(alias) {
                     Ok(())
@@ -1661,7 +1694,19 @@ impl<'a> GraphPlanValidator<'a> {
                 })
             }
             OrderExpression::ProjectionAlias(alias) => self.projection_alias_exists(alias),
+            OrderExpression::CountAll | OrderExpression::Aggregate { .. } => false,
         }
+    }
+
+    fn order_expression_is_projected_property_alias_or_aggregate(
+        &self,
+        expression: &OrderExpression,
+        projected_properties: &[&PropertyRef],
+    ) -> bool {
+        matches!(
+            expression,
+            OrderExpression::CountAll | OrderExpression::Aggregate { .. }
+        ) || self.order_expression_is_projected_property_or_alias(expression, projected_properties)
     }
 
     fn projection_alias_exists(&self, alias: &str) -> bool {
@@ -6483,6 +6528,36 @@ relationships:
 
         assert!(
             error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_hidden_distinct_keyless_relationship_count_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey {
+                    variable: "owns".to_string(),
+                },
+                distinct: true,
+            },
+            direction: OrderDirection::Descending,
+            nulls: None,
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("hidden distinct keyless relationship aggregate target should fail");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("order_by[0].aggregate.target"),
             "{error:?}"
         );
     }

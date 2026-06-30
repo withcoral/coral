@@ -6616,10 +6616,15 @@ fn rename_order_expression_variables(
         | OrderExpression::RelationshipType { variable, .. }
         | OrderExpression::NodeLabels { variable, .. }
         | OrderExpression::PropertyKeys { variable } => rename_string(variable, renames),
+        OrderExpression::Aggregate { target, .. } => {
+            rename_aggregate_target_variables(target, renames);
+        }
         OrderExpression::Scalar(expression) => {
             rename_scalar_expression_variables(expression, renames);
         }
-        OrderExpression::Literal(_) | OrderExpression::ProjectionAlias(_) => {}
+        OrderExpression::CountAll
+        | OrderExpression::Literal(_)
+        | OrderExpression::ProjectionAlias(_) => {}
     }
 }
 
@@ -7039,10 +7044,15 @@ fn reject_ignored_path_variable_references_in_order_expression(
         | OrderExpression::PropertyKeys { variable } => {
             reject_ignored_path_variable(variable, state, path)
         }
+        OrderExpression::Aggregate { target, .. } => {
+            reject_ignored_path_variable_references_in_aggregate_target(target, state, path)
+        }
         OrderExpression::Scalar(expression) => {
             reject_ignored_path_variable_references_in_scalar_expression(expression, state, path)
         }
-        OrderExpression::Literal(_) | OrderExpression::ProjectionAlias(_) => Ok(()),
+        OrderExpression::CountAll
+        | OrderExpression::Literal(_)
+        | OrderExpression::ProjectionAlias(_) => Ok(()),
     }
 }
 
@@ -11206,7 +11216,14 @@ fn count_star_order_expression_for_projection(
             _ => None,
         })
         .collect::<Vec<_>>();
-    projection_alias_for_matching_order_expression(&aliases, path, "count(*)")
+    match aliases.as_slice() {
+        [alias] => Ok(OrderExpression::ProjectionAlias(alias.clone())),
+        [] => Ok(OrderExpression::CountAll),
+        _ => Err(unsupported(
+            path,
+            "ORDER BY count(*) is ambiguous because multiple RETURN projections match",
+        )),
+    }
 }
 
 fn aggregate_order_expression_for_projection(
@@ -11245,27 +11262,19 @@ fn aggregate_order_expression_for_projection(
             _ => None,
         })
         .collect::<Vec<_>>();
-    projection_alias_for_matching_order_expression(
-        &aliases,
-        path,
-        &format!("{}()", aggregate_function_name(function_kind)),
-    )
-}
-
-fn projection_alias_for_matching_order_expression(
-    aliases: &[String],
-    path: String,
-    expression: &str,
-) -> Result<OrderExpression, CoreError> {
-    match aliases {
+    match aliases.as_slice() {
         [alias] => Ok(OrderExpression::ProjectionAlias(alias.clone())),
-        [] => Err(unsupported(
-            path,
-            format!("ORDER BY {expression} must match a RETURN aggregate projection"),
-        )),
+        [] => Ok(OrderExpression::Aggregate {
+            function: function_kind,
+            target,
+            distinct: function.distinct,
+        }),
         _ => Err(unsupported(
             path,
-            format!("ORDER BY {expression} is ambiguous because multiple RETURN projections match"),
+            format!(
+                "ORDER BY {}() is ambiguous because multiple RETURN projections match",
+                aggregate_function_name(function_kind)
+            ),
         )),
     }
 }
@@ -48280,11 +48289,43 @@ relationships:
     }
 
     #[test]
-    fn rejects_unprojected_order_by_aggregate_expressions() {
-        assert_unsupported(
+    fn compiles_unprojected_order_by_aggregate_expressions() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              RETURN service.tier AS tier \
-             ORDER BY count(*)",
+             ORDER BY count(*) DESC, avg(service.risk), tier",
+        )
+        .expect("hidden aggregate order expressions should compile");
+
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::CountAll,
+                    direction: OrderDirection::Descending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Aggregate {
+                        function: AggregateFunction::Avg,
+                        target: AggregateTarget::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        }),
+                        distinct: false,
+                    },
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
         );
     }
 
