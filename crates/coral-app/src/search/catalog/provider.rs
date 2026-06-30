@@ -1,0 +1,554 @@
+//! Catalog metadata Universal Search provider.
+
+use std::collections::BTreeMap;
+
+use coral_engine::{CatalogInfo, TableFunctionInfo, TableInfo};
+
+use crate::catalog::discovery::CatalogItem;
+use crate::query::QueryAttribution;
+use crate::query::manager::{QueryManager, QueryManagerError};
+use crate::search::catalog::ranking::{RankedCatalogHit, rank_catalog_hits};
+use crate::search::catalog::snapshot::{
+    CatalogSearchSnapshot, field_role_from_str, surface_kind_from_str,
+};
+use crate::search::catalog::sqlite_index::{
+    CatalogIndexDocumentKind, CatalogRefreshResult, CatalogSearchHit, SqliteCatalogIndex,
+};
+use crate::search::provider::ProviderSearchOutcome;
+use crate::search::result::{
+    CatalogMetadataResult, ColumnHintResult, ProviderCoverage, ProviderStatus, SearchCandidate,
+    SearchFieldRole, SearchPayload, SearchProviderKind, SearchProviderState, SearchRequest,
+    SearchSurfaceKind, TableColumnPreview, TableColumnPreviewColumn,
+};
+use crate::search::sqlite_store::{SqliteSearchError, SqliteSearchStore};
+use crate::state::AppStateLayout;
+
+const CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER: usize = 5;
+const CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT: usize = 25;
+const MAX_COLUMN_HINTS_PER_SURFACE: usize = 3;
+const TABLE_COLUMN_PREVIEW_LIMIT: usize = 5;
+
+#[derive(Clone)]
+pub(crate) struct CatalogMetadataProvider {
+    layout: AppStateLayout,
+    queries: QueryManager,
+    index: SqliteCatalogIndex,
+}
+
+impl CatalogMetadataProvider {
+    pub(crate) fn new(layout: AppStateLayout, queries: QueryManager) -> Self {
+        Self {
+            layout,
+            queries,
+            index: SqliteCatalogIndex::new(),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "catalog provider search still owns refresh, retrieval, ranking, and mapping until provider internals are split"
+    )]
+    pub(crate) async fn search(
+        &self,
+        request: &SearchRequest,
+        attribution: &QueryAttribution,
+    ) -> ProviderSearchOutcome {
+        let catalog = match self
+            .queries
+            .list_catalog(&request.workspace_name, None, attribution)
+            .await
+        {
+            Ok(catalog) => catalog,
+            Err(error) => return catalog_query_error_outcome(&error),
+        };
+        let catalog_fingerprint = CatalogSearchSnapshot::fingerprint_catalog(&catalog);
+        let store = match SqliteSearchStore::open_app(&self.layout) {
+            Ok(store) => store,
+            Err(error) => return catalog_index_error_outcome(&error),
+        };
+        let capabilities = store.capabilities();
+        tracing::debug!(
+            workspace = %request.workspace_name,
+            sqlite_version = %capabilities.sqlite_version,
+            fts5 = capabilities.fts5,
+            trigram = capabilities.trigram,
+            "using SQLite catalog search store"
+        );
+        let mut connection = match store.connect() {
+            Ok(connection) => connection,
+            Err(error) => return catalog_index_error_outcome(&error),
+        };
+
+        let projection_current = match self.index.projection_is_current(
+            &connection,
+            &request.workspace_name,
+            &catalog_fingerprint,
+        ) {
+            Ok(current) => current,
+            Err(error) => return catalog_index_error_outcome(&error),
+        };
+        let (refresh, stale_index, refresh_lock_error, expected_document_count) =
+            if projection_current {
+                let document_count = match self
+                    .index
+                    .document_count(&connection, &request.workspace_name)
+                {
+                    Ok(count) => count,
+                    Err(error) => return catalog_index_error_outcome(&error),
+                };
+                (
+                    CatalogRefreshResult {
+                        refreshed: false,
+                        document_count,
+                    },
+                    false,
+                    None,
+                    document_count,
+                )
+            } else {
+                let snapshot = CatalogSearchSnapshot::from_catalog(&catalog);
+                let expected_document_count =
+                    u32::try_from(snapshot.documents.len()).unwrap_or(u32::MAX);
+                let index_snapshot = snapshot.index_snapshot();
+                match self
+                    .index
+                    .refresh(&mut connection, &request.workspace_name, &index_snapshot)
+                {
+                    Ok(refresh) => (refresh, false, None, expected_document_count),
+                    Err(error) if error.is_lock_contention() => {
+                        tracing::debug!(
+                            workspace = %request.workspace_name,
+                            error = %error,
+                            "using cached SQLite catalog search projection after refresh lock contention"
+                        );
+                        let document_count = match self
+                            .index
+                            .document_count(&connection, &request.workspace_name)
+                        {
+                            Ok(count) => count,
+                            Err(error) => return catalog_index_error_outcome(&error),
+                        };
+                        (
+                            CatalogRefreshResult {
+                                refreshed: false,
+                                document_count,
+                            },
+                            true,
+                            Some(error.to_string()),
+                            expected_document_count,
+                        )
+                    }
+                    Err(error) => return catalog_index_error_outcome(&error),
+                }
+            };
+        tracing::debug!(
+            workspace = %request.workspace_name,
+            refreshed = refresh.refreshed,
+            document_count = refresh.document_count,
+            stale_index,
+            "prepared SQLite catalog search projection"
+        );
+
+        let retrieval_limit = usize::try_from(request.limit)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(CATALOG_PROVIDER_RETRIEVAL_MULTIPLIER)
+            .max(CATALOG_PROVIDER_MIN_RETRIEVAL_LIMIT);
+        let search_hits = match self.index.search(
+            &connection,
+            &request.workspace_name,
+            &request.terms,
+            retrieval_limit,
+        ) {
+            Ok(search_hits) => search_hits,
+            Err(error) => return catalog_index_error_outcome(&error),
+        };
+        if stale_index && search_hits.document_count == 0 && expected_document_count > 0 {
+            return catalog_index_note_outcome(format!(
+                "Catalog metadata search index is unavailable: refresh could not acquire the SQLite writer lock and no cached projection exists{}",
+                refresh_lock_error
+                    .as_deref()
+                    .map_or_else(String::new, |error| format!(": {error}"))
+            ));
+        }
+
+        let retrieved_hit_count = search_hits.hits.len();
+        let ranked_hits = rank_catalog_hits(search_hits.hits, &request.terms);
+        let candidates = catalog_candidates_from_hits(&catalog, ranked_hits);
+        let candidate_count = candidates.len();
+        if retrieved_hit_count != candidate_count {
+            tracing::debug!(
+                workspace = %request.workspace_name,
+                retrieved_hit_count,
+                candidate_count,
+                "mapped SQLite catalog hits into provider candidates"
+            );
+        }
+        let state = if candidates.is_empty() {
+            SearchProviderState::Empty
+        } else if search_hits.retrieval_limited {
+            SearchProviderState::Partial
+        } else {
+            SearchProviderState::ResultsFound
+        };
+        let note = catalog_provider_note(state, candidate_count, refresh.refreshed, stale_index);
+        ProviderSearchOutcome {
+            candidates,
+            status: ProviderStatus {
+                provider: SearchProviderKind::CatalogMetadata,
+                state,
+                note,
+                coverage: Some(ProviderCoverage {
+                    eligible_units: search_hits.document_count,
+                    searched_units: search_hits.document_count,
+                    returned_count: u32::try_from(candidate_count).unwrap_or(u32::MAX),
+                    has_more: search_hits.retrieval_limited,
+                    stale_index,
+                    ..ProviderCoverage::default()
+                }),
+            },
+        }
+    }
+}
+
+fn catalog_candidates_from_hits(
+    catalog: &CatalogInfo,
+    hits: Vec<RankedCatalogHit>,
+) -> Vec<SearchCandidate> {
+    let mut candidates = Vec::new();
+    let mut column_hints_by_surface = BTreeMap::<(SearchSurfaceKind, String, String), usize>::new();
+
+    for ranked_hit in hits {
+        let hit = ranked_hit.hit;
+        match hit.doc_kind {
+            CatalogIndexDocumentKind::CatalogTable => {
+                if let Some(table) = find_table(catalog, &hit.source_name, &hit.surface_name) {
+                    candidates.push(table_candidate(table, &hit, ranked_hit.score));
+                }
+            }
+            CatalogIndexDocumentKind::CatalogTableFunction => {
+                if let Some(function) = find_function(catalog, &hit.source_name, &hit.surface_name)
+                {
+                    candidates.push(table_function_candidate(function, &hit, ranked_hit.score));
+                }
+            }
+            CatalogIndexDocumentKind::ColumnHint => {
+                let Some(surface_kind) = surface_kind_from_str(&hit.surface_kind) else {
+                    continue;
+                };
+                let count_key = (
+                    surface_kind,
+                    hit.source_name.clone(),
+                    hit.surface_name.clone(),
+                );
+                let count = column_hints_by_surface.entry(count_key).or_default();
+                if *count >= MAX_COLUMN_HINTS_PER_SURFACE {
+                    continue;
+                }
+                candidates.push(column_hint_candidate(
+                    catalog,
+                    &hit,
+                    surface_kind,
+                    ranked_hit.score,
+                ));
+                *count += 1;
+            }
+        }
+    }
+
+    candidates
+}
+
+fn table_candidate(table: &TableInfo, hit: &CatalogSearchHit, score: u32) -> SearchCandidate {
+    SearchCandidate {
+        key: hit.doc_id.clone(),
+        score,
+        provider: SearchProviderKind::CatalogMetadata,
+        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
+            item: CatalogItem::Table(table_summary(table)),
+            matched_fields: hit.matched_fields.clone(),
+            table_column_preview: Some(table_column_preview(table)),
+        }),
+    }
+}
+
+fn table_function_candidate(
+    function: &TableFunctionInfo,
+    hit: &CatalogSearchHit,
+    score: u32,
+) -> SearchCandidate {
+    SearchCandidate {
+        key: hit.doc_id.clone(),
+        score,
+        provider: SearchProviderKind::CatalogMetadata,
+        payload: SearchPayload::CatalogMetadata(CatalogMetadataResult {
+            item: CatalogItem::TableFunction(function.clone()),
+            matched_fields: hit.matched_fields.clone(),
+            table_column_preview: None,
+        }),
+    }
+}
+
+fn column_hint_candidate(
+    catalog: &CatalogInfo,
+    hit: &CatalogSearchHit,
+    surface_kind: SearchSurfaceKind,
+    score: u32,
+) -> SearchCandidate {
+    let metadata = column_hint_metadata(catalog, hit, surface_kind);
+    SearchCandidate {
+        key: hit.doc_id.clone(),
+        score,
+        provider: SearchProviderKind::CatalogMetadata,
+        payload: SearchPayload::ColumnHint(ColumnHintResult {
+            schema_name: hit.source_name.clone(),
+            surface_name: hit.surface_name.clone(),
+            surface_kind,
+            name: hit.field_name.clone(),
+            data_type: metadata.data_type,
+            required: metadata.required,
+            description: metadata.description,
+            matched_fields: hit.matched_fields.clone(),
+            field_role: metadata.field_role,
+        }),
+    }
+}
+
+struct ColumnHintMetadata {
+    data_type: String,
+    required: bool,
+    description: String,
+    field_role: SearchFieldRole,
+}
+
+fn column_hint_metadata(
+    catalog: &CatalogInfo,
+    hit: &CatalogSearchHit,
+    surface_kind: SearchSurfaceKind,
+) -> ColumnHintMetadata {
+    let fallback_role = match surface_kind {
+        SearchSurfaceKind::Table => SearchFieldRole::TableColumn,
+        SearchSurfaceKind::TableFunction => SearchFieldRole::TableFunctionResultColumn,
+    };
+    let field_role = field_role_from_str(&hit.field_role).unwrap_or(fallback_role);
+    match (surface_kind, field_role) {
+        (SearchSurfaceKind::Table, SearchFieldRole::TableColumn) => {
+            find_table(catalog, &hit.source_name, &hit.surface_name)
+                .and_then(|table| {
+                    table
+                        .columns
+                        .iter()
+                        .find(|column| column.name == hit.field_name)
+                })
+                .map_or_else(
+                    || fallback_column_hint_metadata(hit, field_role),
+                    |column| ColumnHintMetadata {
+                        data_type: column.data_type.clone(),
+                        required: column.is_required_filter,
+                        description: column.description.clone(),
+                        field_role,
+                    },
+                )
+        }
+        (SearchSurfaceKind::Table, SearchFieldRole::TableFilter) => {
+            let column =
+                find_table(catalog, &hit.source_name, &hit.surface_name).and_then(|table| {
+                    table
+                        .columns
+                        .iter()
+                        .find(|column| column.name == hit.field_name)
+                });
+            ColumnHintMetadata {
+                data_type: column.map_or_else(String::new, |column| column.data_type.clone()),
+                required: true,
+                description: column.map_or_else(
+                    || "Required table filter".to_string(),
+                    |column| column.description.clone(),
+                ),
+                field_role,
+            }
+        }
+        (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionArgument) => {
+            find_function(catalog, &hit.source_name, &hit.surface_name)
+                .and_then(|function| {
+                    function
+                        .arguments
+                        .iter()
+                        .find(|argument| argument.name == hit.field_name)
+                })
+                .map_or_else(
+                    || fallback_column_hint_metadata(hit, field_role),
+                    |argument| ColumnHintMetadata {
+                        data_type: String::new(),
+                        required: argument.required,
+                        description: "Table function argument".to_string(),
+                        field_role,
+                    },
+                )
+        }
+        (SearchSurfaceKind::TableFunction, SearchFieldRole::TableFunctionResultColumn) => {
+            find_function(catalog, &hit.source_name, &hit.surface_name)
+                .and_then(|function| {
+                    function
+                        .result_columns
+                        .iter()
+                        .find(|column| column.name == hit.field_name)
+                })
+                .map_or_else(
+                    || fallback_column_hint_metadata(hit, field_role),
+                    |column| ColumnHintMetadata {
+                        data_type: column.data_type.clone(),
+                        required: false,
+                        description: column.description.clone(),
+                        field_role,
+                    },
+                )
+        }
+        _ => fallback_column_hint_metadata(hit, field_role),
+    }
+}
+
+fn fallback_column_hint_metadata(
+    hit: &CatalogSearchHit,
+    field_role: SearchFieldRole,
+) -> ColumnHintMetadata {
+    ColumnHintMetadata {
+        data_type: String::new(),
+        required: matches!(field_role, SearchFieldRole::TableFilter),
+        description: hit.description.clone(),
+        field_role,
+    }
+}
+
+fn table_summary(table: &TableInfo) -> TableInfo {
+    let mut table = table.clone();
+    table.columns.clear();
+    table
+}
+
+fn table_column_preview(table: &TableInfo) -> TableColumnPreview {
+    let columns = table
+        .columns
+        .iter()
+        .take(TABLE_COLUMN_PREVIEW_LIMIT)
+        .cloned()
+        .map(|column| TableColumnPreviewColumn {
+            column,
+            matched_fields: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let column_count = u32::try_from(table.columns.len()).unwrap_or(u32::MAX);
+    let omitted_column_count = table.columns.len().saturating_sub(columns.len());
+    TableColumnPreview {
+        column_count,
+        columns,
+        omitted_column_count: u32::try_from(omitted_column_count).unwrap_or(u32::MAX),
+    }
+}
+
+fn find_table<'a>(
+    catalog: &'a CatalogInfo,
+    schema_name: &str,
+    table_name: &str,
+) -> Option<&'a TableInfo> {
+    catalog
+        .tables
+        .iter()
+        .find(|table| table.schema_name == schema_name && table.table_name == table_name)
+}
+
+fn find_function<'a>(
+    catalog: &'a CatalogInfo,
+    schema_name: &str,
+    function_name: &str,
+) -> Option<&'a TableFunctionInfo> {
+    catalog.table_functions.iter().find(|function| {
+        function.schema_name == schema_name && function.function_name == function_name
+    })
+}
+
+fn catalog_query_error_outcome(error: &QueryManagerError) -> ProviderSearchOutcome {
+    ProviderSearchOutcome {
+        candidates: Vec::new(),
+        status: ProviderStatus {
+            provider: SearchProviderKind::CatalogMetadata,
+            state: SearchProviderState::Error,
+            note: format!(
+                "Catalog metadata snapshot is unavailable: {}",
+                catalog_query_error_message(error)
+            ),
+            coverage: Some(ProviderCoverage::default()),
+        },
+    }
+}
+
+fn catalog_query_error_message(error: &QueryManagerError) -> String {
+    match error {
+        QueryManagerError::App(error) => error.to_string(),
+        QueryManagerError::Core(error) => error.to_string(),
+    }
+}
+
+fn catalog_index_error_outcome(error: &SqliteSearchError) -> ProviderSearchOutcome {
+    catalog_index_note_outcome(format!(
+        "Catalog metadata search index is unavailable: {error}"
+    ))
+}
+
+fn catalog_index_note_outcome(note: String) -> ProviderSearchOutcome {
+    ProviderSearchOutcome {
+        candidates: Vec::new(),
+        status: ProviderStatus {
+            provider: SearchProviderKind::CatalogMetadata,
+            state: SearchProviderState::Error,
+            note,
+            coverage: Some(ProviderCoverage::default()),
+        },
+    }
+}
+
+fn catalog_provider_note(
+    state: SearchProviderState,
+    total_count: usize,
+    refreshed: bool,
+    stale_index: bool,
+) -> String {
+    let refresh_note = if stale_index {
+        " from cached SQLite projection because refresh is currently locked"
+    } else if refreshed {
+        " after refreshing the SQLite projection"
+    } else {
+        ""
+    };
+    match state {
+        SearchProviderState::ResultsFound => {
+            format!("Catalog metadata returned {total_count} search hints{refresh_note}")
+        }
+        SearchProviderState::Partial => {
+            format!(
+                "Catalog metadata returned {total_count} search hints; local retrieval cap was reached{refresh_note}"
+            )
+        }
+        SearchProviderState::Empty => {
+            format!("Catalog metadata returned no search hints{refresh_note}")
+        }
+        SearchProviderState::NotEnabled
+        | SearchProviderState::Skipped
+        | SearchProviderState::Error => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::catalog_provider_note;
+    use crate::search::result::SearchProviderState;
+
+    #[test]
+    fn catalog_provider_note_reports_cached_projection_fallback() {
+        let note = catalog_provider_note(SearchProviderState::ResultsFound, 3, false, true);
+
+        assert_eq!(
+            note,
+            "Catalog metadata returned 3 search hints from cached SQLite projection because refresh is currently locked"
+        );
+    }
+}

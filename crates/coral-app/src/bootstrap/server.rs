@@ -56,7 +56,7 @@ use crate::search::manager::SearchManager;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::state::ConfigStore;
+use crate::state::{AppStateLayout, ConfigStore};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -300,12 +300,11 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             query_runtime_context,
-            layout,
+            layout.clone(),
             self.config.engine_extensions_providers,
         );
         let trace_components =
@@ -315,15 +314,19 @@ impl ServerBuilder {
                     service: Some(TraceService::new(store.dir, store.retention)),
                 }
             });
-        let managers = ServerManagers {
-            source_manager,
-            workspace_manager,
-            query_manager,
-            search_manager,
-            feedback_manager,
-            episode_store,
-        };
-        start_server(managers, trace_components, self.config.mode).await
+        start_server(
+            layout,
+            ServerManagers {
+                source: source_manager,
+                workspace: workspace_manager,
+                query: query_manager,
+                feedback: feedback_manager,
+                episode_store,
+            },
+            trace_components,
+            self.config.mode,
+        )
+        .await
     }
 }
 
@@ -412,37 +415,37 @@ struct TraceServerComponents {
 }
 
 struct ServerManagers {
-    source_manager: SourceManager,
-    workspace_manager: WorkspaceManager,
-    query_manager: QueryManager,
-    search_manager: SearchManager,
-    feedback_manager: FeedbackManager,
+    source: SourceManager,
+    workspace: WorkspaceManager,
+    query: QueryManager,
+    feedback: FeedbackManager,
     episode_store: EpisodeStore,
 }
 
 async fn start_server(
+    layout: AppStateLayout,
     managers: ServerManagers,
     trace_components: TraceServerComponents,
     mode: ServerMode,
 ) -> Result<RunningServer, AppError> {
-    let ServerManagers {
-        source_manager,
-        workspace_manager,
-        query_manager,
-        search_manager,
-        feedback_manager,
-        episode_store,
-    } = managers;
     let TraceServerComponents {
         service: trace_service,
         local_trace_store_dir,
     } = trace_components;
-    let source_service = SourceService::new(source_manager, query_manager.clone());
-    let workspace_service = WorkspaceService::new(workspace_manager);
-    let catalog_service = CatalogService::new(query_manager.clone());
-    let query_service = QueryService::new(query_manager);
+    let ServerManagers {
+        source,
+        workspace,
+        query,
+        feedback,
+        episode_store,
+    } = managers;
+    let search_manager = SearchManager::new(layout, query.clone());
+    let source_service = SourceService::new(source, query.clone());
+    let workspace_service = WorkspaceService::new(workspace);
+    let catalog_service = CatalogService::new(query.clone());
+    let query_service = QueryService::new(query);
     let search_service = SearchService::new(search_manager);
-    let feedback_service = FeedbackService::new(feedback_manager);
+    let feedback_service = FeedbackService::new(feedback);
     let episode_service = EpisodeService::new(episode_store);
     let mut routes = Routes::default()
         .add_service(GrpcMethodAnnotatedService::new(SourceServiceServer::new(
@@ -723,7 +726,6 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
-    use crate::search::manager::SearchManager;
     use crate::sources::manager::SourceManager;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
@@ -846,26 +848,24 @@ enabled = false
             layout.clone(),
             None,
         );
-        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
-        let managers = ServerManagers {
-            source_manager,
-            workspace_manager,
-            query_manager,
-            search_manager,
-            feedback_manager,
-            episode_store,
-        };
         let server = start_server(
-            managers,
+            layout,
+            ServerManagers {
+                source: source_manager,
+                workspace: workspace_manager,
+                query: query_manager,
+                feedback: feedback_manager,
+                episode_store,
+            },
             TraceServerComponents {
                 service: Some(trace_service),
                 local_trace_store_dir: None,
@@ -1241,7 +1241,6 @@ tables:
             layout.clone(),
             None,
         );
-        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
@@ -1249,19 +1248,18 @@ tables:
                 home_dir: Some(fake_home.clone()),
                 ..QueryRuntimeContext::default()
             },
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let managers = ServerManagers {
-            source_manager,
-            workspace_manager,
-            query_manager,
-            search_manager,
-            feedback_manager,
-            episode_store,
-        };
         let running = start_server(
-            managers,
+            layout,
+            ServerManagers {
+                source: source_manager,
+                workspace: workspace_manager,
+                query: query_manager,
+                feedback: feedback_manager,
+                episode_store,
+            },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1357,24 +1355,22 @@ tables:
             layout.clone(),
             None,
         );
-        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let managers = ServerManagers {
-            source_manager,
-            workspace_manager,
-            query_manager,
-            search_manager,
-            feedback_manager,
-            episode_store,
-        };
         let running = start_server(
-            managers,
+            layout,
+            ServerManagers {
+                source: source_manager,
+                workspace: workspace_manager,
+                query: query_manager,
+                feedback: feedback_manager,
+                episode_store,
+            },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )
@@ -1470,24 +1466,22 @@ tables:
             layout.clone(),
             None,
         );
-        let search_manager = SearchManager::new(config_store.clone());
         let query_manager = QueryManager::new(
             config_store,
             credential_manager,
             QueryRuntimeContext::default(),
-            layout,
+            layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
-        let managers = ServerManagers {
-            source_manager,
-            workspace_manager,
-            query_manager,
-            search_manager,
-            feedback_manager,
-            episode_store,
-        };
         let running = start_server(
-            managers,
+            layout,
+            ServerManagers {
+                source: source_manager,
+                workspace: workspace_manager,
+                query: query_manager,
+                feedback: feedback_manager,
+                episode_store,
+            },
             TraceServerComponents::default(),
             ServerMode::NativeGrpc,
         )

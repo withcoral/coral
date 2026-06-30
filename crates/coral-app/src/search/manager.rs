@@ -1,63 +1,30 @@
 //! App-level Universal Search manager.
 
-use crate::search::result::{
-    ProviderStatus, SearchManagerError, SearchProviderKind, SearchProviderState, SearchRequest,
-    SearchResponse, SearchTruncation,
-};
-use crate::state::ConfigStore;
+use crate::query::QueryAttribution;
+use crate::query::manager::QueryManager;
+use crate::search::catalog::provider::CatalogMetadataProvider;
+use crate::search::engine::UniversalSearchEngine;
+use crate::search::result::{SearchRequest, SearchResponse};
+use crate::state::AppStateLayout;
 
 #[derive(Clone)]
 pub(crate) struct SearchManager {
-    config_store: ConfigStore,
+    engine: UniversalSearchEngine,
 }
 
 impl SearchManager {
-    pub(crate) fn new(config_store: ConfigStore) -> Self {
-        Self { config_store }
+    pub(crate) fn new(layout: AppStateLayout, query_manager: QueryManager) -> Self {
+        let catalog = CatalogMetadataProvider::new(layout, query_manager);
+        Self {
+            engine: UniversalSearchEngine::new(catalog),
+        }
     }
 
-    pub(crate) fn search(
+    pub(crate) async fn search(
         &self,
         request: &SearchRequest,
-    ) -> Result<SearchResponse, SearchManagerError> {
-        {
-            let _state_lock = self.config_store.state_lock_shared()?;
-            let config = self.config_store.load_config_unlocked()?;
-            config.require_workspace(&request.workspace_name)?;
-        }
-        tracing::debug!(
-            workspace = %request.workspace_name,
-            query_len_bytes = request.query.len(),
-            limit = request.limit,
-            "running Universal Search shell without concrete providers"
-        );
-        Ok(SearchResponse {
-            provider_statuses: vec![
-                ProviderStatus {
-                    provider: SearchProviderKind::CatalogMetadata,
-                    state: SearchProviderState::NotEnabled,
-                    note: "catalog metadata search is not wired yet".to_string(),
-                    coverage: None,
-                },
-                ProviderStatus {
-                    provider: SearchProviderKind::ObservedValues,
-                    state: SearchProviderState::NotEnabled,
-                    note: "observed value search is not wired yet".to_string(),
-                    coverage: None,
-                },
-                ProviderStatus {
-                    provider: SearchProviderKind::NativeFanout,
-                    state: SearchProviderState::NotEnabled,
-                    note: "provider-native fanout is not wired yet".to_string(),
-                    coverage: None,
-                },
-            ],
-            truncation: SearchTruncation {
-                truncated: false,
-                returned_count: 0,
-                max_results: request.limit,
-                note: "no search providers are wired yet".to_string(),
-            },
-        })
+        attribution: &QueryAttribution,
+    ) -> SearchResponse {
+        self.engine.search(request, attribution).await
     }
 }
