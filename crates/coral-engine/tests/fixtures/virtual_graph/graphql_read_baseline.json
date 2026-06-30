@@ -10,7 +10,7 @@
     "NestedRelationships": 5,
     "RelationshipExistence": 5,
     "RootSelection": 4,
-    "RowModifiers": 5,
+    "RowModifiers": 8,
     "ScalarFilters": 12
   },
   "scenarios": [
@@ -353,6 +353,48 @@
         "rows": [
           { "city": "London" },
           { "city": "Paris" }
+        ]
+      }
+    },
+    {
+      "id": "orderby-multi-key-city-then-age",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }, { field: age, direction: DESC }]) { name city age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "city": "London", "age": 34 },
+          { "name": "Bob", "city": "London", "age": 29 },
+          { "name": "Carol", "city": "Paris", "age": 41 }
+        ]
+      }
+    },
+    {
+      "id": "orderby-multi-key-city-then-id-desc",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }, { field: _id, direction: DESC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Alice" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "orderby-multi-key-active-then-name",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: active, direction: DESC }, { field: name, direction: ASC }]) { name active } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "active": true },
+          { "name": "Carol", "active": true },
+          { "name": "Bob", "active": false }
         ]
       }
     },
