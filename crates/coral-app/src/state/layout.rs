@@ -211,6 +211,7 @@ impl AppStateLayout {
             .join(DIAGNOSTICS_FILENAME)
     }
 
+    #[cfg(test)]
     pub(crate) fn v4_surface_dir(
         &self,
         workspace_name: &WorkspaceName,

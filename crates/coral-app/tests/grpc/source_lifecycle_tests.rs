@@ -25,7 +25,8 @@ use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
+    fixture_manifest_yaml, fixture_v4_openapi_manifest_yaml, invalid_manifest_yaml,
+    issues_http_fixture, source_dir,
 };
 
 fn auth_manifest_yaml(inputs: &str, auth: &str) -> String {
@@ -57,6 +58,13 @@ fn secret_auth_manifest_yaml_at(base_url: &str) -> String {
         base_url,
         "inputs:\n  API_TOKEN:\n    kind: secret\n",
         "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n",
+    )
+}
+
+fn v4_secret_auth_manifest(manifest_yaml: &str) -> String {
+    manifest_yaml.replace(
+        "type: openapi",
+        "type: openapi\n  inputs:\n    API_TOKEN:\n      kind: secret\n  auth:\n    type: BasicAuth\n    username: bot\n    password: \"{{input.API_TOKEN}}\"",
     )
 }
 
@@ -253,6 +261,60 @@ async fn startup_import_lists_non_default_legacy_config_source() {
 }
 
 #[tokio::test]
+async fn v4_materialization_reloads_from_database_after_restart() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
+    let (manifest_yaml, openapi_file) =
+        fixture_v4_openapi_manifest_yaml(temp.path(), &issues_http.uri());
+    let manifest_yaml = v4_secret_auth_manifest(&manifest_yaml);
+
+    {
+        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness
+            .import_source(
+                manifest_yaml,
+                Vec::new(),
+                vec![SourceSecret {
+                    key: "API_TOKEN".into(),
+                    value: "secret-token".into(),
+                }],
+            )
+            .await;
+        fs::create_dir_all(
+            source_dir(harness.config_dir(), "github_v4_query").join("materialized/v4"),
+        )
+        .expect("plant stale v4 materialization dir");
+        fs::remove_file(&openapi_file).expect("remove authored descriptor");
+    }
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
+            .await,
+        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
+    );
+    harness
+        .import_source(
+            fixture_manifest_yaml(harness.temp_path()).replace("local_messages", "github_v4_query"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await;
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(harness.config_dir().join("coral.db")),
+    )
+    .await
+    .expect("open db");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM materializations")
+        .fetch_one(&pool)
+        .await
+        .expect("count materializations");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 
@@ -424,6 +486,22 @@ async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
         .expect_err("cleartext credential endpoint should fail");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
     assert!(error.message().contains("base_url"));
+    harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: v4_secret_auth_manifest(
+                &fixture_v4_openapi_manifest_yaml(harness.temp_path(), "http://api.example.com").0,
+            ),
+            variables: Vec::new(),
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("cleartext derived credential endpoint should fail");
     assert!(harness.list_sources().await.is_empty());
 }
 

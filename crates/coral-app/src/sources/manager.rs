@@ -27,10 +27,11 @@ use crate::sources::catalog::{
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
     canonicalize_file_descriptor, cleanup_materialization_backup, cleanup_materialization_tmp,
-    new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
+    materialization_record_from_dir, new_materialization_suffix, replace_v4_materialization,
+    restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::state::db::{CoralDb, DbRepos};
+use crate::state::db::{CoralDb, DbRepos, MaterializationRecord};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
 use crate::workspaces::{
@@ -161,8 +162,15 @@ struct PersistSourceRequest<'a> {
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
+    materialization: Option<MaterializationRecord>,
     credential_material: Option<CredentialMaterialSnapshot>,
 }
+
+type DbSourceSnapshot = (
+    InstalledSource,
+    Option<String>,
+    Option<MaterializationRecord>,
+);
 
 fn materialization_inputs_from_bindings(
     bindings: &ValidatedBindings,
@@ -605,6 +613,8 @@ impl SourceManager {
             source: stored,
             manifest_yaml: self
                 .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &removed)?,
+            materialization: self
+                .source_materialization_with_state_lock_held(workspace_name, source_name)?,
             credential_material,
         };
         let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
@@ -779,30 +789,31 @@ impl SourceManager {
                 (Vec::new(), None)
             };
 
-        let materialization_backup =
-            if let Some(materialization_tmp) = request.materialization_tmp.as_ref() {
-                match replace_v4_materialization(
-                    &self.layout,
-                    workspace_name,
-                    &source_name,
-                    materialization_tmp,
-                ) {
-                    Ok(backup) => backup,
-                    Err(error) => {
-                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state_with_state_lock_held(
-                            workspace_name,
-                            &source_name,
-                            previous,
-                            credential_storage,
-                            &credential_guard,
-                        );
-                        return Err(error);
-                    }
+        let materialization_backup = if self.catalog_db.is_none()
+            && let Some(materialization_tmp) = request.materialization_tmp.as_ref()
+        {
+            match replace_v4_materialization(
+                &self.layout,
+                workspace_name,
+                &source_name,
+                materialization_tmp,
+            ) {
+                Ok(backup) => backup,
+                Err(error) => {
+                    cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                    self.restore_source_rollback_state_with_state_lock_held(
+                        workspace_name,
+                        &source_name,
+                        previous,
+                        credential_storage,
+                        &credential_guard,
+                    );
+                    return Err(error);
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
@@ -820,7 +831,9 @@ impl SourceManager {
             workspace_name,
             stored.clone(),
             request.manifest_yaml,
+            request.materialization_tmp.as_deref(),
         ) {
+            cleanup_materialization_tmp(request.materialization_tmp.as_deref());
             let restore_result = restore_materialization_backup(
                 &self.layout,
                 workspace_name,
@@ -842,6 +855,7 @@ impl SourceManager {
             return Err(error);
         }
         cleanup_materialization_backup(materialization_backup);
+        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
         let mut resolved = stored;
         resolved.version.clone_from(&request.candidate.version);
         Ok(resolved)
@@ -1097,12 +1111,14 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
         manifest_yaml: Option<&str>,
+        materialization_tmp: Option<&std::path::Path>,
     ) -> Result<(), AppError> {
         if self.catalog_db.is_some() {
             return self.upsert_db_source_with_state_lock_held(
                 workspace_name,
                 source,
                 manifest_yaml,
+                materialization_tmp,
             );
         }
         self.config_store
@@ -1115,6 +1131,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
         manifest_yaml: Option<&str>,
+        materialization_tmp: Option<&std::path::Path>,
     ) -> Result<(), AppError> {
         let Some(db) = self.catalog_db.clone() else {
             return Ok(());
@@ -1130,9 +1147,14 @@ impl SourceManager {
             })?;
             validate_imported_manifest_database_persistence(manifest_yaml, &source.variables)?;
         }
+        let materialization_tmp = materialization_tmp.map(std::path::Path::to_path_buf);
         run_db_catalog_operation(async move {
             let mut tx = db.begin().await?;
             let now_unix_nanos = now_unix_nanos_i64()?;
+            let materialization = materialization_tmp
+                .as_deref()
+                .map(|dir| materialization_record_from_dir(&source.name, dir, now_unix_nanos))
+                .transpose()?;
             tx.workspaces()
                 .ensure(workspace_name.as_str(), now_unix_nanos)
                 .await?;
@@ -1155,6 +1177,15 @@ impl SourceManager {
                     )
                     .await?;
             }
+            if let Some(materialization) = materialization {
+                tx.materializations()
+                    .upsert(&workspace_name, &source.name, &materialization)
+                    .await?;
+            } else {
+                tx.materializations()
+                    .remove(&workspace_name, &source.name)
+                    .await?;
+            }
             tx.commit().await?;
             Ok(())
         })
@@ -1165,12 +1196,14 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
         manifest_yaml: Option<&str>,
+        materialization: Option<&MaterializationRecord>,
     ) -> Result<(), AppError> {
         let Some(db) = self.catalog_db.clone() else {
             return Ok(());
         };
         let workspace_name = workspace_name.clone();
         let manifest_yaml = manifest_yaml.map(str::to_string);
+        let materialization = materialization.cloned();
         run_db_catalog_operation(async move {
             let mut tx = db.begin().await?;
             let now_unix_nanos = now_unix_nanos_i64()?;
@@ -1201,6 +1234,15 @@ impl SourceManager {
                         .await?;
                 }
             }
+            if let Some(materialization) = materialization {
+                tx.materializations()
+                    .upsert(&workspace_name, &source.name, &materialization)
+                    .await?;
+            } else {
+                tx.materializations()
+                    .remove(&workspace_name, &source.name)
+                    .await?;
+            }
             tx.commit().await?;
             Ok(())
         })
@@ -1229,7 +1271,7 @@ impl SourceManager {
     fn delete_db_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
-    ) -> Result<Vec<(InstalledSource, Option<String>)>, AppError> {
+    ) -> Result<Vec<DbSourceSnapshot>, AppError> {
         let Some(db) = self.catalog_db.clone() else {
             return Ok(Vec::new());
         };
@@ -1247,7 +1289,11 @@ impl SourceManager {
                 } else {
                     None
                 };
-                source_snapshots.push((source, manifest_yaml));
+                let materialization = tx
+                    .materializations()
+                    .get(&workspace_name, &source.name)
+                    .await?;
+                source_snapshots.push((source, manifest_yaml, materialization));
             }
             tx.workspaces().remove(workspace_name.as_str()).await?;
             tx.commit().await?;
@@ -1442,6 +1488,8 @@ impl SourceManager {
         else {
             return Ok(None);
         };
+        let materialization =
+            self.source_materialization_with_state_lock_held(workspace_name, source_name)?;
         let credential_material = source
             .credential_storage_for_material()
             .map(|credential_storage| {
@@ -1452,8 +1500,29 @@ impl SourceManager {
             manifest_yaml: self
                 .source_manifest_yaml_for_rollback_with_state_lock_held(workspace_name, &source)?,
             source,
+            materialization,
             credential_material,
         }))
+    }
+
+    fn source_materialization_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<MaterializationRecord>, AppError> {
+        let Some(db) = self.catalog_db.clone() else {
+            return Ok(None);
+        };
+        let workspace_name = workspace_name.clone();
+        let source_name = source_name.clone();
+        run_db_catalog_operation(async move {
+            let mut session = db.as_ref();
+            session
+                .materializations()
+                .get(&workspace_name, &source_name)
+                .await
+                .map_err(AppError::from)
+        })
     }
 
     fn restore_source_rollback_state_with_state_lock_held(
@@ -1503,11 +1572,13 @@ impl SourceManager {
                 }
             }
             let previous_source = previous.source;
+            let previous_materialization = previous.materialization;
             if self.catalog_db.is_some() {
                 if let Err(e) = self.restore_db_source_snapshot_with_state_lock_held(
                     workspace_name,
                     previous_source,
                     previous_manifest_yaml.as_deref(),
+                    previous_materialization.as_ref(),
                 ) {
                     warn!("rollback: failed to restore source database row: {e}");
                 }
@@ -1615,12 +1686,13 @@ impl WorkspaceStore for SourceManager {
         let config_deleted = match self.config_store.delete_workspace_unlocked(workspace_name) {
             Ok(deleted) => deleted,
             Err(error) => {
-                for (source, manifest_yaml) in &db_sources {
+                for (source, manifest_yaml, materialization) in &db_sources {
                     if let Err(restore_error) = self
                         .restore_db_source_snapshot_with_state_lock_held(
                             workspace_name,
                             source.clone(),
                             manifest_yaml.as_deref(),
+                            materialization.as_ref(),
                         )
                     {
                         return Err(AppError::FailedPrecondition(format!(
@@ -1643,7 +1715,7 @@ impl WorkspaceStore for SourceManager {
         deleted.sources.extend(
             db_sources
                 .into_iter()
-                .map(|(source, _manifest_yaml)| source),
+                .map(|(source, _manifest_yaml, _materialization)| source),
         );
         Ok(Some(deleted))
     }

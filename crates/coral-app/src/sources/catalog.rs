@@ -173,7 +173,7 @@ fn validate_http_source_for_database_persistence(
     http: &coral_spec::backends::http::HttpSourceManifest,
 ) -> Result<(), AppError> {
     let mut needs_transport_guard =
-        validate_http_auth_spec_for_database_persistence(input_kinds, "auth", &http.auth)?;
+        validate_auth_spec_for_database_persistence(input_kinds, "auth", &http.auth)?;
     needs_transport_guard |= validate_headers_for_database_persistence(
         input_kinds,
         "request_headers",
@@ -222,7 +222,7 @@ fn validate_v4_source_for_database_persistence(
     for surface in &v4.surfaces {
         match &surface.runtime {
             coral_spec::v4::SurfaceRuntimeConfig::OpenApi(runtime) => {
-                let mut needs_transport_guard = validate_http_auth_spec_for_database_persistence(
+                let mut needs_transport_guard = validate_auth_spec_for_database_persistence(
                     input_kinds,
                     &format!("surface '{}' auth", surface.id),
                     &runtime.auth,
@@ -274,7 +274,7 @@ fn candidate_from_manifest(
     })
 }
 
-fn validate_http_auth_spec_for_database_persistence(
+pub(crate) fn validate_auth_spec_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     auth: &AuthSpec,
@@ -378,7 +378,7 @@ fn validate_mcp_server_for_database_persistence(
     Ok(())
 }
 
-fn validate_request_headers_for_database_persistence(
+pub(crate) fn validate_request_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     request: &coral_spec::RequestSpec,
@@ -426,7 +426,7 @@ fn validate_request_headers_for_database_persistence(
     Ok(needs_transport_guard)
 }
 
-fn validate_headers_for_database_persistence(
+pub(crate) fn validate_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     headers: &[HeaderSpec],
@@ -528,7 +528,7 @@ fn value_source_references_secret_input(
     }
 }
 
-fn template_references_secret_input(
+pub(crate) fn template_references_secret_input(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     template: &ParsedTemplate,
 ) -> bool {

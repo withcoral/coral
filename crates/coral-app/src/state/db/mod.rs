@@ -23,5 +23,8 @@ pub(crate) use config::{DatabaseConfig, ResolvedDatabaseConfig};
 pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::import_config_source_catalog;
+pub(crate) use repositories::materializations::{
+    MaterializationRecord, MaterializationSurfaceRecord,
+};
 pub(crate) use session::{DbRepos, DbSession, DbWriteSession};
 pub(crate) use transaction::CoralTx;

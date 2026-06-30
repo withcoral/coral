@@ -30,10 +30,11 @@ use crate::sources::catalog::{
     validate_imported_manifest_database_persistence,
 };
 use crate::sources::materialization::{
-    incompatible_materialization_error, load_v4_materialization,
+    LoadedV4Materialization, incompatible_materialization_error, load_v4_materialization,
+    load_v4_materialization_from_record,
 };
 use crate::sources::model::{InstalledSource, SourceOrigin};
-use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::sources::runtime_package::runtime_components_for_loaded_v4_source;
 use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
@@ -396,6 +397,38 @@ impl QueryManager {
         resolve_installed_manifest_from_yaml(source, &manifest_yaml)
     }
 
+    async fn load_v4_materialization_for_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        manifest_yaml: &str,
+        manifest: &coral_spec::v4::V4SourceManifest,
+    ) -> Result<LoadedV4Materialization, AppError> {
+        if let Some(db) = self.catalog_db.as_ref() {
+            let mut session = db.as_ref();
+            let record = session
+                .materializations()
+                .get(workspace_name, &source.name)
+                .await?
+                .ok_or_else(|| {
+                    incompatible_materialization_error(&source.name, "required artifact is missing")
+                })?;
+            return load_v4_materialization_from_record(
+                &source.name,
+                manifest_yaml,
+                manifest,
+                &record,
+            );
+        }
+        load_v4_materialization(
+            &self.layout,
+            workspace_name,
+            &source.name,
+            manifest_yaml,
+            manifest,
+        )
+    }
+
     async fn load_query_sources_from_installed(
         &self,
         workspace_name: &WorkspaceName,
@@ -445,15 +478,16 @@ impl QueryManager {
             )?;
         }
         let v4_runtime_components = if let Some(v4) = source_spec.as_v4() {
-            let materialized = load_v4_materialization(
-                &self.layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-            )?;
+            let materialized = self
+                .load_v4_materialization_for_source(
+                    workspace_name,
+                    source,
+                    &installed.manifest_yaml,
+                    v4,
+                )
+                .await?;
             Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
+                runtime_components_for_loaded_v4_source(v4, &materialized).map_err(|error| {
                     incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),

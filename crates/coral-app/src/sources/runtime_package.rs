@@ -19,10 +19,33 @@ use coral_spec::{
 };
 
 use crate::bootstrap::AppError;
+use crate::sources::materialization::{
+    LoadedV4Materialization, validate_materialized_surface_base_url,
+};
 
+#[cfg(test)]
 pub(crate) fn runtime_components_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+) -> Result<Vec<RuntimeSourceComponent>, AppError> {
+    runtime_components_for_v4_source_inner(manifest, materialized, None)
+}
+
+pub(crate) fn runtime_components_for_loaded_v4_source(
+    manifest: &V4SourceManifest,
+    loaded: &LoadedV4Materialization,
+) -> Result<Vec<RuntimeSourceComponent>, AppError> {
+    runtime_components_for_v4_source_inner(
+        manifest,
+        &loaded.materialized,
+        Some(loaded.raw_source_documents()),
+    )
+}
+
+fn runtime_components_for_v4_source_inner(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+    raw_documents: Option<&BTreeMap<String, Vec<u8>>>,
 ) -> Result<Vec<RuntimeSourceComponent>, AppError> {
     let mut components = Vec::new();
     for surface in &manifest.surfaces {
@@ -35,6 +58,8 @@ pub(crate) fn runtime_components_for_v4_source(
                     manifest,
                     materialized,
                     &surface.id,
+                    raw_documents
+                        .and_then(|documents| documents.get(&surface.id).map(Vec::as_slice)),
                 )?));
             }
             SurfaceType::Mcp => {
@@ -64,6 +89,7 @@ fn http_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
     surface_id: &str,
+    raw_source_document: Option<&[u8]>,
 ) -> Result<HttpSourceManifest, AppError> {
     let surface = manifest.surface(surface_id).ok_or_else(|| {
         AppError::FailedPrecondition(format!("DSL v4 manifest is missing surface '{surface_id}'"))
@@ -155,7 +181,7 @@ fn http_manifest_for_surface(
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
         },
-        base_url: surface_base_url(manifest, surface, materialized_surface)?,
+        base_url: surface_base_url(manifest, surface, materialized_surface, raw_source_document)?,
         auth: openapi_runtime.auth.clone(),
         request_headers: openapi_runtime.request_headers.clone(),
         rate_limit: openapi_runtime.rate_limit.clone(),
@@ -337,6 +363,7 @@ fn surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     materialized_surface: &coral_spec::v4::MaterializedSurface,
+    raw_source_document: Option<&[u8]>,
 ) -> Result<ParsedTemplate, AppError> {
     let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
         AppError::FailedPrecondition(format!(
@@ -349,12 +376,16 @@ fn surface_base_url(
         validate_surface_base_url_template(manifest, surface, &base_url, "authored")?;
         return Ok(base_url);
     }
-    let bytes = std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to read materialized OpenAPI document for surface '{}': {error}",
-            surface.id
-        ))
-    })?;
+    let bytes = match raw_source_document {
+        Some(bytes) => bytes.to_vec(),
+        None => std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to read materialized OpenAPI document for surface '{}': {error}",
+                surface.id
+            ))
+        })?,
+    };
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface '{}': {error}",
@@ -874,37 +905,6 @@ mod tests {
                 .offset_pagination
                 .as_ref(),
             Some(&offset_pagination)
-        );
-    }
-
-    #[test]
-    fn derived_openapi_server_url_rejects_runtime_controlled_tokens() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let openapi = temp.path().join("openapi.yaml");
-        std::fs::write(
-            &openapi,
-            r#"
-openapi: 3.0.3
-servers:
-  - url: https://{host}
-    variables:
-      host:
-        default: "{{filter.host}}"
-paths: {}
-"#,
-        )
-        .expect("write openapi");
-
-        let surface = surface_without_authored_base_url();
-        let manifest = manifest_with_surface(surface.clone());
-        let error = surface_base_url(&manifest, &surface, &materialized_surface(openapi))
-            .expect_err("runtime token should be rejected");
-
-        assert!(
-            error
-                .to_string()
-                .contains("base_url may only reference source inputs"),
-            "unexpected error: {error}"
         );
     }
 }
