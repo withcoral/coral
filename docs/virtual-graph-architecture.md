@@ -486,11 +486,13 @@ The supported foundation subset is intentionally narrow:
   correlated scalar-subquery limits. Other nested count comparisons continue
   through the scalar count renderer and will require staged aggregate planning
   for broader parent-property support. Row-preserving scoped returns such as
-  `RETURN *` and `RETURN 1` are accepted as no-op compatibility syntax because
-  `EXISTS` and `COUNT` consume only subquery cardinality. `EXISTS` also accepts
+  `RETURN *`, `RETURN 1`, and scalar/property projections such as
+  `RETURN target.name` are accepted as no-op compatibility syntax after the
+  return expressions validate against the scoped graph plan, because `EXISTS`
+  and `COUNT` consume only subquery cardinality. `EXISTS` also accepts
   `RETURN DISTINCT` over those no-op scoped returns because distinctness cannot
   change existence. `OPTIONAL MATCH`, `WITH`, cardinality-changing
-  `RETURN DISTINCT` inside counted subqueries, `RETURN` over graph expressions,
+  `RETURN DISTINCT` inside counted subqueries, `RETURN` over graph objects,
   return ordering/pagination, and `UNION` inside scoped subqueries still require
   staged planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to

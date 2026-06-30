@@ -5446,9 +5446,9 @@ async fn cypher_noop_return_inside_scoped_subqueries_executes() {
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1 } \
+         WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN DISTINCT target.name } \
          RETURN service.name AS service, \
-                COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN * } AS dependency_count \
+                COUNT { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name, 1 } AS dependency_count \
          ORDER BY dependency_count DESC, service",
     )
     .await

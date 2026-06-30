@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "CollectSubquery": 2,
-    "CountSubquery": 2,
+    "CountSubquery": 3,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
@@ -370,6 +370,20 @@
       }
     },
     {
+      "id": "count-subquery-scalar-return",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) RETURN p.name AS person, COUNT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name } AS friend_count ORDER BY friend_count DESC, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice", "friend_count": 2 },
+          { "person": "Bob", "friend_count": 1 },
+          { "person": "Carol", "friend_count": 0 }
+        ]
+      }
+    },
+    {
       "id": "count-subquery-predicate",
       "feature": "CountSubquery",
       "query": "MATCH (p:Person) WHERE COUNT { MATCH (p)-[:KNOWS]->(:Person) } > 1 RETURN p.name AS person",
@@ -422,7 +436,7 @@
     {
       "id": "exists-subquery-distinct-noop-return",
       "feature": "ExistsSubquery",
-      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person) RETURN DISTINCT 1 } RETURN p.name AS person ORDER BY person",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(friend:Person) RETURN DISTINCT friend.name } RETURN p.name AS person ORDER BY person",
       "expected": {
         "kind": "rows",
         "ordered": true,

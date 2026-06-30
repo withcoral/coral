@@ -23359,20 +23359,13 @@ fn compile_regular_query_scoped_plan(
             ),
         ));
     };
-    match &single_part.body {
-        SinglePartBody::Finish(_) => {}
-        SinglePartBody::Return(return_clause) => {
-            validate_scoped_subquery_noop_return(
-                return_clause,
-                &path,
-                feature_name,
-                allow_distinct_noop_return,
-            )?;
-        }
+    let return_clause = match &single_part.body {
+        SinglePartBody::Finish(_) => None,
+        SinglePartBody::Return(return_clause) => Some(return_clause),
         SinglePartBody::Updating {
             updating,
             return_clause,
-        } if updating.is_empty() && return_clause.is_none() => {}
+        } if updating.is_empty() && return_clause.is_none() => None,
         SinglePartBody::Updating {
             updating,
             return_clause,
@@ -23380,12 +23373,7 @@ fn compile_regular_query_scoped_plan(
             let Some(return_clause) = return_clause else {
                 unreachable!("return_clause.is_some() was checked above");
             };
-            validate_scoped_subquery_noop_return(
-                return_clause,
-                &path,
-                feature_name,
-                allow_distinct_noop_return,
-            )?;
+            Some(return_clause)
         }
         SinglePartBody::Updating { .. } => {
             return Err(unsupported(
@@ -23393,7 +23381,7 @@ fn compile_regular_query_scoped_plan(
                 "write clauses are not supported by Coral virtual graphs",
             ));
         }
-    }
+    };
     if single_part.reading_clauses.is_empty() {
         return Err(unsupported(format!("{path}.match"), missing_match_message));
     }
@@ -23422,6 +23410,17 @@ fn compile_regular_query_scoped_plan(
             ),
         ));
     }
+    if let Some(return_clause) = return_clause {
+        validate_scoped_subquery_noop_return(
+            return_clause,
+            &path,
+            feature_name,
+            allow_distinct_noop_return,
+            &exists_plan,
+            &exists_state,
+            context,
+        )?;
+    }
     Ok(CompiledScopedPlan {
         plan: exists_plan,
         delta: ScopedPlanDelta {
@@ -23437,6 +23436,9 @@ fn validate_scoped_subquery_noop_return(
     path: &str,
     feature_name: &'static str,
     allow_distinct_noop_return: bool,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
 ) -> Result<(), CoreError> {
     if return_clause.distinct && !allow_distinct_noop_return {
         return Err(unsupported(
@@ -23463,19 +23465,56 @@ fn validate_scoped_subquery_noop_return(
     if return_clause.items.is_empty() {
         return Err(unsupported(
             format!("{path}.return.items"),
-            format!("RETURN inside {feature_name} must include RETURN * or literal projections"),
+            format!("RETURN inside {feature_name} must include RETURN * or scalar projections"),
         ));
     }
     for (index, item) in return_clause.items.iter().enumerate() {
-        if !scoped_subquery_return_item_is_noop_literal(item) {
-            return Err(unsupported(
-                format!("{path}.return.items[{index}]"),
-                format!(
-                    "RETURN inside {feature_name} currently supports only row-preserving literal projections or RETURN *"
-                ),
-            ));
-        }
+        validate_scoped_subquery_return_item(
+            item,
+            index,
+            path,
+            feature_name,
+            plan,
+            state,
+            context,
+        )?;
     }
+    Ok(())
+}
+
+fn validate_scoped_subquery_return_item(
+    item: &ProjectionItem,
+    index: usize,
+    path: &str,
+    feature_name: &'static str,
+    plan: &GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    if scoped_subquery_return_item_is_noop_literal(item) {
+        return Ok(());
+    }
+    if matches!(item.expression, Expression::Variable(_))
+        || matches!(item.expression, Expression::CountStar { .. })
+        || expression_contains_aggregate(&item.expression)
+        || expression_contains_subquery(&item.expression)
+    {
+        return Err(unsupported(
+            format!("{path}.return.items[{index}]"),
+            format!(
+                "RETURN inside {feature_name} currently supports only row-preserving scalar or literal projections or RETURN *"
+            ),
+        ));
+    }
+    compile_scalar_expression_in_predicate_mode(
+        &item.expression,
+        format!("{path}.return.items[{index}].expression"),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )?;
     Ok(())
 }
 
@@ -40225,8 +40264,8 @@ relationships:
     fn compiles_noop_returns_inside_scoped_exists_and_count_subqueries() {
         let plan = compile_cypher(
             "MATCH (service:Service) \
-             WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN DISTINCT 1 } \
-             RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(:Service) RETURN * } AS dependencies",
+             WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN DISTINCT target.name } \
+             RETURN COUNT { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name, 1 } AS dependencies",
         )
         .expect("row-preserving scoped subquery RETURN clauses should compile");
 
@@ -40253,9 +40292,9 @@ relationships:
             ),
             (
                 "MATCH (service:Service) \
-                 WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target.name } \
+                 WHERE EXISTS { MATCH (service)-[:DEPENDS_ON]->(target:Service) RETURN target } \
                  RETURN service.name AS service",
-                "RETURN inside EXISTS subqueries currently supports only row-preserving literal projections or RETURN *",
+                "RETURN inside EXISTS subqueries currently supports only row-preserving scalar or literal projections or RETURN *",
             ),
             (
                 "MATCH (service:Service) \
