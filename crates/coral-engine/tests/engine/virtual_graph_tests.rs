@@ -7394,7 +7394,7 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
     assert!(
         graph_execution
             .translated_sql()
-            .contains("MEDIAN(\"n0\".\"risk_score\") AS \"medianRisk\""),
+            .contains("MEDIAN(CAST(\"n0\".\"risk_score\" AS DOUBLE)) AS \"medianRisk\""),
         "{}",
         graph_execution.translated_sql()
     );
@@ -14621,7 +14621,7 @@ async fn cypher_median_aggregate_projection_executes_against_synthetic_sources()
     assert!(
         execution
             .translated_sql()
-            .contains("MEDIAN(\"n0\".\"risk_score\") AS \"median_risk\""),
+            .contains("MEDIAN(CAST(\"n0\".\"risk_score\" AS DOUBLE)) AS \"median_risk\""),
         "{}",
         execution.translated_sql()
     );

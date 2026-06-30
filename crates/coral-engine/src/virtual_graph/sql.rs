@@ -8314,6 +8314,11 @@ fn render_aggregate_invocation_sql(
     distinct: bool,
 ) -> String {
     let distinct_sql = if distinct { "DISTINCT " } else { "" };
+    let target = if function == AggregateFunction::Median {
+        format!("CAST({target} AS DOUBLE)")
+    } else {
+        target.to_string()
+    };
     if let AggregateFunction::PercentileCont { percentile } = function {
         return format!(
             "PERCENTILE_CONT({distinct_sql}{target}, {})",
@@ -12001,11 +12006,11 @@ relationships: []
 
         assert!(
             translation.sql().contains(
-                "MEDIAN(\"n1\".\"risk_score\") AS \"median_risk\", \
+                "MEDIAN(CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"median_risk\", \
                  PERCENTILE_CONT(\"n1\".\"risk_score\", 0.75) AS \"p75_risk\", \
                  STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
                  STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
-                 MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\", \
+                 MEDIAN(DISTINCT CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"distinct_median_risk\", \
                  SQRT(VAR_SAMP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_sample_risk\", \
                  SQRT(VAR_POP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_population_risk\""
             ),

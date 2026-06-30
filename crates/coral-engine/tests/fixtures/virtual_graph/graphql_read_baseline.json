@@ -2,7 +2,7 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 6,
+    "Aggregation": 9,
     "BooleanFilters": 6,
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
@@ -445,6 +445,44 @@
         "rows": [
           { "city": "London", "avgAge": 31.5 },
           { "city": "Paris", "avgAge": 41.0 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-median-global",
+      "feature": "Aggregation",
+      "query": "query { Person { medianAge: _median(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "medianAge": 34.0 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-median-grouped-by-city",
+      "feature": "Aggregation",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }]) { city medianAge: _median(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "medianAge": 31.5 },
+          { "city": "Paris", "medianAge": 41.0 }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-median-count-grouped",
+      "feature": "Aggregation",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC }]) { city medianAge: _median(field: age) people: _count } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London", "medianAge": 31.5, "people": 2 },
+          { "city": "Paris", "medianAge": 41.0, "people": 1 }
         ]
       }
     },
