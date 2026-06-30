@@ -14,6 +14,8 @@ export interface CoralSidecar {
 }
 
 const READY_RE = /Coral UI listening on (http:\/\/(?:127\.0\.0\.1|localhost|\[[^\]]+\])(?::\d+)?|http:\/\/[^\s]+)/
+const STARTUP_TIMEOUT_MS = 30_000
+const OUTPUT_TAIL_LIMIT = 8000
 
 function moduleDir(): string {
   return dirname(fileURLToPath(import.meta.url))
@@ -115,16 +117,21 @@ export function startCoralSidecar(): Promise<CoralSidecar> {
   return new Promise((resolveStart, rejectStart) => {
     let stdoutBuffer = ''
     let stderrTail = ''
-    let resolved = false
+    let settled = false
+    let startupTimeout: ReturnType<typeof setTimeout> | null = null
 
     const reject = (error: Error) => {
-      if (resolved) return
+      if (settled) return
+      settled = true
+      if (startupTimeout) clearTimeout(startupTimeout)
       rejectStart(error)
     }
 
     const resolveReady = (url: string) => {
-      if (resolved) return
-      resolved = true
+      if (settled) return
+      settled = true
+      if (startupTimeout) clearTimeout(startupTimeout)
+      stdoutBuffer = ''
       resolveStart({
         url,
         child,
@@ -134,21 +141,26 @@ export function startCoralSidecar(): Promise<CoralSidecar> {
       })
     }
 
+    startupTimeout = setTimeout(() => {
+      reject(new Error(`Coral runtime did not become ready within ${STARTUP_TIMEOUT_MS / 1000}s. ${stderrTail}`))
+      void stopChild(child)
+    }, STARTUP_TIMEOUT_MS)
+
     child.on('error', reject)
     child.stdout?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8')
       process.stdout.write(`[coral-sidecar] ${text}`)
-      stdoutBuffer += text
+      stdoutBuffer = (stdoutBuffer + text).slice(-OUTPUT_TAIL_LIMIT)
       const match = stdoutBuffer.match(READY_RE)
       if (match?.[1]) resolveReady(match[1])
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8')
       process.stderr.write(`[coral-sidecar] ${text}`)
-      stderrTail = (stderrTail + text).slice(-8000)
+      stderrTail = (stderrTail + text).slice(-OUTPUT_TAIL_LIMIT)
     })
     child.once('exit', (code, signal) => {
-      if (resolved) return
+      if (settled) return
       reject(new Error(`Coral runtime exited before ready (code=${code}, signal=${signal}). ${stderrTail}`))
     })
   })

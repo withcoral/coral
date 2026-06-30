@@ -4,7 +4,9 @@ import type { Route } from './+types/root'
 import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
 import './styles/globals.css'
 import './wax/theme/global.css'
-import { useTheme } from './wax/theme/theme-provider'
+import { darkTheme } from './wax/theme/theme-dark.css'
+import { lightTheme } from './wax/theme/theme-light.css'
+import { THEME_STORAGE_KEY, useTheme } from './wax/theme/theme-provider'
 
 export const links = () => [
   {
@@ -45,11 +47,39 @@ function ThemedBody({ children }: { children: React.ReactNode }) {
 
   return (
     <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>
+      <ThemeBootstrapScript />
       {children}
       <ScrollRestoration />
       <Scripts />
     </body>
   )
+}
+
+function ThemeBootstrapScript() {
+  const source = `
+(function () {
+  var darkClass = ${JSON.stringify(darkTheme)};
+  var lightClass = ${JSON.stringify(lightTheme)};
+  var storageKey = ${JSON.stringify(THEME_STORAGE_KEY)};
+  function readPreference() {
+    try {
+      var stored = window.localStorage.getItem(storageKey);
+      var parsed = stored ? JSON.parse(stored) : 'system';
+      return parsed === 'dark' || parsed === 'light' || parsed === 'system' ? parsed : 'system';
+    } catch (_) {
+      return 'system';
+    }
+  }
+  var preference = readPreference();
+  var theme = preference === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+    : preference;
+  document.body.classList.remove(darkClass, lightClass);
+  document.body.classList.add(theme === 'light' ? lightClass : darkClass);
+  document.body.style.colorScheme = theme;
+})();
+`
+  return <script dangerouslySetInnerHTML={{ __html: source }} />
 }
 
 export async function loader({ request }: Route.LoaderArgs) {

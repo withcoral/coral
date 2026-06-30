@@ -71,6 +71,7 @@
         "pages": [
           "index",
           "getting-started/installation",
+          "getting-started/desktop",
           "getting-started/quickstart"
         ]
       },

@@ -1,9 +1,10 @@
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-react'
 
 import { Sidebar } from './sidebar'
+import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
 
 async function renderSidebar(initialIsMinimized: boolean) {
   const router = createMemoryRouter(
@@ -20,7 +21,12 @@ async function renderSidebar(initialIsMinimized: boolean) {
 }
 
 describe('Sidebar', () => {
+  beforeEach(() => {
+    document.cookie = `${SIDEBAR_COOKIE_NAME}=; Max-Age=0; Path=/`
+  })
+
   afterEach(async () => {
+    document.cookie = `${SIDEBAR_COOKIE_NAME}=; Max-Age=0; Path=/`
     await page.viewport(1024, 768)
   })
 
@@ -51,6 +57,16 @@ describe('Sidebar', () => {
     const sidebar = screen.getByRole('navigation', { name: 'Coral' })
 
     await screen.getByRole('button', { name: 'Collapse sidebar' }).click()
+
+    await expect.element(sidebar).toHaveAttribute('data-sidebar-minimized', 'true')
+    await expect.element(screen.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
+  })
+
+  it('restores the minimized state from the client cookie', async () => {
+    document.cookie = `${SIDEBAR_COOKIE_NAME}=true; Path=/`
+
+    const screen = await renderSidebar(false)
+    const sidebar = screen.getByRole('navigation', { name: 'Coral' })
 
     await expect.element(sidebar).toHaveAttribute('data-sidebar-minimized', 'true')
     await expect.element(screen.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()

@@ -89,6 +89,8 @@ function updatePlatformIcon() {
 
 function createMainWindow(): BrowserWindow {
   const preloadPath = join(currentDir(), '..', 'preload', 'index.cjs')
+  let trustedRendererOrigin: string | null = null
+  let trustedErrorUrl: string | null = null
 
   const window = new BrowserWindow({
     width: 1280,
@@ -117,15 +119,33 @@ function createMainWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  window.webContents.on('will-navigate', (event, url) => {
+    if (isTrustedNavigation(url, trustedRendererOrigin, trustedErrorUrl)) return
+    event.preventDefault()
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      void shell.openExternal(url)
+    }
+  })
+
+  window.webContents.on('will-redirect', (event, url) => {
+    if (isTrustedNavigation(url, trustedRendererOrigin, trustedErrorUrl)) return
+    event.preventDefault()
+  })
+
   void rendererEntryUrl()
-    .then((url) => window.loadURL(url))
+    .then((url) => {
+      trustedRendererOrigin = urlOrigin(url)
+      trustedErrorUrl = null
+      return window.loadURL(url)
+    })
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       const escapedMessage = escapeHtml(message)
+      const errorUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font-family: system-ui; padding: 24px;"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`
+      trustedRendererOrigin = null
+      trustedErrorUrl = errorUrl
       console.error(`[coral-renderer] failed to start app renderer: ${message}`)
-      void window.loadURL(
-        `data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font-family: system-ui; padding: 24px;"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`,
-      )
+      void window.loadURL(errorUrl)
     })
 
   window.on('closed', () => {
@@ -133,6 +153,24 @@ function createMainWindow(): BrowserWindow {
   })
 
   return window
+}
+
+function urlOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
+}
+
+function isTrustedNavigation(
+  targetUrl: string,
+  trustedRendererOrigin: string | null,
+  trustedErrorUrl: string | null,
+): boolean {
+  if (trustedErrorUrl && targetUrl === trustedErrorUrl) return true
+  if (!trustedRendererOrigin) return false
+  return urlOrigin(targetUrl) === trustedRendererOrigin
 }
 
 function ensureSidecar(): Promise<CoralSidecar> {

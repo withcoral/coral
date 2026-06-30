@@ -34,6 +34,7 @@ export default function SettingsRoute() {
   const [clientStatus, setClientStatus] = useState<ClientStatus>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingAction>(null)
+  const hasPendingAction = pending !== null
   const isDesktopAvailable = Boolean(desktop)
 
   useEffect(() => {
@@ -58,7 +59,7 @@ export default function SettingsRoute() {
   }, [desktop])
 
   async function handleConnectMcp(client: McpClientDescriptor) {
-    if (!desktop) return
+    if (!desktop || hasPendingAction) return
 
     setPending({ clientId: client.id, kind: 'connect' })
     try {
@@ -124,7 +125,7 @@ export default function SettingsRoute() {
                   <div className={styles.cardFooter}>
                     <div className={styles.cardActions}>
                       <Button.Container
-                        disabled={!isDesktopAvailable || connectPending}
+                        disabled={!isDesktopAvailable || hasPendingAction}
                         onClick={() => handleConnectMcp(client)}
                         size="32"
                         variant="secondary"

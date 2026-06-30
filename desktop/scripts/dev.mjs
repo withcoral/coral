@@ -82,7 +82,7 @@ try {
 
   electron.once('exit', (code) => {
     shutdown()
-    process.exitCode = code ?? 0
+    process.exitCode = code ?? 1
   })
 } catch (error) {
   shutdown()

@@ -8,7 +8,8 @@ import { lightTheme } from '@/wax/theme/theme-light.css'
 type Theme = 'dark' | 'light'
 type ThemePreference = 'dark' | 'light' | 'system'
 
-export const themeAtom = atomWithStorage<ThemePreference>('coral:theme', 'system')
+export const THEME_STORAGE_KEY = 'coral:theme'
+export const themeAtom = atomWithStorage<ThemePreference>(THEME_STORAGE_KEY, 'system')
 
 export function getThemeClass(theme: Theme) {
   return theme === 'light' ? lightTheme : darkTheme

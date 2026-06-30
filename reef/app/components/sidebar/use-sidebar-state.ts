@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { SIDEBAR_COOKIE_NAME } from './sidebar-state'
+import { readSidebarCollapsedCookieValue, SIDEBAR_COOKIE_NAME } from './sidebar-state'
 
 const COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60
 
@@ -15,7 +15,11 @@ function saveSidebarState(isMinimized: boolean) {
 // entirely in CSS via media queries, which avoids the flash of an expanded
 // sidebar that a client-side viewport check would cause before hydration.
 export function useSidebarState(initialIsMinimized: boolean) {
-  const [isMinimized, setIsMinimized] = useState(initialIsMinimized)
+  const [isMinimized, setIsMinimized] = useState(() => {
+    if (typeof document === 'undefined') return initialIsMinimized
+    if (!document.cookie.includes(`${SIDEBAR_COOKIE_NAME}=`)) return initialIsMinimized
+    return readSidebarCollapsedCookieValue(document.cookie)
+  })
 
   const toggleSidebar = () => {
     const next = !isMinimized
