@@ -2,7 +2,6 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
-import { installCliCommand } from './cli-command'
 import { configureMcpClient, mcpClients } from './mcp-config'
 import { openMcpConnectionTest } from './mcp-test'
 import { startReefRendererServer, type ReefRendererServer } from './reef-renderer'
@@ -144,14 +143,9 @@ function registerIpcHandlers() {
     const started = await ensureSidecar()
     return { url: started.url, packaged: started.packaged }
   })
-  ipcMain.handle('coral:install-cli', () => installCliCommand())
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
   ipcMain.handle('coral:test-mcp', (_event, clientId: McpClientId) => openMcpConnectionTest(clientId))
-}
-
-function cliInstallDetail(result: Awaited<ReturnType<typeof installCliCommand>>): string {
-  return `${result.commandPath} -> ${result.targetPath}`
 }
 
 function installMenu() {
@@ -175,21 +169,6 @@ function installMenu() {
     {
       label: 'Coral',
       submenu: [
-        {
-          label: 'Install CLI Command',
-          click: async () => {
-            try {
-              const result = await installCliCommand()
-              await dialog.showMessageBox({
-                type: 'info',
-                message: 'Coral CLI command installed',
-                detail: cliInstallDetail(result),
-              })
-            } catch (error) {
-              await dialog.showErrorBox('CLI install failed', error instanceof Error ? error.message : String(error))
-            }
-          },
-        },
         {
           label: 'Configure MCP',
           submenu: mcpSubmenu,

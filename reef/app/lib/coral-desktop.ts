@@ -5,13 +5,6 @@ export interface SidecarInfo {
   url: string
 }
 
-export interface CliInstallResult {
-  commandPath: string
-  installKind: 'symlink'
-  onPath: boolean
-  targetPath: string
-}
-
 export interface McpClientDescriptor {
   configPath: string
   id: McpClientId
@@ -32,7 +25,6 @@ export interface McpTestResult {
 export interface CoralDesktopApi {
   awaitInitialization(): Promise<SidecarInfo>
   configureMcp(clientId: McpClientId): Promise<McpConfigureResult>
-  installCli(): Promise<CliInstallResult>
   listMcpClients(): Promise<McpClientDescriptor[]>
   testMcp(clientId: McpClientId): Promise<McpTestResult>
 }

@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   coralDesktopApi,
   desktopErrorMessage,
-  type CliInstallResult,
   type McpClientDescriptor,
   type McpClientId,
 } from '@/lib/coral-desktop'
@@ -13,29 +12,22 @@ import { addToast } from '@/wax/components/toast'
 import * as styles from './settings.css'
 
 type PendingAction =
-  | { kind: 'cli' }
   | { clientId: McpClientId; kind: 'connect' }
   | { clientId: McpClientId; kind: 'test' }
   | null
 
 type ClientStatus = Partial<Record<McpClientId, string>>
-type PendingKind = 'cli' | 'connect' | 'test'
+type PendingKind = 'connect' | 'test'
 
 function isPending(pending: PendingAction, kind: PendingKind, clientId?: McpClientId) {
   if (!pending || pending.kind !== kind) return false
-  if (kind === 'cli') return true
   return 'clientId' in pending && pending.clientId === clientId
-}
-
-function installSummary(result: CliInstallResult): string {
-  return `${result.commandPath} -> ${result.targetPath}`
 }
 
 export default function SettingsRoute() {
   const desktop = useMemo(() => coralDesktopApi(), [])
   const [clients, setClients] = useState<McpClientDescriptor[]>([])
   const [clientStatus, setClientStatus] = useState<ClientStatus>({})
-  const [commandStatus, setCommandStatus] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingAction>(null)
   const isDesktopAvailable = Boolean(desktop)
@@ -60,28 +52,6 @@ export default function SettingsRoute() {
       cancelled = true
     }
   }, [desktop])
-
-  async function handleInstallCli() {
-    if (!desktop) return
-
-    setPending({ kind: 'cli' })
-    try {
-      const result = await desktop.installCli()
-      const summary = installSummary(result)
-      setCommandStatus(summary)
-      addToast('success', {
-        description: summary,
-        title: 'Coral command installed',
-      })
-    } catch (error) {
-      addToast('error', {
-        description: desktopErrorMessage(error),
-        title: 'Command install failed',
-      })
-    } finally {
-      setPending(null)
-    }
-  }
 
   async function handleConnectMcp(client: McpClientDescriptor) {
     if (!desktop) return
@@ -132,30 +102,6 @@ export default function SettingsRoute() {
       <header className={styles.header}>
         <Typography.HeadingMedium as="h1">Settings</Typography.HeadingMedium>
       </header>
-
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <Typography.HeadingXSmall as="h2">Command line</Typography.HeadingXSmall>
-        </div>
-
-        <div className={styles.commandRow}>
-          <div className={styles.rowContent}>
-            <Typography.BodyStrong>coral</Typography.BodyStrong>
-            <Typography.CodeSmallInline className={styles.path}>
-              {commandStatus ?? 'Not installed from this app yet'}
-            </Typography.CodeSmallInline>
-          </div>
-
-          <Button.Container
-            disabled={!isDesktopAvailable || isPending(pending, 'cli')}
-            onClick={handleInstallCli}
-            variant="secondary"
-          >
-            <Button.Icon name="Download" />
-            <Button.Text>{isPending(pending, 'cli') ? 'Installing' : 'Install'}</Button.Text>
-          </Button.Container>
-        </div>
-      </section>
 
       <section className={styles.section}>
         <div className={styles.sectionHeader}>

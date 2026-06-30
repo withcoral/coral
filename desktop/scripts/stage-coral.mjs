@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
@@ -7,7 +7,6 @@ const repoRoot = resolve(desktopRoot, '..')
 const outputDir = resolve(desktopRoot, 'resources', 'coral')
 const commandDir = resolve(desktopRoot, 'resources', 'bin')
 const binaryName = process.platform === 'win32' ? 'coral.exe' : 'coral'
-const commandName = process.platform === 'win32' ? 'coral.cmd' : 'coral'
 const targetBinary = resolve(repoRoot, 'target', 'release', binaryName)
 
 function run(command, args, options = {}) {
@@ -43,23 +42,10 @@ await run('cargo', ['build', '--locked', '-p', 'coral-cli', '--release'])
 await rm(outputDir, { recursive: true, force: true })
 await rm(commandDir, { recursive: true, force: true })
 await mkdir(outputDir, { recursive: true })
-await mkdir(commandDir, { recursive: true })
 await copyFile(targetBinary, join(outputDir, binaryName))
 
-if (process.platform === 'win32') {
-  await writeFile(join(commandDir, commandName), '@echo off\r\n"%~dp0\\..\\coral\\coral.exe" %*\r\n')
-} else {
-  const commandShim = [
-    '#!/bin/sh',
-    'set -eu',
-    'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-    'exec "$script_dir/../coral/coral" "$@"',
-    '',
-  ].join('\n')
-  await writeFile(join(commandDir, commandName), commandShim)
+if (process.platform !== 'win32') {
   await chmod(join(outputDir, binaryName), 0o755)
-  await chmod(join(commandDir, commandName), 0o755)
 }
 
 console.log(`[stage-coral] staged ${targetBinary} -> ${join(outputDir, binaryName)}`)
-console.log(`[stage-coral] staged CLI command -> ${join(commandDir, commandName)}`)

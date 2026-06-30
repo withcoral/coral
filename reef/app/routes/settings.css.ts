@@ -44,20 +44,6 @@ export const sectionHeader = style({
   maxWidth: '720px',
 })
 
-export const commandRow = style({
-  alignItems: 'center',
-  display: 'grid',
-  gap: '16px',
-  gridTemplateColumns: 'minmax(0, 1fr) auto',
-  maxWidth: '960px',
-  '@media': {
-    [MOBILE_QUERY]: {
-      alignItems: 'stretch',
-      gridTemplateColumns: '1fr',
-    },
-  },
-})
-
 export const clientList = style({
   display: 'flex',
   flexDirection: 'column',
