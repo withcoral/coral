@@ -322,7 +322,7 @@ mod tests {
             .expect("insert source catalog rows");
         session
             .credential_documents()
-            .upsert(&workspace, &source, &credential_document_write(), 5)
+            .insert_if_absent(&workspace, &source, &credential_document_write(), 5)
             .await
             .expect("insert credential document row");
         assert_eq!(
@@ -410,7 +410,7 @@ mod tests {
             .expect("reinsert source catalog rows");
         session
             .credential_documents()
-            .upsert(&workspace, &source, &credential_document_write(), 5)
+            .insert_if_absent(&workspace, &source, &credential_document_write(), 5)
             .await
             .expect("reinsert credential document row");
         delete_workspace(&mut session, &workspace_id)

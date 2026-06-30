@@ -52,6 +52,14 @@ impl CoralDb {
             CoralDbBackend::Postgres(db) => db.pool.close().await,
         }
     }
+
+    #[expect(
+        dead_code,
+        reason = "database credential bootstrap uses this in the next stacked branch"
+    )]
+    pub(crate) fn is_postgres(&self) -> bool {
+        matches!(self.backend, CoralDbBackend::Postgres(_))
+    }
 }
 
 async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {

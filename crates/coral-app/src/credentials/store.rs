@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -10,10 +11,15 @@ use sha2::{Digest as _, Sha256};
 
 use crate::bootstrap::AppError;
 use crate::state::AppStateLayout;
+use crate::state::db::{CoralDb, CredentialDocumentRecord, CredentialDocumentWrite, DbRepos};
 use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
+use super::encryption::{
+    CredentialKeyProvider, EncryptedCredentialDocument, decrypt_credential_values,
+    encrypt_credential_values, rewrap_credential_document,
+};
 use super::{
     CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
 };
@@ -48,6 +54,11 @@ impl EncodedCredentialMaterial {
 struct CredentialSetRef<'a> {
     workspace_name: &'a WorkspaceName,
     credential_set_id: &'a CredentialSetId,
+}
+
+pub(super) struct DatabaseCredentialMaterial {
+    pub(super) values: BTreeMap<String, String>,
+    pub(super) document_version: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +164,8 @@ pub(crate) struct CredentialStore {
     preference: CredentialStoragePreference,
     file: Arc<dyn CredentialMaterialBackend>,
     keychain: Arc<dyn CredentialMaterialBackend>,
+    database: Option<Arc<CoralDb>>,
+    key_provider: Option<Arc<dyn CredentialKeyProvider>>,
 }
 
 impl CredentialStore {
@@ -171,7 +184,25 @@ impl CredentialStore {
             preference,
             file: Arc::new(FileCredentialBackend::new(layout)),
             keychain: Arc::new(KeychainCredentialBackend::new(config_namespace)),
+            database: None,
+            key_provider: None,
         }
+    }
+
+    #[expect(
+        dead_code,
+        reason = "database credential store construction is wired by the next stacked branch"
+    )]
+    pub(crate) fn with_database(
+        layout: AppStateLayout,
+        preference: CredentialStoragePreference,
+        database: Arc<CoralDb>,
+        key_provider: Arc<dyn CredentialKeyProvider>,
+    ) -> Self {
+        let mut store = Self::with_preference(layout, preference);
+        store.database = Some(database);
+        store.key_provider = Some(key_provider);
+        store
     }
 
     #[cfg(test)]
@@ -185,6 +216,8 @@ impl CredentialStore {
             preference,
             file: Arc::new(FileCredentialBackend::new(layout)),
             keychain,
+            database: None,
+            key_provider: None,
         }
     }
 
@@ -219,6 +252,9 @@ impl CredentialStore {
         storage: CredentialStorageKind,
         values: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.replace_database_material(workspace_name, credential_set_id, values);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -246,6 +282,9 @@ impl CredentialStore {
         storage: CredentialStorageKind,
         values: &BTreeMap<String, String>,
     ) -> Result<(), AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.replace_database_material(workspace_name, credential_set_id, values);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -271,12 +310,15 @@ impl CredentialStore {
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
-        update: F,
+        mut update: F,
     ) -> Result<R, AppError>
     where
-        F: FnOnce(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
+        F: FnMut(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
     {
         tracing::trace!(%credential_set_id, %storage, "updating credential material");
+        if storage == CredentialStorageKind::Database {
+            return self.update_database_material(workspace_name, credential_set_id, update);
+        }
         let current = self.read_material(workspace_name, credential_set_id, storage)?;
         let (next, result) = update(current)?;
         self.replace_material(workspace_name, credential_set_id, storage, &next)?;
@@ -288,12 +330,15 @@ impl CredentialStore {
         workspace_name: &WorkspaceName,
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
-        update: F,
+        mut update: F,
     ) -> Result<R, AppError>
     where
-        F: FnOnce(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
+        F: FnMut(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
     {
         tracing::trace!(%credential_set_id, %storage, "updating credential material with state lock held");
+        if storage == CredentialStorageKind::Database {
+            return self.update_database_material(workspace_name, credential_set_id, update);
+        }
         let current = self.read_material(workspace_name, credential_set_id, storage)?;
         let (next, result) = update(current)?;
         self.replace_material_with_state_lock_held(
@@ -324,6 +369,9 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<BTreeMap<String, String>, AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.read_database_material(workspace_name, credential_set_id);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -348,6 +396,9 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<CredentialMaterialSnapshot, AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.snapshot_database_material(workspace_name, credential_set_id);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -368,6 +419,9 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<CredentialMaterialSnapshot, AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.snapshot_database_material(workspace_name, credential_set_id);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -390,6 +444,9 @@ impl CredentialStore {
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), AppError> {
         let storage = snapshot.storage();
+        if storage == CredentialStorageKind::Database {
+            return self.restore_database_material(workspace_name, credential_set_id, snapshot);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -411,6 +468,9 @@ impl CredentialStore {
         snapshot: &CredentialMaterialSnapshot,
     ) -> Result<(), AppError> {
         let storage = snapshot.storage();
+        if storage == CredentialStorageKind::Database {
+            return self.restore_database_material(workspace_name, credential_set_id, snapshot);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -432,6 +492,9 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<(), AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.remove_database_material(workspace_name, credential_set_id);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -452,6 +515,9 @@ impl CredentialStore {
         credential_set_id: &CredentialSetId,
         storage: CredentialStorageKind,
     ) -> Result<(), AppError> {
+        if storage == CredentialStorageKind::Database {
+            return self.remove_database_material(workspace_name, credential_set_id);
+        }
         let set = CredentialSetRef {
             workspace_name,
             credential_set_id,
@@ -467,7 +533,14 @@ impl CredentialStore {
     }
 
     pub(crate) fn default_write_storage(&self) -> Result<CredentialStorageKind, CredentialsError> {
+        if self.database.is_some() {
+            return Ok(CredentialStorageKind::Database);
+        }
         match self.preference {
+            CredentialStoragePreference::Database => Err(CredentialsError::Unavailable(
+                "database credential storage is configured, but the database backend is not available"
+                    .to_string(),
+            )),
             CredentialStoragePreference::File => Ok(CredentialStorageKind::File),
             CredentialStoragePreference::Keychain => {
                 self.keychain
@@ -489,8 +562,334 @@ impl CredentialStore {
         match storage {
             CredentialStorageKind::File => self.file.as_ref(),
             CredentialStorageKind::Keychain => self.keychain.as_ref(),
+            CredentialStorageKind::Database => {
+                unreachable!("database credential storage bypasses legacy material backends")
+            }
         }
     }
+
+    fn database_parts(&self) -> Result<(Arc<CoralDb>, Arc<dyn CredentialKeyProvider>), AppError> {
+        let database = self.database.clone().ok_or_else(|| {
+            AppError::Credentials(CredentialsError::Unavailable(
+                "database credential storage is not configured".to_string(),
+            ))
+        })?;
+        let key_provider = self.key_provider.clone().ok_or_else(|| {
+            AppError::Credentials(CredentialsError::Unavailable(
+                "credential encryption key provider is not configured".to_string(),
+            ))
+        })?;
+        Ok((database, key_provider))
+    }
+
+    fn read_database_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<BTreeMap<String, String>, AppError> {
+        let (database, key_provider) = self.database_parts()?;
+        let workspace_name = workspace_name.clone();
+        let source_name = credential_set_id.source_name()?;
+        run_credential_db_operation(async move {
+            let mut session = database.as_ref();
+            let Some(record) = session
+                .credential_documents()
+                .get(&workspace_name, &source_name)
+                .await?
+            else {
+                return Ok(BTreeMap::new());
+            };
+            let expected_document_version = record.document_version;
+            let document = encrypted_document_from_record(record);
+            let kek = key_provider.key(&document.key_id)?;
+            let values = decrypt_credential_values(&workspace_name, &source_name, &document, &kek)
+                .map_err(AppError::from)?;
+            if let Some(rewrapped) = rewrap_credential_document(
+                &workspace_name,
+                &source_name,
+                &document,
+                key_provider.as_ref(),
+            )? {
+                let now_unix_nanos = now_unix_nanos_i64()?;
+                let mut tx = database.begin().await?;
+                tx.credential_documents()
+                    .rewrap_if_current(
+                        &workspace_name,
+                        &source_name,
+                        expected_document_version,
+                        &credential_document_write_from_encrypted(rewrapped),
+                        now_unix_nanos,
+                    )
+                    .await?;
+                tx.commit().await?;
+            }
+            Ok(values)
+        })
+    }
+
+    pub(super) fn read_database_material_for_update(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<DatabaseCredentialMaterial, AppError> {
+        let (database, key_provider) = self.database_parts()?;
+        let workspace_name = workspace_name.clone();
+        let source_name = credential_set_id.source_name()?;
+        run_credential_db_operation(async move {
+            let mut session = database.as_ref();
+            let Some(record) = session
+                .credential_documents()
+                .get(&workspace_name, &source_name)
+                .await?
+            else {
+                return Ok(DatabaseCredentialMaterial {
+                    values: BTreeMap::new(),
+                    document_version: None,
+                });
+            };
+            let document_version = record.document_version;
+            let document = encrypted_document_from_record(record);
+            let kek = key_provider.key(&document.key_id)?;
+            let values = decrypt_credential_values(&workspace_name, &source_name, &document, &kek)
+                .map_err(AppError::from)?;
+            Ok(DatabaseCredentialMaterial {
+                values,
+                document_version: Some(document_version),
+            })
+        })
+    }
+
+    fn replace_database_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        values: &BTreeMap<String, String>,
+    ) -> Result<(), AppError> {
+        if values.is_empty() {
+            return self.remove_database_material(workspace_name, credential_set_id);
+        }
+        loop {
+            let current =
+                self.read_database_material_for_update(workspace_name, credential_set_id)?;
+            if self.replace_database_material_if_current(
+                workspace_name,
+                credential_set_id,
+                current.document_version,
+                values,
+            )? {
+                return Ok(());
+            }
+        }
+    }
+
+    pub(super) fn replace_database_material_if_current(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        expected_document_version: Option<i64>,
+        values: &BTreeMap<String, String>,
+    ) -> Result<bool, AppError> {
+        if values.is_empty() {
+            self.remove_database_material(workspace_name, credential_set_id)?;
+            return Ok(true);
+        }
+        let (database, key_provider) = self.database_parts()?;
+        let workspace_name = workspace_name.clone();
+        let source_name = credential_set_id.source_name()?;
+        let values = values.clone();
+        run_credential_db_operation(async move {
+            let now_unix_nanos = now_unix_nanos_i64()?;
+            let encrypted = encrypt_credential_values(
+                &workspace_name,
+                &source_name,
+                &values,
+                key_provider.as_ref(),
+            )?;
+            let mut tx = database.begin().await?;
+            tx.workspaces()
+                .ensure(workspace_name.as_str(), now_unix_nanos)
+                .await?;
+            let write = credential_document_write_from_encrypted(encrypted);
+            let applied = match expected_document_version {
+                Some(version) => {
+                    tx.credential_documents()
+                        .replace_if_current(
+                            &workspace_name,
+                            &source_name,
+                            version,
+                            &write,
+                            now_unix_nanos,
+                        )
+                        .await?
+                }
+                None => {
+                    tx.credential_documents()
+                        .insert_if_absent(&workspace_name, &source_name, &write, now_unix_nanos)
+                        .await?
+                }
+            };
+            tx.commit().await?;
+            Ok(applied)
+        })
+    }
+
+    fn update_database_material<F, R>(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        mut update: F,
+    ) -> Result<R, AppError>
+    where
+        F: FnMut(BTreeMap<String, String>) -> Result<(BTreeMap<String, String>, R), AppError>,
+    {
+        loop {
+            let current =
+                self.read_database_material_for_update(workspace_name, credential_set_id)?;
+            let (next, result) = update(current.values)?;
+            if next.is_empty() {
+                self.remove_database_material(workspace_name, credential_set_id)?;
+                return Ok(result);
+            }
+            if self.replace_database_material_if_current(
+                workspace_name,
+                credential_set_id,
+                current.document_version,
+                &next,
+            )? {
+                return Ok(result);
+            }
+        }
+    }
+
+    fn snapshot_database_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<CredentialMaterialSnapshot, AppError> {
+        let values = self.read_database_material(workspace_name, credential_set_id)?;
+        if values.is_empty() {
+            return Ok(CredentialMaterialSnapshot::new(
+                CredentialStorageKind::Database,
+                None,
+            ));
+        }
+        let bytes = serde_json::to_vec(&values)
+            .map_err(|error| CredentialsError::Parse(error.to_string()))?;
+        Ok(CredentialMaterialSnapshot::new(
+            CredentialStorageKind::Database,
+            Some(bytes),
+        ))
+    }
+
+    fn restore_database_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+        snapshot: &CredentialMaterialSnapshot,
+    ) -> Result<(), AppError> {
+        if snapshot.storage() != CredentialStorageKind::Database {
+            return Err(CredentialsError::SnapshotStorageMismatch {
+                snapshot: snapshot.storage().as_config_value(),
+                requested: CredentialStorageKind::Database.as_config_value(),
+            }
+            .into());
+        }
+        let Some(bytes) = snapshot.material() else {
+            return self.remove_database_material(workspace_name, credential_set_id);
+        };
+        let values = serde_json::from_slice::<BTreeMap<String, String>>(bytes)
+            .map_err(|error| CredentialsError::Parse(error.to_string()))?;
+        self.replace_database_material(workspace_name, credential_set_id, &values)
+    }
+
+    fn remove_database_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        credential_set_id: &CredentialSetId,
+    ) -> Result<(), AppError> {
+        let (database, _) = self.database_parts()?;
+        let workspace_name = workspace_name.clone();
+        let source_name = credential_set_id.source_name()?;
+        run_credential_db_operation(async move {
+            let mut tx = database.begin().await?;
+            tx.credential_documents()
+                .remove(&workspace_name, &source_name)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+}
+
+fn run_credential_db_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "failed to create credential database runtime: {error}"
+                ))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                AppError::FailedPrecondition(
+                    "credential database operation thread panicked".to_string(),
+                )
+            })?;
+    }
+
+    run_on_runtime(operation)
+}
+
+fn credential_document_write_from_encrypted(
+    document: EncryptedCredentialDocument,
+) -> CredentialDocumentWrite {
+    CredentialDocumentWrite {
+        ciphertext: document.ciphertext,
+        nonce: document.nonce,
+        wrapped_dek: document.wrapped_dek,
+        wrapped_dek_nonce: document.wrapped_dek_nonce,
+        key_id: document.key_id,
+        algorithm: document.algorithm,
+        aad_version: document.binding_version,
+    }
+}
+
+fn encrypted_document_from_record(record: CredentialDocumentRecord) -> EncryptedCredentialDocument {
+    EncryptedCredentialDocument {
+        ciphertext: record.ciphertext,
+        nonce: record.nonce,
+        wrapped_dek: record.wrapped_dek,
+        wrapped_dek_nonce: record.wrapped_dek_nonce,
+        key_id: record.key_id,
+        algorithm: record.algorithm,
+        binding_version: record.aad_version,
+    }
+}
+
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
+    })
 }
 
 fn contextualize_storage_error<T>(
@@ -1042,6 +1441,9 @@ fn encode_values(
                 .map(EncodedCredentialMaterial)
                 .map_err(|error| CredentialsError::Parse(error.to_string()))
         }
+        CredentialStorageKind::Database => Err(CredentialsError::Crypto(
+            "database credential material is encrypted directly from values".to_string(),
+        )),
     }
 }
 
@@ -1066,6 +1468,10 @@ fn decode_values(
             }
             Ok(document.values)
         }
+        CredentialStorageKind::Database => Err(CredentialsError::Crypto(
+            "database credential material is decrypted directly from credential documents"
+                .to_string(),
+        )),
     }
 }
 

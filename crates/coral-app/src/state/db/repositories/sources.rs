@@ -605,6 +605,7 @@ fn parse_credential_storage(storage: &str) -> Result<CredentialStorageKind, DbEr
     match storage {
         "file" => Ok(CredentialStorageKind::File),
         "keychain" => Ok(CredentialStorageKind::Keychain),
+        "database" => Ok(CredentialStorageKind::Database),
         other => Err(DbError::CorruptData(format!(
             "invalid credential storage '{other}'"
         ))),
