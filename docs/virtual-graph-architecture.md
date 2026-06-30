@@ -99,8 +99,10 @@ predicates and static comprehensions remain semantically correct without
 introducing SQL-rendering shortcuts in the frontend.
 
 The frontend also folds `keys({ ... })` over literal map syntax as a typed
-static string list before SQL lowering. Only the map key tokens are
-materialized; map values are ignored for key extraction and runtime map values
+static string list before SQL lowering. Literal-map value lookups such as
+`({name: 'Alice'}).name` and `{rank: 1}['rank']` fold to scalar literals when
+the selected value is itself a scalar literal or scalar parameter, with missing
+keys folding to `NULL`. Runtime map values and graph-dependent map entry values
 remain unsupported until Coral has a dedicated map IR.
 
 For graph-backed map access, `properties(variable).field`,
@@ -373,7 +375,9 @@ The supported foundation subset is intentionally narrow:
   Literal map key extraction, such as `keys({name: n.name, tier: n.tier})`, is
   folded as a source-order typed string list and then routed through the same
   static-list reducers used for projection, ordering, list endpoint functions,
-  predicates, and comprehensions. This does not materialize a map value.
+  predicates, and comprehensions. Literal map value lookups over scalar-literal
+  or scalar-parameter values fold to scalar literals, while graph-dependent map
+  entry values remain rejected before SQL lowering.
   Property access through `properties(...)`, such as `properties(n).name` or
   `properties(n)['name']`, plus direct static graph-value indexes such as
   `n['name']`, is normalized to the existing `n.name` property-reference IR and

@@ -9,8 +9,8 @@ use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
     ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension,
-    Literal as CypherLiteral, NumberLiteral, Parameter as CypherParameter, StringLiteral,
-    UnaryOperator,
+    Literal as CypherLiteral, MapLiteral, NumberLiteral, Parameter as CypherParameter,
+    StringLiteral, UnaryOperator,
 };
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
@@ -19067,6 +19067,11 @@ fn compile_property_lookup_scalar_expression_in_mode(
     )? {
         return Ok(expression);
     }
+    if let Some(literal) =
+        compile_optional_static_map_lookup_literal(expression, path.clone(), context)?
+    {
+        return Ok(ScalarExpression::Literal(literal));
+    }
     Ok(ScalarExpression::Property(compile_property_ref(
         expression, path, plan, context,
     )?))
@@ -29283,7 +29288,7 @@ fn compile_optional_property_ref(
         Expression::Parenthesized(inner) => {
             compile_optional_property_ref(inner, path, plan, context)
         }
-        Expression::PropertyLookup { .. } => {
+        Expression::PropertyLookup { base, .. } => {
             if compile_optional_endpoint_property_scalar_expression(
                 expression,
                 path.clone(),
@@ -29292,6 +29297,9 @@ fn compile_optional_property_ref(
             )?
             .is_some()
             {
+                return Ok(None);
+            }
+            if !is_property_index_base_expression(base) {
                 return Ok(None);
             }
             compile_property_ref(expression, path, plan, context).map(Some)
@@ -30064,8 +30072,15 @@ fn compile_literal(
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => compile_literal(inner, path, context),
+        Expression::PropertyLookup { .. } => {
+            compile_static_map_lookup_literal(expression, path, context)
+        }
         Expression::ListIndex { list, index, .. } => {
-            compile_literal_list_index(list, index, path, context)
+            if literal_map_expression(list).is_some() {
+                compile_static_map_lookup_literal(expression, path, context)
+            } else {
+                compile_literal_list_index(list, index, path, context)
+            }
         }
         Expression::Literal(CypherLiteral::String(value)) => {
             Ok(Literal::String(value.value.clone()))
@@ -30103,6 +30118,86 @@ fn compile_literal(
             path,
             "only string, numeric, boolean, and null literals are supported",
         )),
+    }
+}
+
+fn compile_optional_static_map_lookup_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<Literal>, CoreError> {
+    if !is_static_map_lookup_expression(expression) {
+        return Ok(None);
+    }
+    compile_static_map_lookup_literal(expression, path, context).map(Some)
+}
+
+fn compile_static_map_lookup_literal(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_static_map_lookup_literal(inner, path, context),
+        Expression::PropertyLookup { base, property, .. } => {
+            let Some(map) = literal_map_expression(base) else {
+                return Err(unsupported(
+                    path,
+                    "literal map property lookups require a literal map base",
+                ));
+            };
+            compile_static_map_key_literal(map, &property.name.name, path, context)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            let Some(map) = literal_map_expression(list) else {
+                return Err(unsupported(
+                    path,
+                    "literal map index lookups require a literal map base",
+                ));
+            };
+            let key = compile_property_index_name(index, format!("{path}.index"), context)?;
+            compile_static_map_key_literal(map, &key, path, context)
+        }
+        _ => Err(unsupported(
+            path,
+            "literal map lookups must be map.property or map['property'] expressions",
+        )),
+    }
+}
+
+fn compile_static_map_key_literal(
+    map: &MapLiteral,
+    key: &str,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let Some((_, value)) = map
+        .entries
+        .iter()
+        .rev()
+        .find(|(entry_key, _)| entry_key.name.name == key)
+    else {
+        return Ok(Literal::Null);
+    };
+    compile_literal(value, format!("{path}.value"), context)
+}
+
+fn literal_map_expression(expression: &Expression) -> Option<&MapLiteral> {
+    match expression {
+        Expression::Parenthesized(inner) => literal_map_expression(inner),
+        Expression::Literal(CypherLiteral::Map(map)) => Some(map),
+        _ => None,
+    }
+}
+
+fn is_static_map_lookup_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_static_map_lookup_expression(inner),
+        Expression::PropertyLookup { base, .. } => literal_map_expression(base).is_some(),
+        Expression::ListIndex { list, .. } => literal_map_expression(list).is_some(),
+        _ => false,
     }
 }
 
@@ -30158,6 +30253,7 @@ fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementType
 fn is_literal_projection_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_projection_expression(inner),
+        expression if is_static_map_lookup_expression(expression) => true,
         Expression::ListIndex { .. }
         | Expression::ListSlice { .. }
         | Expression::Literal(_)
@@ -30175,6 +30271,7 @@ fn is_literal_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Parenthesized(inner) => is_literal_expression(inner),
         Expression::Literal(CypherLiteral::List(_)) => false,
+        expression if is_static_map_lookup_expression(expression) => true,
         Expression::ListIndex { .. } | Expression::Literal(_) | Expression::Parameter(_) => true,
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
@@ -40274,6 +40371,77 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_literal_map_value_lookups() {
+        let parameters = BTreeMap::from([(
+            "kind".to_string(),
+            CypherParameterValue::Literal(Literal::String("service".to_string())),
+        )]);
+        let plan = compile_cypher_with_parameters(
+            "MATCH (service:Service) \
+             WHERE ({tier: 'prod'}).tier = service.tier \
+             RETURN ({kind: $kind}).kind AS kind, \
+                    {rank: 1}['rank'] AS rank, \
+                    {known: true}.missing AS missing \
+             ORDER BY {sort: 'constant'}['sort']",
+            &parameters,
+        )
+        .expect("static literal map value lookups should fold to scalar literals");
+
+        assert_eq!(
+            plan.predicates,
+            vec![PropertyPredicate {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            }]
+        );
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Literal {
+                    literal: Literal::String("service".to_string()),
+                    alias: "kind".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Integer(1),
+                    alias: "rank".to_string(),
+                },
+                Projection::Literal {
+                    literal: Literal::Null,
+                    alias: "missing".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Literal(Literal::String("constant".to_string())),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_literal_map_value_lookups() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN {name: service.name}['name'] AS name",
+        )
+        .expect_err("dynamic map values should still require a map-value IR");
+
+        assert!(
+            error
+                .to_string()
+                .contains("only string, numeric, boolean, and null literals are supported"),
+            "{error}"
         );
     }
 

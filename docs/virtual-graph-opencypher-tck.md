@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-103 scenarios, which is 6.38% of the full upstream scenario-definition inventory
-and 7.96% of the read-candidate inventory.
+104 scenarios, which is 6.44% of the full upstream scenario-definition inventory
+and 8.04% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 103 representative read-only scenarios:
+The baseline currently contains 104 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -172,10 +172,11 @@ The baseline currently contains 103 representative read-only scenarios:
   comprehensions, including folded math-function map expressions.
 - `LiteralExpressions`: 2 scenarios for scalar literal projections and
   homogeneous literal-list projections.
-- `MapExpressions`: 3 scenarios for static literal-map key extraction with
-  `keys({ ... })`, including composition with projections, list endpoint
-  functions, and `IN` membership, plus `properties(variable).field` and static
-  string-index access over mapped graph properties.
+- `MapExpressions`: 4 scenarios for static literal-map key extraction with
+  `keys({ ... })`, static literal-map value lookup, including composition with
+  projections, list endpoint functions, and `IN` membership, plus
+  `properties(variable).field` and static string-index access over mapped graph
+  properties.
 - `ScalarExpressions`: 23 scenarios for searched `CASE`, scalar-string
   `isEmpty(...)` predicates and projections, string case conversion, trim
   variants, `replace(...)`, `substring(...)`, `size(...)`, `left(...)`,

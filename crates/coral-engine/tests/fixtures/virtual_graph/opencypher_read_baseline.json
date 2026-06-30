@@ -8,7 +8,7 @@
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
     "ListExpressions": 9,
-    "MapExpressions": 3,
+    "MapExpressions": 4,
     "Match": 3,
     "MathematicalFunctions": 5,
     "NullSemantics": 3,
@@ -479,6 +479,19 @@
             "first_key": "first",
             "has_city_key": true
           }
+        ]
+      }
+    },
+    {
+      "id": "static-map-value-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE ({active: true}).active = p.active RETURN ({name: 'static'}).name AS dotted, {rank: 7}['rank'] AS indexed, {known: true}.missing AS missing ORDER BY {sort: 'constant'}['sort']",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "dotted": "static", "indexed": 7 },
+          { "dotted": "static", "indexed": 7 }
         ]
       }
     },
