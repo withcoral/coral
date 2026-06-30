@@ -54,19 +54,36 @@ function escapeHtml(value: string): string {
   })
 }
 
-function desktopIconPath(appearance: 'light' | 'dark' = 'light'): string {
-  const iconName = appearance === 'dark' ? 'icon-dark.png' : 'icon.png'
+type IconAppearance = 'light' | 'dark'
+type IconFormat = 'icns' | 'ico' | 'png'
+
+function desktopIconPath(appearance: IconAppearance = 'light', format: IconFormat = 'png'): string {
+  const variant = appearance === 'dark' ? '-dark' : ''
+  const iconName = `icon${variant}.${format}`
   return app.isPackaged
     ? join(process.resourcesPath, 'icons', iconName)
     : join(currentDir(), '..', '..', 'resources', 'icons', iconName)
 }
 
-function currentDesktopIconPath(): string {
-  return desktopIconPath(nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+function currentIconAppearance(): IconAppearance {
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
 }
 
-function updateDockIcon() {
-  if (process.platform === 'darwin' && app.dock) app.dock.setIcon(currentDesktopIconPath())
+function currentWindowIconPath(): string {
+  if (process.platform === 'win32') return desktopIconPath(currentIconAppearance(), 'ico')
+  return desktopIconPath(currentIconAppearance(), 'png')
+}
+
+function currentDockIconPath(): string {
+  return desktopIconPath(currentIconAppearance(), 'icns')
+}
+
+function updatePlatformIcon() {
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(currentDockIconPath())
+  } else {
+    mainWindow?.setIcon(currentWindowIconPath())
+  }
 }
 
 function createMainWindow(): BrowserWindow {
@@ -78,7 +95,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 520,
     title: 'Coral',
-    icon: currentDesktopIconPath(),
+    icon: currentWindowIconPath(),
     autoHideMenuBar: process.platform !== 'darwin',
     webPreferences: {
       preload: preloadPath,
@@ -222,8 +239,8 @@ if (!gotLock) {
 }
 
 app.whenReady().then(() => {
-  updateDockIcon()
-  nativeTheme.on('updated', updateDockIcon)
+  updatePlatformIcon()
+  nativeTheme.on('updated', updatePlatformIcon)
   registerIpcHandlers()
   installMenu()
   sidecarPromise = ensureSidecar()

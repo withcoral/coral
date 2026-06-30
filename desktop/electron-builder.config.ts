@@ -18,7 +18,7 @@ const config: Configuration = {
     {
       from: 'resources/icons/',
       to: 'icons/',
-      filter: ['icon.icns', 'icon.ico', 'icon.png', 'icon-dark.png', 'icon.svg'],
+      filter: ['icon.icns', 'icon-dark.icns', 'icon.ico', 'icon-dark.ico', 'icon.png', 'icon-dark.png', 'icon.svg'],
     },
     {
       from: '../reef/build/client/',
