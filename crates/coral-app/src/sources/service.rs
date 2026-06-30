@@ -38,7 +38,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
 use crate::sources::manager::{
-    CreateBundledSourceCommand, CreateBundledSourceWithOAuthCommand, ImportSourceCommand,
+    CreateSourceCommand, CreateSourceWithOAuthCommand, ImportSourceCommand,
     ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
     PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
     SourceOAuthCredentialRetrieval,
@@ -164,13 +164,13 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let command = CreateBundledSourceCommand {
+            let command = CreateSourceCommand {
                 name: bundled_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
             let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
-                sources.create_bundled_source(&workspace_name, &command)
+                sources.create_source(&workspace_name, &command)
             })
             .await?;
             Ok(Response::new(CreateBundledSourceResponse {
@@ -193,7 +193,7 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let response_workspace_name = workspace_name.clone();
-            let command = CreateBundledSourceWithOAuthCommand {
+            let command = CreateSourceWithOAuthCommand {
                 name: SourceName::parse(&request.name).map_err(app_status)?,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
                 oauth_credential_retrievals: request
@@ -207,11 +207,7 @@ impl SourceServiceApi for SourceService {
                 import_source_response_stream(response_workspace_name, move |event_sender| {
                     instrument_grpc(span, async move {
                         sources
-                            .create_bundled_source_with_oauth(
-                                &workspace_name,
-                                command,
-                                event_sender,
-                            )
+                            .create_source_with_oauth(&workspace_name, command, event_sender)
                             .await
                             .map_err(app_status)
                     })
@@ -548,7 +544,7 @@ fn proto_source_origin(origin: SourceOrigin) -> ProtoSourceOrigin {
     match origin {
         SourceOrigin::Bundled => ProtoSourceOrigin::Bundled,
         SourceOrigin::Imported => ProtoSourceOrigin::Imported,
-        SourceOrigin::Global => ProtoSourceOrigin::Global,
+        SourceOrigin::GlobalSpec => ProtoSourceOrigin::GlobalSpec,
     }
 }
 

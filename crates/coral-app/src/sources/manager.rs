@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use coral_spec::v4::SurfaceDescriptor;
 use serde_yaml::Value as YamlValue;
@@ -17,8 +18,8 @@ use crate::credentials::{
 };
 use crate::sources::SourceName;
 use crate::sources::catalog::{
-    describe_manifest, is_bundled_source, list_bundled_sources, load_bundled_source,
-    load_global_source_spec, resolve_installed_manifest,
+    InstalledSourceManifest, describe_manifest, list_bundled_sources, load_bundled_source,
+    resolve_installed_manifest as resolve_source_manifest,
 };
 use crate::sources::materialization::{
     MaterializationBuild, MaterializationInputs, build_v4_materialization_tmp,
@@ -26,6 +27,7 @@ use crate::sources::materialization::{
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::source_specs::SourceSpecStore;
 use crate::state::{AppStateLayout, ConfigStore, RegisteredSourceSpec};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
@@ -39,27 +41,17 @@ pub(crate) struct SourceManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
+    global_source_specs: Arc<dyn SourceSpecStore>,
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
 }
 
-pub(crate) struct CreateBundledSourceCommand {
+pub(crate) struct CreateSourceCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
 }
 
-pub(crate) struct CreateBundledSourceWithOAuthCommand {
-    pub(crate) name: SourceName,
-    pub(crate) bindings: SourceBindings,
-    pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
-}
-
-pub(crate) struct CreateGlobalSourceCommand {
-    pub(crate) name: SourceName,
-    pub(crate) bindings: SourceBindings,
-}
-
-pub(crate) struct CreateGlobalSourceWithOAuthCommand {
+pub(crate) struct CreateSourceWithOAuthCommand {
     pub(crate) name: SourceName,
     pub(crate) bindings: SourceBindings,
     pub(crate) oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
@@ -165,6 +157,11 @@ struct PersistSourceRequest<'a> {
     materialization_tmp: Option<PathBuf>,
 }
 
+struct ResolvedNamedSourceSpec {
+    manifest_yaml: String,
+    source_origin: SourceOrigin,
+}
+
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
@@ -188,23 +185,10 @@ fn materialization_inputs_from_bindings(
     reason = "registry methods are wired by the next stack branch"
 )]
 impl SourceManager {
-    #[cfg(test)]
-    pub(crate) fn new_for_tests(
-        config_store: ConfigStore,
-        credential_manager: CredentialManager,
-        layout: AppStateLayout,
-    ) -> Self {
-        Self::new(
-            config_store,
-            credential_manager,
-            layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
-        )
-    }
-
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
+        global_source_specs: Arc<dyn SourceSpecStore>,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
@@ -212,6 +196,7 @@ impl SourceManager {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
+            global_source_specs,
             layout,
             lifecycle_lock,
         }
@@ -247,30 +232,29 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         match self.config_store.get_source(workspace_name, source_name) {
             Ok(source) => {
-                return Ok(
-                    resolve_installed_manifest(workspace_name, &source, &self.layout)?.candidate,
-                );
+                return Ok(self
+                    .resolve_installed_manifest(workspace_name, &source)?
+                    .candidate);
             }
             Err(AppError::SourceNotFound(_)) => {}
             Err(error) => return Err(error),
         }
 
-        match load_bundled_source(source_name) {
-            Ok(bundled) => self.describe_bundled_source(workspace_name, &bundled.manifest_yaml),
-            Err(AppError::InvalidInput(_)) => {
-                match self.config_store.get_source_spec(source_name) {
-                    Ok(_) => {
-                        let global = load_global_source_spec(source_name, &self.layout)?;
-                        self.describe_global_source(workspace_name, &global.manifest_yaml)
-                    }
-                    Err(AppError::SourceNotFound(_)) => {
-                        Err(AppError::SourceNotFound(source_name.to_string()))
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            Err(error) => Err(error),
-        }
+        let spec = self.load_named_source_spec(source_name)?;
+        self.describe_named_source(workspace_name, &spec.manifest_yaml, spec.source_origin)
+    }
+
+    pub(crate) fn resolve_installed_manifest(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<InstalledSourceManifest, AppError> {
+        resolve_source_manifest(
+            workspace_name,
+            source,
+            &self.layout,
+            self.global_source_specs.as_ref(),
+        )
     }
 
     pub(crate) fn discover_sources(
@@ -305,8 +289,8 @@ impl SourceManager {
             .list_source_specs()?
             .into_iter()
             .map(|source_spec| {
-                let manifest = load_global_source_spec(&source_spec.name, &self.layout)?;
-                describe_manifest(&manifest.manifest_yaml, SourceOrigin::Global, false)
+                let manifest = self.global_source_specs.load(&source_spec.name)?;
+                describe_manifest(&manifest.manifest_yaml, SourceOrigin::GlobalSpec, false)
             })
             .collect()
     }
@@ -319,30 +303,20 @@ impl SourceManager {
         let manifest = parse_source_manifest_yaml(&command.manifest_yaml)
             .map_err(|error| AppError::InvalidInput(error.to_string()))?;
         let manifest_yaml = durable_import_manifest_yaml(&command.manifest_yaml, &manifest)?;
-        let candidate = describe_manifest(&manifest_yaml, SourceOrigin::Global, false)?;
-        if is_bundled_source(&candidate.name) {
-            return Err(AppError::InvalidInput(format!(
-                "global source spec '{}' conflicts with a bundled source",
-                candidate.name
-            )));
-        }
+        let candidate = describe_manifest(&manifest_yaml, SourceOrigin::GlobalSpec, false)?;
 
-        let manifest_path = self.layout.source_spec_manifest_file(&candidate.name);
-        let previous_manifest = match std::fs::read_to_string(&manifest_path) {
-            Ok(manifest_yaml) => Some(manifest_yaml),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
+        let previous_manifest = self
+            .global_source_specs
+            .load_optional(&candidate.name)?
+            .map(|manifest| manifest.manifest_yaml);
         let previous_spec = match self.config_store.get_source_spec(&candidate.name) {
             Ok(source_spec) => Some(source_spec),
             Err(AppError::SourceNotFound(_)) => None,
             Err(error) => return Err(error),
         };
 
-        if let Some(parent) = manifest_path.parent() {
-            fs::ensure_dir(parent)?;
-        }
-        fs::write_atomic(&manifest_path, manifest_yaml.as_bytes())?;
+        self.global_source_specs
+            .write_manifest(&candidate.name, &manifest_yaml)?;
 
         let registered = RegisteredSourceSpec {
             name: candidate.name.clone(),
@@ -365,13 +339,12 @@ impl SourceManager {
     ) -> Result<CandidateSource, AppError> {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         let registered = self.config_store.get_source_spec(source_name)?;
-        let manifest = match load_global_source_spec(source_name, &self.layout) {
-            Ok(manifest) => Some(manifest.manifest_yaml),
-            Err(AppError::MissingGlobalSourceSpec { .. }) => None,
-            Err(error) => return Err(error),
-        };
+        let manifest = self
+            .global_source_specs
+            .load_optional(source_name)?
+            .map(|manifest| manifest.manifest_yaml);
         let removed = if let Some(manifest_yaml) = manifest.as_deref() {
-            let candidate = describe_manifest(manifest_yaml, SourceOrigin::Global, false)?;
+            let candidate = describe_manifest(manifest_yaml, SourceOrigin::GlobalSpec, false)?;
             if candidate.name != *source_name {
                 return Err(AppError::FailedPrecondition(format!(
                     "registered source spec '{source_name}' does not match manifest name '{}'",
@@ -386,53 +359,53 @@ impl SourceManager {
                 version: registered.version.clone(),
                 inputs: Vec::new(),
                 installed: false,
-                origin: SourceOrigin::Global,
+                origin: SourceOrigin::GlobalSpec,
                 credential_storage: None,
             }
         };
 
-        let source_spec_dir = self.layout.source_spec_dir(source_name);
-        let backup_dir = fs::DirectoryBackup::move_for_delete(&source_spec_dir, source_name)?;
+        let removed_manifest_tree = self.global_source_specs.remove(source_name)?;
 
         if let Err(error) = self.config_store.remove_source_spec(source_name) {
-            if let Err(restore_error) = backup_dir.restore() {
+            if let Err(restore_error) = removed_manifest_tree.restore() {
                 return Err(AppError::FailedPrecondition(format!(
                     "failed to remove source spec '{source_name}': {error}; failed to restore source-spec directory from '{}': {restore_error}",
-                    backup_dir.backup_path().display()
+                    removed_manifest_tree.backup_path().display()
                 )));
             }
             return Err(error);
         }
-        backup_dir.commit()?;
-        cleanup_empty_parent(&self.layout.source_specs_root(), source_spec_dir.parent());
+        removed_manifest_tree.commit()?;
         Ok(removed)
     }
 
-    pub(crate) fn create_bundled_source(
+    pub(crate) fn create_source(
         &self,
         workspace_name: &WorkspaceName,
-        command: &CreateBundledSourceCommand,
+        command: &CreateSourceCommand,
     ) -> Result<InstalledSource, AppError> {
-        let bundled = load_bundled_source(&command.name)?;
-        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
+        let spec = self.load_named_source_spec(&command.name)?;
+        let candidate =
+            self.describe_named_source(workspace_name, &spec.manifest_yaml, spec.source_origin)?;
         self.install_validated_source(
             workspace_name,
             &candidate,
             &command.bindings,
             None,
-            &bundled.manifest_yaml,
-            SourceOrigin::Bundled,
+            &spec.manifest_yaml,
+            spec.source_origin,
         )
     }
 
-    pub(crate) async fn create_bundled_source_with_oauth(
+    pub(crate) async fn create_source_with_oauth(
         &self,
         workspace_name: &WorkspaceName,
-        command: CreateBundledSourceWithOAuthCommand,
+        command: CreateSourceWithOAuthCommand,
         events: ImportSourceEventSender,
     ) -> Result<InstalledSource, AppError> {
-        let bundled = load_bundled_source(&command.name)?;
-        let candidate = self.describe_bundled_source(workspace_name, &bundled.manifest_yaml)?;
+        let spec = self.load_named_source_spec(&command.name)?;
+        let candidate =
+            self.describe_named_source(workspace_name, &spec.manifest_yaml, spec.source_origin)?;
         self.install_source_with_oauth(
             workspace_name,
             &candidate,
@@ -440,48 +413,8 @@ impl SourceManager {
             command.oauth_credential_retrievals,
             events,
             None,
-            &bundled.manifest_yaml,
-            SourceOrigin::Bundled,
-        )
-        .await
-    }
-
-    pub(crate) fn create_global_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        command: &CreateGlobalSourceCommand,
-    ) -> Result<InstalledSource, AppError> {
-        self.config_store.get_source_spec(&command.name)?;
-        let global = load_global_source_spec(&command.name, &self.layout)?;
-        let candidate = self.describe_global_source(workspace_name, &global.manifest_yaml)?;
-        self.install_validated_source(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            None,
-            &global.manifest_yaml,
-            SourceOrigin::Global,
-        )
-    }
-
-    pub(crate) async fn create_global_source_with_oauth(
-        &self,
-        workspace_name: &WorkspaceName,
-        command: CreateGlobalSourceWithOAuthCommand,
-        events: ImportSourceEventSender,
-    ) -> Result<InstalledSource, AppError> {
-        self.config_store.get_source_spec(&command.name)?;
-        let global = load_global_source_spec(&command.name, &self.layout)?;
-        let candidate = self.describe_global_source(workspace_name, &global.manifest_yaml)?;
-        self.install_source_with_oauth(
-            workspace_name,
-            &candidate,
-            &command.bindings,
-            command.oauth_credential_retrievals,
-            events,
-            None,
-            &global.manifest_yaml,
-            SourceOrigin::Global,
+            &spec.manifest_yaml,
+            spec.source_origin,
         )
         .await
     }
@@ -694,7 +627,7 @@ impl SourceManager {
                 SourceOrigin::Imported => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
-                SourceOrigin::Bundled | SourceOrigin::Global => None,
+                SourceOrigin::Bundled | SourceOrigin::GlobalSpec => None,
             },
             credential_material,
         };
@@ -748,26 +681,41 @@ impl SourceManager {
         Ok(removed)
     }
 
-    fn describe_bundled_source(
+    fn load_named_source_spec(
+        &self,
+        name: &SourceName,
+    ) -> Result<ResolvedNamedSourceSpec, AppError> {
+        match self.config_store.get_source_spec(name) {
+            Ok(_) => Ok(ResolvedNamedSourceSpec {
+                manifest_yaml: self.global_source_specs.load(name)?.manifest_yaml,
+                source_origin: SourceOrigin::GlobalSpec,
+            }),
+            Err(AppError::SourceNotFound(_)) => load_bundled_source(name)
+                .map(|bundled| ResolvedNamedSourceSpec {
+                    manifest_yaml: bundled.manifest_yaml,
+                    source_origin: SourceOrigin::Bundled,
+                })
+                .map_err(|error| {
+                    if matches!(error, AppError::InvalidInput(_)) {
+                        AppError::SourceNotFound(name.to_string())
+                    } else {
+                        error
+                    }
+                }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn describe_named_source(
         &self,
         workspace_name: &WorkspaceName,
         manifest_yaml: &str,
+        source_origin: SourceOrigin,
     ) -> Result<CandidateSource, AppError> {
-        let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Bundled, false)?;
+        let mut candidate = describe_manifest(manifest_yaml, source_origin, false)?;
         candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
         Ok(candidate)
     }
-
-    fn describe_global_source(
-        &self,
-        workspace_name: &WorkspaceName,
-        manifest_yaml: &str,
-    ) -> Result<CandidateSource, AppError> {
-        let mut candidate = describe_manifest(manifest_yaml, SourceOrigin::Global, false)?;
-        candidate.installed = self.source_exists(workspace_name, &candidate.name)?;
-        Ok(candidate)
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "Source persistence keeps rollback steps together so failure ordering is visible."
@@ -888,7 +836,7 @@ impl SourceManager {
 
         let persisted_version = match request.origin {
             SourceOrigin::Bundled => None,
-            SourceOrigin::Imported | SourceOrigin::Global => request.candidate.version.clone(),
+            SourceOrigin::Imported | SourceOrigin::GlobalSpec => request.candidate.version.clone(),
         };
         let stored = InstalledSource {
             name: source_name.clone(),
@@ -980,8 +928,7 @@ impl SourceManager {
             if installed.name == *candidate_name {
                 continue;
             }
-            let installed_manifest =
-                resolve_installed_manifest(workspace_name, &installed, &self.layout)?;
+            let installed_manifest = self.resolve_installed_manifest(workspace_name, &installed)?;
             let installed_schema_names = runtime_schema_names(&installed_manifest.source_spec);
             if let Some(schema_name) = candidate_schema_names
                 .intersection(&installed_schema_names)
@@ -1250,7 +1197,7 @@ impl SourceManager {
                 SourceOrigin::Imported => Some(std::fs::read_to_string(
                     self.layout.manifest_file(workspace_name, source_name),
                 )?),
-                SourceOrigin::Bundled | SourceOrigin::Global => None,
+                SourceOrigin::Bundled | SourceOrigin::GlobalSpec => None,
             },
             source,
             credential_material,
@@ -1352,22 +1299,23 @@ impl SourceManager {
         previous_spec: Option<RegisteredSourceSpec>,
         previous_manifest: Option<String>,
     ) {
-        let manifest_path = self.layout.source_spec_manifest_file(source_name);
         if let Some(manifest_yaml) = previous_manifest {
-            if let Some(parent) = manifest_path.parent()
-                && let Err(error) = fs::ensure_dir(parent)
+            if let Err(error) = self
+                .global_source_specs
+                .write_manifest(source_name, &manifest_yaml)
             {
-                warn!("rollback: failed to create source-spec manifest parent dir: {error}");
-            }
-            if let Err(error) = fs::write_atomic(&manifest_path, manifest_yaml.as_bytes()) {
                 warn!("rollback: failed to restore source-spec manifest: {error}");
             }
         } else {
-            let source_spec_dir = self.layout.source_spec_dir(source_name);
-            if source_spec_dir.exists()
-                && let Err(error) = std::fs::remove_dir_all(&source_spec_dir)
-            {
-                warn!("rollback: failed to remove new source-spec directory: {error}");
+            match self.global_source_specs.remove(source_name) {
+                Ok(removed_manifest_tree) => {
+                    if let Err(error) = removed_manifest_tree.commit() {
+                        warn!("rollback: failed to remove new source-spec directory: {error}");
+                    }
+                }
+                Err(error) => {
+                    warn!("rollback: failed to remove new source-spec directory: {error}");
+                }
             }
         }
 
@@ -1390,7 +1338,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         mut source: InstalledSource,
     ) -> Result<InstalledSource, AppError> {
-        source.version = resolve_installed_manifest(workspace_name, &source, &self.layout)?
+        source.version = self
+            .resolve_installed_manifest(workspace_name, &source)?
             .candidate
             .version;
         Ok(source)
@@ -1746,7 +1695,7 @@ mod tests {
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener as StdTcpListener;
     use std::path::Path;
-    use std::sync::mpsc as std_mpsc;
+    use std::sync::{Arc, mpsc as std_mpsc};
     use std::thread;
     use std::time::Duration;
 
@@ -1756,11 +1705,12 @@ mod tests {
     use url::Url;
 
     use super::{
-        ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
-        ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent,
-        PersistSourceRequest, SourceBinding, SourceBindings, SourceManager,
-        SourceOAuthCredentialRetrieval, ValidatedBindings, materialization_inputs_from_bindings,
-        normalize_binding_key, source_needs_stored_material_for_validation,
+        CreateSourceCommand, ImportSourceCommand, ImportSourceEventSender,
+        ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
+        PendingImportSourceWithCredentialsEvent, PersistSourceRequest, RegisterSourceSpecCommand,
+        SourceBinding, SourceBindings, SourceManager, SourceOAuthCredentialRetrieval,
+        ValidatedBindings, materialization_inputs_from_bindings, normalize_binding_key,
+        source_needs_stored_material_for_validation,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
@@ -1770,8 +1720,9 @@ mod tests {
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+    use crate::sources::source_specs::GlobalSourceSpecStore;
     use crate::state::{AppStateLayout, ConfigStore};
-    use crate::workspaces::WorkspaceName;
+    use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
 
     fn default_workspace() -> WorkspaceName {
@@ -2009,6 +1960,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2099,6 +2051,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout,
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2168,6 +2121,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout,
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2472,8 +2426,13 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout);
+        let manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
 
         config_store
@@ -2526,8 +2485,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
 
         let disabled = manager
             .discover_sources(&default_workspace())
@@ -2536,6 +2500,55 @@ tables:
             !disabled
                 .iter()
                 .any(|source| source.name.as_str() == "github_v4")
+        );
+    }
+
+    #[test]
+    fn create_source_prefers_registered_global_spec_over_bundled_source() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let source_name = SourceName::parse("github").expect("source");
+        let global_source_specs = Arc::new(GlobalSourceSpecStore::new(layout.clone()));
+        let credential_store = CredentialStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(credential_store);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            global_source_specs,
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
+        let registered = manager
+            .register_source_spec(&RegisterSourceSpecCommand {
+                manifest_yaml: manifest_without_secrets().replace("public_messages", "github"),
+            })
+            .expect("register global source spec with bundled source name");
+        assert_eq!(registered.origin, SourceOrigin::GlobalSpec);
+
+        let info = manager
+            .get_source_info(&default_workspace(), &source_name)
+            .expect("registered global spec should shadow bundled source info");
+        assert_eq!(info.origin, SourceOrigin::GlobalSpec);
+
+        let installed = manager
+            .create_source(
+                &default_workspace(),
+                &CreateSourceCommand {
+                    name: source_name,
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("install source from registered global spec before bundled source");
+
+        assert_eq!(installed.name.as_str(), "github");
+        assert_eq!(installed.origin, SourceOrigin::GlobalSpec);
+        assert!(
+            !layout
+                .manifest_file(&default_workspace(), &installed.name)
+                .exists()
         );
     }
 
@@ -2551,8 +2564,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
 
         let installed = manager
             .import_source(
@@ -2592,10 +2610,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let manager = SourceManager::new_for_tests(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
 
         manager
@@ -2654,10 +2674,12 @@ tables:
             v4_openapi_fixture_with_defaulted_input_server_url(),
         )
         .expect("write fixture");
-        let manager = SourceManager::new_for_tests(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
 
         let error = manager
@@ -2692,10 +2714,12 @@ tables:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new_for_tests(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout,
+            WorkspaceLifecycleLock::default(),
         );
 
         let error = manager
@@ -2725,10 +2749,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture_with_metadata()).expect("write fixture");
-        let manager = SourceManager::new_for_tests(
+        let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
 
         manager
@@ -2764,8 +2790,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         let source_dir = layout.source_dir(&default_workspace(), &source_name);
@@ -2867,7 +2898,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
 
         let source = manager
             .import_source(
@@ -2903,8 +2940,13 @@ tables:
             CredentialStoragePreference::Auto,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
 
@@ -2974,8 +3016,13 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("public_messages").expect("source");
 
         let source = manager
@@ -3016,7 +3063,13 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
 
         let error = manager
             .import_source(
@@ -3045,8 +3098,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -3099,8 +3157,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -3148,8 +3211,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -3206,8 +3274,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let secret_path = layout.secret_file(&default_workspace(), &source_name);
         std::fs::create_dir_all(&secret_path).expect("create blocking secret directory");
@@ -3242,8 +3315,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -3309,8 +3387,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store.clone());
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout.clone(),
+            WorkspaceLifecycleLock::default(),
+        );
         let workspace_name = default_workspace();
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
@@ -3406,8 +3489,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
@@ -3436,34 +3524,7 @@ tables:
             },
             event_tx,
         );
-        let callback = async {
-            let event = event_rx
-                .recv()
-                .await
-                .expect("authorization event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthAuthorization {
-                input_key,
-                authorization_url,
-                ..
-            } = event
-            else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-            let parsed = Url::parse(&authorization_url).expect("authorization url");
-            assert_eq!(parsed.path(), "/organizations/oauth/authorize");
-            callback(&authorization_url, redirect_port).await;
-            let event = event_rx
-                .recv()
-                .await
-                .expect("completion event")
-                .into_event();
-            let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
-                panic!("unexpected import event");
-            };
-            assert_eq!(input_key, "API_TOKEN");
-        };
+        let callback = complete_oauth_authorization(&mut event_rx, redirect_port);
 
         let (source, ()) = tokio::join!(import, callback);
         let source = source.expect("import source with OAuth");
@@ -3507,8 +3568,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         manager
@@ -3584,7 +3650,13 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            layout,
+            WorkspaceLifecycleLock::default(),
+        );
         let redirect_port = free_loopback_port();
         let (event_tx, mut event_rx) = import_event_channel();
 
@@ -3640,6 +3712,39 @@ tables:
             .expect("callback response")
             .error_for_status()
             .expect("callback success");
+    }
+
+    async fn complete_oauth_authorization(
+        event_rx: &mut mpsc::Receiver<PendingImportSourceWithCredentialsEvent>,
+        redirect_port: u16,
+    ) {
+        let event = event_rx
+            .recv()
+            .await
+            .expect("authorization event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::OAuthAuthorization {
+            input_key,
+            authorization_url,
+            ..
+        } = event
+        else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
+        let parsed = Url::parse(&authorization_url).expect("authorization url");
+        assert_eq!(parsed.path(), "/organizations/oauth/authorize");
+        callback(&authorization_url, redirect_port).await;
+
+        let event = event_rx
+            .recv()
+            .await
+            .expect("completion event")
+            .into_event();
+        let ImportSourceWithCredentialsEvent::OAuthCompleted { input_key, .. } = event else {
+            panic!("unexpected import event");
+        };
+        assert_eq!(input_key, "API_TOKEN");
     }
 
     fn import_event_channel() -> (

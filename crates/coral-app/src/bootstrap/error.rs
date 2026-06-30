@@ -29,7 +29,7 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
-    /// An installed global-origin source references a missing global source spec.
+    /// An installed source references a missing global source spec.
     #[error(
         "failed precondition: source '{source_name}' references a global source spec that is not registered. Re-register the source spec or remove and re-add the source."
     )]

@@ -1,12 +1,12 @@
 //! Bundled source catalog and installed-manifest resolution helpers.
 
-use std::collections::BTreeSet;
-
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
+use std::collections::BTreeSet;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
+use crate::sources::source_specs::SourceSpecStore;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -14,11 +14,6 @@ include!(concat!(env!("OUT_DIR"), "/bundled_sources.rs"));
 
 #[derive(Debug, Clone)]
 pub(crate) struct BundledSourceManifest {
-    pub(crate) manifest_yaml: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GlobalSourceSpecManifest {
     pub(crate) manifest_yaml: String,
 }
 
@@ -63,42 +58,20 @@ pub(crate) fn load_bundled_source(name: &SourceName) -> Result<BundledSourceMani
     })
 }
 
-pub(crate) fn is_bundled_source(name: &SourceName) -> bool {
-    BUNDLED_SOURCES
-        .iter()
-        .any(|(candidate, _)| *candidate == name.as_str())
-}
-
-pub(crate) fn load_global_source_spec(
-    name: &SourceName,
-    layout: &AppStateLayout,
-) -> Result<GlobalSourceSpecManifest, AppError> {
-    let manifest_path = layout.source_spec_manifest_file(name);
-    let manifest_yaml = std::fs::read_to_string(&manifest_path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            AppError::MissingGlobalSourceSpec {
-                source_name: name.to_string(),
-            }
-        } else {
-            AppError::Io(error)
-        }
-    })?;
-    Ok(GlobalSourceSpecManifest { manifest_yaml })
-}
-
 /// Resolve the effective installed manifest and verify it still matches the
 /// installed source identity in app state.
 pub(crate) fn resolve_installed_manifest(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
     layout: &AppStateLayout,
+    global_source_specs: &dyn SourceSpecStore,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
         SourceOrigin::Imported => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
-        SourceOrigin::Global => load_global_source_spec(&source.name, layout)?.manifest_yaml,
+        SourceOrigin::GlobalSpec => global_source_specs.load(&source.name)?.manifest_yaml,
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;

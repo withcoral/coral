@@ -53,6 +53,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
+use crate::sources::source_specs::GlobalSourceSpecStore;
 use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
@@ -273,10 +274,12 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
+        let global_source_specs = Arc::new(GlobalSourceSpecStore::new(layout.clone()));
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            global_source_specs,
             layout.clone(),
             workspace_lifecycle_lock.clone(),
         );
@@ -303,6 +306,7 @@ impl ServerBuilder {
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            source_manager.clone(),
         );
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
@@ -703,10 +707,11 @@ mod tests {
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
+    use crate::sources::source_specs::GlobalSourceSpecStore;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
-    use crate::workspaces::{WorkspaceManager, WorkspaceName};
+    use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceName};
     use crate::{AwsEngineExtensionsProvider, NoopEngineExtensionsProvider};
 
     fn default_workspace() -> Workspace {
@@ -811,10 +816,12 @@ enabled = false
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
@@ -830,6 +837,7 @@ enabled = false
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            source_manager.clone(),
         );
         let trace_service =
             TraceService::new(temp.path().join("trace-store"), Duration::from_mins(1));
@@ -1201,10 +1209,12 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
@@ -1223,6 +1233,7 @@ tables:
             },
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            source_manager.clone(),
         );
         let running = start_server(
             source_manager,
@@ -1312,10 +1323,12 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
@@ -1331,6 +1344,7 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            source_manager.clone(),
         );
         let running = start_server(
             source_manager,
@@ -1420,10 +1434,12 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let source_manager = SourceManager::new_for_tests(
+        let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
+            WorkspaceLifecycleLock::default(),
         );
         let feedback_manager = FeedbackManager::new(layout.clone());
         let episode_store = EpisodeStore::new(layout.clone());
@@ -1439,6 +1455,7 @@ tables:
             QueryRuntimeContext::default(),
             layout,
             vec![Arc::new(NoopEngineExtensionsProvider)],
+            source_manager.clone(),
         );
         let running = start_server(
             source_manager,

@@ -67,7 +67,7 @@ impl InstalledSource {
 pub(crate) enum SourceOrigin {
     Bundled,
     Imported,
-    Global,
+    GlobalSpec,
 }
 
 impl SourceOrigin {
@@ -75,7 +75,7 @@ impl SourceOrigin {
         match self {
             Self::Bundled => "bundled",
             Self::Imported => "imported",
-            Self::Global => "global",
+            Self::GlobalSpec => "global_spec",
         }
     }
 }
