@@ -7,7 +7,7 @@
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
-    "NestedRelationships": 5,
+    "NestedRelationships": 8,
     "RelationshipExistence": 5,
     "RootSelection": 4,
     "RowModifiers": 8,
@@ -596,6 +596,42 @@
         "ordered": true,
         "rows": [
           { "source": "Alice", "target": "Carol", "since": 2022 }
+        ]
+      }
+    },
+    {
+      "id": "traversal-strength-gte-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name out_KNOWS(to: Person, relationshipWhere: { strength: { gte: 0.5 } }) { target: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "target": "Bob", "strength": 0.9 }
+        ]
+      }
+    },
+    {
+      "id": "traversal-strength-lt-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name out_KNOWS(to: Person, relationshipWhere: { strength: { lt: 0.5 } }) { target: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "target": "Carol", "strength": 0.3 }
+        ]
+      }
+    },
+    {
+      "id": "traversal-strength-range-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Bob\" } }) { name out_KNOWS(to: Person, relationshipWhere: { strength: { gte: 0.6, lte: 0.8 } }) { target: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob", "target": "Carol", "strength": 0.7 }
         ]
       }
     },
