@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-127 scenarios, which is 7.86% of the full upstream scenario-definition inventory
-and 9.81% of the read-candidate inventory.
+128 scenarios, which is 7.93% of the full upstream scenario-definition inventory
+and 9.89% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,7 +148,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 127 representative read-only scenarios:
+The baseline currently contains 128 representative read-only scenarios:
 
 - `Match`: 3 scenarios for labeled node scans plus forward and reverse
   relationship matches.
@@ -176,12 +176,13 @@ The baseline currently contains 127 representative read-only scenarios:
   scalar collection.
 - `ExistsSubquery`: 2 scenarios for `EXISTS { ... }` predicates, including
   row-preserving `RETURN DISTINCT` inside the scoped subquery.
-- `ListExpressions`: 14 scenarios for static `range(...)`, `split(...)`,
+- `ListExpressions`: 15 scenarios for static `range(...)`, `split(...)`,
   indexes, slices, endpoint functions, collection predicates, and list
   comprehensions, including folded math-function map expressions and static
   `reduce(...)` folds, direct folded-list `ORDER BY` keys, compile-time
-  dynamic label/type literal lists and folded string-list expressions, plus
-  legacy static `filter(...)` / `extract(...)` functions.
+  dynamic label/type literal lists, folded string-list expressions, and
+  statically selected list-valued `CASE`, plus legacy static `filter(...)` /
+  `extract(...)` functions.
 - `LiteralExpressions`: 2 scenarios for scalar literal projections and
   homogeneous literal-list projections.
 - `MapExpressions`: 5 scenarios for static literal-map key extraction with

@@ -1218,6 +1218,20 @@ fn compile_optional_static_unwind_case_value(
     path: impl Into<String>,
     context: &CypherCompileContext,
 ) -> Result<Option<StaticListValue>, CoreError> {
+    compile_optional_static_folded_case_list_value(
+        case,
+        path,
+        context,
+        "UNWIND over list-valued CASE expressions requires statically foldable WHEN predicates",
+    )
+}
+
+fn compile_optional_static_folded_case_list_value(
+    case: &CaseExpression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+    non_foldable_message: &'static str,
+) -> Result<Option<StaticListValue>, CoreError> {
     let path = path.into();
     let Some(parts) = compile_optional_static_list_case_parts(
         case,
@@ -1231,7 +1245,7 @@ fn compile_optional_static_unwind_case_value(
     for (index, (when, result)) in parts.alternatives.into_iter().enumerate() {
         match when {
             PredicateExpression::Boolean(true) => {
-                return Ok(Some(static_unwind_case_result_value(
+                return Ok(Some(static_folded_case_result_value(
                     result,
                     parts.element_type,
                 )));
@@ -1240,13 +1254,13 @@ fn compile_optional_static_unwind_case_value(
             _ => {
                 return Err(unsupported(
                     format!("{path}.alternatives[{index}].when"),
-                    "UNWIND over list-valued CASE expressions requires statically foldable WHEN predicates",
+                    non_foldable_message,
                 ));
             }
         }
     }
     match parts.default {
-        Some(result) => Ok(Some(static_unwind_case_result_value(
+        Some(result) => Ok(Some(static_folded_case_result_value(
             result,
             parts.element_type,
         ))),
@@ -1258,7 +1272,7 @@ fn compile_optional_static_unwind_case_value(
     }
 }
 
-fn static_unwind_case_result_value(
+fn static_folded_case_result_value(
     result: StaticListCaseResult,
     element_type: Option<LiteralListElementType>,
 ) -> StaticListValue {
@@ -29757,6 +29771,17 @@ fn compile_dynamic_label_expressions(
         Expression::Literal(CypherLiteral::List(list)) => {
             compile_dynamic_label_literal_list(&list.elements, path, context)
         }
+        Expression::Case(case) => {
+            match compile_optional_static_folded_case_list_value(
+                case,
+                path.clone(),
+                context,
+                "dynamic label CASE expressions require statically foldable WHEN predicates",
+            )? {
+                Some(value) => compile_dynamic_label_static_list_value(value, path),
+                None => Err(unsupported(path, DYNAMIC_LABEL_EXPRESSION_MESSAGE)),
+            }
+        }
         Expression::Parameter(parameter) => {
             match context.parameter_value(parameter, path.clone())? {
                 CypherParameterValue::Literal(Literal::String(label)) => Ok(vec![label.clone()]),
@@ -41825,6 +41850,74 @@ relationships:
     }
 
     #[test]
+    fn compiles_static_case_dynamic_label_pattern_lists() {
+        let query = compile_cypher_query(
+            "MATCH (entity:$(CASE WHEN true THEN split('Team,Service', ',') ELSE ['Person'] END)) \
+             RETURN entity.name AS name",
+        )
+        .expect("static CASE dynamic label pattern lists should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("static CASE dynamic label lists should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
+        );
+    }
+
+    #[test]
+    fn compiles_static_case_dynamic_label_predicate_lists() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:$(CASE WHEN false THEN ['Team'] ELSE ['Service'] END) \
+             RETURN service.name AS service",
+        )
+        .expect("static CASE dynamic label predicate lists should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn compiles_static_case_dynamic_relationship_type_lists() {
+        let query = compile_cypher_query(
+            "MATCH (source:Service)-[:DEPENDS_ON|$(CASE WHEN true THEN split('OWNS,DEPENDS_ON', ',') ELSE ['ALERTS'] END)]->(target:Service) \
+             RETURN target.name AS target",
+        )
+        .expect("static CASE dynamic relationship type lists should compile and deduplicate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("static CASE dynamic relationship type lists should expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("DEPENDS_ON")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.relationships.first())
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("OWNS")
+        );
+    }
+
+    #[test]
     fn compiles_parameterized_dynamic_node_label_pattern_alternatives() {
         let parameters = BTreeMap::from([(
             "label".to_string(),
@@ -42031,6 +42124,23 @@ relationships:
             error
                 .to_string()
                 .contains("dynamic label list expressions require only strings"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_row_dependent_static_case_dynamic_label_lists() {
+        let error = compile_cypher_query(
+            "MATCH (service:Service) \
+             WHERE service:$(CASE WHEN service.name = 'billing' THEN ['Service'] ELSE ['Team'] END) \
+             RETURN service.name AS service",
+        )
+        .expect_err("dynamic label CASE predicates with row dependencies should be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "dynamic label CASE expressions require statically foldable WHEN predicates"
+            ),
             "{error:?}"
         );
     }
