@@ -12862,7 +12862,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), haversin(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), haversin(), isNaN(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -13049,6 +13049,9 @@ fn evaluate_static_map_function(
     }
     if let Some(literal) = evaluate_static_map_numeric_function(function, &path, evaluation)? {
         return Ok(literal);
+    }
+    if is_is_nan_function(function) {
+        return evaluate_static_map_is_nan(function, &path, evaluation);
     }
     if let Some(literal) = evaluate_static_map_string_function(function, &path, evaluation)? {
         return Ok(literal);
@@ -13787,6 +13790,21 @@ fn evaluate_static_map_sign(
         }
     };
     Ok(Literal::Integer(sign))
+}
+
+fn evaluate_static_map_is_nan(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    evaluation: StaticFilterEvaluation<'_>,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    let literal =
+        evaluate_static_map_single_function_argument(function, path.clone(), evaluation, "isNaN")?;
+    let Some(value) = StaticNumericLiteral::from_literal(&literal, format!("{path}.arguments[0]"))?
+    else {
+        return Ok(Literal::Null);
+    };
+    Ok(Literal::Boolean(value.as_f64().is_nan()))
 }
 
 fn evaluate_static_map_power(
@@ -27440,6 +27458,7 @@ fn is_static_map_operand_function(function: &FunctionInvocation) -> bool {
         || is_empty_function(function)
         || is_static_map_cast_function(function)
         || is_static_map_numeric_function(function)
+        || is_is_nan_function(function)
         || static_map_string_function_returns_string(function)
 }
 
@@ -39559,7 +39578,8 @@ relationships:
                     [x IN [4, 9] | sqrt(x)] AS roots, \
                     [x IN [1.0, 3.0, 6.5, null] | sign(x - 3.0)] AS signs, \
                     [x IN [2, 3, null] | pow(x, 3)] AS powers, \
-                    [x IN [2, 3] | power(x, 2)] AS squares",
+                    [x IN [2, 3] | power(x, 2)] AS squares, \
+                    [x IN [1.0, 2.0, null] | isNaN(x)] AS nan_checks",
         )
         .expect("static list comprehension numeric function maps should compile");
 
@@ -39630,6 +39650,17 @@ relationships:
                         element_type: LiteralListElementType::Float,
                     },
                     alias: "squares".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::Boolean(false),
+                            Literal::Boolean(false),
+                            Literal::Null
+                        ],
+                        element_type: LiteralListElementType::Boolean,
+                    },
+                    alias: "nan_checks".to_string(),
                 },
             ]
         );

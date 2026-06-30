@@ -10703,12 +10703,6 @@ relationships: []
                 },
                 alias: "risk_log10".to_string(),
             },
-            Projection::Expression {
-                expression: ScalarExpression::IsNaN {
-                    expression: Box::new(service_risk_expression()),
-                },
-                alias: "risk_is_nan".to_string(),
-            },
         ];
         plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
             lhs: ScalarExpression::Log {
@@ -10760,13 +10754,6 @@ relationships: []
         assert!(
             translation
                 .sql()
-                .contains("isnan(\"n1\".\"risk_score\") AS \"risk_is_nan\""),
-            "{}",
-            translation.sql()
-        );
-        assert!(
-            translation
-                .sql()
                 .contains("WHERE ln(\"n1\".\"risk_score\") < 0"),
             "{}",
             translation.sql()
@@ -10775,6 +10762,31 @@ relationships: []
             translation
                 .sql()
                 .contains("ORDER BY sqrt(\"n1\".\"risk_score\") ASC"),
+            "{}",
+            translation.sql()
+        );
+    }
+
+    #[test]
+    fn lower_graph_plan_renders_is_nan_scalar_expressions() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.predicates.clear();
+        plan.projections = vec![expression_projection(
+            "risk_is_nan",
+            ScalarExpression::IsNaN {
+                expression: Box::new(service_risk_expression()),
+            },
+        )];
+
+        let translation = graph
+            .lower_graph_plan(&plan)
+            .expect("isNaN scalar expression should lower");
+
+        assert!(
+            translation
+                .sql()
+                .contains("isnan(\"n1\".\"risk_score\") AS \"risk_is_nan\""),
             "{}",
             translation.sql()
         );
