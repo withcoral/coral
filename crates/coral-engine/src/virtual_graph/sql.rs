@@ -8200,6 +8200,7 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
         AggregateFunction::Sum => "SUM",
         AggregateFunction::Avg => "AVG",
         AggregateFunction::Median => "MEDIAN",
+        AggregateFunction::PercentileCont { .. } => "PERCENTILE_CONT",
         AggregateFunction::StdDev => "STDDEV_SAMP",
         AggregateFunction::StdDevP => "STDDEV_POP",
         AggregateFunction::Min => "MIN",
@@ -8213,6 +8214,12 @@ fn render_aggregate_invocation_sql(
     distinct: bool,
 ) -> String {
     let distinct_sql = if distinct { "DISTINCT " } else { "" };
+    if let AggregateFunction::PercentileCont { percentile } = function {
+        return format!(
+            "PERCENTILE_CONT({distinct_sql}{target}, {})",
+            render_float_literal(percentile.into_inner())
+        );
+    }
     if function == AggregateFunction::Collect {
         return format!(
             "COALESCE(ARRAY_AGG({distinct_sql}{target}) FILTER (WHERE ({target}) IS NOT NULL), make_array())"
@@ -11807,6 +11814,17 @@ relationships: []
             alias: "median_risk".to_string(),
         });
         plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::PercentileCont {
+                percentile: ordered_float::OrderedFloat(0.75),
+            },
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: false,
+            alias: "p75_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
             function: AggregateFunction::StdDev,
             target: AggregateTarget::Property(PropertyRef {
                 variable: "service".to_string(),
@@ -11859,6 +11877,7 @@ relationships: []
         assert!(
             translation.sql().contains(
                 "MEDIAN(\"n1\".\"risk_score\") AS \"median_risk\", \
+                 PERCENTILE_CONT(\"n1\".\"risk_score\", 0.75) AS \"p75_risk\", \
                  STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
                  STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
                  MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\", \

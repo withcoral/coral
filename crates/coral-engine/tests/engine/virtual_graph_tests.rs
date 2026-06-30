@@ -14134,6 +14134,60 @@ async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sour
 }
 
 #[tokio::test]
+async fn cypher_percentile_cont_aggregate_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE service.tier = 'prod' \
+         RETURN percentileCont(service.risk, 0.75) AS p75_risk",
+    )
+    .await
+    .expect("percentileCont aggregate Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("PERCENTILE_CONT(\"n0\".\"risk_score\", 0.75) AS \"p75_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT PERCENTILE_CONT(risk_score, 0.75) AS \"p75_risk\" \
+         FROM ops.services \
+         WHERE tier = 'prod'",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows.len(), 1);
+    assert_eq!(sql_rows.len(), 1);
+
+    let graph_row = graph_rows
+        .first()
+        .expect("graph percentile query should return one row");
+    let sql_row = sql_rows
+        .first()
+        .expect("SQL percentile query should return one row");
+    assert_close(
+        graph_row["p75_risk"].as_f64().unwrap(),
+        sql_row["p75_risk"].as_f64().unwrap(),
+    );
+    assert_close(graph_row["p75_risk"].as_f64().unwrap(), 0.8);
+}
+
+#[tokio::test]
 async fn cypher_gql_aggregate_function_aliases_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

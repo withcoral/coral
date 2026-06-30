@@ -746,6 +746,11 @@ pub enum AggregateFunction {
     Avg,
     /// `MEDIAN(property)`.
     Median,
+    /// `PERCENTILECONT(property, percentile)`.
+    PercentileCont {
+        /// Requested percentile in the inclusive range `[0.0, 1.0]`.
+        percentile: OrderedFloat<f64>,
+    },
     /// `STDEV(property)` / sample standard deviation.
     StdDev,
     /// `STDEVP(property)` / population standard deviation.

@@ -2628,12 +2628,14 @@ fn compile_static_alternative_outer_aggregate_item(
         return Ok(None);
     };
     let item_path = format!("{path}.return.items[{index}]");
-    let function_kind = compile_aggregate_function(function).ok_or_else(|| {
-        unsupported(
-            format!("{item_path}.expression"),
-            "pattern alternatives only support property aggregates after expansion",
-        )
-    })?;
+    let function_kind =
+        compile_aggregate_function(function, &format!("{item_path}.expression"), context)?
+            .ok_or_else(|| {
+                unsupported(
+                    format!("{item_path}.expression"),
+                    "pattern alternatives only support property aggregates after expansion",
+                )
+            })?;
     let source_expression = compile_static_alternative_outer_aggregate_source_expression(
         function,
         function_kind,
@@ -3081,7 +3083,7 @@ fn id_function_expression_for_expression(
 fn aggregate_function_call(expression: &Expression) -> Option<&FunctionInvocation> {
     match expression {
         Expression::Parenthesized(inner) => aggregate_function_call(inner),
-        Expression::FunctionCall(function) if compile_aggregate_function(function).is_some() => {
+        Expression::FunctionCall(function) if is_aggregate_function_call(function) => {
             Some(function)
         }
         _ => None,
@@ -3185,8 +3187,8 @@ fn return_item_projection_name(item: &ProjectionItem) -> String {
             Expression::Variable(variable) => variable_name(variable),
             Expression::CountStar { .. } => "count".to_string(),
             Expression::FunctionCall(function) => {
-                if let Some(function_kind) = compile_aggregate_function(function) {
-                    aggregate_function_name(function_kind).to_string()
+                if let Some(alias) = aggregate_function_default_alias(function) {
+                    alias.to_string()
                 } else {
                     default_scalar_function_alias(function)
                 }
@@ -4809,7 +4811,7 @@ fn expression_contains_aggregate(expression: &Expression) -> bool {
     match expression {
         Expression::CountStar { .. } => true,
         Expression::FunctionCall(function) => {
-            compile_aggregate_function(function).is_some()
+            is_aggregate_function_call(function)
                 || function.arguments.iter().any(expression_contains_aggregate)
         }
         Expression::Literal(literal) => literal_contains_aggregate(literal),
@@ -10658,7 +10660,7 @@ fn compile_function_call_order_expression_after_metadata_list_index(
     )? {
         return compile_scalar_order_expression(expression, projections, path);
     }
-    if compile_aggregate_function(function).is_some() {
+    if is_aggregate_function_call(function) {
         return aggregate_order_expression_for_projection(
             function,
             projections,
@@ -11234,7 +11236,7 @@ fn aggregate_order_expression_for_projection(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
-    let function_kind = compile_aggregate_function(function).ok_or_else(|| {
+    let function_kind = compile_aggregate_function(function, &path, context)?.ok_or_else(|| {
         unsupported(
             path.clone(),
             format!(
@@ -16435,7 +16437,7 @@ fn compile_other_function_projection(
     {
         return Ok(projection);
     }
-    if compile_aggregate_function(function).is_some() {
+    if is_aggregate_function_call(function) {
         return compile_aggregate_projection(function, item, path, plan, context);
     }
     Err(unsupported(
@@ -20558,15 +20560,18 @@ fn compile_aggregate_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
-    let function_kind = compile_aggregate_function(function).ok_or_else(|| {
-        unsupported(
-            format!("{path}.expression"),
-            format!(
-                "RETURN function '{}' is not supported yet",
-                qualified_function_name(function)
-            ),
-        )
-    })?;
+    let function_kind =
+        compile_aggregate_function(function, &format!("{path}.expression"), context)?.ok_or_else(
+            || {
+                unsupported(
+                    format!("{path}.expression"),
+                    format!(
+                        "RETURN function '{}' is not supported yet",
+                        qualified_function_name(function)
+                    ),
+                )
+            },
+        )?;
     let target =
         compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
     Ok(Projection::Aggregate {
@@ -20588,6 +20593,14 @@ fn compile_function_aggregate_target(
     context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
     match function.arguments.as_slice() {
+        [argument, _] if matches!(function_kind, AggregateFunction::PercentileCont { .. }) => {
+            compile_aggregate_target(
+                argument,
+                format!("{path}.expression.arguments[0]"),
+                plan,
+                context,
+            )
+        }
         [argument] => compile_aggregate_target(
             argument,
             format!("{path}.expression.arguments[0]"),
@@ -22258,34 +22271,129 @@ fn compile_aggregate_scalar_target_expression(
     compile_scalar_expression_with_path_state(expression, path, plan, None, context)
 }
 
-fn compile_aggregate_function(function: &FunctionInvocation) -> Option<AggregateFunction> {
+fn compile_aggregate_function(
+    function: &FunctionInvocation,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<Option<AggregateFunction>, CoreError> {
+    let [name] = function.name.as_slice() else {
+        return Ok(None);
+    };
+    if name.name.eq_ignore_ascii_case("count") {
+        Ok(Some(AggregateFunction::Count))
+    } else if name.name.eq_ignore_ascii_case("collect")
+        || name.name.eq_ignore_ascii_case("collect_list")
+    {
+        Ok(Some(AggregateFunction::Collect))
+    } else if name.name.eq_ignore_ascii_case("sum") {
+        Ok(Some(AggregateFunction::Sum))
+    } else if name.name.eq_ignore_ascii_case("avg") {
+        Ok(Some(AggregateFunction::Avg))
+    } else if name.name.eq_ignore_ascii_case("median") {
+        Ok(Some(AggregateFunction::Median))
+    } else if name.name.eq_ignore_ascii_case("percentileCont")
+        || name.name.eq_ignore_ascii_case("percentile_cont")
+    {
+        if function.distinct {
+            return Err(unsupported(
+                format!("{path}.distinct"),
+                "percentileCont(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_cont aggregates",
+            ));
+        }
+        Ok(Some(AggregateFunction::PercentileCont {
+            percentile: compile_percentile_argument(function, path, context)?,
+        }))
+    } else if name.name.eq_ignore_ascii_case("stDev")
+        || name.name.eq_ignore_ascii_case("stdev_samp")
+    {
+        Ok(Some(AggregateFunction::StdDev))
+    } else if name.name.eq_ignore_ascii_case("stDevP")
+        || name.name.eq_ignore_ascii_case("stdev_pop")
+    {
+        Ok(Some(AggregateFunction::StdDevP))
+    } else if name.name.eq_ignore_ascii_case("min") {
+        Ok(Some(AggregateFunction::Min))
+    } else if name.name.eq_ignore_ascii_case("max") {
+        Ok(Some(AggregateFunction::Max))
+    } else {
+        Ok(None)
+    }
+}
+
+fn compile_percentile_argument(
+    function: &FunctionInvocation,
+    path: &str,
+    context: &CypherCompileContext,
+) -> Result<OrderedFloat<f64>, CoreError> {
+    let [_, percentile] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "percentileCont() supports exactly two arguments: value and percentile",
+        ));
+    };
+    let literal = compile_literal(percentile, format!("{path}.arguments[1]"), context)?;
+    let value = match literal {
+        Literal::Integer(0) => 0.0,
+        Literal::Integer(1) => 1.0,
+        Literal::Integer(_) => {
+            return Err(unsupported(
+                format!("{path}.arguments[1]"),
+                "percentileCont() percentile must be between 0.0 and 1.0 inclusive",
+            ));
+        }
+        Literal::Float(value) => value.into_inner(),
+        _ => {
+            return Err(unsupported(
+                format!("{path}.arguments[1]"),
+                "percentileCont() requires a numeric percentile literal",
+            ));
+        }
+    };
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(unsupported(
+            format!("{path}.arguments[1]"),
+            "percentileCont() percentile must be between 0.0 and 1.0 inclusive",
+        ));
+    }
+    Ok(OrderedFloat(value))
+}
+
+fn is_aggregate_function_call(function: &FunctionInvocation) -> bool {
+    aggregate_function_default_alias(function).is_some()
+}
+
+fn aggregate_function_default_alias(function: &FunctionInvocation) -> Option<&'static str> {
     let [name] = function.name.as_slice() else {
         return None;
     };
     if name.name.eq_ignore_ascii_case("count") {
-        Some(AggregateFunction::Count)
+        Some("count")
     } else if name.name.eq_ignore_ascii_case("collect")
         || name.name.eq_ignore_ascii_case("collect_list")
     {
-        Some(AggregateFunction::Collect)
+        Some("collect")
     } else if name.name.eq_ignore_ascii_case("sum") {
-        Some(AggregateFunction::Sum)
+        Some("sum")
     } else if name.name.eq_ignore_ascii_case("avg") {
-        Some(AggregateFunction::Avg)
+        Some("avg")
     } else if name.name.eq_ignore_ascii_case("median") {
-        Some(AggregateFunction::Median)
+        Some("median")
+    } else if name.name.eq_ignore_ascii_case("percentileCont")
+        || name.name.eq_ignore_ascii_case("percentile_cont")
+    {
+        Some("percentileCont")
     } else if name.name.eq_ignore_ascii_case("stDev")
         || name.name.eq_ignore_ascii_case("stdev_samp")
     {
-        Some(AggregateFunction::StdDev)
+        Some("stDev")
     } else if name.name.eq_ignore_ascii_case("stDevP")
         || name.name.eq_ignore_ascii_case("stdev_pop")
     {
-        Some(AggregateFunction::StdDevP)
+        Some("stDevP")
     } else if name.name.eq_ignore_ascii_case("min") {
-        Some(AggregateFunction::Min)
+        Some("min")
     } else if name.name.eq_ignore_ascii_case("max") {
-        Some(AggregateFunction::Max)
+        Some("max")
     } else {
         None
     }
@@ -22298,6 +22406,7 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
         AggregateFunction::Median => "median",
+        AggregateFunction::PercentileCont { .. } => "percentileCont",
         AggregateFunction::StdDev => "stDev",
         AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
@@ -47903,6 +48012,80 @@ relationships:
                 },
             ]
         );
+    }
+
+    #[test]
+    fn compiles_percentile_cont_aggregate_projections_and_ordering() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN service.tier AS tier, \
+                    percentileCont(service.risk, 0.75) AS p75_risk \
+             ORDER BY percentileCont(service.risk, 0.5) DESC, tier",
+        )
+        .expect("percentileCont aggregate query should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    },
+                    alias: Some("tier".to_string()),
+                },
+                Projection::Aggregate {
+                    function: super::AggregateFunction::PercentileCont {
+                        percentile: ordered_float::OrderedFloat(0.75),
+                    },
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                    alias: "p75_risk".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![
+                OrderKey {
+                    expression: OrderExpression::Aggregate {
+                        function: AggregateFunction::PercentileCont {
+                            percentile: ordered_float::OrderedFloat(0.5),
+                        },
+                        target: AggregateTarget::Property(PropertyRef {
+                            variable: "service".to_string(),
+                            property: "risk".to_string(),
+                        }),
+                        distinct: false,
+                    },
+                    direction: OrderDirection::Descending,
+                    nulls: None,
+                },
+                OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "tier".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_distinct_percentile_cont_aggregates() {
+        let error = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN percentileCont(DISTINCT service.risk, 0.75) AS p75_risk",
+        )
+        .expect_err("distinct percentileCont should be rejected before SQL lowering");
+
+        assert!(error.to_string().contains("percentileCont(DISTINCT"));
+        assert!(error.to_string().contains("DataFusion 53"));
     }
 
     #[test]

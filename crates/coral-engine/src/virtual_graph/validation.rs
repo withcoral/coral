@@ -580,6 +580,7 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
         self.validate_distinct_keyless_relationship_counts()?;
+        self.validate_distinct_aggregate_options()?;
         let projected_properties = self.projected_properties();
         for (index, order_key) in self.plan.order_by.iter().enumerate() {
             if !self.order_expression_is_projected_property_alias_or_aggregate(
@@ -605,6 +606,36 @@ impl<'a> GraphPlanValidator<'a> {
                     OrderExpression::CountAll | OrderExpression::Aggregate { .. }
                 )
             })
+    }
+
+    fn validate_distinct_aggregate_options(&self) -> Result<(), CoreError> {
+        for (index, projection) in self.plan.projections.iter().enumerate() {
+            let Projection::Aggregate {
+                function: AggregateFunction::PercentileCont { .. },
+                distinct: true,
+                ..
+            } = projection
+            else {
+                continue;
+            };
+            return Err(unsupported_distinct_percentile_cont_error(format!(
+                "projections[{index}].distinct"
+            )));
+        }
+        for (index, key) in self.plan.order_by.iter().enumerate() {
+            let OrderExpression::Aggregate {
+                function: AggregateFunction::PercentileCont { .. },
+                distinct: true,
+                ..
+            } = &key.expression
+            else {
+                continue;
+            };
+            return Err(unsupported_distinct_percentile_cont_error(format!(
+                "order_by[{index}].aggregate.distinct"
+            )));
+        }
+        Ok(())
     }
 
     fn validate_distinct_keyless_relationship_counts(&self) -> Result<(), CoreError> {
@@ -4123,6 +4154,7 @@ impl<'a> GraphPlanValidator<'a> {
             AggregateFunction::Sum
             | AggregateFunction::Avg
             | AggregateFunction::Median
+            | AggregateFunction::PercentileCont { .. }
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP => Ok(ScalarType::Float),
             AggregateFunction::Min | AggregateFunction::Max => match target {
@@ -6041,6 +6073,7 @@ fn aggregate_function_name(function: AggregateFunction) -> &'static str {
         AggregateFunction::Sum => "sum",
         AggregateFunction::Avg => "avg",
         AggregateFunction::Median => "median",
+        AggregateFunction::PercentileCont { .. } => "percentileCont",
         AggregateFunction::StdDev => "stDev",
         AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
@@ -6054,9 +6087,19 @@ fn aggregate_function_requires_numeric_target(function: AggregateFunction) -> bo
         AggregateFunction::Sum
             | AggregateFunction::Avg
             | AggregateFunction::Median
+            | AggregateFunction::PercentileCont { .. }
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP
     )
+}
+
+fn unsupported_distinct_percentile_cont_error(path: impl Into<String>) -> CoreError {
+    Diagnostic::new(
+        "INVALID_AGGREGATE_TARGET",
+        path,
+        "percentileCont(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_cont aggregates",
+    )
+    .into_core_error()
 }
 
 fn aggregate_function_accepts_graph_variable_key(function: AggregateFunction) -> bool {
@@ -6579,6 +6622,69 @@ relationships:
         graph
             .validate_graph_plan(&plan)
             .expect("distinct standard deviation aggregate should validate");
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_distinct_percentile_cont_aggregates() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Aggregate {
+            function: AggregateFunction::PercentileCont {
+                percentile: ordered_float::OrderedFloat(0.75),
+            },
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            }),
+            distinct: true,
+            alias: "p75_tier".to_string(),
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("distinct percentile-continuous aggregate should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("percentileCont(DISTINCT ...)"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn validate_graph_plan_rejects_hidden_distinct_percentile_cont_ordering() {
+        let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+        let mut plan = ownership_plan();
+        plan.order_by = vec![OrderKey {
+            expression: OrderExpression::Aggregate {
+                function: AggregateFunction::PercentileCont {
+                    percentile: ordered_float::OrderedFloat(0.75),
+                },
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                }),
+                distinct: true,
+            },
+            direction: OrderDirection::Descending,
+            nulls: None,
+        }];
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("hidden distinct percentile-continuous aggregate should fail validation");
+
+        assert!(
+            error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("order_by[0].aggregate.distinct"),
+            "{error:?}"
+        );
     }
 
     #[test]
