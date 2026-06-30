@@ -27,7 +27,7 @@
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
-    "VariableLengthPaths": 4,
+    "VariableLengthPaths": 16,
     "Where": 24,
     "With": 24
   },
@@ -6016,6 +6016,257 @@
             "hops": 0
           }
         ]
+      }
+    },
+    {
+      "id": "exact-zero-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*0]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Alice",
+            "hops": 0
+          },
+          {
+            "source": "Bob",
+            "target": "Bob",
+            "hops": 0
+          },
+          {
+            "source": "Carol",
+            "target": "Carol",
+            "hops": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "exact-one-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..1]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "zero-to-two-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*0..2]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Alice",
+            "hops": 0
+          },
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2
+          },
+          {
+            "source": "Bob",
+            "target": "Bob",
+            "hops": 0
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1
+          },
+          {
+            "source": "Carol",
+            "target": "Carol",
+            "hops": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "bound-start-exact-two-variable-length-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person) WHERE a.name = 'Alice' MATCH path = (a)-[:KNOWS*2]->(c:Person) RETURN c.name AS target, length(path) AS hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "target": "Carol",
+            "hops": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-range-length-predicate",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) WHERE length(path) = 2 RETURN a.name AS source, c.name AS target, length(path) AS hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-range-counts-path-multiplicity",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person) WHERE a.name = 'Alice' MATCH (a)-[:KNOWS*1..2]->(c:Person) RETURN count(*) AS paths",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "paths": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-range-counts-distinct-targets",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person) WHERE a.name = 'Alice' MATCH (a)-[:KNOWS*1..2]->(c:Person) RETURN count(DISTINCT c) AS targets",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "targets": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-range-endpoint-filter",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person) WHERE a.name = 'Alice' MATCH (a)-[:KNOWS*1..2]->(c:Person) WHERE c.active RETURN DISTINCT c.name AS target ORDER BY target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "incoming-bounded-variable-length-relationship-range",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (target:Person)<-[:KNOWS*1..2]-(source:Person) RETURN source.name AS source, target.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-range-before-fixed-hop",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH path = (a:Person)-[:KNOWS*0..1]->(:Person)-[:KNOWS]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "open-lower-variable-length-range-rejected",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person) WHERE a.name = 'Alice' MATCH (a)-[:KNOWS*..2]->(c:Person) RETURN c.name AS target",
+      "expected": {
+        "kind": "error",
+        "contains": "variable-length relationship ranges require finite non-negative bounds"
+      }
+    },
+    {
+      "id": "unbounded-variable-length-range-rejected",
+      "feature": "VariableLengthPaths",
+      "query": "MATCH (a:Person)-[:KNOWS*]->(c:Person) RETURN a.name AS source, c.name AS target",
+      "expected": {
+        "kind": "error",
+        "contains": "unbounded ranges are not supported yet"
       }
     },
     {
