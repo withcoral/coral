@@ -55,11 +55,11 @@ function escapeHtml(value: string): string {
 }
 
 type IconAppearance = 'light' | 'dark'
-type IconFormat = 'icns' | 'ico' | 'png'
+type IconFormat = 'icns' | 'ico' | 'mac-png' | 'png'
 
 function desktopIconPath(appearance: IconAppearance = 'light', format: IconFormat = 'png'): string {
   const variant = appearance === 'dark' ? '-dark' : ''
-  const iconName = `icon${variant}.${format}`
+  const iconName = format === 'mac-png' ? `icon${variant}-mac.png` : `icon${variant}.${format}`
   return app.isPackaged
     ? join(process.resourcesPath, 'icons', iconName)
     : join(currentDir(), '..', '..', 'resources', 'icons', iconName)
@@ -70,12 +70,13 @@ function currentIconAppearance(): IconAppearance {
 }
 
 function currentWindowIconPath(): string {
+  if (process.platform === 'darwin') return desktopIconPath(currentIconAppearance(), 'mac-png')
   if (process.platform === 'win32') return desktopIconPath(currentIconAppearance(), 'ico')
   return desktopIconPath(currentIconAppearance(), 'png')
 }
 
 function currentDockIconPath(): string {
-  return desktopIconPath(currentIconAppearance(), 'png')
+  return desktopIconPath(currentIconAppearance(), 'mac-png')
 }
 
 function updatePlatformIcon() {
