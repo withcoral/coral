@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    CreateGlobalSourceRequest, DeleteSourceSpecRequest, ExecuteSqlRequest, ImportSourceRequest,
+    CreateSourceRequest, DeleteSourceSpecRequest, ExecuteSqlRequest, ImportSourceRequest,
     ListCatalogRequest, ListSourceSpecsRequest, ListSourcesRequest, PaginationRequest,
     RegisterSourceSpecRequest, Source, SourceInfo, SourceSecret, SourceVariable, TableSummary,
     ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
@@ -137,9 +137,9 @@ impl GrpcHarness {
             .source_specs
     }
 
-    pub(crate) async fn create_global_source(&self, name: &str) -> Source {
+    pub(crate) async fn create_source(&self, name: &str) -> Source {
         self.source_client()
-            .create_global_source(Request::new(CreateGlobalSourceRequest {
+            .create_source(Request::new(CreateSourceRequest {
                 workspace: Some(default_workspace()),
                 name: name.to_string(),
                 variables: Vec::new(),

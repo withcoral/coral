@@ -21,8 +21,8 @@ import { Typography } from '@/wax/components/typography'
 import { Markdown } from '@/components/markdown'
 import { providerIcon } from '@/lib/provider-icons'
 import {
-  createBundledSource,
-  createBundledSourceWithOAuth,
+  createSource,
+  createSourceWithOAuth,
   getSourceInfo,
   type InstallInput,
   type ResolvedSourceInfo,
@@ -189,9 +189,9 @@ function SourceInstallDialogContent({
       }
 
       if (retrievalProtos.length === 0) {
-        await createBundledSource(name, bindings)
+        await createSource(name, bindings)
       } else {
-        await createBundledSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
+        await createSourceWithOAuth(name, bindings, retrievalProtos, callbacks)
       }
 
       addToast('neutral', {

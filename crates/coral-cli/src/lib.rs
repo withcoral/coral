@@ -964,7 +964,7 @@ async fn run_source_add(
                 .map_err(anyhow::Error::from)?;
             if interactive {
                 let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
-                source_ops::add_bundled_source_with_credentials(
+                source_ops::add_named_source_with_credentials(
                     app,
                     workspace,
                     &available.name,
@@ -976,7 +976,7 @@ async fn run_source_add(
                     &inputs,
                     format!("coral source add --interactive {}", available.name),
                 )?;
-                source_ops::add_bundled_source(app, workspace, &available.name, variables, secrets)
+                source_ops::add_named_source(app, workspace, &available.name, variables, secrets)
                     .await?
             }
         }

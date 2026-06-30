@@ -19,24 +19,21 @@ use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CreateGlobalSourceRequest, CreateGlobalSourceResponse,
-    CreateGlobalSourceWithOAuthRequest, CreateGlobalSourceWithOAuthResponse,
-    CreateWorkspaceRequest, CreateWorkspaceResponse, DeleteSourceRequest, DeleteSourceResponse,
-    DeleteSourceSpecRequest, DeleteSourceSpecResponse, DeleteWorkspaceRequest,
-    DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest,
-    DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest,
-    ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
-    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListCatalogRequest,
-    ListCatalogResponse, ListColumnsRequest, ListColumnsResponse, ListSourceSpecsRequest,
-    ListSourceSpecsResponse, ListSourcesRequest, ListSourcesResponse, ListWorkspacesRequest,
-    ListWorkspacesResponse, PaginationRequest, PaginationResponse, QueryPlan,
-    RegisterSourceSpecRequest, RegisterSourceSpecResponse, SearchCatalogRequest,
+    CreateSourceRequest, CreateSourceResponse, CreateSourceWithOAuthRequest,
+    CreateSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteSourceSpecRequest, DeleteSourceSpecResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    ListSourceSpecsRequest, ListSourceSpecsResponse, ListSourcesRequest, ListSourcesResponse,
+    ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
+    QueryPlan, RegisterSourceSpecRequest, RegisterSourceSpecResponse, SearchCatalogRequest,
     SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
     SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, Workspace, catalog_item, create_bundled_source_with_o_auth_response,
-    create_global_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    ValidateSourceResponse, Workspace, catalog_item, create_source_with_o_auth_response,
+    import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
@@ -658,10 +655,8 @@ struct Captured {
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
-    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
-    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
-    create_global_source: Mutex<Vec<CreateGlobalSourceRequest>>,
-    create_global_source_with_oauth: Mutex<Vec<CreateGlobalSourceWithOAuthRequest>>,
+    create_source: Mutex<Vec<CreateSourceRequest>>,
+    create_source_with_oauth: Mutex<Vec<CreateSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
     list_source_specs: Mutex<Vec<ListSourceSpecsRequest>>,
     register_source_spec: Mutex<Vec<RegisterSourceSpecRequest>>,
@@ -909,34 +904,17 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
-type MockBundledSourceStream =
-    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
-type MockGlobalSourceStream =
-    Pin<Box<dyn Stream<Item = Result<CreateGlobalSourceWithOAuthResponse, Status>> + Send>>;
+type MockSourceStream =
+    Pin<Box<dyn Stream<Item = Result<CreateSourceWithOAuthResponse, Status>> + Send>>;
 type MockImportSourceStream =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
-fn mock_bundled_source_stream() -> MockBundledSourceStream {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
-    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
-        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
-            mock_source(),
-        )),
+fn mock_source_stream(source: Source) -> MockSourceStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<CreateSourceWithOAuthResponse, Status>>(1);
+    tx.try_send(Ok(CreateSourceWithOAuthResponse {
+        event: Some(create_source_with_o_auth_response::Event::Source(source)),
     }))
-    .expect("send mock bundled source credential event");
-    Box::pin(ReceiverStream::new(rx))
-}
-
-fn mock_global_source_stream() -> MockGlobalSourceStream {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateGlobalSourceWithOAuthResponse, Status>>(1);
-    tx.try_send(Ok(CreateGlobalSourceWithOAuthResponse {
-        event: Some(create_global_source_with_o_auth_response::Event::Source(
-            mock_global_source(),
-        )),
-    }))
-    .expect("send mock global source credential event");
+    .expect("send mock source credential event");
     Box::pin(ReceiverStream::new(rx))
 }
 
@@ -951,8 +929,7 @@ fn mock_import_source_stream() -> MockImportSourceStream {
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
-    type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
-    type CreateGlobalSourceWithOAuthStream = MockGlobalSourceStream;
+    type CreateSourceWithOAuthStream = MockSourceStream;
     type ImportSourceStream = MockImportSourceStream;
 
     async fn discover_sources(
@@ -1012,56 +989,42 @@ impl SourceService for MockSourceService {
         }))
     }
 
-    async fn create_bundled_source(
+    async fn create_source(
         &self,
-        request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
+        request: Request<CreateSourceRequest>,
+    ) -> Result<Response<CreateSourceResponse>, Status> {
+        let request = request.into_inner();
+        let source = if request.name == "linear" {
+            mock_global_source()
+        } else {
+            mock_source()
+        };
         self.captured
-            .create_bundled_source
+            .create_source
             .lock()
-            .expect("create_bundled_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(CreateBundledSourceResponse {
-            source: Some(mock_source()),
+            .expect("create_source capture")
+            .push(request);
+        Ok(Response::new(CreateSourceResponse {
+            source: Some(source),
         }))
     }
 
-    async fn create_bundled_source_with_o_auth(
+    async fn create_source_with_o_auth(
         &self,
-        request: Request<CreateBundledSourceWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
+        request: Request<CreateSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateSourceWithOAuthStream>, Status> {
+        let request = request.into_inner();
+        let source = if request.name == "linear" {
+            mock_global_source()
+        } else {
+            mock_source()
+        };
         self.captured
-            .create_bundled_source_with_oauth
+            .create_source_with_oauth
             .lock()
-            .expect("create_bundled_source_with_oauth capture")
-            .push(request.into_inner());
-        Ok(Response::new(mock_bundled_source_stream()))
-    }
-
-    async fn create_global_source(
-        &self,
-        request: Request<CreateGlobalSourceRequest>,
-    ) -> Result<Response<CreateGlobalSourceResponse>, Status> {
-        self.captured
-            .create_global_source
-            .lock()
-            .expect("create_global_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(CreateGlobalSourceResponse {
-            source: Some(mock_global_source()),
-        }))
-    }
-
-    async fn create_global_source_with_o_auth(
-        &self,
-        request: Request<CreateGlobalSourceWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateGlobalSourceWithOAuthStream>, Status> {
-        self.captured
-            .create_global_source_with_oauth
-            .lock()
-            .expect("create_global_source_with_oauth capture")
-            .push(request.into_inner());
-        Ok(Response::new(mock_global_source_stream()))
+            .expect("create_source_with_oauth capture")
+            .push(request);
+        Ok(Response::new(mock_source_stream(source)))
     }
 
     async fn import_source(
@@ -1350,11 +1313,11 @@ impl MockServer {
             .clone()
     }
 
-    pub(crate) fn create_global_source_requests(&self) -> Vec<CreateGlobalSourceRequest> {
+    pub(crate) fn create_source_requests(&self) -> Vec<CreateSourceRequest> {
         self.captured
-            .create_global_source
+            .create_source
             .lock()
-            .expect("create_global_source capture")
+            .expect("create_source capture")
             .clone()
     }
 

@@ -7,7 +7,7 @@
 use std::fs;
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
+    CreateSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
     ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
     QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
@@ -101,7 +101,7 @@ async fn global_source_spec_registers_installs_and_orphans_on_delete() {
     );
     assert!(harness.list_sources().await.is_empty());
 
-    let created = harness.create_global_source("local_messages").await;
+    let created = harness.create_source("local_messages").await;
 
     assert_eq!(created.name, "local_messages");
     assert_eq!(created.version, "0.1.0");
@@ -844,7 +844,7 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
 
     harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {
@@ -1030,12 +1030,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_registers_tables() {
+async fn create_source_registers_tables() {
     let harness = GrpcHarness::new().await;
 
     harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {
@@ -1058,12 +1058,12 @@ async fn create_bundled_source_registers_tables() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_missing_required_secret_returns_invalid_argument() {
+async fn create_source_missing_required_secret_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![SourceVariable {
@@ -1083,12 +1083,12 @@ async fn create_bundled_source_missing_required_secret_returns_invalid_argument(
 }
 
 #[tokio::test]
-async fn create_bundled_source_missing_required_variable_returns_invalid_argument() {
+async fn create_source_missing_required_variable_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: Vec::new(),
@@ -1108,12 +1108,12 @@ async fn create_bundled_source_missing_required_variable_returns_invalid_argumen
 }
 
 #[tokio::test]
-async fn create_bundled_source_unknown_input_returns_invalid_argument() {
+async fn create_source_unknown_input_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![
@@ -1138,12 +1138,12 @@ async fn create_bundled_source_unknown_input_returns_invalid_argument() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
+async fn create_source_repeated_secret_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![SourceVariable {
@@ -1172,12 +1172,12 @@ async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
+async fn create_source_does_not_persist_manifest_to_config_dir() {
     let harness = GrpcHarness::new().await;
 
     let created = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {

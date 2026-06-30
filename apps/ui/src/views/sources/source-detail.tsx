@@ -13,7 +13,7 @@ import { Typography } from '@/wax/components/typography'
 
 import { providerIcon } from '@/lib/provider-icons'
 import {
-  createBundledSource,
+  createSource,
   deleteSource,
   getInstalledSource,
   getSourceInfo,
@@ -187,7 +187,7 @@ function SourceDetailDialogContent({
           }
         }
       }
-      await createBundledSource(name, bindings)
+      await createSource(name, bindings)
       onClose()
       addToast('success', { title: `Updated ${name}` })
     } catch (e) {
