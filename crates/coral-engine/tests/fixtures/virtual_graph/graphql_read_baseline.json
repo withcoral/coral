@@ -3,8 +3,8 @@
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
     "Aggregation": 6,
-    "BooleanFilters": 1,
-    "ErrorHandling": 5,
+    "BooleanFilters": 6,
+    "ErrorHandling": 6,
     "GeneratedClientShape": 5,
     "IdentityFields": 1,
     "NestedRelationships": 1,
@@ -148,6 +148,69 @@
         "ordered": true,
         "rows": [
           { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-and-array",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { and: [{ city: { eq: \"London\" } }, { active: { eq: true } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-or-array",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { or: [{ age: { gte: 41 } }, { active: { eq: false } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-nested-and-or",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { and: [{ or: [{ name: { eq: \"Alice\" } }, { name: { eq: \"Bob\" } }] }, { city: { eq: \"London\" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-not-nested-or",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { not: { or: [{ city: { eq: \"Paris\" } }, { active: { eq: false } }] } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "boolean-uppercase-or-alias",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { OR: [{ name: { eq: \"Alice\" } }, { name: { eq: \"Carol\" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Carol" }
         ]
       }
     },
@@ -433,6 +496,15 @@
       "expected": {
         "kind": "error",
         "contains": "orderBy direction must be"
+      }
+    },
+    {
+      "id": "boolean-xor-arity-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person(where: { xor: [{ active: { eq: true } }] }) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "requires exactly two objects"
       }
     }
   ]
