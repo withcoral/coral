@@ -4,7 +4,7 @@ import type { Route } from './+types/root'
 import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
 import './styles/globals.css'
 import './wax/theme/global.css'
-import { darkTheme } from './wax/theme/theme-dark.css'
+import { useTheme } from './wax/theme/theme-provider'
 
 export const links = () => [
   {
@@ -35,12 +35,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body className={darkTheme}>
-        {children}
-        <ScrollRestoration />
-        <Scripts />
-      </body>
+      <ThemedBody>{children}</ThemedBody>
     </html>
+  )
+}
+
+function ThemedBody({ children }: { children: React.ReactNode }) {
+  const { theme, themeClass } = useTheme()
+
+  return (
+    <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>
+      {children}
+      <ScrollRestoration />
+      <Scripts />
+    </body>
   )
 }
 

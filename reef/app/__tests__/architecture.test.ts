@@ -338,7 +338,7 @@ describe('Architectural Tests', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
       expect(routeConfig).toMatch(
-        /layout\('routes\/app-shell\.tsx', \[index\('routes\/index\.tsx'\), route\('settings', 'routes\/settings\.tsx'\)\]\)/,
+        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('settings', 'routes\/settings\.tsx'\),?\s*\]\s*\)/,
       )
     })
 
