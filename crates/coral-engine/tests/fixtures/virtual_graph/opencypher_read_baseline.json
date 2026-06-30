@@ -14,7 +14,7 @@
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
     "OptionalMatch": 15,
-    "Parameters": 3,
+    "Parameters": 14,
     "PathMetadata": 1,
     "PathValues": 16,
     "PatternComprehension": 15,
@@ -5625,6 +5625,222 @@
             "name": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "parameterized-property-equality",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.name = $name RETURN p.city AS city, p.age AS age",
+      "parameters": {
+        "name": "Alice"
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 34,
+            "city": "London"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-numeric-range",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.age >= $min_age RETURN p.name AS name ORDER BY p.age",
+      "parameters": {
+        "min_age": 30
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-list-membership",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.city IN $cities RETURN p.name AS name ORDER BY name",
+      "parameters": {
+        "cities": [
+          "London",
+          "Paris"
+        ]
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-return-projection",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.active = $active RETURN $tag AS tag, p.name AS name ORDER BY name",
+      "parameters": {
+        "active": true,
+        "tag": "active_person"
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "tag": "active_person"
+          },
+          {
+            "name": "Carol",
+            "tag": "active_person"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-string-prefix",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.name STARTS WITH $prefix RETURN p.name AS name",
+      "parameters": {
+        "prefix": "A"
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-skip-and-limit",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP $skip LIMIT $limit",
+      "parameters": {
+        "limit": 1,
+        "skip": 1
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-relationship-property-comparison",
+      "feature": "Parameters",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.since >= $since RETURN a.name AS source, b.name AS target ORDER BY r.since",
+      "parameters": {
+        "since": 2021
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Bob",
+            "target": "Carol"
+          },
+          {
+            "source": "Alice",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-float-comparison",
+      "feature": "Parameters",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.strength < $max_strength RETURN a.name AS source, b.name AS target ORDER BY source, target",
+      "parameters": {
+        "max_strength": 0.8
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Carol"
+          },
+          {
+            "source": "Bob",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-null-projection",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN coalesce($fallback_city, p.city) AS city, $marker AS marker",
+      "parameters": {
+        "fallback_city": null,
+        "marker": null
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "London"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-id-list-membership",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) WHERE id(p) IN $ids RETURN p.name AS name ORDER BY name",
+      "parameters": {
+        "ids": [
+          1,
+          3
+        ]
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-limit-string-rejected",
+      "feature": "Parameters",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT $limit",
+      "parameters": {
+        "limit": "two"
+      },
+      "expected": {
+        "kind": "error",
+        "contains": "LIMIT"
       }
     },
     {
