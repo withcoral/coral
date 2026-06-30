@@ -22,7 +22,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "ReturnProjection": 12,
-    "RowModifiers": 14,
+    "RowModifiers": 24,
     "ScalarExpressions": 60,
     "TypeConversion": 16,
     "Union": 17,
@@ -8998,6 +8998,179 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "limit-two-ordered",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT 2",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "skip-one-ordered",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "limit-exceeds-row-count",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT 10",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "skip-zero-ordered",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 0",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "skip-exact-row-count",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 3",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "skip-limit-exceeds-remaining",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 1 LIMIT 10",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-skip",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP $skipAmount",
+      "parameters": {
+        "skipAmount": 1
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parameterized-skip-limit-window",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP $skipAmount LIMIT $limitAmount",
+      "parameters": {
+        "skipAmount": 1,
+        "limitAmount": 2
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-expression-skip",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP (0 + 2)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-expression-limit",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT (1 + 1)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
           {
             "name": "Bob"
           }
