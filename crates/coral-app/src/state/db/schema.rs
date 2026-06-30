@@ -36,3 +36,10 @@ pub(in crate::state::db) enum SourceSecretKeys {
     Position,
     Key,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum AppStateMarkers {
+    Table,
+    Key,
+    CreatedAtUnixNanos,
+}

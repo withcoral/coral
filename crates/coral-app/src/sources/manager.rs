@@ -613,9 +613,10 @@ impl SourceManager {
             }
             return Err(error);
         }
-        if let Err(error) = self
-            .config_store
-            .remove_source_unlocked(workspace_name, source_name)
+        if self.catalog_db.is_none()
+            && let Err(error) = self
+                .config_store
+                .remove_source_unlocked(workspace_name, source_name)
         {
             let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
@@ -1078,9 +1079,12 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.upsert_db_source_with_state_lock_held(workspace_name, source.clone())?;
+        if self.catalog_db.is_some() {
+            return self.upsert_db_source_with_state_lock_held(workspace_name, source);
+        }
         self.config_store
-            .upsert_source_unlocked(workspace_name, source)
+            .upsert_source_unlocked(workspace_name, source)?;
+        Ok(())
     }
 
     fn upsert_db_source_with_state_lock_held(
@@ -1088,22 +1092,22 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        if let Some(db) = self.catalog_db.clone() {
-            let workspace_name = workspace_name.clone();
-            return run_db_catalog_operation(async move {
-                let mut tx = db.begin().await?;
-                let now_unix_nanos = now_unix_nanos_i64()?;
-                tx.workspaces()
-                    .ensure(workspace_name.as_str(), now_unix_nanos)
-                    .await?;
-                tx.sources()
-                    .upsert_source(&workspace_name, &source, now_unix_nanos)
-                    .await?;
-                tx.commit().await?;
-                Ok(())
-            });
-        }
-        Ok(())
+        let Some(db) = self.catalog_db.clone() else {
+            return Ok(());
+        };
+        let workspace_name = workspace_name.clone();
+        run_db_catalog_operation(async move {
+            let mut tx = db.begin().await?;
+            let now_unix_nanos = now_unix_nanos_i64()?;
+            tx.workspaces()
+                .ensure(workspace_name.as_str(), now_unix_nanos)
+                .await?;
+            tx.sources()
+                .upsert_source(&workspace_name, &source, now_unix_nanos)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        })
     }
 
     fn remove_db_source_with_state_lock_held(
@@ -1309,12 +1313,13 @@ impl SourceManager {
                 }
             }
             let previous_source = previous.source;
-            if let Err(e) =
-                self.upsert_db_source_with_state_lock_held(workspace_name, previous_source.clone())
-            {
-                warn!("rollback: failed to restore source database row: {e}");
-            }
-            if let Err(e) = self
+            if self.catalog_db.is_some() {
+                if let Err(e) =
+                    self.upsert_db_source_with_state_lock_held(workspace_name, previous_source)
+                {
+                    warn!("rollback: failed to restore source database row: {e}");
+                }
+            } else if let Err(e) = self
                 .config_store
                 .upsert_source_unlocked(workspace_name, previous_source)
             {
@@ -1327,11 +1332,13 @@ impl SourceManager {
             {
                 warn!("rollback: failed to remove source directory: {e}");
             }
-            if let Err(e) = self.remove_db_source_with_state_lock_held(workspace_name, source_name)
-            {
-                warn!("rollback: failed to remove source database row: {e}");
-            }
-            if let Err(e) = self
+            if self.catalog_db.is_some() {
+                if let Err(e) =
+                    self.remove_db_source_with_state_lock_held(workspace_name, source_name)
+                {
+                    warn!("rollback: failed to remove source database row: {e}");
+                }
+            } else if let Err(e) = self
                 .config_store
                 .remove_source_unlocked(workspace_name, source_name)
             {

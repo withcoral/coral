@@ -489,6 +489,12 @@ impl ConfigStore {
         self.load_config_unlocked().map(|config| config.catalog)
     }
 
+    pub(crate) fn clear_source_catalog_unlocked(&self) -> Result<(), AppError> {
+        let mut config = self.load_unlocked()?;
+        config.catalog = SourceCatalog::default();
+        self.save_unlocked(&config)
+    }
+
     fn update_config_unlocked<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,

@@ -305,8 +305,15 @@ pub fn default_workspace_mcp_startup_context(
 ) -> Result<DefaultWorkspaceMcpStartupContext, AppError> {
     let layout = discover_app_state_layout(None)?;
     layout.ensure()?;
+    default_workspace_mcp_startup_context_for_layout(&layout, query_history_limit)
+}
+
+fn default_workspace_mcp_startup_context_for_layout(
+    layout: &AppStateLayout,
+    query_history_limit: usize,
+) -> Result<DefaultWorkspaceMcpStartupContext, AppError> {
     let source_names = default_workspace_source_names_for_layout(layout.clone())?;
-    let telemetry_config = TelemetryConfig::load(&layout)?;
+    let telemetry_config = TelemetryConfig::load(layout)?;
     let query_history = if telemetry_config.trace_history.enabled {
         let query_history = crate::telemetry::list_local_query_history(
             layout.local_trace_store_dir(),
@@ -398,10 +405,55 @@ fn new_source_count(sources: &[String], selected_sources: &HashSet<String>) -> u
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
-        McpQueryHistoryEntry, McpQueryTableFunctionUsage, McpQueryTableUsage,
+        DefaultWorkspaceMcpStartupContext, McpQueryHistoryEntry, McpQueryTableFunctionUsage,
+        McpQueryTableUsage, default_workspace_mcp_startup_context_for_layout,
         select_mcp_query_history,
     };
+    use crate::sources::SourceName;
+    use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::{AppStateLayout, ConfigStore};
+    use crate::workspaces::WorkspaceName;
+
+    #[test]
+    fn mcp_startup_context_imports_legacy_config_sources_into_database() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::default();
+        let source = InstalledSource {
+            name: SourceName::parse("github").expect("source name"),
+            version: Some("1.2.3".to_string()),
+            variables: BTreeMap::new(),
+            secrets: Vec::new(),
+            credential_storage: None,
+            origin: SourceOrigin::Bundled,
+        };
+        config_store
+            .upsert_source(&workspace, source)
+            .expect("seed legacy config source");
+
+        let context = default_workspace_mcp_startup_context_for_layout(&layout, 5)
+            .expect("load startup context");
+
+        assert_eq!(
+            context,
+            DefaultWorkspaceMcpStartupContext {
+                source_names: vec!["github".to_string()],
+                query_history: Vec::new(),
+            }
+        );
+        assert!(
+            config_store
+                .load_config_unlocked()
+                .expect("load cleaned config")
+                .source_catalog_entries()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn query_history_selection_filters_empty_results_and_sorts_by_complexity() {

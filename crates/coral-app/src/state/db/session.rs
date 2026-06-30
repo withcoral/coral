@@ -6,6 +6,7 @@ use sqlx::{FromRow, Postgres, Sqlite};
 
 use super::backend::CoralDbBackend;
 use super::{CoralDb, CoralTx, DbError};
+use crate::state::db::repositories::app_state_markers::AppStateMarkersRepo;
 use crate::state::db::repositories::sources::SourcesRepo;
 use crate::state::db::repositories::workspaces::WorkspacesRepo;
 
@@ -36,6 +37,10 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn sources(&mut self) -> SourcesRepo<'_, Self> {
         SourcesRepo::new(self)
+    }
+
+    fn app_state_markers(&mut self) -> AppStateMarkersRepo<'_, Self> {
+        AppStateMarkersRepo::new(self)
     }
 }
 
