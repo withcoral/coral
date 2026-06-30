@@ -26,8 +26,8 @@
     "Union": 4,
     "Unwind": 3,
     "VariableLengthPaths": 4,
-    "Where": 11,
-    "With": 6
+    "Where": 14,
+    "With": 14
   },
   "scenarios": [
     {
@@ -246,6 +246,63 @@
           {
             "person": "Bob",
             "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-after-with-disconnected-property-join",
+      "feature": "Where",
+      "query": "MATCH (a:Person), (b:Person) WITH a, b WHERE a.age < b.age RETURN a.name AS younger, b.name AS older ORDER BY younger, older",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "younger": "Alice",
+            "older": "Carol"
+          },
+          {
+            "younger": "Bob",
+            "older": "Alice"
+          },
+          {
+            "younger": "Bob",
+            "older": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-after-with-id-equality-join",
+      "feature": "Where",
+      "query": "MATCH (a:Person), (b:Person) WITH a, b WHERE id(a) = id(b) RETURN a.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-after-with-optional-null-filter",
+      "feature": "Where",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) WITH p, friend WHERE friend IS NULL RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
           }
         ]
       }
@@ -3225,6 +3282,140 @@
           {
             "name": "Alice",
             "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-scalar-alias-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS name, p.age AS age WHERE age >= 34 RETURN name, age ORDER BY age, name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          },
+          {
+            "name": "Carol",
+            "age": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-distinct-alias-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH DISTINCT p.city AS city WHERE city <> '' RETURN city ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "London"
+          },
+          {
+            "city": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-star-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH * WHERE p.city <> '' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-multi-stage-filters",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p WHERE p.active MATCH (p)-[:KNOWS]->(friend:Person) WITH p.name AS person, friend.name AS friend, friend.age AS friend_age WHERE friend_age > 35 RETURN person, friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-group-threshold",
+      "feature": "With",
+      "query": "MATCH (:Person)-[:KNOWS]->(friend:Person) WITH friend.city AS city, count(*) AS inbound WHERE inbound >= 2 RETURN city, inbound",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "Paris",
+            "inbound": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-sum-threshold",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(:Person) WITH p.name AS person, sum(r.since) AS since_total WHERE since_total > 2021 RETURN person, since_total",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "since_total": 4042
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-filtered-order-skip-limit",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS name, p.age AS age ORDER BY age DESC SKIP 1 LIMIT 1 WHERE age >= 29 RETURN name, age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-relationship-property-alias-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) WITH p.name AS person, friend.name AS friend, r.since AS since WHERE since >= 2021 RETURN person, friend, since ORDER BY since, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "since": 2021
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "since": 2022
           }
         ]
       }

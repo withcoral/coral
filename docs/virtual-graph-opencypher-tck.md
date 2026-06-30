@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-182 scenarios, which is 11.27% of the full upstream scenario-definition inventory
-and 14.08% of the read-candidate inventory.
+193 scenarios, which is 11.95% of the full upstream scenario-definition inventory
+and 14.93% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -148,16 +148,14 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 182 representative read-only scenarios:
+The baseline currently contains 193 representative read-only scenarios:
 
-- `Match`: 15 scenarios for labeled and unlabeled node scans, forward, reverse,
-  and undirected relationship matches, cartesian products, connected chains,
-  relationship bindings and properties, anonymous endpoints, counts, closed
-  no-row patterns, and duplicate relationship-variable rejection.
-- `Where`: 11 scenarios for comparisons, property-to-property comparisons,
-  boolean conjunction/disjunction, negation, `XOR`, list membership,
-  metadata-list membership, string predicates, regex predicates, and
-  `exists(property)`.
+- `Match`: 15 scenarios for labeled node scans plus forward and reverse
+  relationship matches.
+- `Where`: 14 scenarios for comparisons, post-`WITH` property and identity
+  joins, property-to-property comparisons, boolean conjunction/disjunction,
+  negation, `XOR`, list membership, metadata-list membership, string
+  predicates, regex predicates, optional null filtering, and `exists(property)`.
 - `RelationshipProperties`: 1 scenario for relationship property filtering.
 - `OptionalMatch`: 4 scenarios for null-preserving rows, null filtering,
   `coalesce(...)`, and connected multi-hop optional chains.
@@ -165,10 +163,12 @@ The baseline currently contains 182 representative read-only scenarios:
   aggregates, statistical aggregates, distinct statistical aggregates,
   `percentileCont(...)`, `count(DISTINCT ...)`, hidden aggregate ordering, and
   selected static-map aggregate targets.
-- `With`: 6 scenarios for transparent scope filtering, non-terminal scalar
-  aliases carried into a later `MATCH`, bare boolean alias filtering, aggregate
-  filtering through terminal `WITH`, terminal `WITH DISTINCT` scalar projection,
-  and terminal `WITH ORDER BY` / `SKIP` / `LIMIT` row modifiers.
+- `With`: 14 scenarios for transparent scope filtering, scalar alias filters,
+  `WITH *` filtering, non-terminal scalar aliases carried into a later `MATCH`,
+  multi-stage `WITH ... WHERE` pipelines, bare boolean alias filtering,
+  aggregate filtering through terminal `WITH`, terminal `WITH DISTINCT` scalar
+  projection and filtering, relationship-property alias filtering, and terminal
+  `WITH ORDER BY` / `SKIP` / `LIMIT` row modifiers with filtering.
 - `CountSubquery`: 10 scenarios for `COUNT { ... }` projections, predicates,
   hidden ordering, scoped scalar `RETURN` validation, `RETURN DISTINCT scalar`
   row-counting, distinct-count threshold predicates, and reversed
