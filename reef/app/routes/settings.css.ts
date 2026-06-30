@@ -8,16 +8,28 @@ const MOBILE_QUERY = `screen and (max-width: ${breakpoints.mobile})`
 export const page = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: '28px',
   height: '100%',
   overflow: 'auto',
-  paddingBlock: '28px',
-  paddingInline: '32px',
+  paddingBlock: '32px',
+  paddingInline: '24px',
   '@media': {
     [MOBILE_QUERY]: {
-      gap: '22px',
       paddingBlock: '20px',
       paddingInline: '16px',
+    },
+  },
+})
+
+export const container = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '32px',
+  marginInline: 'auto',
+  maxWidth: '960px',
+  width: '100%',
+  '@media': {
+    [MOBILE_QUERY]: {
+      gap: '24px',
     },
   },
 })
@@ -25,74 +37,102 @@ export const page = style({
 export const header = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: '6px',
-  maxWidth: '680px',
+  gap: '4px',
 })
 
 export const section = style({
-  borderBlockStart: `1px solid ${theme.stroke.secondary}`,
   display: 'flex',
   flexDirection: 'column',
   gap: '16px',
-  paddingBlockStart: '20px',
 })
 
-export const sectionHeader = style({
+export const sectionHead = style({
+  alignItems: 'baseline',
   display: 'flex',
-  flexDirection: 'column',
-  gap: '4px',
-  maxWidth: '720px',
-})
-
-export const clientList = style({
-  display: 'flex',
-  flexDirection: 'column',
   gap: '8px',
-  maxWidth: '960px',
 })
 
-export const clientRow = style({
+export const sectionCount = style({
   alignItems: 'center',
-  background: theme.surface.onMainContentSubtle,
+  background: theme.surface.onMainContent,
   border: `1px solid ${theme.stroke.secondary}`,
-  borderRadius: '8px',
+  borderRadius: '999px',
+  color: theme.content.secondary,
+  display: 'inline-flex',
+  fontSize: '11px',
+  fontWeight: 600,
+  height: '18px',
+  justifyContent: 'center',
+  minWidth: '22px',
+  paddingInline: '6px',
+})
+
+export const cardGrid = style({
   display: 'grid',
   gap: '16px',
-  gridTemplateColumns: 'minmax(0, 1fr) auto',
-  minHeight: '68px',
-  paddingBlock: '12px',
-  paddingInline: '14px',
-  '@media': {
-    [MOBILE_QUERY]: {
-      alignItems: 'stretch',
-      gridTemplateColumns: '1fr',
-    },
-  },
+  gridTemplateColumns: 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))',
 })
 
-export const rowContent = style({
+export const clientCard = style({
+  background: theme.surface.card,
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: '12px',
   display: 'flex',
   flexDirection: 'column',
-  gap: '4px',
+  gap: '12px',
+  minHeight: '148px',
+  padding: '16px',
+})
+
+export const cardHeader = style({
+  alignItems: 'center',
+  display: 'flex',
+  gap: '10px',
   minWidth: 0,
 })
 
-export const rowActions = style({
+export const clientLogo = style({
+  alignItems: 'center',
+  background: theme.surface.onMainContent,
+  border: `1px solid ${theme.stroke.secondary}`,
+  borderRadius: '50%',
+  display: 'flex',
+  flexShrink: 0,
+  height: '30px',
+  justifyContent: 'center',
+  width: '30px',
+})
+
+export const cardTitle = style({
+  minWidth: 0,
+})
+
+export const path = style({
+  display: 'block',
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+})
+
+export const cardFooter = style({
   alignItems: 'center',
   display: 'flex',
   gap: '8px',
   justifyContent: 'flex-end',
-  '@media': {
-    [MOBILE_QUERY]: {
-      justifyContent: 'flex-start',
-    },
-  },
+  marginBlockStart: 'auto',
 })
 
-export const path = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+export const connectedPill = style({
+  marginInlineEnd: 'auto',
+})
+
+export const cardActions = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px',
+  justifyContent: 'flex-end',
 })
 
 export const status = style({
