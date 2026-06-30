@@ -7207,6 +7207,7 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
             distinctAverageRisk: _avgDistinct(field: risk)
             medianRisk: _median(field: risk)
             distinctMedianRisk: _medianDistinct(field: risk)
+            p75Risk: _percentileCont(field: risk, percentile: 0.75)
             distinctMinRisk: _minDistinct(field: risk)
             distinctMaxRisk: _maxDistinct(field: risk)
           }
@@ -7237,6 +7238,13 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
         "{}",
         graph_execution.translated_sql()
     );
+    assert!(
+        graph_execution
+            .translated_sql()
+            .contains("PERCENTILE_CONT(\"n0\".\"risk_score\", 0.75) AS \"p75Risk\""),
+        "{}",
+        graph_execution.translated_sql()
+    );
 
     let sql_execution = CoralQuery::execute_sql(
         std::slice::from_ref(&source),
@@ -7247,6 +7255,7 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
                 AVG(DISTINCT risk_score) AS \"distinctAverageRisk\", \
                 MEDIAN(risk_score) AS \"medianRisk\", \
                 MEDIAN(DISTINCT risk_score) AS \"distinctMedianRisk\", \
+                PERCENTILE_CONT(risk_score, 0.75) AS \"p75Risk\", \
                 MIN(DISTINCT risk_score) AS \"distinctMinRisk\", \
                 MAX(DISTINCT risk_score) AS \"distinctMaxRisk\" \
          FROM ops.services \
@@ -7268,6 +7277,7 @@ async fn graphql_statistical_aggregate_fields_match_equivalent_sql() {
     assert_close(row["distinctAverageRisk"].as_f64().unwrap(), 0.7);
     assert_close(row["medianRisk"].as_f64().unwrap(), 0.7);
     assert_close(row["distinctMedianRisk"].as_f64().unwrap(), 0.7);
+    assert_close(row["p75Risk"].as_f64().unwrap(), 0.8);
     assert_close(row["distinctMinRisk"].as_f64().unwrap(), 0.5);
     assert_close(row["distinctMaxRisk"].as_f64().unwrap(), 0.9);
 }

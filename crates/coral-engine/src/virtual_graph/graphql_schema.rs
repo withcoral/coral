@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
 use super::graphql_aggregate::{
-    GRAPHQL_PROPERTY_AGGREGATE_FIELDS, GraphqlAggregateReturnType,
+    GRAPHQL_PROPERTY_AGGREGATE_FIELDS, GraphqlAggregateArgumentSpec, GraphqlAggregateReturnType,
     is_reserved_graphql_node_property_name,
 };
 use crate::CoreError;
@@ -372,8 +372,9 @@ fn push_node_type(sdl: &mut String, graph: &Declaration, node: &Node) {
         for field in GRAPHQL_PROPERTY_AGGREGATE_FIELDS {
             writeln!(
                 sdl,
-                "  {}(field: {aggregate_field_type}!): {}",
+                "  {}({}): {}",
                 field.field_name,
+                graphql_aggregate_arguments_sdl(field.arguments, &aggregate_field_type),
                 graphql_aggregate_return_type_name(field.return_type)
             )
             .expect("writing GraphQL SDL to string should not fail");
@@ -865,6 +866,18 @@ fn graphql_aggregate_return_type_name(return_type: GraphqlAggregateReturnType) -
         GraphqlAggregateReturnType::Int => "Int",
         GraphqlAggregateReturnType::GraphValue => "CoralGraphValue",
         GraphqlAggregateReturnType::GraphValueList => "[CoralGraphValue!]",
+    }
+}
+
+fn graphql_aggregate_arguments_sdl(
+    arguments: GraphqlAggregateArgumentSpec,
+    aggregate_field_type: &str,
+) -> String {
+    match arguments {
+        GraphqlAggregateArgumentSpec::Field => format!("field: {aggregate_field_type}!"),
+        GraphqlAggregateArgumentSpec::FieldAndPercentile => {
+            format!("field: {aggregate_field_type}!, percentile: Float!")
+        }
     }
 }
 

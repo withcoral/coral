@@ -2,6 +2,24 @@
 
 use super::ir::AggregateFunction;
 
+/// Aggregate function shape for GraphQL aggregate fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphqlAggregateFunctionSpec {
+    /// Aggregate function with no extra GraphQL arguments beyond `field:`.
+    Fixed(AggregateFunction),
+    /// Exact continuous percentile with an additional `percentile:` argument.
+    PercentileCont,
+}
+
+/// Argument shape for property-backed GraphQL aggregate fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraphqlAggregateArgumentSpec {
+    /// `field: <Property>`.
+    Field,
+    /// `field: <Property>, percentile: <Float>`.
+    FieldAndPercentile,
+}
+
 /// Return type category for generated GraphQL aggregate fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GraphqlAggregateReturnType {
@@ -19,9 +37,11 @@ pub(crate) struct GraphqlAggregateFieldSpec {
     /// GraphQL field name, including the leading underscore.
     pub field_name: &'static str,
     /// Shared graph aggregate function.
-    pub function: AggregateFunction,
+    pub function: GraphqlAggregateFunctionSpec,
     /// Whether the aggregate should lower with `DISTINCT`.
     pub distinct: bool,
+    /// GraphQL argument shape.
+    pub arguments: GraphqlAggregateArgumentSpec,
     /// SDL return type family.
     pub return_type: GraphqlAggregateReturnType,
 }
@@ -34,92 +54,114 @@ pub(crate) struct GraphqlAggregateFieldSpec {
 pub(crate) const GRAPHQL_PROPERTY_AGGREGATE_FIELDS: &[GraphqlAggregateFieldSpec] = &[
     GraphqlAggregateFieldSpec {
         field_name: "_countDistinct",
-        function: AggregateFunction::Count,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Count),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::Int,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_collect",
-        function: AggregateFunction::Collect,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Collect),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValueList,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_collectDistinct",
-        function: AggregateFunction::Collect,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Collect),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValueList,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_sum",
-        function: AggregateFunction::Sum,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Sum),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_sumDistinct",
-        function: AggregateFunction::Sum,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Sum),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_avg",
-        function: AggregateFunction::Avg,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Avg),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_avgDistinct",
-        function: AggregateFunction::Avg,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Avg),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_median",
-        function: AggregateFunction::Median,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Median),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_medianDistinct",
-        function: AggregateFunction::Median,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Median),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
+        return_type: GraphqlAggregateReturnType::GraphValue,
+    },
+    GraphqlAggregateFieldSpec {
+        field_name: "_percentileCont",
+        function: GraphqlAggregateFunctionSpec::PercentileCont,
+        distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::FieldAndPercentile,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_stDev",
-        function: AggregateFunction::StdDev,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::StdDev),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_stDevP",
-        function: AggregateFunction::StdDevP,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::StdDevP),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_min",
-        function: AggregateFunction::Min,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Min),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_minDistinct",
-        function: AggregateFunction::Min,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Min),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_max",
-        function: AggregateFunction::Max,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Max),
         distinct: false,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
     GraphqlAggregateFieldSpec {
         field_name: "_maxDistinct",
-        function: AggregateFunction::Max,
+        function: GraphqlAggregateFunctionSpec::Fixed(AggregateFunction::Max),
         distinct: true,
+        arguments: GraphqlAggregateArgumentSpec::Field,
         return_type: GraphqlAggregateReturnType::GraphValue,
     },
 ];

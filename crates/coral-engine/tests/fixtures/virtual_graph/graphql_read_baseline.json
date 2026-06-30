@@ -2,7 +2,7 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 1,
+    "Aggregation": 2,
     "BooleanFilters": 1,
     "ErrorHandling": 1,
     "GeneratedClientShape": 1,
@@ -101,6 +101,18 @@
         "rows": [
           { "city": "London", "people": 2 },
           { "city": "Paris", "people": 1 }
+        ]
+      }
+    },
+    {
+      "id": "percentile-cont-aggregate",
+      "feature": "Aggregation",
+      "query": "query { Person { p75Age: _percentileCont(field: age, percentile: 0.75) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "p75Age": 37.5 }
         ]
       }
     },
