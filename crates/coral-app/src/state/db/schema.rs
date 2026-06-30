@@ -48,6 +48,29 @@ pub(in crate::state::db) enum SourceManifests {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum Materializations {
+    Table,
+    WorkspaceId,
+    SourceName,
+    MaterializationVersion,
+    FingerprintYaml,
+    ProjectionsYaml,
+    DiagnosticsYaml,
+    CreatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum MaterializationSurfaces {
+    Table,
+    WorkspaceId,
+    SourceName,
+    SurfaceId,
+    SourceDocumentRaw,
+    SourceDocumentYaml,
+    SemanticIrYaml,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum AppStateMarkers {
     Table,
     Key,
