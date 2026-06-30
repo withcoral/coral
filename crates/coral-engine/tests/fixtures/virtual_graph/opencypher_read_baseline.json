@@ -5,7 +5,7 @@
     "Aggregation": 20,
     "CollectSubquery": 3,
     "CountSubquery": 10,
-    "ExistsSubquery": 2,
+    "ExistsSubquery": 13,
     "GraphMetadata": 19,
     "ListExpressions": 36,
     "LiteralExpressions": 15,
@@ -1795,6 +1795,175 @@
           },
           {
             "person": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-return-true",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person) RETURN true } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-not-outgoing",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE NOT EXISTS { MATCH (p)-[:KNOWS]->(:Person) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-incoming",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (:Person)-[:KNOWS]->(p) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob"
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-not-incoming",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE NOT EXISTS { MATCH (:Person)-[:KNOWS]->(p) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-inner-property-predicate",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(friend:Person) WHERE friend.city = 'Paris' } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-correlated-property-predicate",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(friend:Person) WHERE friend.active = p.active } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-relationship-predicate",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[r:KNOWS]->(:Person) WHERE r.since = 2022 } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-and-composition",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person) } AND EXISTS { MATCH (:Person)-[:KNOWS]->(p) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-or-composition",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE p.city = '' OR EXISTS { MATCH (p)-[r:KNOWS]->(:Person) WHERE r.strength > 0.8 } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-multihop",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "exists-subquery-not-multihop",
+      "feature": "ExistsSubquery",
+      "query": "MATCH (p:Person) WHERE NOT EXISTS { MATCH (p)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person) } RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob"
+          },
+          {
+            "person": "Carol"
           }
         ]
       }
