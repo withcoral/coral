@@ -29,11 +29,13 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::codegen::http::header::CONTENT_TYPE;
-use tonic::codegen::http::{HeaderValue, Method, Request, Response, StatusCode};
+use tonic::codegen::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, Service};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use url::{Host, Url};
 
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -464,9 +466,11 @@ fn start_grpc_web_server(
         .layer(GrpcWebLayer::new())
         .layer(GrpcWebOnlyLayer);
 
-    let app = grpc.fallback_service(StaticAssetService {
-        provider: static_assets,
-    });
+    let app = grpc
+        .fallback_service(StaticAssetService {
+            provider: static_assets,
+        })
+        .layer(grpc_web_cors_layer());
 
     let combined: Routes = app.into();
 
@@ -480,6 +484,38 @@ fn start_grpc_web_server(
             })
             .await
     })
+}
+
+fn grpc_web_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(|origin, _request_parts| {
+            is_loopback_http_origin(origin)
+        }))
+        .allow_methods([Method::GET, Method::HEAD, Method::POST, Method::OPTIONS])
+        .allow_headers(Any)
+        .expose_headers([
+            HeaderName::from_static("grpc-status"),
+            HeaderName::from_static("grpc-message"),
+            HeaderName::from_static("grpc-status-details-bin"),
+        ])
+}
+
+fn is_loopback_http_origin(origin: &HeaderValue) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(url) = Url::parse(origin) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -928,6 +964,94 @@ enabled = false
         assert_eq!(
             native_grpc.status(),
             reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_allows_loopback_cors_preflight() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let path = format!("{endpoint}/coral.v1.SourceService/DiscoverSources");
+        let client = reqwest::Client::new();
+        let origin = "http://127.0.0.1:49152";
+
+        let response = client
+            .request(reqwest::Method::OPTIONS, &path)
+            .header("origin", origin)
+            .header("access-control-request-method", "POST")
+            .header(
+                "access-control-request-headers",
+                "content-type,x-grpc-web,x-user-agent",
+            )
+            .send()
+            .await
+            .expect("CORS preflight");
+
+        assert!(
+            response.status().is_success(),
+            "unexpected preflight status: {}",
+            response.status()
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some(origin)
+        );
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-methods")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("POST")),
+            "expected POST in access-control-allow-methods"
+        );
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-headers")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value == "*" || value.contains("content-type")),
+            "expected requested headers in access-control-allow-headers"
+        );
+
+        running.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn embedded_ui_server_rejects_non_loopback_cors_origin() {
+        let temp = TempDir::new().expect("temp dir");
+        let running = ServerBuilder::embedded_ui_loopback(0, Arc::new(StubAssets))
+            .with_config_dir(temp.path().join("coral-config"))
+            .start()
+            .await
+            .expect("start embedded UI server");
+        let endpoint = running.endpoint_uri();
+        let path = format!("{endpoint}/coral.v1.SourceService/DiscoverSources");
+        let client = reqwest::Client::new();
+
+        let response = client
+            .request(reqwest::Method::OPTIONS, &path)
+            .header("origin", "https://example.com")
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .expect("CORS preflight");
+
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "non-loopback origins must not receive CORS access"
         );
 
         running.shutdown().await.expect("shutdown");
