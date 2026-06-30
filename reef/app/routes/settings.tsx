@@ -9,7 +9,6 @@ import {
 import { Button, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'
-import { Pill } from '@/wax/components/pill'
 import { addToast } from '@/wax/components/toast'
 
 import * as styles from './settings.css'
@@ -151,12 +150,6 @@ export default function SettingsRoute() {
                   </Typography.CodeSmallInline>
 
                   <div className={styles.cardFooter}>
-                    {connectedPath && (
-                      <Pill className={styles.connectedPill} color="green">
-                        Connected
-                      </Pill>
-                    )}
-
                     <div className={styles.cardActions}>
                       {canTest && (
                         <Button.Container

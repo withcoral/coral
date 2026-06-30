@@ -123,10 +123,6 @@ export const cardFooter = style({
   marginBlockStart: 'auto',
 })
 
-export const connectedPill = style({
-  marginInlineEnd: 'auto',
-})
-
 export const cardActions = style({
   alignItems: 'center',
   display: 'flex',
