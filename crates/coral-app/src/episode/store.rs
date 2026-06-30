@@ -31,7 +31,7 @@ use crate::workspaces::WorkspaceName;
 /// over this evicts the oldest records first (the newest is always kept, even if it
 /// alone exceeds the ceiling). Generous — bounds disk without losing recent history;
 /// becomes a `[episodes]` config knob alongside JSONL→Parquet compaction later.
-const MAX_EPISODE_BYTES_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_EPISODE_BYTES_PER_WORKSPACE: u64 = 256 * 1024 * 1024;
 
 /// A registered episode — one task-attempt's intent and lineage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +121,7 @@ pub(crate) struct EpisodeStore {
 
 impl EpisodeStore {
     /// Creates a store that persists under `layout` with the default byte ceiling.
+    #[cfg(test)]
     pub(crate) fn new(layout: AppStateLayout) -> Self {
         Self {
             layout,
@@ -129,13 +130,6 @@ impl EpisodeStore {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "DB-backed episode writes are exercised by tests here and wired to production after legacy episode import in the next stack PR."
-        )
-    )]
     pub(crate) fn with_db(layout: AppStateLayout, catalog_db: Arc<CoralDb>) -> Self {
         Self {
             layout,
@@ -276,7 +270,7 @@ fn open_episode_in_db(
     })
 }
 
-fn next_db_episode_created_at(
+pub(crate) fn next_db_episode_created_at(
     episodes: &[EpisodeRecord],
 ) -> Result<(u128, i64), EpisodeStoreError> {
     let now = db_timestamp_from_unix_nanos(now_unix_nanos())?;
@@ -308,7 +302,7 @@ fn db_timestamp_from_unix_nanos(nanos: u128) -> Result<i64, EpisodeStoreError> {
     })
 }
 
-fn retain_episode_records_within_budget(
+pub(crate) fn retain_episode_records_within_budget(
     mut episodes: Vec<EpisodeRecord>,
     max_bytes: u64,
 ) -> Vec<EpisodeRecord> {
@@ -328,7 +322,7 @@ fn retain_episode_records_within_budget(
     episodes
 }
 
-fn episode_record_bytes(
+pub(crate) fn episode_record_bytes(
     workspace: &WorkspaceName,
     id: &str,
     intent: &str,

@@ -3,17 +3,23 @@ use std::fs;
 use std::io::ErrorKind;
 
 use chrono::{DateTime, Utc};
+use coral_api::CORAL_EPISODE_INTENT_MAX_CHARS;
 use serde::Deserialize;
 
 use super::session::DbRepos;
 use super::{CoralDb, DbError, MaterializationRecord};
 use crate::bootstrap::AppError;
+use crate::episode::EpisodeId;
+use crate::episode::store::{
+    EpisodeStoreError, MAX_EPISODE_BYTES_PER_WORKSPACE, episode_record_bytes,
+    next_db_episode_created_at, retain_episode_records_within_budget,
+};
 use crate::sources::catalog::validate_imported_manifest_database_persistence;
 use crate::sources::materialization::{
     load_v4_materialization_from_record, materialization_record_from_dir,
 };
 use crate::sources::model::SourceOrigin;
-use crate::state::db::FeedbackReportRecord;
+use crate::state::db::{EpisodeRecord, FeedbackReportRecord};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
 use coral_spec::parse_source_manifest_yaml;
@@ -350,12 +356,21 @@ struct PersistedFeedbackReport {
     stuck: String,
 }
 
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct PersistedEpisode {
+    id: String,
+    workspace: String,
+    intent: String,
+    parent_episode_id: Option<String>,
+    created_at_unix_nanos: u128,
+}
+
 pub(crate) async fn import_filesystem_feedback_reports(
     db: &CoralDb,
     layout: &AppStateLayout,
 ) -> Result<usize, AppError> {
     let mut imported = 0;
-    for workspace_name in filesystem_feedback_workspaces(layout)? {
+    for workspace_name in filesystem_workspaces(layout)? {
         let path = layout.feedback_reports_file(&workspace_name);
         if !path.exists() {
             continue;
@@ -507,7 +522,242 @@ fn parse_legacy_feedback_report_line(
     })
 }
 
-fn filesystem_feedback_workspaces(layout: &AppStateLayout) -> Result<Vec<WorkspaceName>, AppError> {
+pub(crate) async fn import_filesystem_episodes(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+) -> Result<usize, AppError> {
+    import_filesystem_episodes_with_max_bytes(db, layout, MAX_EPISODE_BYTES_PER_WORKSPACE).await
+}
+
+async fn import_filesystem_episodes_with_max_bytes(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+    max_bytes: u64,
+) -> Result<usize, AppError> {
+    let mut imported = 0;
+    for workspace_name in filesystem_workspaces(layout)? {
+        let path = layout.episodes_file(&workspace_name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    detail = %error,
+                    "skipping legacy episode JSONL import because the file could not be read"
+                );
+                continue;
+            }
+        };
+        let mut has_unimported_rows = false;
+        let records = raw
+            .split(|&byte| byte == b'\n')
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let Ok(text) = std::str::from_utf8(line) else {
+                    tracing::warn!(
+                        path = %path.display(),
+                        line = index + 1,
+                        "leaving episode record with invalid UTF-8 in legacy JSONL"
+                    );
+                    has_unimported_rows = true;
+                    return None;
+                };
+                if text.trim().is_empty() {
+                    return None;
+                }
+                if let Some(record) =
+                    parse_legacy_episode_line(&path, workspace_name.as_str(), index + 1, text)
+                {
+                    Some(record)
+                } else {
+                    has_unimported_rows = true;
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if !records.is_empty() {
+            let (workspace_imported, has_conflicts) =
+                import_workspace_episodes(db, &workspace_name, &path, &records, max_bytes).await?;
+            imported += workspace_imported;
+            has_unimported_rows |= has_conflicts;
+        }
+        if has_unimported_rows {
+            tracing::warn!(
+                path = %path.display(),
+                "legacy episode JSONL retained because at least one row was not imported"
+            );
+        } else {
+            remove_episodes_file(&path);
+        }
+    }
+    Ok(imported)
+}
+
+async fn import_workspace_episodes(
+    db: &CoralDb,
+    workspace_name: &WorkspaceName,
+    path: &std::path::Path,
+    records: &[EpisodeRecord],
+    max_bytes: u64,
+) -> Result<(usize, bool), AppError> {
+    let Some(first) = records.first() else {
+        return Ok((0, false));
+    };
+    let mut tx = db.begin().await?;
+    tx.workspaces()
+        .ensure_write_locked(workspace_name.as_str(), first.created_at_unix_nanos)
+        .await?;
+    let mut episodes = tx
+        .episodes()
+        .list_workspace_episodes(workspace_name)
+        .await?;
+    let mut imported = 0;
+    let mut has_conflicts = false;
+    for record in records {
+        if let Some(existing) = episodes.iter().find(|existing| existing.id == record.id) {
+            if existing.intent == record.intent
+                && existing.parent_episode_id == record.parent_episode_id
+            {
+                continue;
+            }
+            tracing::warn!(
+                path = %path.display(),
+                episode_id = %record.id,
+                workspace = %workspace_name,
+                "legacy episode JSONL retained because an episode row conflicts with the database"
+            );
+            has_conflicts = true;
+            continue;
+        }
+        let (created_at_unix_nanos_raw, created_at_unix_nanos) =
+            next_db_episode_created_at(&episodes).map_err(episode_store_error_to_app)?;
+        let record_bytes = episode_record_bytes(
+            workspace_name,
+            &record.id,
+            &record.intent,
+            record.parent_episode_id.as_deref(),
+            created_at_unix_nanos_raw,
+        )
+        .map_err(episode_store_error_to_app)?;
+        let mut imported_record = record.clone();
+        imported_record.created_at_unix_nanos = created_at_unix_nanos;
+        imported_record.record_bytes = record_bytes;
+        episodes.push(imported_record);
+        imported += 1;
+    }
+    let kept = retain_episode_records_within_budget(episodes, max_bytes);
+    tx.episodes()
+        .replace_workspace_episodes(workspace_name, &kept)
+        .await?;
+    tx.commit().await?;
+    Ok((imported, has_conflicts))
+}
+
+fn episode_store_error_to_app(error: EpisodeStoreError) -> AppError {
+    match error {
+        EpisodeStoreError::Persistence(error) => error,
+        other => AppError::FailedPrecondition(other.to_string()),
+    }
+}
+
+fn parse_legacy_episode_line(
+    path: &std::path::Path,
+    file_workspace: &str,
+    line_number: usize,
+    line: &str,
+) -> Option<EpisodeRecord> {
+    let record = match serde_json::from_str::<PersistedEpisode>(line) {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving invalid episode record in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    let workspace = match WorkspaceName::parse(&record.workspace) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving episode with invalid workspace in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    if workspace.as_str() != file_workspace {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            episode_workspace = %workspace,
+            file_workspace,
+            "leaving episode stored under a different workspace in legacy JSONL"
+        );
+        return None;
+    }
+    if let Err(error) = EpisodeId::parse(&record.id) {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            %error,
+            "leaving episode with invalid id in legacy JSONL"
+        );
+        return None;
+    }
+    let parent_episode_id = match record.parent_episode_id {
+        Some(parent_episode_id) => {
+            if let Err(error) = EpisodeId::parse(&parent_episode_id) {
+                tracing::warn!(
+                    path = %path.display(),
+                    line = line_number,
+                    %error,
+                    "leaving episode with invalid parent id in legacy JSONL"
+                );
+                return None;
+            }
+            Some(parent_episode_id)
+        }
+        None => None,
+    };
+    let intent = record.intent.trim();
+    if intent.is_empty() || intent.chars().count() > CORAL_EPISODE_INTENT_MAX_CHARS {
+        tracing::warn!(
+            path = %path.display(),
+            line = line_number,
+            "leaving episode with invalid intent in legacy JSONL"
+        );
+        return None;
+    }
+    let created_at_unix_nanos = match i64::try_from(record.created_at_unix_nanos) {
+        Ok(created_at_unix_nanos) => created_at_unix_nanos,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_number,
+                %error,
+                "leaving episode with out-of-range timestamp in legacy JSONL"
+            );
+            return None;
+        }
+    };
+    Some(EpisodeRecord {
+        id: record.id,
+        intent: intent.to_string(),
+        parent_episode_id,
+        created_at_unix_nanos,
+        record_bytes: 0,
+    })
+}
+
+fn filesystem_workspaces(layout: &AppStateLayout) -> Result<Vec<WorkspaceName>, AppError> {
     let root = layout.workspaces_root();
     let mut workspaces = Vec::new();
     let entries = match fs::read_dir(root) {
@@ -531,7 +781,7 @@ fn filesystem_feedback_workspaces(layout: &AppStateLayout) -> Result<Vec<Workspa
             Err(error) => tracing::warn!(
                 path = %entry.path().display(),
                 detail = %error,
-                "skipping legacy feedback import for invalid workspace directory"
+                "skipping legacy filesystem import for invalid workspace directory"
             ),
         }
     }
@@ -543,6 +793,20 @@ fn is_workspace_delete_rollback_dir(name: &str) -> bool {
         return false;
     };
     Uuid::parse_str(rollback_id).is_ok()
+}
+
+fn remove_episodes_file(path: &std::path::Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                detail = %error,
+                "episodes imported into database but legacy JSONL cleanup failed"
+            );
+        }
+    }
 }
 
 fn remove_feedback_reports_file(path: &std::path::Path) {
@@ -614,7 +878,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        SourceCatalogImportReport, import_config_source_catalog, import_filesystem_feedback_reports,
+        SourceCatalogImportReport, import_config_source_catalog, import_filesystem_episodes,
+        import_filesystem_episodes_with_max_bytes, import_filesystem_feedback_reports,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -624,7 +889,7 @@ mod tests {
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::session::DbRepos;
     use crate::state::db::{
-        CoralDb, DatabaseConfig, FeedbackReportRecord, MaterializationRecord,
+        CoralDb, DatabaseConfig, EpisodeRecord, FeedbackReportRecord, MaterializationRecord,
         MaterializationSurfaceRecord, ResolvedDatabaseConfig,
     };
     use crate::state::{AppStateLayout, ConfigStore};
@@ -1508,6 +1773,209 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run concurrent Postgres episode import coverage"]
+    async fn concurrent_episode_import_race_serializes_on_workspace_lock_postgres() {
+        let Some(url) = crate::bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse(&format!("episode{}", uuid::Uuid::new_v4().simple()))
+            .expect("workspace");
+        let episodes_file = write_episodes_file(
+            &layout,
+            &workspace,
+            &episode_jsonl(workspace.as_str(), "ep_1", "task", 1),
+        );
+        let mut tx = db.begin().await.expect("begin lock tx");
+        tx.workspaces()
+            .ensure_write_locked(workspace.as_str(), 7)
+            .await
+            .expect("hold workspace lock");
+        let first = import_filesystem_episodes(&db, &layout);
+        let second = import_filesystem_episodes(&db, &layout);
+        tokio::pin!(first);
+        tokio::pin!(second);
+
+        if tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            tokio::select! {
+                result = &mut first => result,
+                result = &mut second => result,
+            }
+        })
+        .await
+        .is_ok()
+        {
+            panic!("episode import completed before the workspace lock was released");
+        }
+        tx.commit().await.expect("release workspace lock");
+        let (first, second) = tokio::join!(&mut first, &mut second);
+        assert_eq!(
+            first.expect("first import") + second.expect("second import"),
+            1
+        );
+        assert!(!episodes_file.exists());
+        let mut session = &db;
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes.first().expect("episode").id, "ep_1");
+    }
+
+    #[tokio::test]
+    async fn episode_import_applies_budget_in_file_order() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        write_episodes_file(
+            &layout,
+            &workspace,
+            &[
+                episode_jsonl("default", "ep_z", "first file row", 300),
+                episode_jsonl("default", "ep_y", "middle file row", 200),
+                episode_jsonl("default", "ep_a", "last file row", 1),
+            ]
+            .concat(),
+        );
+        let db = open_sqlite(&layout).await;
+
+        import_filesystem_episodes_with_max_bytes(&db, &layout, 1)
+            .await
+            .expect("import episodes");
+        let mut session = &db;
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 1);
+        let survivor = episodes.first().expect("survivor");
+        assert_eq!(survivor.id, "ep_a", "legacy file order decides newest");
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This integration-style import test keeps related retention cases in one setup."
+    )]
+    async fn episode_import_retains_legacy_jsonl_when_rows_are_not_imported() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let episodes_file = layout.episodes_file(&workspace);
+        fs::create_dir_all(episodes_file.parent().expect("episodes parent"))
+            .expect("create episodes parent");
+        fs::write(
+            &episodes_file,
+            r#"{"id":"ep_1","workspace":"default","intent":"find the HR onboarding form","parent_episode_id":null,"created_at_unix_nanos":99}
+not-json
+{"id":"ep_other","workspace":"other","intent":"wrong workspace","parent_episode_id":null,"created_at_unix_nanos":100}
+{"id":"ep_conflict","workspace":"default","intent":"legacy intent","parent_episode_id":null,"created_at_unix_nanos":101}
+"#,
+        )
+        .expect("write episode JSONL");
+        #[cfg(unix)]
+        let blocked_file = {
+            use std::os::unix::fs::PermissionsExt;
+            let blocked = WorkspaceName::parse("blocked").expect("workspace");
+            let file = write_episodes_file(
+                &layout,
+                &blocked,
+                &episode_jsonl("blocked", "ep_blocked", "blocked", 1),
+            );
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o000))
+                .expect("make blocked file unreadable");
+            file
+        };
+        let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin seed tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("ensure workspace");
+        tx.episodes()
+            .insert(
+                &workspace,
+                &EpisodeRecord {
+                    id: "ep_conflict".to_string(),
+                    intent: "database intent".to_string(),
+                    parent_episode_id: None,
+                    created_at_unix_nanos: 1,
+                    record_bytes: 1,
+                },
+            )
+            .await
+            .expect("seed existing episode");
+        tx.commit().await.expect("commit seed");
+
+        let imported = import_filesystem_episodes(&db, &layout)
+            .await
+            .expect("import episodes");
+
+        #[cfg(unix)]
+        assert!(blocked_file.exists());
+        assert_eq!(imported, 1);
+        assert!(
+            episodes_file.exists(),
+            "legacy episode JSONL with unimported rows must be preserved"
+        );
+        assert_eq!(
+            import_filesystem_episodes(&db, &layout)
+                .await
+                .expect("reimport episodes"),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&blocked_file, fs::Permissions::from_mode(0o600))
+                .expect("restore blocked file permissions");
+        }
+        let mut session = &db;
+        assert!(
+            session
+                .workspaces()
+                .get("other")
+                .await
+                .expect("get other workspace")
+                .is_none(),
+            "cross-workspace episode import must not create the embedded workspace"
+        );
+        let episodes = session
+            .episodes()
+            .list_workspace_episodes(&workspace)
+            .await
+            .expect("list episodes");
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(
+            episodes
+                .iter()
+                .find(|episode| episode.id == "ep_1")
+                .expect("imported episode")
+                .intent,
+            "find the HR onboarding form"
+        );
+        assert_eq!(
+            episodes
+                .iter()
+                .find(|episode| episode.id == "ep_conflict")
+                .expect("seed episode")
+                .intent,
+            "database intent"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn import_succeeds_when_post_commit_config_cleanup_fails() {
@@ -1622,6 +2090,30 @@ mod tests {
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    fn episode_jsonl(
+        workspace: &str,
+        id: &str,
+        intent: &str,
+        created_at_unix_nanos: u128,
+    ) -> String {
+        format!(
+            r#"{{"id":"{id}","workspace":"{workspace}","intent":"{intent}","parent_episode_id":null,"created_at_unix_nanos":{created_at_unix_nanos}}}
+"#
+        )
+    }
+
+    fn write_episodes_file(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        contents: &str,
+    ) -> std::path::PathBuf {
+        let episodes_file = layout.episodes_file(workspace);
+        fs::create_dir_all(episodes_file.parent().expect("episodes parent"))
+            .expect("create episodes parent");
+        fs::write(&episodes_file, contents).expect("write episode JSONL");
+        episodes_file
     }
 
     fn feedback_jsonl(workspace: &str, id: &str) -> String {

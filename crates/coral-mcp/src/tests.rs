@@ -22,7 +22,7 @@ use rmcp::{
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
-use sqlx::{Row, sqlite::SqliteConnectOptions};
+use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -543,29 +543,30 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             .contains("argument 'episode_id' must be graphic ASCII")
     );
 
-    let episodes_path = temp
-        .path()
-        .join("coral-config/workspaces/default/episodes/episodes.jsonl");
-    let raw = fs::read_to_string(&episodes_path).expect("episode file should exist");
-    let records = raw
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("episode JSONL should parse"))
-        .collect::<Vec<_>>();
+    let episodes_path = legacy_episodes_path(&temp);
+    assert!(
+        !episodes_path.exists(),
+        "DB-backed MCP session should not write legacy episode JSONL"
+    );
+    let records = db_episodes(&temp).await;
     assert_eq!(records.len(), 2);
     let root_record = records
         .iter()
-        .find(|record| record["id"] == root_episode_id.as_str())
+        .find(|record| record.id == root_episode_id)
         .expect("root episode record");
-    assert_eq!(root_record["workspace"], "default");
-    assert_eq!(root_record["intent"], "Investigate customer renewal risk");
-    assert_eq!(root_record["parent_episode_id"], Value::Null);
+    assert_eq!(root_record.workspace_id, "default");
+    assert_eq!(root_record.intent, "Investigate customer renewal risk");
+    assert_eq!(root_record.parent_episode_id, None);
     let child_record = records
         .iter()
-        .find(|record| record["id"] == child_episode_id.as_str())
+        .find(|record| record.id == child_episode_id)
         .expect("child episode record");
-    assert_eq!(child_record["workspace"], "default");
-    assert_eq!(child_record["intent"], "Check renewal table columns");
-    assert_eq!(child_record["parent_episode_id"], root_episode_id.as_str());
+    assert_eq!(child_record.workspace_id, "default");
+    assert_eq!(child_record.intent, "Check renewal table columns");
+    assert_eq!(
+        child_record.parent_episode_id.as_deref(),
+        Some(root_episode_id.as_str())
+    );
 
     let blank_intent = client
         .call_tool(
@@ -580,8 +581,7 @@ async fn mcp_episode_tool_persists_episode_and_tags_follow_up_calls() {
             .to_string()
             .contains("missing string argument 'intent'")
     );
-    let raw_after_error = fs::read_to_string(&episodes_path).expect("episode file should exist");
-    assert_eq!(raw_after_error.lines().count(), 2);
+    assert_eq!(db_episodes(&temp).await.len(), 2);
 
     session.shutdown().await;
 }
@@ -1411,7 +1411,7 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(structured["message"], "Feedback report stored.");
     assert!(structured.get("upload").is_none());
 
-    let db = open_feedback_database(&temp).await;
+    let db = open_coral_database(&temp).await;
     assert_feedback_row_matches(
         &db,
         structured["feedback_id"].as_str().expect("feedback id"),
@@ -1444,17 +1444,48 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     session.shutdown().await;
 }
 
-async fn open_feedback_database(temp: &TempDir) -> sqlx::SqlitePool {
-    sqlx::SqlitePool::connect_with(
+struct EpisodeRow {
+    id: String,
+    workspace_id: String,
+    intent: String,
+    parent_episode_id: Option<String>,
+}
+
+fn legacy_episodes_path(temp: &TempDir) -> PathBuf {
+    temp.path()
+        .join("coral-config/workspaces/default/episodes/episodes.jsonl")
+}
+
+async fn open_coral_database(temp: &TempDir) -> SqlitePool {
+    SqlitePool::connect_with(
         SqliteConnectOptions::new()
             .filename(temp.path().join("coral-config/coral.db"))
             .create_if_missing(false),
     )
     .await
-    .expect("open feedback database")
+    .expect("open coral database")
 }
 
-async fn assert_feedback_row_matches(db: &sqlx::SqlitePool, feedback_id: &str) {
+async fn db_episodes(temp: &TempDir) -> Vec<EpisodeRow> {
+    let db = open_coral_database(temp).await;
+    sqlx::query(
+        "select id, workspace_id, intent, parent_episode_id \
+         from episodes order by created_at_unix_nanos, id",
+    )
+    .fetch_all(&db)
+    .await
+    .expect("query episodes")
+    .into_iter()
+    .map(|row| EpisodeRow {
+        id: row.get("id"),
+        workspace_id: row.get("workspace_id"),
+        intent: row.get("intent"),
+        parent_episode_id: row.get("parent_episode_id"),
+    })
+    .collect()
+}
+
+async fn assert_feedback_row_matches(db: &SqlitePool, feedback_id: &str) {
     let record =
         sqlx::query("select id, workspace_id, trying_to_do, tried, stuck from feedback_reports")
             .fetch_one(db)

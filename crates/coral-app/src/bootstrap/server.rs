@@ -54,7 +54,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
-use crate::state::db::import_filesystem_feedback_reports;
+use crate::state::db::{import_filesystem_episodes, import_filesystem_feedback_reports};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -255,7 +255,6 @@ impl ServerBuilder {
         layout.ensure()?;
         let config_store = ConfigStore::new(layout.clone());
         let coral_db = super::open_initialized_database(&layout, &config_store).await?;
-        let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -273,6 +272,8 @@ impl ServerBuilder {
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         import_filesystem_feedback_reports(&coral_db, &layout).await?;
+        import_filesystem_episodes(&coral_db, &layout).await?;
+        let coral_db = Arc::new(coral_db);
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -297,7 +298,7 @@ impl ServerBuilder {
             self.config.feedback_publisher,
             Arc::clone(&coral_db),
         );
-        let episode_store = EpisodeStore::new(layout.clone());
+        let episode_store = EpisodeStore::with_db(layout.clone(), Arc::clone(&coral_db));
         let body_capture_max_bytes = telemetry_config
             .trace_history
             .http_body_recording_max_bytes();
@@ -780,7 +781,19 @@ enabled = false
     async fn open_episode_through_server_persists() {
         let temp = TempDir::new().expect("temp dir");
         let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout.ensure().expect("layout dirs");
         disable_internal_tracing(&config_dir);
+        let workspace = WorkspaceName::default();
+        let episodes_file = layout.episodes_file(&workspace);
+        std::fs::create_dir_all(episodes_file.parent().expect("episodes parent"))
+            .expect("create episodes parent");
+        std::fs::write(
+            &episodes_file,
+            r#"{"id":"ep_legacy","workspace":"default","intent":"continue migration","parent_episode_id":null,"created_at_unix_nanos":99}
+"#,
+        )
+        .expect("write legacy episode");
         let server = ServerBuilder::new()
             .with_config_dir(config_dir.clone())
             .start()
@@ -803,14 +816,33 @@ enabled = false
             .await
             .expect("OpenEpisode is served regardless of the episodes feature");
 
-        // The handler ran the full path through to the per-workspace episode log.
-        let layout = AppStateLayout::discover(Some(config_dir)).expect("layout");
-        let raw = std::fs::read_to_string(layout.episodes_file(&WorkspaceName::default()))
-            .expect("episode file should exist");
-        assert!(raw.contains("ep_smoke"), "episode id should be persisted");
+        // The handler ran the full path through to the DB-backed episode store.
+        let DatabaseConfig::Sqlite { path } =
+            DatabaseConfig::load(&layout).expect("load database config")
+        else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        let mut session = &db;
+        let imported = session
+            .episodes()
+            .get(&workspace, "ep_legacy")
+            .await
+            .expect("get imported episode")
+            .expect("legacy episode should be imported");
+        assert_eq!(imported.intent, "continue migration");
+        let episode = session
+            .episodes()
+            .get(&workspace, "ep_smoke")
+            .await
+            .expect("get episode")
+            .expect("episode should be persisted");
+        assert_eq!(episode.intent, "find the HR onboarding form");
         assert!(
-            raw.contains("find the HR onboarding form"),
-            "intent should be persisted"
+            !episodes_file.exists(),
+            "DB-backed server should not write legacy episode JSONL"
         );
         server.shutdown().await.expect("shutdown");
     }
