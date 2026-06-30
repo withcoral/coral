@@ -7,7 +7,7 @@
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
-    "NestedRelationships": 8,
+    "NestedRelationships": 11,
     "RelationshipExistence": 5,
     "RootSelection": 4,
     "RowModifiers": 8,
@@ -661,6 +661,30 @@
       }
     },
     {
+      "id": "incoming-strength-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name in_KNOWS(from: Person, relationshipWhere: { strength: { gte: 0.5 } }) { knower: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "knower": "Bob", "strength": 0.7 }
+        ]
+      }
+    },
+    {
+      "id": "incoming-strength-since-combined",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Carol\" } }) { name in_KNOWS(from: Person, relationshipWhere: { strength: { lt: 0.5 }, since: { gte: 2022 } }) { knower: name _edge { strength: strength since: since } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "knower": "Alice", "strength": 0.3, "since": 2022 }
+        ]
+      }
+    },
+    {
       "id": "undirected-relationship-traversal",
       "feature": "NestedRelationships",
       "query": "query { Person(where: { name: { eq: \"Bob\" } }) { name any_KNOWS(label: Person) { contact: name } } }",
@@ -683,6 +707,18 @@
         "rows": [
           { "name": "Alice", "contact": "Bob", "strength": 0.9 },
           { "name": "Alice", "contact": "Carol", "strength": 0.3 }
+        ]
+      }
+    },
+    {
+      "id": "undirected-strength-filter",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name any_KNOWS(label: Person, relationshipWhere: { strength: { gt: 0.5 } }) { contact: name _edge { strength: strength } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "contact": "Bob", "strength": 0.9 }
         ]
       }
     },
