@@ -7305,16 +7305,7 @@ impl<'a> Lowerer<'a> {
         distinct: bool,
     ) -> Result<String, CoreError> {
         let target = self.render_aggregate_target(function, target)?;
-        let distinct = if distinct { "DISTINCT " } else { "" };
-        if function == AggregateFunction::Collect {
-            return Ok(format!(
-                "COALESCE(ARRAY_AGG({distinct}{target}) FILTER (WHERE ({target}) IS NOT NULL), make_array())"
-            ));
-        }
-        Ok(format!(
-            "{}({distinct}{target})",
-            render_aggregate_function(function)
-        ))
+        Ok(render_aggregate_invocation_sql(function, &target, distinct))
     }
 
     fn render_binding_key_ref(&self, variable: &str) -> Result<String, CoreError> {
@@ -8126,26 +8117,14 @@ fn render_union_outer_projection_item(item: &GraphUnionOuterProjectionItem) -> S
             source,
             distinct,
             alias,
-        } if *function == AggregateFunction::Collect => {
+        } => {
             let source = quote_ident(source);
             format!(
-                "COALESCE(ARRAY_AGG({}{source}) FILTER (WHERE ({source}) IS NOT NULL), make_array()) AS {}",
-                if *distinct { "DISTINCT " } else { "" },
+                "{} AS {}",
+                render_aggregate_invocation_sql(*function, &source, *distinct),
                 quote_ident(alias)
             )
         }
-        GraphUnionOuterProjectionItem::Aggregate {
-            function,
-            source,
-            distinct,
-            alias,
-        } => format!(
-            "{}({}{}) AS {}",
-            render_aggregate_function(*function),
-            if *distinct { "DISTINCT " } else { "" },
-            quote_ident(source),
-            quote_ident(alias)
-        ),
     }
 }
 
@@ -8214,6 +8193,34 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
         AggregateFunction::Min => "MIN",
         AggregateFunction::Max => "MAX",
     }
+}
+
+fn render_aggregate_invocation_sql(
+    function: AggregateFunction,
+    target: &str,
+    distinct: bool,
+) -> String {
+    let distinct_sql = if distinct { "DISTINCT " } else { "" };
+    if function == AggregateFunction::Collect {
+        return format!(
+            "COALESCE(ARRAY_AGG({distinct_sql}{target}) FILTER (WHERE ({target}) IS NOT NULL), make_array())"
+        );
+    }
+    if distinct {
+        match function {
+            AggregateFunction::StdDev => {
+                return format!("SQRT(VAR_SAMP(DISTINCT {target}))");
+            }
+            AggregateFunction::StdDevP => {
+                return format!("SQRT(VAR_POP(DISTINCT {target}))");
+            }
+            _ => {}
+        }
+    }
+    format!(
+        "{}({distinct_sql}{target})",
+        render_aggregate_function(function)
+    )
 }
 
 fn projection_output_alias(projection: &Projection) -> Option<&str> {
@@ -11814,6 +11821,24 @@ relationships: []
             distinct: true,
             alias: "distinct_median_risk".to_string(),
         });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::StdDev,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: true,
+            alias: "distinct_sample_risk".to_string(),
+        });
+        plan.projections.push(Projection::Aggregate {
+            function: AggregateFunction::StdDevP,
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "risk".to_string(),
+            }),
+            distinct: true,
+            alias: "distinct_population_risk".to_string(),
+        });
 
         let translation = graph
             .lower_graph_plan(&plan)
@@ -11824,7 +11849,9 @@ relationships: []
                 "MEDIAN(\"n1\".\"risk_score\") AS \"median_risk\", \
                  STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
                  STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
-                 MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\""
+                 MEDIAN(DISTINCT \"n1\".\"risk_score\") AS \"distinct_median_risk\", \
+                 SQRT(VAR_SAMP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_sample_risk\", \
+                 SQRT(VAR_POP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_population_risk\""
             ),
             "{}",
             translation.sql()

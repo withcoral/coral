@@ -1993,6 +1993,55 @@ async fn cypher_static_node_label_alternatives_numeric_aggregates_after_union() 
 }
 
 #[tokio::test]
+async fn cypher_static_node_label_alternatives_distinct_stddev_after_union() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person|Team)-[:OWNS]->(service:Service) \
+         WHERE owner.name = 'platform' \
+         RETURN owner.name AS owner, \
+                stDev(DISTINCT service.risk) AS sample_risk, \
+                stDevP(DISTINCT service.risk) AS population_risk",
+    )
+    .await
+    .expect("static label alternatives with distinct stddev aggregates should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SQRT(VAR_SAMP(DISTINCT \"__coral_agg_1\")) AS \"sample_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("SQRT(VAR_POP(DISTINCT \"__coral_agg_2\")) AS \"population_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows.len(), 1);
+    let row = rows.first().expect("platform aggregate row should exist");
+    assert_eq!(row.get("owner"), Some(&json!("platform")));
+    assert_close(
+        row["sample_risk"].as_f64().unwrap(),
+        0.035_355_339_059_327_41,
+    );
+    assert_close(
+        row["population_risk"].as_f64().unwrap(),
+        0.024_999_999_999_999_967,
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_node_label_alternatives_aggregate_expressions_after_union() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -14026,15 +14075,30 @@ async fn cypher_statistical_aggregate_projections_execute_against_synthetic_sour
 
     let graph_rows = execution_to_rows(execution.execution());
     let sql_rows = execution_to_rows(&sql_execution);
-    assert_eq!(graph_rows, sql_rows);
-
-    let row = graph_rows
+    assert_eq!(graph_rows.len(), 1);
+    assert_eq!(sql_rows.len(), 1);
+    let graph_row = graph_rows
         .first()
-        .expect("aggregate query should return one row");
-    assert_close(row["sample_risk"].as_f64().unwrap(), 0.282_842_712_474_619);
-    assert_close(row["population_risk"].as_f64().unwrap(), 0.2);
-    assert_close(row["distinct_total_risk"].as_f64().unwrap(), 1.4);
-    assert_close(row["distinct_average_risk"].as_f64().unwrap(), 0.7);
+        .expect("graph aggregate query should return one row");
+    let sql_row = sql_rows
+        .first()
+        .expect("SQL aggregate query should return one row");
+    assert_close(
+        graph_row["sample_risk"].as_f64().unwrap(),
+        sql_row["sample_risk"].as_f64().unwrap(),
+    );
+    assert_close(
+        graph_row["population_risk"].as_f64().unwrap(),
+        sql_row["population_risk"].as_f64().unwrap(),
+    );
+
+    assert_close(
+        graph_row["sample_risk"].as_f64().unwrap(),
+        0.282_842_712_474_619,
+    );
+    assert_close(graph_row["population_risk"].as_f64().unwrap(), 0.2);
+    assert_close(graph_row["distinct_total_risk"].as_f64().unwrap(), 1.4);
+    assert_close(graph_row["distinct_average_risk"].as_f64().unwrap(), 0.7);
 }
 
 #[tokio::test]
@@ -14093,29 +14157,71 @@ async fn cypher_gql_aggregate_function_aliases_execute_against_synthetic_sources
 }
 
 #[tokio::test]
-async fn cypher_distinct_standard_deviation_rejects_before_execution() {
+async fn cypher_distinct_standard_deviation_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
     let source = build_source(ops_manifest(temp.path()));
     let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
 
-    let error = CoralQuery::execute_cypher(
-        &[source],
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
         test_runtime(),
         &graph,
         "MATCH (service:Service) \
-         RETURN stDevP(DISTINCT service.risk) AS population_risk",
+         RETURN stDev(DISTINCT service.risk) AS sample_risk, \
+                stDevP(DISTINCT service.risk) AS population_risk",
     )
     .await
-    .expect_err("distinct standard deviation should fail before execution");
+    .expect("distinct standard-deviation aggregate should execute");
 
     assert!(
-        error.to_string().contains("UNSUPPORTED_CYPHER"),
-        "{error:?}"
+        execution
+            .translated_sql()
+            .contains("SQRT(VAR_SAMP(DISTINCT \"n0\".\"risk_score\")) AS \"sample_risk\""),
+        "{}",
+        execution.translated_sql()
     );
     assert!(
-        error.to_string().contains("stDevP(DISTINCT property)"),
-        "{error:?}"
+        execution
+            .translated_sql()
+            .contains("SQRT(VAR_POP(DISTINCT \"n0\".\"risk_score\")) AS \"population_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT SQRT(VAR_SAMP(DISTINCT risk_score)) AS \"sample_risk\", \
+                SQRT(VAR_POP(DISTINCT risk_score)) AS \"population_risk\" \
+         FROM ops.services",
+    )
+    .await
+    .expect("equivalent SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows.len(), 1);
+    assert_eq!(sql_rows.len(), 1);
+
+    let row = graph_rows
+        .first()
+        .expect("aggregate query should return one row");
+    let sql_row = sql_rows
+        .first()
+        .expect("equivalent aggregate query should return one row");
+    assert_close(
+        row["sample_risk"].as_f64().unwrap(),
+        sql_row["sample_risk"].as_f64().unwrap(),
+    );
+    assert_close(
+        row["population_risk"].as_f64().unwrap(),
+        sql_row["population_risk"].as_f64().unwrap(),
+    );
+    assert_close(row["sample_risk"].as_f64().unwrap(), 0.334_165_627_596_057);
+    assert_close(
+        row["population_risk"].as_f64().unwrap(),
+        0.289_395_922_569_755_6,
     );
 }
 

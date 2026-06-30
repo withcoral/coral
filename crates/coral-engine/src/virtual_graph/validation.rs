@@ -694,16 +694,8 @@ impl<'a> GraphPlanValidator<'a> {
                     )?;
                 }
                 Projection::Aggregate {
-                    function,
-                    target,
-                    distinct,
-                    ..
+                    function, target, ..
                 } => {
-                    Self::validate_aggregate_distinct_support(
-                        *function,
-                        *distinct,
-                        format!("projections[{index}].distinct"),
-                    )?;
                     self.validate_aggregate_target(
                         *function,
                         target,
@@ -3954,30 +3946,6 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
-    fn validate_aggregate_distinct_support(
-        function: AggregateFunction,
-        distinct: bool,
-        path: impl Into<String>,
-    ) -> Result<(), CoreError> {
-        if distinct
-            && matches!(
-                function,
-                AggregateFunction::StdDev | AggregateFunction::StdDevP
-            )
-        {
-            return Err(Diagnostic::new(
-                "UNSUPPORTED_AGGREGATION",
-                path,
-                format!(
-                    "{}(DISTINCT property) is not supported because DataFusion does not execute distinct standard-deviation aggregates",
-                    aggregate_function_name(function)
-                ),
-            )
-            .into_core_error());
-        }
-        Ok(())
-    }
-
     fn validate_aggregate_target(
         &self,
         function: AggregateFunction,
@@ -5830,16 +5798,8 @@ fn validate_union_outer_projection(
             }
             GraphUnionOuterProjectionItem::CountAll { .. } => {}
             GraphUnionOuterProjectionItem::Aggregate {
-                function,
-                source,
-                distinct,
-                ..
+                function, source, ..
             } => {
-                GraphPlanValidator::validate_aggregate_distinct_support(
-                    *function,
-                    *distinct,
-                    format!("outer_projection.items[{index}].distinct"),
-                )?;
                 let source_type = validate_union_outer_projection_source(
                     branch_projection_names,
                     branch_projection_types,
@@ -6528,27 +6488,22 @@ relationships:
     }
 
     #[test]
-    fn validate_graph_plan_rejects_distinct_standard_deviation_aggregates() {
+    fn validate_graph_plan_accepts_distinct_standard_deviation_aggregates() {
         let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
         let mut plan = ownership_plan();
         plan.projections = vec![Projection::Aggregate {
             function: AggregateFunction::StdDevP,
             target: AggregateTarget::Property(PropertyRef {
                 variable: "service".to_string(),
-                property: "risk".to_string(),
+                property: "tier".to_string(),
             }),
             distinct: true,
             alias: "population_risk".to_string(),
         }];
 
-        let error = graph
+        graph
             .validate_graph_plan(&plan)
-            .expect_err("distinct standard deviation aggregate should fail validation");
-
-        assert!(
-            error.to_string().contains("UNSUPPORTED_AGGREGATION"),
-            "{error:?}"
-        );
+            .expect("distinct standard deviation aggregate should validate");
     }
 
     #[test]

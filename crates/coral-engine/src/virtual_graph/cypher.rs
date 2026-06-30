@@ -2634,11 +2634,6 @@ fn compile_static_alternative_outer_aggregate_item(
             "pattern alternatives only support property aggregates after expansion",
         )
     })?;
-    reject_unsupported_distinct_aggregate(
-        function_kind,
-        function.distinct,
-        format!("{item_path}.expression.distinct"),
-    )?;
     let source_expression = compile_static_alternative_outer_aggregate_source_expression(
         function,
         function_kind,
@@ -20563,11 +20558,6 @@ fn compile_aggregate_projection(
             ),
         )
     })?;
-    reject_unsupported_distinct_aggregate(
-        function_kind,
-        function.distinct,
-        format!("{path}.expression.distinct"),
-    )?;
     let target =
         compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
     Ok(Projection::Aggregate {
@@ -22290,28 +22280,6 @@ fn compile_aggregate_function(function: &FunctionInvocation) -> Option<Aggregate
     } else {
         None
     }
-}
-
-fn reject_unsupported_distinct_aggregate(
-    function: AggregateFunction,
-    distinct: bool,
-    path: impl Into<String>,
-) -> Result<(), CoreError> {
-    if distinct
-        && matches!(
-            function,
-            AggregateFunction::StdDev | AggregateFunction::StdDevP
-        )
-    {
-        return Err(unsupported(
-            path,
-            format!(
-                "{}(DISTINCT property) is not supported because DataFusion does not execute distinct standard-deviation aggregates",
-                aggregate_function_name(function)
-            ),
-        ));
-    }
-    Ok(())
 }
 
 fn aggregate_function_name(function: AggregateFunction) -> &'static str {
@@ -47973,20 +47941,24 @@ relationships:
     }
 
     #[test]
-    fn rejects_distinct_standard_deviation_aggregate_projections() {
-        let error = compile_cypher(
+    fn compiles_distinct_standard_deviation_aggregate_projections() {
+        let plan = compile_cypher(
             "MATCH (service:Service) \
              RETURN stDevP(DISTINCT service.risk) AS population_risk",
         )
-        .expect_err("distinct standard-deviation aggregate should be rejected");
+        .expect("distinct standard-deviation aggregate should compile");
 
-        assert!(
-            error.to_string().contains("UNSUPPORTED_CYPHER"),
-            "{error:?}"
-        );
-        assert!(
-            error.to_string().contains("stDevP(DISTINCT property)"),
-            "{error:?}"
+        assert_eq!(
+            plan.projections,
+            vec![Projection::Aggregate {
+                function: super::AggregateFunction::StdDevP,
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                distinct: true,
+                alias: "population_risk".to_string(),
+            }]
         );
     }
 
