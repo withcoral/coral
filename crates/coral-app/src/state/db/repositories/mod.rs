@@ -1,3 +1,4 @@
+pub(crate) mod feedback_reports;
 pub(crate) mod gui_onboarding;
 pub(crate) mod identity_specs;
 pub(crate) mod materializations;

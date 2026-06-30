@@ -183,3 +183,17 @@ pub(in crate::state::db) enum MaterializationSurfaces {
     SemanticIrYaml,
     OperationMetadataYaml,
 }
+
+#[derive(Iden)]
+pub(in crate::state::db) enum FeedbackReports {
+    Table,
+    Id,
+    WorkspaceId,
+    CreatedAtUnixNanos,
+    TryingToDo,
+    Tried,
+    Stuck,
+    PublishStatus,
+    PublishError,
+    PublishedAtUnixNanos,
+}
