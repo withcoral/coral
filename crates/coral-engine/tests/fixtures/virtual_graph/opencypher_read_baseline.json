@@ -28,7 +28,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 4,
     "Where": 24,
-    "With": 14
+    "With": 24
   },
   "scenarios": [
     {
@@ -6012,6 +6012,231 @@
             "person": "Alice",
             "friend": "Carol",
             "since": 2022
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-star-carries-relationship-before-match",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) WITH * MATCH (friend)-[:KNOWS]->(foaf:Person) RETURN p.name AS person, friend.name AS friend, r.since AS since, foaf.name AS foaf ORDER BY person, friend, foaf",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "since": 2020,
+            "foaf": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-computed-expression-before-match",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p, p.age + 5 AS future_age MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, future_age, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "future_age": 39,
+            "friend": "Bob"
+          },
+          {
+            "person": "Alice",
+            "future_age": 39,
+            "friend": "Carol"
+          },
+          {
+            "person": "Bob",
+            "future_age": 34,
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-dropped-variable-retains-prior-match",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[:KNOWS]->(:Person) WITH p MATCH (p)-[:KNOWS]->(later:Person) RETURN p.name AS person, count(later) AS outgoing ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "outgoing": 4
+          },
+          {
+            "person": "Bob",
+            "outgoing": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-node-variable-renaming-before-match",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p AS source MATCH (source)-[:KNOWS]->(friend:Person) RETURN source.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob"
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol"
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-relationship-variable-renaming",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) WITH r AS edge, p, friend RETURN p.name AS person, friend.name AS friend, edge.since AS since ORDER BY since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "since": 2020
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "since": 2021
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "since": 2022
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-chained-computed-aliases",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p, p.age + 1 AS age1 MATCH (p)-[:KNOWS]->(friend:Person) WITH p, friend, age1, age1 + 1 AS age2 WHERE age2 > 35 RETURN p.name AS name, age1, age2, friend.name AS friend ORDER BY name, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age1": 35,
+            "age2": 36,
+            "friend": "Bob"
+          },
+          {
+            "name": "Alice",
+            "age1": 35,
+            "age2": 36,
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-distinct-node-projection",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[:KNOWS]->(:Person) WITH DISTINCT p RETURN p AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "person.__id": 1,
+            "person.__labels": [
+              "Person"
+            ],
+            "person.active": true,
+            "person.age": 34,
+            "person.city": "London",
+            "person.name": "Alice"
+          },
+          {
+            "person.__id": 2,
+            "person.__labels": [
+              "Person"
+            ],
+            "person.active": false,
+            "person.age": 29,
+            "person.city": "",
+            "person.name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-star-adds-scalar-alias-return-star",
+      "feature": "With",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' WITH *, p.age + 1 AS next_age RETURN *",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "next_age": 35,
+            "p.__id": 1,
+            "p.__labels": [
+              "Person"
+            ],
+            "p.active": true,
+            "p.age": 34,
+            "p.city": "London",
+            "p.name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-chain-summary-rejected",
+      "feature": "With",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) WITH p, count(friend) AS friend_count WITH count(p) AS people_with_friends, sum(friend_count) AS total_edges RETURN people_with_friends, total_edges",
+      "expected": {
+        "kind": "error",
+        "contains": "aggregate WITH aliases require staged query planning"
+      }
+    },
+    {
+      "id": "with-scalar-alias-backreference-chain",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p, p.name AS name, p.age AS age MATCH (p)-[:KNOWS]->(friend:Person) WITH name, age, age + 10 AS next_decade, friend RETURN name, age, next_decade, friend.name AS friend ORDER BY name, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34,
+            "next_decade": 44,
+            "friend": "Bob"
+          },
+          {
+            "name": "Alice",
+            "age": 34,
+            "next_decade": 44,
+            "friend": "Carol"
+          },
+          {
+            "name": "Bob",
+            "age": 29,
+            "next_decade": 39,
+            "friend": "Carol"
           }
         ]
       }
