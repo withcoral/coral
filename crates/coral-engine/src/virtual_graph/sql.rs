@@ -10703,6 +10703,12 @@ relationships: []
                 },
                 alias: "risk_log10".to_string(),
             },
+            Projection::Expression {
+                expression: ScalarExpression::IsNaN {
+                    expression: Box::new(service_risk_expression()),
+                },
+                alias: "risk_is_nan".to_string(),
+            },
         ];
         plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
             lhs: ScalarExpression::Log {
@@ -10748,6 +10754,13 @@ relationships: []
             translation
                 .sql()
                 .contains("log10(\"n1\".\"risk_score\") AS \"risk_log10\""),
+            "{}",
+            translation.sql()
+        );
+        assert!(
+            translation
+                .sql()
+                .contains("isnan(\"n1\".\"risk_score\") AS \"risk_is_nan\""),
             "{}",
             translation.sql()
         );
