@@ -23,7 +23,7 @@
     "RowModifiers": 14,
     "ScalarExpressions": 60,
     "TypeConversion": 3,
-    "Union": 4,
+    "Union": 17,
     "Unwind": 13,
     "VariableLengthPaths": 4,
     "Where": 24,
@@ -4614,6 +4614,258 @@
             "category": "senior"
           }
         ]
+      }
+    },
+    {
+      "id": "union-chained-match-branches-removes-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.name = 'Carol' RETURN p.name AS name UNION MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION MATCH (p:Person) WHERE p.name = 'Carol' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-chained-match-branches-preserves-duplicates",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.name = 'Carol' RETURN p.name AS name UNION ALL MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION ALL MATCH (p:Person) WHERE p.name = 'Carol' RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-unwind-branch-duplicates-collapse",
+      "feature": "Union",
+      "query": "UNWIND [2, 1, 2, 3] AS value MATCH (p:Person) WHERE p.name = 'Alice' RETURN value UNION UNWIND [3, 4] AS value MATCH (p:Person) WHERE p.name = 'Alice' RETURN value",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "value": 1
+          },
+          {
+            "value": 2
+          },
+          {
+            "value": 3
+          },
+          {
+            "value": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-unwind-branch-duplicates-preserved",
+      "feature": "Union",
+      "query": "UNWIND [2, 1, 2, 3] AS value MATCH (p:Person) WHERE p.name = 'Alice' RETURN value UNION ALL UNWIND [3, 4] AS value MATCH (p:Person) WHERE p.name = 'Alice' RETURN value",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "value": 2
+          },
+          {
+            "value": 1
+          },
+          {
+            "value": 2
+          },
+          {
+            "value": 3
+          },
+          {
+            "value": 3
+          },
+          {
+            "value": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-overlapping-match-branches-dedupe-rows",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.active RETURN p.name AS name UNION MATCH (p:Person) WHERE p.age >= 34 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-overlapping-match-branches-preserve-rows",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.active RETURN p.name AS name UNION ALL MATCH (p:Person) WHERE p.age >= 34 RETURN p.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-combines-match-and-unwind-branch",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.city = '' RETURN p.name AS name UNION UNWIND ['Alice', 'Bob'] AS name MATCH (p:Person) WHERE p.name = name RETURN name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-combines-match-and-unwind-branch",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.city = '' RETURN p.name AS name UNION ALL UNWIND ['Alice', 'Bob'] AS name MATCH (p:Person) WHERE p.name = name RETURN name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-relationship-branches-dedupe-overlap",
+      "feature": "Union",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' RETURN b.name AS name UNION MATCH (:Person)-[:KNOWS]->(b:Person) WHERE b.name = 'Carol' RETURN b.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-relationship-branches-preserve-overlap",
+      "feature": "Union",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' RETURN b.name AS name UNION ALL MATCH (:Person)-[:KNOWS]->(b:Person) WHERE b.name = 'Carol' RETURN b.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-branch-local-order-limit-preserved",
+      "feature": "Union",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC LIMIT 1 UNION MATCH (p:Person) RETURN p.name AS name ORDER BY p.age ASC LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-all-branch-local-order-skip-limit-preserved",
+      "feature": "Union",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age ASC LIMIT 2 UNION ALL MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC SKIP 1 LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "union-rejects-mismatched-column-names",
+      "feature": "Union",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS left_value UNION MATCH (p:Person) WHERE p.name = 'Bob' RETURN p.name AS right_value",
+      "expected": {
+        "kind": "error",
+        "contains": "UNION branch projections must match the first branch"
       }
     },
     {
