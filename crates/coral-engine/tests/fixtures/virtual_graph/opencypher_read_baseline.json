@@ -10,7 +10,7 @@
     "ListExpressions": 26,
     "LiteralExpressions": 2,
     "MapExpressions": 5,
-    "Match": 3,
+    "Match": 15,
     "MathematicalFunctions": 18,
     "NullSemantics": 3,
     "OptionalMatch": 4,
@@ -292,6 +292,301 @@
             "target": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "match-unlabeled-node-scan",
+      "feature": "Match",
+      "query": "MATCH (p) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-node-cartesian-product",
+      "feature": "Match",
+      "query": "MATCH (a:Person), (b:Person) RETURN a.name AS left, b.name AS right ORDER BY left, right",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "left": "Alice",
+            "right": "Alice"
+          },
+          {
+            "left": "Alice",
+            "right": "Bob"
+          },
+          {
+            "left": "Alice",
+            "right": "Carol"
+          },
+          {
+            "left": "Bob",
+            "right": "Alice"
+          },
+          {
+            "left": "Bob",
+            "right": "Bob"
+          },
+          {
+            "left": "Bob",
+            "right": "Carol"
+          },
+          {
+            "left": "Carol",
+            "right": "Alice"
+          },
+          {
+            "left": "Carol",
+            "right": "Bob"
+          },
+          {
+            "left": "Carol",
+            "right": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-independent-clauses-cartesian-product",
+      "feature": "Match",
+      "query": "MATCH (a:Person) MATCH (b:Person) RETURN a.name AS left, b.name AS right ORDER BY left, right",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "left": "Alice",
+            "right": "Alice"
+          },
+          {
+            "left": "Alice",
+            "right": "Bob"
+          },
+          {
+            "left": "Alice",
+            "right": "Carol"
+          },
+          {
+            "left": "Bob",
+            "right": "Alice"
+          },
+          {
+            "left": "Bob",
+            "right": "Bob"
+          },
+          {
+            "left": "Bob",
+            "right": "Carol"
+          },
+          {
+            "left": "Carol",
+            "right": "Alice"
+          },
+          {
+            "left": "Carol",
+            "right": "Bob"
+          },
+          {
+            "left": "Carol",
+            "right": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-undirected-relationship-orientations",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]-(b:Person) RETURN a.name AS left, b.name AS right ORDER BY left, right",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "left": "Alice",
+            "right": "Bob"
+          },
+          {
+            "left": "Alice",
+            "right": "Carol"
+          },
+          {
+            "left": "Bob",
+            "right": "Alice"
+          },
+          {
+            "left": "Bob",
+            "right": "Carol"
+          },
+          {
+            "left": "Carol",
+            "right": "Alice"
+          },
+          {
+            "left": "Carol",
+            "right": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-two-hop-directed-chain",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a.name AS source, b.name AS middle, c.name AS target ORDER BY source, middle, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "middle": "Bob",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-comma-separated-connected-chain",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person), (b)-[:KNOWS]->(c:Person) RETURN a.name AS source, b.name AS middle, c.name AS target ORDER BY source, middle, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "middle": "Bob",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-relationship-properties-returned",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, r.since AS since, r.strength AS strength ORDER BY since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "since": 2020,
+            "strength": 0.9
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "since": 2021,
+            "strength": 0.7
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "since": 2022,
+            "strength": 0.3
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-anonymous-start-node",
+      "feature": "Match",
+      "query": "MATCH (:Person)-[r:KNOWS]->(target:Person) RETURN target.name AS target, r.since AS since ORDER BY target, since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "target": "Bob",
+            "since": 2020
+          },
+          {
+            "target": "Carol",
+            "since": 2021
+          },
+          {
+            "target": "Carol",
+            "since": 2022
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-return-multiple-bound-variables",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, a.age AS sourceAge, b.name AS target, b.city AS targetCity ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "sourceAge": 34,
+            "target": "Bob",
+            "targetCity": ""
+          },
+          {
+            "source": "Alice",
+            "sourceAge": 34,
+            "target": "Carol",
+            "targetCity": "Paris"
+          },
+          {
+            "source": "Bob",
+            "sourceAge": 29,
+            "target": "Carol",
+            "targetCity": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-closed-pattern-no-rows",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) RETURN a.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "match-count-directed-relationships",
+      "feature": "Match",
+      "query": "MATCH (:Person)-[:KNOWS]->(:Person) RETURN count(*) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "relationships": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "match-duplicate-relationship-variable-rejected",
+      "feature": "Match",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(:Person)-[r:KNOWS]->(a) RETURN a.name AS name",
+      "expected": {
+        "kind": "error",
+        "contains": "variable 'r' is bound more than once"
       }
     },
     {
