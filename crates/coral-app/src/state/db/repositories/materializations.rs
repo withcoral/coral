@@ -29,6 +29,7 @@ pub(crate) struct MaterializationSurfaceRecord {
     pub(crate) source_document_raw: Vec<u8>,
     pub(crate) source_document_yaml: String,
     pub(crate) semantic_ir_yaml: String,
+    pub(crate) operation_metadata_yaml: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -42,6 +43,7 @@ struct JoinedMaterializationRow {
     source_document_raw: Option<Vec<u8>>,
     source_document_yaml: Option<String>,
     semantic_ir_yaml: Option<String>,
+    operation_metadata_yaml: Option<String>,
 }
 
 pub(crate) struct MaterializationsRepo<'a, S> {
@@ -89,6 +91,7 @@ fn materialization_get_statement(
             Surfaces::SourceDocumentRaw,
             Surfaces::SourceDocumentYaml,
             Surfaces::SemanticIrYaml,
+            Surfaces::OperationMetadataYaml,
         ])
         .from(Mats::Table)
         .left_join(
@@ -161,6 +164,11 @@ fn row_surface(
             row.semantic_ir_yaml,
             source_name,
             "semantic_ir_yaml",
+        )?,
+        operation_metadata_yaml: required_surface_field(
+            row.operation_metadata_yaml,
+            source_name,
+            "operation_metadata_yaml",
         )?,
     }))
 }
@@ -244,6 +252,7 @@ where
                 Surfaces::SourceDocumentRaw,
                 Surfaces::SourceDocumentYaml,
                 Surfaces::SemanticIrYaml,
+                Surfaces::OperationMetadataYaml,
             ])
             .values_panic([
                 Expr::val(workspace_name.as_str().to_string()),
@@ -252,6 +261,7 @@ where
                 Expr::val(surface.source_document_raw.clone()),
                 Expr::val(surface.source_document_yaml.clone()),
                 Expr::val(surface.semantic_ir_yaml.clone()),
+                Expr::val(surface.operation_metadata_yaml.clone()),
             ])
             .to_owned();
         self.session.execute(statement).await
@@ -329,7 +339,7 @@ mod tests {
             variables: std::collections::BTreeMap::default(),
             secrets: Vec::new(),
             credential_storage: None,
-            credential_revision: uuid::Uuid::default(),
+            credential_revision: uuid::Uuid::from_u128(1),
             origin: SourceOrigin::Imported,
         };
         let empty_surfaces = MaterializationRecord {
@@ -346,6 +356,7 @@ mod tests {
                 source_document_raw: b"replacement raw".to_vec(),
                 source_document_yaml: "replacement: true\n".to_string(),
                 semantic_ir_yaml: "replacement-ir: true\n".to_string(),
+                operation_metadata_yaml: "replacement-metadata: true\n".to_string(),
             }],
             ..materialization_record("v4-replacement", 22)
         };
@@ -532,12 +543,14 @@ mod tests {
                     source_document_raw: b"mcp raw".to_vec(),
                     source_document_yaml: "mcp: true\n".to_string(),
                     semantic_ir_yaml: "mcp-ir: true\n".to_string(),
+                    operation_metadata_yaml: "mcp-metadata: true\n".to_string(),
                 },
                 MaterializationSurfaceRecord {
                     surface_id: "rest".to_string(),
                     source_document_raw: b"rest raw".to_vec(),
                     source_document_yaml: "rest: true\n".to_string(),
                     semantic_ir_yaml: "rest-ir: true\n".to_string(),
+                    operation_metadata_yaml: "rest-metadata: true\n".to_string(),
                 },
             ],
         }

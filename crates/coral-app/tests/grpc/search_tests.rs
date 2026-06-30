@@ -26,7 +26,9 @@ use tonic::{Code, Request};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::harness::{GrpcHarness, default_workspace, manifest_yaml, source_dir};
+use super::harness::{
+    GrpcHarness, default_workspace, fixture_v4_openapi_manifest_yaml, manifest_yaml, source_dir,
+};
 
 // The old live-scope VALUES CTE bound five fields per surface. At 6,553 surfaces, the
 // count query's two additional fields exceeded bundled SQLite's 32,766-variable limit.
@@ -1348,8 +1350,16 @@ async fn source_scoped_all_clear_does_not_load_manifest_and_bumps_generation() {
             |row| row.get(0),
         )
         .expect("initial source generation");
-    std::fs::remove_file(source_dir(harness.config_dir(), "searchable").join("manifest.yaml"))
-        .expect("remove manifest before clear");
+    let app_db = rusqlite::Connection::open(harness.config_dir().join("coral.db"))
+        .expect("open app database");
+    let deleted = app_db
+        .execute(
+            "DELETE FROM source_manifests WHERE workspace_id = ?1 AND source_name = ?2",
+            ["default", "searchable"],
+        )
+        .expect("remove canonical manifest before clear");
+    assert_eq!(deleted, 1);
+    drop(app_db);
 
     let clear = harness
         .search_client()
@@ -1452,6 +1462,43 @@ async fn source_scoped_clear_leaves_the_other_installed_source_intact() {
         .collect::<Result<Vec<_>, _>>()
         .expect("collect catalog sources");
     assert_eq!(surviving_catalog_sources, ["github_mcp_v4"]);
+}
+
+#[tokio::test]
+async fn search_reads_v4_catalog_from_database_after_legacy_artifacts_are_removed() {
+    let harness = GrpcHarness::new().await;
+    let (manifest_yaml, _) =
+        fixture_v4_openapi_manifest_yaml(harness.temp_path(), "https://example.com");
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+    let legacy_dir = source_dir(harness.config_dir(), "github_v4_query");
+    if legacy_dir.exists() {
+        std::fs::remove_dir_all(&legacy_dir).expect("remove legacy source artifacts");
+    }
+    assert!(!legacy_dir.exists());
+
+    let response = harness
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(default_workspace()),
+            query: "issues title".to_string(),
+            limit: 10,
+        }))
+        .await
+        .expect("search")
+        .into_inner();
+
+    assert_provider_state(
+        &response,
+        SearchProvider::CatalogMetadata,
+        SearchProviderState::ResultsFound,
+    );
+    assert!(response.results.iter().any(|result| {
+        result.surface.as_ref().is_some_and(|surface| {
+            surface.schema_name == "github_v4_query" && surface.name == "issues"
+        })
+    }));
 }
 
 #[tokio::test]

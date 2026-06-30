@@ -36,7 +36,10 @@ use crate::sources::catalog::{
     load_bundled_source, resolve_installed_manifest_from_yaml,
     validate_imported_manifest_database_persistence,
 };
-use crate::sources::materialization::{SourceDiagnosticReporter, SourceLoadDiagnosticStage};
+use crate::sources::materialization::{
+    LoadedV4Materialization, SourceDiagnosticReporter, SourceLoadDiagnosticStage,
+    incompatible_materialization_error, load_v4_materialization_from_record,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::sources::runtime_package::{
     RuntimeContractFingerprint, query_source_from_installed_manifest,
@@ -632,7 +635,7 @@ impl QueryManager {
         let installed_sources = self.installed_sources(workspace_name).await?;
         let sources = self
             .load_query_sources_from_installed(workspace_name, installed_sources)
-            .await;
+            .await?;
         Ok((sources, config))
     }
 
@@ -694,11 +697,37 @@ impl QueryManager {
         resolve_installed_manifest_from_yaml(source, &manifest_yaml)
     }
 
+    async fn load_v4_materialization_for_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        manifest_yaml: &str,
+        manifest: &coral_spec::v4::V4SourceManifest,
+    ) -> Result<LoadedV4Materialization, AppError> {
+        let mut session = self.db.as_ref();
+        let record = session
+            .materializations()
+            .get(workspace_name, &source.name)
+            .await?
+            .ok_or_else(|| {
+                incompatible_materialization_error(&source.name, "required artifact is missing")
+            })?;
+        load_v4_materialization_from_record(
+            &self.layout,
+            workspace_name,
+            &source.name,
+            manifest_yaml,
+            manifest,
+            &record,
+            &self.diagnostic_reporter,
+        )
+    }
+
     async fn load_query_sources_from_installed(
         &self,
         workspace_name: &WorkspaceName,
         installed_sources: Vec<InstalledSource>,
-    ) -> QuerySourceLoad {
+    ) -> Result<QuerySourceLoad, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
             workspace = tracing::field::Empty,
@@ -721,6 +750,7 @@ impl QueryManager {
                         );
                         loaded_sources.push(loaded_source);
                     }
+                    Err(error @ AppError::Database(_)) => return Err(error),
                     Err(error) => {
                         failed_source_names.insert(source.name.to_string());
                         self.diagnostic_reporter.report_source_load_failure(
@@ -732,15 +762,15 @@ impl QueryManager {
                     }
                 }
             }
-            (loaded_sources, failed_source_names)
+            Ok::<_, AppError>((loaded_sources, failed_source_names))
         }
         .instrument(span.clone())
-        .await;
+        .await?;
         span.record("source.count", loaded_sources.len());
-        QuerySourceLoad {
+        Ok(QuerySourceLoad {
             loaded: loaded_sources,
             failed_source_names,
-        }
+        })
     }
 
     async fn load_query_source(
@@ -791,11 +821,24 @@ impl QueryManager {
                 resolved_secrets.insert(secret_name, value.clone());
             }
         }
+        let v4_materialized = if let Some(v4) = source_spec.as_v4() {
+            Some(
+                self.load_v4_materialization_for_source(
+                    workspace_name,
+                    source,
+                    &installed.manifest_yaml,
+                    v4,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let loaded_runtime = query_source_from_installed_manifest(
-            &self.layout,
             workspace_name,
             source,
             &installed,
+            v4_materialized.as_ref(),
             &self.diagnostic_reporter,
             resolved_secrets,
         )?;
@@ -1044,7 +1087,8 @@ impl QueryManager {
                 .map_err(QueryManagerError::App)?;
             let source_load = self
                 .load_query_sources_from_installed(workspace_name, installed_sources)
-                .await;
+                .await
+                .map_err(QueryManagerError::App)?;
             (source_load.loaded, config)
         };
         Ok((loaded_sources, config))

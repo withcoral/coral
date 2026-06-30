@@ -24,11 +24,10 @@ use crate::bootstrap::AppError;
 use crate::hash::sha256_hex;
 use crate::sources::catalog::InstalledSourceManifest;
 use crate::sources::materialization::{
-    SourceDiagnosticReporter, incompatible_materialization_error,
-    load_v4_materialization_with_reporter,
+    LoadedV4Materialization, SourceDiagnosticReporter, incompatible_materialization_error,
+    validate_materialized_surface_base_url,
 };
 use crate::sources::model::InstalledSource;
-use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
 const RUNTIME_CONTRACT_FINGERPRINT_VERSION: u32 = 3;
@@ -120,11 +119,11 @@ pub(crate) fn runtime_contract_fingerprint(
 /// scope code must consume this result instead of independently rebuilding the
 /// runtime contract.
 pub(crate) fn query_source_from_installed_manifest(
-    layout: &AppStateLayout,
-    workspace_name: &WorkspaceName,
+    _workspace_name: &WorkspaceName,
     source: &InstalledSource,
     installed: &InstalledSourceManifest,
-    diagnostic_reporter: &SourceDiagnosticReporter,
+    loaded_v4_materialization: Option<&LoadedV4Materialization>,
+    _diagnostic_reporter: &SourceDiagnosticReporter,
     resolved_secrets: BTreeMap<String, String>,
 ) -> Result<LoadedRuntimeSource, AppError> {
     let source_spec = &installed.source_spec;
@@ -132,15 +131,10 @@ pub(crate) fn query_source_from_installed_manifest(
         let component = if v4.surface.surface_type == SurfaceType::Database {
             Some(runtime_component_for_v4_database_source(v4)?)
         } else {
-            let materialized = load_v4_materialization_with_reporter(
-                layout,
-                workspace_name,
-                &source.name,
-                &installed.manifest_yaml,
-                v4,
-                diagnostic_reporter,
-            )?;
-            runtime_component_for_v4_source(v4, &materialized).map_err(|error| match error {
+            let loaded = loaded_v4_materialization.ok_or_else(|| {
+                incompatible_materialization_error(&source.name, "required artifact is missing")
+            })?;
+            runtime_component_for_loaded_v4_source(v4, loaded).map_err(|error| match error {
                 error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
                 error => incompatible_materialization_error(
                     &source.name,
@@ -181,9 +175,29 @@ pub(crate) fn query_source_from_installed_manifest(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn runtime_component_for_v4_source(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+) -> Result<Option<RuntimeSourceComponent>, AppError> {
+    runtime_component_for_v4_source_inner(manifest, materialized, None)
+}
+
+pub(crate) fn runtime_component_for_loaded_v4_source(
+    manifest: &V4SourceManifest,
+    loaded: &LoadedV4Materialization,
+) -> Result<Option<RuntimeSourceComponent>, AppError> {
+    runtime_component_for_v4_source_inner(
+        manifest,
+        &loaded.materialized,
+        Some(loaded.raw_source_document()),
+    )
+}
+
+fn runtime_component_for_v4_source_inner(
+    manifest: &V4SourceManifest,
+    materialized: &V4MaterializedSource,
+    raw_source_document: Option<&[u8]>,
 ) -> Result<Option<RuntimeSourceComponent>, AppError> {
     if manifest.identity_requirements.is_some() {
         return Err(AppError::UnsupportedV4IdentityRequirements {
@@ -195,7 +209,7 @@ pub(crate) fn runtime_component_for_v4_source(
     }
     match manifest.surface.surface_type {
         SurfaceType::OpenApi => Ok(Some(RuntimeSourceComponent::Http(
-            http_manifest_for_surface(manifest, materialized)?,
+            http_manifest_for_surface(manifest, materialized, raw_source_document)?,
         ))),
         SurfaceType::Mcp => Ok(Some(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(
             manifest,
@@ -235,6 +249,7 @@ fn has_published_projection(materialized: &V4MaterializedSource) -> bool {
 fn http_manifest_for_surface(
     manifest: &V4SourceManifest,
     materialized: &V4MaterializedSource,
+    raw_source_document: Option<&[u8]>,
 ) -> Result<HttpSourceManifest, AppError> {
     let surface = &manifest.surface;
     let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
@@ -320,7 +335,7 @@ fn http_manifest_for_surface(
             description: manifest.common.description.clone(),
             test_queries: Vec::new(),
         },
-        base_url: surface_base_url(manifest, surface, materialized_surface)?,
+        base_url: surface_base_url(manifest, surface, materialized_surface, raw_source_document)?,
         auth: openapi_runtime.auth.clone(),
         request_headers: openapi_runtime.request_headers.clone(),
         rate_limit: openapi_runtime.rate_limit.clone(),
@@ -504,6 +519,7 @@ fn surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     materialized_surface: &coral_spec::v4::MaterializedSurface,
+    raw_source_document: Option<&[u8]>,
 ) -> Result<ParsedTemplate, AppError> {
     let openapi_runtime = surface.openapi_runtime().ok_or_else(|| {
         AppError::FailedPrecondition("DSL v4 surface is not an OpenAPI surface".to_string())
@@ -513,11 +529,15 @@ fn surface_base_url(
         validate_surface_base_url_template(manifest, surface, &base_url, "authored")?;
         return Ok(base_url);
     }
-    let bytes = std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to read materialized OpenAPI surface document: {error}"
-        ))
-    })?;
+    let bytes = match raw_source_document {
+        Some(bytes) => bytes.to_vec(),
+        None => std::fs::read(&materialized_surface.raw_source_document_path).map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to read materialized OpenAPI surface document: {error}"
+            ))
+        })?,
+    };
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface: {error}"
@@ -1821,7 +1841,7 @@ paths: {}
 
         let surface = surface_without_authored_base_url();
         let manifest = manifest_with_surface(surface.clone());
-        let error = surface_base_url(&manifest, &surface, &materialized_surface(openapi))
+        let error = surface_base_url(&manifest, &surface, &materialized_surface(openapi), None)
             .expect_err("runtime token should be rejected");
 
         assert!(

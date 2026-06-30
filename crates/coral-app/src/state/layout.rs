@@ -7,9 +7,9 @@ use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strateg
 use crate::bootstrap::AppError;
 use crate::functions::FunctionName;
 use crate::sources::SourceName;
-use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME,
-};
+#[cfg(test)]
+use crate::sources::materialization::{DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME};
+use crate::sources::materialization::{OPERATION_METADATA_FILENAME, PROJECTIONS_FILENAME};
 use crate::storage::fs::{ensure_dir, remove_file_if_exists};
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
 
@@ -252,6 +252,7 @@ impl AppStateLayout {
             .join(format!("v4.{suffix}"))
     }
 
+    #[cfg(test)]
     pub(crate) fn v4_fingerprint_file(
         &self,
         workspace_name: &WorkspaceName,
@@ -284,6 +285,7 @@ impl AppStateLayout {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn v4_diagnostics_file(
         &self,
         workspace_name: &WorkspaceName,
