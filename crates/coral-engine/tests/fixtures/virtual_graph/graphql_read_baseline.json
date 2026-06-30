@@ -11,7 +11,7 @@
     "RelationshipExistence": 5,
     "RootSelection": 2,
     "RowModifiers": 5,
-    "ScalarFilters": 8
+    "ScalarFilters": 12
   },
   "scenarios": [
     {
@@ -137,6 +137,56 @@
         "kind": "rows",
         "ordered": true,
         "rows": []
+      }
+    },
+    {
+      "id": "scalar-matches-anchored-regex",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { name: { matches: \"^A\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-not-contains-filter",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { city: { notContains: \"ondon\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-not-starts-with-filter",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { name: { notStartsWith: \"A\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "scalar-not-ends-with-filter",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { name: { notEndsWith: \"l\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
       }
     },
     {
