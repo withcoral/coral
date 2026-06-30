@@ -4,6 +4,8 @@ use std::path::PathBuf;
 pub(crate) enum DbError {
     #[error("database configuration is invalid: {0}")]
     Config(String),
+    #[error("database contains invalid data: {0}")]
+    InvalidData(String),
     #[error("database file parent directory is missing for {0}")]
     MissingDatabaseParent(PathBuf),
     #[error(transparent)]
