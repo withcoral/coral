@@ -16,7 +16,7 @@
     "OptionalMatch": 15,
     "Parameters": 3,
     "PathMetadata": 1,
-    "PathValues": 4,
+    "PathValues": 16,
     "PatternComprehension": 2,
     "Quantifiers": 12,
     "RelationshipProperties": 1,
@@ -6650,6 +6650,331 @@
             "reversed_relationships": [
               101
             ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-hop-path-element-id-lists",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a.name AS source, b.name AS middle, c.name AS target, length(path) AS hops, nodes(path) AS nodes, relationships(path) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "middle": "Bob",
+            "target": "Carol",
+            "hops": 2,
+            "nodes": [
+              1,
+              2,
+              3
+            ],
+            "relationships": [
+              100,
+              101
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-hop-path-list-indexes",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN nodes(path)[0] AS first_node, nodes(path)[1] AS middle_node, nodes(path)[2] AS last_node, relationships(path)[0] AS first_relationship, relationships(path)[1] AS second_relationship, relationships(path)[-1] AS last_relationship",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "first_node": 1,
+            "middle_node": 2,
+            "last_node": 3,
+            "first_relationship": 100,
+            "second_relationship": 101,
+            "last_relationship": 101
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-hop-path-list-slices-and-reverse",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN nodes(path)[0..2] AS first_two_nodes, nodes(path)[1..] AS last_two_nodes, relationships(path)[..1] AS first_relationship, relationships(path)[1..] AS last_relationship, reverse(relationships(path)) AS reversed_relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "first_two_nodes": [
+              1,
+              2
+            ],
+            "last_two_nodes": [
+              2,
+              3
+            ],
+            "first_relationship": [
+              100
+            ],
+            "last_relationship": [
+              101
+            ],
+            "reversed_relationships": [
+              101,
+              100
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "one-hop-path-size-functions",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops, size(nodes(path)) AS node_count, size(relationships(path)) AS relationship_count ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-hop-path-size-functions",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN length(path) AS hops, size(nodes(path)) AS node_count, size(relationships(path)) AS relationship_count",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "hops": 2,
+            "node_count": 3,
+            "relationship_count": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "bounded-path-size-functions",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops, size(nodes(path)) AS node_count, size(relationships(path)) AS relationship_count ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2,
+            "node_count": 3,
+            "relationship_count": 2
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1,
+            "node_count": 2,
+            "relationship_count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "bounded-path-endpoint-access",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops, head(nodes(path)) AS source_id, last(nodes(path)) AS target_id, last(relationships(path)) AS final_relationship ORDER BY source, target, hops",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob",
+            "hops": 1,
+            "source_id": 1,
+            "target_id": 2,
+            "final_relationship": 100
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 1,
+            "source_id": 1,
+            "target_id": 3,
+            "final_relationship": 102
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "hops": 2,
+            "source_id": 1,
+            "target_id": 3,
+            "final_relationship": 101
+          },
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "hops": 1,
+            "source_id": 2,
+            "target_id": 3,
+            "final_relationship": 101
+          }
+        ]
+      }
+    },
+    {
+      "id": "path-filter-by-final-relationship",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) WHERE relationships(path)[-1] = 101 RETURN a.name AS source, b.name AS middle, c.name AS target, nodes(path) AS nodes, relationships(path) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "middle": "Bob",
+            "target": "Carol",
+            "nodes": [
+              1,
+              2,
+              3
+            ],
+            "relationships": [
+              100,
+              101
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "path-pattern-with-no-rows",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) RETURN nodes(path) AS nodes, relationships(path) AS relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "path-element-out-of-range-indexes",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN a.name AS source, coalesce(nodes(path)[2], -1) AS missing_node_fallback, coalesce(relationships(path)[1], -1) AS missing_relationship_fallback, coalesce(relationships(path)[-2], -1) AS before_first_relationship_fallback",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "missing_node_fallback": -1,
+            "missing_relationship_fallback": -1,
+            "before_first_relationship_fallback": -1
+          }
+        ]
+      }
+    },
+    {
+      "id": "path-element-negative-slices",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) WHERE a.name = 'Alice' AND b.name = 'Bob' RETURN nodes(path)[-2..] AS all_nodes, nodes(path)[-1..] AS target_only, relationships(path)[-1..] AS all_relationships",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_nodes": [
+              1,
+              2
+            ],
+            "target_only": [
+              2
+            ],
+            "all_relationships": [
+              100
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "zero-hop-path-element-lists",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS*0]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops, size(nodes(path)) AS node_count, size(relationships(path)) AS relationship_count, nodes(path) AS nodes, relationships(path) AS relationships ORDER BY source",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Alice",
+            "hops": 0,
+            "node_count": 1,
+            "relationship_count": 0,
+            "nodes": [
+              1
+            ],
+            "relationships": []
+          },
+          {
+            "source": "Bob",
+            "target": "Bob",
+            "hops": 0,
+            "node_count": 1,
+            "relationship_count": 0,
+            "nodes": [
+              2
+            ],
+            "relationships": []
+          },
+          {
+            "source": "Carol",
+            "target": "Carol",
+            "hops": 0,
+            "node_count": 1,
+            "relationship_count": 0,
+            "nodes": [
+              3
+            ],
+            "relationships": []
           }
         ]
       }
