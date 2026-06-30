@@ -241,6 +241,21 @@ struct StaticReduceSource {
     expression_source: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticListFunctionKind {
+    Filter,
+    Extract,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticListFunctionSource {
+    kind: StaticListFunctionKind,
+    variable: String,
+    collection_source: String,
+    filter_source: Option<String>,
+    map_source: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InlinePropertyValueSource {
     source: String,
@@ -400,6 +415,7 @@ struct CypherCompileContext {
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
     list_comprehension_sources: BTreeMap<(usize, usize), ListComprehensionSource>,
     static_reduce_sources: BTreeMap<(usize, usize), StaticReduceSource>,
+    static_list_function_sources: BTreeMap<(usize, usize), StaticListFunctionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
     inline_property_value_sources: BTreeMap<usize, InlinePropertyValueSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
@@ -421,6 +437,7 @@ impl CypherCompileContext {
             collection_filter_calls: collect_collection_filter_calls(cypher),
             list_comprehension_sources: collect_list_comprehension_sources(cypher),
             static_reduce_sources: collect_static_reduce_sources(cypher),
+            static_list_function_sources: collect_static_list_function_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
             inline_property_value_sources: collect_inline_property_value_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
@@ -469,6 +486,14 @@ impl CypherCompileContext {
 
     fn static_reduce_source(&self, function: &FunctionInvocation) -> Option<&StaticReduceSource> {
         self.static_reduce_sources
+            .get(&(function.span.start, function.span.end))
+    }
+
+    fn static_list_function_source(
+        &self,
+        function: &FunctionInvocation,
+    ) -> Option<&StaticListFunctionSource> {
+        self.static_list_function_sources
             .get(&(function.span.start, function.span.end))
     }
 
@@ -10560,6 +10585,18 @@ fn compile_order_expression_fallback(
     {
         return compile_scalar_order_expression(expression, projections, path);
     }
+    if matches!(
+        expression,
+        Expression::FunctionCall(function)
+            if is_filter_function(function) || is_extract_function(function)
+    ) && let Some(expression) = compile_optional_static_list_scalar_expression(
+        expression,
+        path.clone(),
+        Some(plan),
+        context,
+    )? {
+        return compile_scalar_order_expression(expression, projections, path);
+    }
     compile_order_expression_after_metadata_list_index(
         expression,
         projections,
@@ -11626,6 +11663,11 @@ fn compile_optional_static_list_value(
         Expression::FunctionCall(function) if is_split_function(function) => {
             compile_static_split_list_value(function, path, context).map(Some)
         }
+        Expression::FunctionCall(function)
+            if is_filter_function(function) || is_extract_function(function) =>
+        {
+            compile_static_legacy_list_function_value(function, path, plan, context).map(Some)
+        }
         expression @ Expression::FunctionCall(function) if is_keys_function(function) => {
             if let Some(value) = compile_optional_static_map_keys_list_value(function) {
                 return Ok(Some(value));
@@ -11753,6 +11795,89 @@ fn compile_optional_static_list_comprehension_value(
         mode: PredicateCompileMode::CaseWhen { plan },
     };
     evaluate_static_list_comprehension_value(collection, path, evaluation).map(Some)
+}
+
+fn compile_static_legacy_list_function_value(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<StaticListValue, CoreError> {
+    let path = path.into();
+    let function_name = qualified_function_name(function);
+    let source = context
+        .static_list_function_source(function)
+        .ok_or_else(|| {
+            unsupported(
+                format!("{path}.arguments"),
+                match function_name.to_ascii_lowercase().as_str() {
+                    "filter" => "filter() requires `item IN collection WHERE predicate`",
+                    "extract" => "extract() requires `item IN collection | expression`",
+                    _ => "legacy static list function source could not be recovered",
+                },
+            )
+        })?;
+    let expected_kind = if is_filter_function(function) {
+        StaticListFunctionKind::Filter
+    } else if is_extract_function(function) {
+        StaticListFunctionKind::Extract
+    } else {
+        return Err(CoreError::internal(format!(
+            "unexpected legacy static list function '{function_name}'"
+        )));
+    };
+    if source.kind != expected_kind {
+        return Err(CoreError::internal(format!(
+            "recovered legacy static list function kind did not match '{function_name}'"
+        )));
+    }
+    let Some(collection) = compile_static_list_value_source(
+        &source.collection_source,
+        format!("{path}.collection"),
+        plan,
+        context,
+    )?
+    else {
+        return Err(unsupported(
+            format!("{path}.collection"),
+            format!(
+                "{function_name}() requires a literal list, list parameter, static split(...), range(...), tail(...), extract(...), filter(...), or static labels()/keys() metadata list",
+            ),
+        ));
+    };
+
+    let filter_fragment = source
+        .filter_source
+        .as_deref()
+        .map(|filter_source| {
+            parse_cypher_expression_fragment(filter_source, format!("{path}.filter"), context)
+        })
+        .transpose()?;
+    let map_fragment = source
+        .map_source
+        .as_deref()
+        .map(|map_source| {
+            parse_cypher_expression_fragment(map_source, format!("{path}.map"), context)
+        })
+        .transpose()?;
+    let filter = filter_fragment.as_ref().map(|(filter, _)| filter);
+    let filter_context = filter_fragment
+        .as_ref()
+        .map_or(context, |(_, filter_context)| filter_context);
+    let map = map_fragment.as_ref().map(|(map, _)| map);
+    let map_context = map_fragment
+        .as_ref()
+        .map_or(context, |(_, map_context)| map_context);
+
+    let evaluation = StaticListComprehensionEvaluation {
+        variable: &source.variable,
+        filter,
+        filter_context,
+        map,
+        map_context,
+        mode: PredicateCompileMode::CaseWhen { plan },
+    };
+    evaluate_static_list_comprehension_value(collection, path, evaluation)
 }
 
 fn compile_optional_static_list_comprehension_scalar_expression(
@@ -20893,6 +21018,22 @@ fn collect_static_reduce_sources(cypher: &str) -> BTreeMap<(usize, usize), Stati
         .collect()
 }
 
+fn collect_static_list_function_sources(
+    cypher: &str,
+) -> BTreeMap<(usize, usize), StaticListFunctionSource> {
+    // Legacy Cypher list functions filter(...) and extract(...) have
+    // comprehension-like headers that are not represented as ordinary function
+    // arguments in the typed AST. Recover their source parts from the lossless
+    // CST and compile them through the same static list-comprehension folder.
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::FUNCTION_INVOCATION)
+        .filter_map(|node| static_list_function_source_from_cst(cypher, &node))
+        .collect()
+}
+
 fn collect_unwind_expression_sources(cypher: &str) -> BTreeMap<(usize, usize), String> {
     // decypher's high-level AST can under-represent UNWIND expressions such as
     // `UNWIND ['a'] + $extra AS value`. Recover the full source expression from
@@ -22035,6 +22176,78 @@ fn parse_static_reduce_source(source: &str) -> Option<StaticReduceSource> {
     })
 }
 
+fn static_list_function_source_from_cst(
+    cypher: &str,
+    node: &SyntaxNode,
+) -> Option<((usize, usize), StaticListFunctionSource)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let value = parse_static_list_function_source(source)?;
+    Some(((start, end), value))
+}
+
+fn parse_static_list_function_source(source: &str) -> Option<StaticListFunctionSource> {
+    let open = source.find('(')?;
+    let close = source.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let function_name = source.get(..open)?.trim();
+    let kind = if function_name.eq_ignore_ascii_case("filter") {
+        StaticListFunctionKind::Filter
+    } else if function_name.eq_ignore_ascii_case("extract") {
+        StaticListFunctionKind::Extract
+    } else {
+        return None;
+    };
+
+    let inner = source.get(open + 1..close)?.trim();
+    match kind {
+        StaticListFunctionKind::Filter => parse_static_filter_function_source(inner),
+        StaticListFunctionKind::Extract => parse_static_extract_function_source(inner),
+    }
+}
+
+fn parse_static_filter_function_source(inner: &str) -> Option<StaticListFunctionSource> {
+    let in_index = find_top_level_keyword(inner, "IN")?;
+    let variable = parse_collection_filter_variable(inner.get(..in_index)?.trim())?;
+    let after_in = inner.get(in_index + "IN".len()..)?.trim();
+    let where_index = find_top_level_keyword(after_in, "WHERE")?;
+    let collection_source = after_in.get(..where_index)?.trim();
+    let filter_source = after_in.get(where_index + "WHERE".len()..)?.trim();
+    if collection_source.is_empty() || filter_source.is_empty() {
+        return None;
+    }
+    Some(StaticListFunctionSource {
+        kind: StaticListFunctionKind::Filter,
+        variable,
+        collection_source: collection_source.to_string(),
+        filter_source: Some(filter_source.to_string()),
+        map_source: None,
+    })
+}
+
+fn parse_static_extract_function_source(inner: &str) -> Option<StaticListFunctionSource> {
+    let in_index = find_top_level_keyword(inner, "IN")?;
+    let variable = parse_collection_filter_variable(inner.get(..in_index)?.trim())?;
+    let after_in = inner.get(in_index + "IN".len()..)?.trim();
+    let pipe_index = find_top_level_character(after_in, '|')?;
+    let collection_source = after_in.get(..pipe_index)?.trim();
+    let map_source = after_in.get(pipe_index + 1..)?.trim();
+    if collection_source.is_empty() || map_source.is_empty() {
+        return None;
+    }
+    Some(StaticListFunctionSource {
+        kind: StaticListFunctionKind::Extract,
+        variable,
+        collection_source: collection_source.to_string(),
+        filter_source: None,
+        map_source: Some(map_source.to_string()),
+    })
+}
+
 fn parse_collection_filter_variable(source: &str) -> Option<String> {
     if source.is_empty() {
         return None;
@@ -22994,6 +23207,20 @@ fn is_reduce_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("reduce")
+    )
+}
+
+fn is_filter_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("filter")
+    )
+}
+
+fn is_extract_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("extract")
     )
 }
 
@@ -38351,6 +38578,88 @@ relationships:
                 direction: OrderDirection::Ascending,
                 nulls: None,
             }]
+        );
+    }
+
+    #[test]
+    fn compiles_static_filter_and_extract_list_functions() {
+        let graph = star_test_graph();
+        let plan = compile_cypher_for_graph(
+            &graph,
+            "MATCH (service:Service) \
+             RETURN filter(key IN keys(service) WHERE key <> 'name') AS service_keys_without_name, \
+                    extract(key IN keys(service) | toUpper(key)) AS service_key_tokens, \
+                    extract(x IN filter(x IN [1, 2, 3] WHERE x > 1) | x + 1) AS shifted \
+             ORDER BY filter(key IN keys(service) WHERE key = 'tier')",
+        )
+        .expect("static filter()/extract() list functions should compile");
+
+        assert_eq!(
+            plan.projections,
+            vec![
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::String("tier".to_string())],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_keys_without_name".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![
+                            Literal::String("NAME".to_string()),
+                            Literal::String("TIER".to_string()),
+                        ],
+                        element_type: LiteralListElementType::String,
+                    },
+                    alias: "service_key_tokens".to_string(),
+                },
+                Projection::Expression {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(3), Literal::Integer(4)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "shifted".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            plan.order_by,
+            vec![OrderKey {
+                expression: OrderExpression::Scalar(ScalarExpression::TypedLiteralList {
+                    literals: vec![Literal::String("tier".to_string())],
+                    element_type: LiteralListElementType::String,
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_dynamic_static_filter_and_extract_list_functions() {
+        let dynamic_filter_collection = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN filter(x IN service.name WHERE x <> 'a') AS values",
+        )
+        .expect_err("dynamic filter() collection should be rejected");
+        assert!(
+            dynamic_filter_collection
+                .to_string()
+                .contains("filter() requires a literal list"),
+            "{dynamic_filter_collection}"
+        );
+
+        let dynamic_extract_map = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN extract(x IN [1, 2] | service.name) AS values",
+        )
+        .expect_err("dynamic extract() map should be rejected");
+        assert!(
+            dynamic_extract_map
+                .to_string()
+                .contains("static list comprehension map expressions"),
+            "{dynamic_extract_map}"
         );
     }
 

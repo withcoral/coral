@@ -17011,6 +17011,44 @@ async fn cypher_static_list_comprehensions_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_static_filter_and_extract_functions_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person)-[:OWNS]->(service:Service) \
+         RETURN person.name AS owner, \
+                service.name AS service, \
+                filter(key IN keys(service) WHERE key STARTS WITH 't') AS service_t_keys, \
+                extract(key IN filter(key IN keys(service) WHERE key <> 'id') | toUpper(key)) AS service_key_tokens \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("static filter()/extract() functions should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("make_array('team', 'tier') AS \"service_t_keys\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "service_t_keys": ["team", "tier"], "service_key_tokens": ["ACTIVE", "NAME", "RISK", "TEAM", "TIER"]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "service_t_keys": ["team", "tier"], "service_key_tokens": ["ACTIVE", "NAME", "RISK", "TEAM", "TIER"]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "service_t_keys": ["team", "tier"], "service_key_tokens": ["ACTIVE", "NAME", "RISK", "TEAM", "TIER"]}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_filtered_static_list_comprehensions_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
