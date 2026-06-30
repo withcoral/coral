@@ -18,6 +18,7 @@
     "PathMetadata": 1,
     "PathValues": 4,
     "PatternComprehension": 2,
+    "Quantifiers": 12,
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "ReturnProjection": 12,
@@ -6947,6 +6948,242 @@
             "single_paris": true
           }
         ]
+      }
+    },
+    {
+      "id": "quantifier-basic-literal-predicates",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(x IN [1, 2, 3] WHERE x > 0) AS all_positive, any(x IN [1, 2, 3] WHERE x > 2) AS any_over_two, none(x IN [1, 2, 3] WHERE x > 5) AS none_over_five, single(x IN [1, 2, 3] WHERE x = 2) AS single_two",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_positive": true,
+            "any_over_two": true,
+            "none_over_five": true,
+            "single_two": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-empty-list-vacuous-results",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(x IN range(1, 0) WHERE x > 0) AS all_empty, any(x IN range(1, 0) WHERE x > 0) AS any_empty, none(x IN range(1, 0) WHERE x > 0) AS none_empty, single(x IN range(1, 0) WHERE x > 0) AS single_empty",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_empty": true,
+            "any_empty": false,
+            "none_empty": true,
+            "single_empty": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-boolean-list-predicates",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(flag IN [true, true]) AS all_true, any(flag IN [false, true]) AS any_true, none(flag IN [false, false]) AS none_true, single(flag IN [false, true, false]) AS single_true",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_true": true,
+            "any_true": true,
+            "none_true": true,
+            "single_true": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-string-predicate-families",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(name IN ['Bob', 'Eve'] WHERE size(name) = 3) AS all_three_letters, any(city IN ['London', 'Paris'] WHERE city STARTS WITH 'Par') AS any_starts_par, none(city IN ['Rome', 'Milan'] WHERE city CONTAINS 'x') AS none_contains_x, single(city IN ['London', 'Paris', 'Rome'] WHERE city ENDS WITH 'is') AS single_ends_is",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_three_letters": true,
+            "any_starts_par": true,
+            "none_contains_x": true,
+            "single_ends_is": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-range-thresholds",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(x IN range(1, 3) WHERE x > 0) AS all_positive, any(x IN range(1, 3) WHERE x > 2) AS any_gt_two, none(x IN range(1, 3) WHERE x < 0) AS none_negative, single(x IN range(1, 3) WHERE x = 2) AS single_two",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_positive": true,
+            "any_gt_two": true,
+            "none_negative": true,
+            "single_two": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-metadata-key-predicates",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, all(k IN keys(p) WHERE k IN ['active', 'age', 'city', 'name']) AS keys_declared, any(k IN tail(keys(p)) WHERE k = 'city') AS tail_has_city, none(label IN labels(p) WHERE label = 'Team') AS no_team_label, single(label IN labels(p) WHERE label = 'Person') AS one_person_label ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "keys_declared": true,
+            "tail_has_city": true,
+            "no_team_label": true,
+            "one_person_label": true
+          },
+          {
+            "name": "Bob",
+            "keys_declared": true,
+            "tail_has_city": true,
+            "no_team_label": true,
+            "one_person_label": true
+          },
+          {
+            "name": "Carol",
+            "keys_declared": true,
+            "tail_has_city": true,
+            "no_team_label": true,
+            "one_person_label": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-metadata-ordered-string-predicates",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(k IN keys(p) WHERE k >= 'active') AS all_after_active, any(k IN keys(p) WHERE k > 'city') AS any_after_city, single(k IN keys(p) WHERE k < 'age') AS single_before_age, none(label IN labels(p) WHERE label < 'Person') AS none_label_before_person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_after_active": true,
+            "any_after_city": true,
+            "single_before_age": true,
+            "none_label_before_person": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-optional-coalesce-metadata",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Bob', 'Carol'] OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, any(k IN coalesce(keys(friend), ['fallback']) WHERE k = 'fallback') AS fallback_key, all(k IN coalesce(keys(friend), ['fallback']) WHERE k <> 'deprecated') AS keys_declared, single(k IN coalesce(keys(friend), ['fallback']) WHERE k STARTS WITH 'f') AS single_fallback ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Bob",
+            "fallback_key": false,
+            "keys_declared": true,
+            "single_fallback": false
+          },
+          {
+            "person": "Carol",
+            "fallback_key": true,
+            "keys_declared": true,
+            "single_fallback": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-case-list-branches",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, any(k IN CASE WHEN p.active THEN ['active', 'verified'] ELSE ['inactive'] END WHERE k = 'active') AS active_branch, none(k IN CASE WHEN p.city = '' THEN [] ELSE ['city'] END WHERE k = 'missing') AS no_missing, single(k IN CASE WHEN p.active THEN ['yes'] ELSE ['no', 'maybe'] END WHERE k STARTS WITH 'y') AS one_yes ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "active_branch": true,
+            "no_missing": true,
+            "one_yes": true
+          },
+          {
+            "name": "Bob",
+            "active_branch": false,
+            "no_missing": true,
+            "one_yes": false
+          },
+          {
+            "name": "Carol",
+            "active_branch": true,
+            "no_missing": true,
+            "one_yes": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-parameter-list-predicates",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(age IN $ages WHERE age > 20) AS all_adults, any(age IN $ages WHERE age = 29) AS has_bob_age, none(age IN $ages WHERE age < 0) AS none_negative, single(age IN $ages WHERE age = 34) AS one_alice_age",
+      "parameters": {
+        "ages": [
+          34,
+          29,
+          41
+        ]
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_adults": true,
+            "has_bob_age": true,
+            "none_negative": true,
+            "one_alice_age": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-list-comprehension-source",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN all(x IN [n IN range(1, 3) | n + 1] WHERE x > 1) AS all_shifted, any(x IN [n IN range(1, 5) WHERE n > 1 | n] WHERE x = 4) AS any_four, none(x IN [n IN range(1, 3) | n * n] WHERE x = 2) AS no_square_two, single(x IN [n IN range(1, 3) | n * n] WHERE x = 4) AS single_square_four",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "all_shifted": true,
+            "any_four": true,
+            "no_square_two": true,
+            "single_square_four": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "quantifier-dynamic-collection-rejected",
+      "feature": "Quantifiers",
+      "query": "MATCH (p:Person) WHERE any(city IN p.city WHERE city = 'London') RETURN p.name AS name",
+      "expected": {
+        "kind": "error",
+        "contains": "collection predicates require a literal list, list parameter, static split(...), range(...), tail(...), or static labels()/keys() metadata list"
       }
     },
     {
