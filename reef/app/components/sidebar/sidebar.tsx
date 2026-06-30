@@ -17,6 +17,7 @@ interface SidebarProps {
 
 const NAV_ITEMS = [
   { icon: 'Plug', label: 'Sources', paths: ['/', '/sources'], to: '/sources' },
+  { icon: 'Table2', label: 'Schema', paths: ['/schema'], to: '/schema' },
   { icon: 'Activity', label: 'Traces', paths: ['/traces'], to: '/traces' },
 ] satisfies Array<{ icon: IconName; label: string; paths: string[]; to: string }>
 

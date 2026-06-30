@@ -1,73 +1,23 @@
-import { createVar, fallbackVar, style } from '@vanilla-extract/css'
-import { recipe } from '@vanilla-extract/recipes'
+import { style } from '@vanilla-extract/css'
 
-import { theme } from '@/wax/theme/theme.css'
+import { fontFamily } from '@/wax/theme/font.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
-// The fallback keeps cells styled as the default table style when they're
-// rendered without a Table.Wrapper setting the var.
-const createTableVar = (fallback: string) => {
-  const ref = createVar()
-  return { ref, value: fallbackVar(ref, fallback) }
-}
+export const wrapperCompact = style({
+  border: `1px solid ${theme.stroke.primary}`,
+  borderRadius: 6,
+  overflowX: 'auto',
+})
 
-const tableVars = {
-  cellEdgePaddingInlineEnd: createTableVar('12px'),
-  cellEdgePaddingInlineStart: createTableVar('12px'),
-  cellPaddingBlock: createTableVar('12px'),
-  cellPaddingInline: createTableVar('12px'),
-  headerBorderTop: createTableVar('none'),
-  headerEdgePaddingInlineEnd: createTableVar('12px'),
-  headerEdgePaddingInlineStart: createTableVar('12px'),
-  headerPaddingBlock: createTableVar('12px'),
-  headerPaddingInline: createTableVar('12px'),
-  rowHoverBackground: createTableVar(theme.surface.onMainContent),
-}
-
-export const wrapper = recipe({
-  base: {
-    border: 'none',
-    borderRadius: 0,
-    overflowX: 'auto',
-  },
-  defaultVariants: {
-    tableStyle: 'default',
-  },
-  variants: {
-    tableStyle: {
-      compact: {
-        vars: {
-          [tableVars.cellEdgePaddingInlineEnd.ref]: '12px',
-          [tableVars.cellEdgePaddingInlineStart.ref]: '12px',
-          [tableVars.cellPaddingBlock.ref]: '6px',
-          [tableVars.cellPaddingInline.ref]: '12px',
-          [tableVars.headerBorderTop.ref]: 'none',
-          [tableVars.headerEdgePaddingInlineEnd.ref]: '12px',
-          [tableVars.headerEdgePaddingInlineStart.ref]: '12px',
-          [tableVars.headerPaddingBlock.ref]: '6px',
-          [tableVars.headerPaddingInline.ref]: '12px',
-          [tableVars.rowHoverBackground.ref]: theme.surface.onMainContentSubtle,
-        },
-      },
-      default: {
-        vars: {
-          [tableVars.cellEdgePaddingInlineEnd.ref]: '12px',
-          [tableVars.cellEdgePaddingInlineStart.ref]: '12px',
-          [tableVars.cellPaddingBlock.ref]: '12px',
-          [tableVars.cellPaddingInline.ref]: '12px',
-          [tableVars.headerBorderTop.ref]: 'none',
-          [tableVars.headerEdgePaddingInlineEnd.ref]: '12px',
-          [tableVars.headerEdgePaddingInlineStart.ref]: '12px',
-          [tableVars.headerPaddingBlock.ref]: '12px',
-          [tableVars.headerPaddingInline.ref]: '12px',
-          [tableVars.rowHoverBackground.ref]: theme.surface.onMainContent,
-        },
-      },
-    },
-  },
+export const wrapperDefault = style({
+  overflowX: 'auto',
 })
 
 export const table = style({
   borderCollapse: 'collapse',
+  fontFamily: fontFamily.encodeSans,
+  fontSize: '12px',
+  lineHeight: '16px',
   width: '100%',
 })
 
@@ -79,21 +29,21 @@ export const thead = style({
 })
 
 export const th = style({
-  ...theme.typography.bodyStrong,
   borderBottom: `1px solid ${theme.stroke.primary}`,
-  borderTop: tableVars.headerBorderTop.value,
-  color: theme.content.primary,
-  paddingBlock: tableVars.headerPaddingBlock.value,
-  paddingInline: tableVars.headerPaddingInline.value,
+  color: theme.content.secondary,
+  fontWeight: 500,
+  paddingBlock: 6,
+  paddingInline: 12,
   textAlign: 'left',
   whiteSpace: 'nowrap',
   selectors: {
-    '&:first-child': {
-      paddingInlineStart: tableVars.headerEdgePaddingInlineStart.value,
+    [`${wrapperDefault} &`]: {
+      borderTop: `1px solid ${theme.stroke.primary}`,
+      paddingBlock: 10,
+      paddingInline: 8,
     },
-    '&:last-child': {
-      paddingInlineEnd: tableVars.headerEdgePaddingInlineEnd.value,
-    },
+    [`${wrapperDefault} &:first-child`]: { paddingInlineStart: 32 },
+    [`${wrapperDefault} &:last-child`]: { paddingInlineEnd: 32 },
   },
 })
 
@@ -101,39 +51,51 @@ export const tbody = style({})
 
 export const tr = style({
   borderBottom: `1px solid ${theme.stroke.primary}`,
-  transition: 'background-color 0.1s ease',
+  transition: animation.colorTransition,
   selectors: {
     'tbody &:hover': {
-      backgroundColor: tableVars.rowHoverBackground.value,
+      backgroundColor: theme.surface.onMainContentSubtle,
+    },
+    [`${wrapperDefault} tbody &:hover`]: {
+      backgroundColor: theme.surface.onMainContent,
+    },
+    '&:last-child': {
+      borderBottom: 0,
     },
   },
 })
 
-// Shared layout for both cell variants — they differ only by typography token.
-const cellLayout = {
-  color: theme.content.secondary,
-  maxWidth: '250px',
+export const td = style({
+  fontFamily: fontFamily.dmMono,
+  maxWidth: 280,
   overflow: 'hidden',
-  paddingBlock: tableVars.cellPaddingBlock.value,
-  paddingInline: tableVars.cellPaddingInline.value,
+  paddingBlock: 5,
+  paddingInline: 12,
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
   selectors: {
-    '&:first-child': {
-      paddingInlineStart: tableVars.cellEdgePaddingInlineStart.value,
+    [`${wrapperDefault} &`]: {
+      paddingBlock: 8,
+      paddingInline: 8,
     },
-    '&:last-child': {
-      paddingInlineEnd: tableVars.cellEdgePaddingInlineEnd.value,
-    },
+    [`${wrapperDefault} &:first-child`]: { paddingInlineStart: 32 },
+    [`${wrapperDefault} &:last-child`]: { paddingInlineEnd: 32 },
   },
-} as const
-
-export const td = style({
-  ...cellLayout,
-  ...theme.typography.codeInline,
 })
 
 export const tdText = style({
-  ...cellLayout,
-  ...theme.typography.body,
+  maxWidth: 320,
+  overflow: 'hidden',
+  paddingBlock: 5,
+  paddingInline: 12,
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  selectors: {
+    [`${wrapperDefault} &`]: {
+      paddingBlock: 8,
+      paddingInline: 8,
+    },
+    [`${wrapperDefault} &:first-child`]: { paddingInlineStart: 32 },
+    [`${wrapperDefault} &:last-child`]: { paddingInlineEnd: 32 },
+  },
 })

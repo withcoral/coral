@@ -42,7 +42,6 @@ export function Pill<T extends ElementType = 'div'>({
   title,
   ...rest
 }: PillProps<T>) {
-  // Separate icons from text content for proper truncation
   const icons: React.ReactNode[] = []
   const textParts: React.ReactNode[] = []
 

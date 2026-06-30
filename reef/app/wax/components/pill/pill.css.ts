@@ -170,5 +170,4 @@ export const colorVariants = styleVariants({
   },
 })
 
-// Combined style for mention pills (used in search bar)
 export const mentionPill = `${basePill} ${sizeVariants.default} ${colorVariants.mention}`
