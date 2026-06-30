@@ -155,6 +155,46 @@ jobs:
       - name: Run make rust-checks
         run: make rust-checks
 
+  postgres-repository-tests:
+    name: Postgres repository tests
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_checks == 'true' }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: coral-postgres-${{ runner.os }}
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run Postgres repository tests
+        env:
+          CORAL_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: |
+          cargo test --locked -p coral-app \
+            state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
+            -- --ignored
+
   windows-rust-smoke:
     name: Windows Rust smoke
     runs-on: windows-latest

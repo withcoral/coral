@@ -23,6 +23,11 @@ pub(crate) fn discover_app_state_layout(
     env::AppEnvironment::discover().app_state_layout(config_dir_override)
 }
 
+#[cfg(test)]
+pub(crate) fn env_var(name: &str) -> Option<String> {
+    env::AppEnvironment::env_var(name)
+}
+
 /// Loads installed source names for the default workspace from local config only.
 ///
 /// This is intentionally narrower than starting the local server and calling

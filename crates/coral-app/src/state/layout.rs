@@ -58,6 +58,10 @@ impl AppStateLayout {
         &self.config_dir
     }
 
+    pub(crate) fn database_file(&self) -> PathBuf {
+        self.config_dir.join("coral.db")
+    }
+
     pub(crate) fn state_lock(&self) -> &Path {
         &self.state_lock
     }
@@ -209,6 +213,7 @@ mod tests {
         let source_name = SourceName::parse("github").expect("source");
 
         assert_eq!(layout.config_file(), config_dir.join("config.toml"));
+        assert_eq!(layout.database_file(), config_dir.join("coral.db"));
         assert_eq!(
             layout.manifest_file(&workspace_name, &source_name),
             config_dir

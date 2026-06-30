@@ -8,6 +8,7 @@
 
 use coral_api::v1::ListSourcesRequest;
 use coral_client::{AppClient, default_workspace, local::ServerBuilder};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -22,6 +23,7 @@ async fn server_lifecycle_can_repeat_within_process() {
             .start()
             .await
             .expect("start server");
+        assert_default_sqlite_db_is_migrated(&config_dir).await;
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
@@ -39,4 +41,25 @@ async fn server_lifecycle_can_repeat_within_process() {
 
         server.shutdown().await.expect("shutdown server");
     }
+}
+
+async fn assert_default_sqlite_db_is_migrated(config_dir: &std::path::Path) {
+    let database_file = config_dir.join("coral.db");
+    assert!(
+        database_file.exists(),
+        "default SQLite database should exist"
+    );
+
+    let options = SqliteConnectOptions::new().filename(&database_file);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .expect("open created SQLite database");
+    let table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect migrated schema");
+    assert_eq!(table_count, 1, "workspaces table should be migrated");
 }

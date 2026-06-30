@@ -39,6 +39,10 @@ impl AppEnvironment {
             ..QueryRuntimeContext::default()
         }
     }
+
+    pub(crate) fn env_var(name: &str) -> Option<String> {
+        env_var(name)
+    }
 }
 
 #[expect(
@@ -47,6 +51,14 @@ impl AppEnvironment {
 )]
 fn coral_config_dir_override() -> Option<PathBuf> {
     std::env::var_os(CORAL_CONFIG_DIR).map(PathBuf::from)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 #[cfg(test)]
