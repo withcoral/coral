@@ -6,7 +6,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
-use crate::state::db::{CoralTx, DbError, DbSession};
+use crate::state::db::{DbError, DbSession, DbWriteSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -31,6 +31,11 @@ struct SourceVariableRow {
 #[derive(Debug, sqlx::FromRow)]
 struct SourceSecretKeyRow {
     key: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SourceNameRow {
+    name: String,
 }
 
 pub(crate) struct SourcesRepo<'a, S> {
@@ -72,12 +77,14 @@ where
         &mut self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<String>, DbError> {
-        Ok(self
-            .list_workspace_sources(workspace_name)
-            .await?
-            .into_iter()
-            .map(|source| source.name.as_str().to_string())
-            .collect())
+        let statement = Query::select()
+            .column(Sources::Name)
+            .from(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .order_by(Sources::Name, Order::Asc)
+            .to_owned();
+        let rows: Vec<SourceNameRow> = self.session.fetch_all(statement).await?;
+        Ok(rows.into_iter().map(|row| row.name).collect())
     }
 
     pub(crate) async fn get_source(
@@ -175,7 +182,10 @@ where
     }
 }
 
-impl<'a> SourcesRepo<'a, CoralTx<'_>> {
+impl<S> SourcesRepo<'_, S>
+where
+    S: DbWriteSession,
+{
     pub(crate) async fn upsert_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -396,6 +406,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_repository_rejects_source_without_workspace_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        let workspace = unique_workspace();
+        let source = source("orphan", None, [], [], None, SourceOrigin::Bundled);
+        let mut tx = db.begin().await.expect("begin tx");
+
+        let error = tx
+            .sources()
+            .upsert_source(&workspace, &source, 10)
+            .await
+            .expect_err("source rows must require an existing workspace");
+
+        assert!(
+            error.to_string().to_lowercase().contains("foreign key"),
+            "unexpected error: {error}"
+        );
+        tx.rollback().await.expect("rollback failed tx");
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
@@ -493,15 +525,7 @@ mod tests {
         assert_eq!(get_source(db, &workspace, &rolled_back.name).await, None);
 
         let zeta_name = zeta.name.clone();
-        let mut tx = db.begin().await.expect("begin remove tx");
-        assert_eq!(
-            tx.sources()
-                .remove_source(&workspace, &zeta_name)
-                .await
-                .expect("remove source"),
-            Some(zeta)
-        );
-        tx.commit().await.expect("commit remove");
+        assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
     }
 
@@ -534,6 +558,21 @@ mod tests {
             .get_source(workspace, source_name)
             .await
             .expect("get source")
+    }
+
+    async fn remove_source(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        let mut tx = db.begin().await.expect("begin remove tx");
+        let removed = tx
+            .sources()
+            .remove_source(workspace, source_name)
+            .await
+            .expect("remove source");
+        tx.commit().await.expect("commit remove tx");
+        removed
     }
 
     fn source<const VARIABLES: usize, const SECRETS: usize>(

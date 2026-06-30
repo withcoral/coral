@@ -76,7 +76,9 @@ mod tests {
     use crate::bootstrap;
     use crate::state::AppStateLayout;
     use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
-    use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
+    use crate::state::db::{
+        CoralDb, DatabaseConfig, DbError, DbSession, DbWriteSession, ResolvedDatabaseConfig,
+    };
 
     #[derive(Debug, sqlx::FromRow)]
     struct CountRow {
@@ -151,7 +153,7 @@ mod tests {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace_id = format!("workspace_{suffix}");
         let source_name = format!("source_{suffix}");
-        let mut session = db;
+        let mut session = db.begin().await.expect("begin migration contract tx");
 
         insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
             .await
@@ -224,6 +226,10 @@ mod tests {
                 .expect("count secret keys after workspace delete"),
             0
         );
+        session
+            .rollback()
+            .await
+            .expect("rollback migration contract tx");
     }
 
     async fn insert_source_catalog_rows<S>(
@@ -387,7 +393,7 @@ mod tests {
         source_name: &str,
     ) -> Result<(), DbError>
     where
-        S: DbSession,
+        S: DbWriteSession,
     {
         session
             .execute_delete(
@@ -402,7 +408,7 @@ mod tests {
 
     async fn delete_workspace<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>
     where
-        S: DbSession,
+        S: DbWriteSession,
     {
         session
             .execute_delete(
