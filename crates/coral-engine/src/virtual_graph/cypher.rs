@@ -235,6 +235,7 @@ struct ListComprehensionSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PatternComprehensionSource {
     collect_query_source: String,
+    count_query_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18246,6 +18247,16 @@ fn compile_character_length_scalar_expression(
     )? {
         return Ok(length);
     }
+    if is_size_function(function)
+        && let Some(length) = compile_optional_pattern_comprehension_size_scalar_expression(
+            argument,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?
+    {
+        return Ok(length);
+    }
     let function_name = qualified_function_name(function);
     Ok(ScalarExpression::CharacterLength {
         expression: Box::new(compile_single_scalar_function_argument(
@@ -18256,6 +18267,32 @@ fn compile_character_length_scalar_expression(
             context,
         )?),
     })
+}
+
+fn compile_optional_pattern_comprehension_size_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_pattern_comprehension_size_scalar_expression(
+                inner, path, mode, context,
+            )
+        }
+        Expression::PatternComprehension(comprehension) => {
+            compile_pattern_comprehension_count_scalar_expression(
+                comprehension,
+                path,
+                mode.static_metadata_plan(),
+                context,
+            )
+            .map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn compile_optional_metadata_list_length_scalar_expression(
@@ -21312,8 +21349,14 @@ fn parse_pattern_comprehension_source(source: &str) -> Option<PatternComprehensi
     } else {
         format!("MATCH {pattern_source} WHERE {where_source} RETURN {map_source}")
     };
+    let count_query_source = if where_source.is_empty() {
+        format!("MATCH {pattern_source} RETURN 1")
+    } else {
+        format!("MATCH {pattern_source} WHERE {where_source} RETURN 1")
+    };
     Some(PatternComprehensionSource {
         collect_query_source,
+        count_query_source,
     })
 }
 
@@ -23995,6 +24038,48 @@ fn compile_pattern_comprehension_scalar_expression(
     })
 }
 
+fn compile_pattern_comprehension_count_scalar_expression(
+    comprehension: &decypher::ast::expr::PatternComprehension,
+    path: impl Into<String>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let Some(source) = context.pattern_comprehension_source(comprehension) else {
+        return Err(unsupported(
+            path,
+            "pattern comprehensions require recoverable source text",
+        ));
+    };
+    let query = decypher::parse(&source.count_query_source).map_err(|error| {
+        Diagnostic::new(
+            "CYPHER_PARSE_ERROR",
+            path.clone(),
+            format!("could not parse pattern comprehension count recovery: {error}"),
+        )
+        .into_core_error()
+    })?;
+    let regular_query = regular_query_from_single_statement(query, &path)?;
+    let fragment_context = CypherCompileContext::from_source_with_parameters_and_graph(
+        &source.count_query_source,
+        context.parameters.clone(),
+        context.graph.clone(),
+        BTreeMap::new(),
+    );
+    let (pattern, distinct_target) = compile_regular_query_count_subquery(
+        &regular_query,
+        path.clone(),
+        plan,
+        &fragment_context,
+        "pattern comprehensions",
+        "pattern comprehensions require a relationship pattern",
+    )?;
+    Ok(ScalarExpression::CountSubquery {
+        pattern: Box::new(pattern),
+        distinct_target: distinct_target.map(Box::new),
+    })
+}
+
 #[derive(Debug)]
 struct CompiledScopedPlan<'a> {
     plan: GraphPlan,
@@ -24731,6 +24816,18 @@ fn compile_is_empty_predicate(
         argument,
         format!("{path}.arguments[0]"),
         plan,
+        context,
+    )? {
+        return Ok(ScalarPredicate {
+            lhs: length,
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+        });
+    }
+    if let Some(length) = compile_optional_pattern_comprehension_size_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
         context,
     )? {
         return Ok(ScalarPredicate {
@@ -41349,6 +41446,59 @@ relationships:
                 && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
                     if pattern.relationships.len() == 1)
                 && matches!(target.as_ref(), ScalarExpression::Literal(Literal::Integer(1)))
+        ));
+    }
+
+    #[test]
+    fn compiles_pattern_comprehension_size_as_count_subquery() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             RETURN size([(service)-[:DEPENDS_ON]->(target:Service) | target]) AS dependency_count",
+        )
+        .expect("pattern comprehension size should compile through count lowering");
+
+        assert!(matches!(
+            plan.projections.as_slice(),
+            [Projection::Expression {
+                expression:
+                    ScalarExpression::CountSubquery {
+                        pattern,
+                        distinct_target: None,
+                    },
+                alias,
+            }] if alias == "dependency_count"
+                && matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                    if pattern.relationships.len() == 1)
+        ));
+    }
+
+    #[test]
+    fn compiles_pattern_comprehension_is_empty_as_count_predicate() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE isEmpty([(service)-[:DEPENDS_ON]->(target:Service) \
+                            WHERE target.tier = 'prod' | target]) \
+             RETURN service.name AS service",
+        )
+        .expect("pattern comprehension isEmpty should compile through count lowering");
+
+        assert!(matches!(
+            plan.predicate,
+            Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::CountSubquery {
+                    pattern,
+                    distinct_target: None,
+                },
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(0))),
+            })) if matches!(pattern.as_ref(), CountSubqueryPattern::Relationships(pattern)
+                if pattern.relationships.len() == 1
+                    && pattern.predicates.iter().any(|predicate| {
+                        predicate.property.variable == "target"
+                            && predicate.property.property == "tier"
+                            && predicate.operator == ComparisonOperator::Equal
+                            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+                    }))
         ));
     }
 

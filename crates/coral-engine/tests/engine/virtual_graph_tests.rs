@@ -5722,6 +5722,56 @@ async fn cypher_collect_subqueries_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_pattern_comprehension_size_and_is_empty_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE isEmpty([(service)-[:DEPENDS_ON]->(target:Service) \
+                        WHERE target.tier = 'prod' | target]) \
+         RETURN service.name AS service, \
+                size([(service)-[:DEPENDS_ON]->(target:Service) | target]) AS dependency_count \
+         ORDER BY service",
+    )
+    .await
+    .expect("Cypher pattern comprehension size and isEmpty should execute");
+
+    assert!(
+        execution.translated_sql().contains("COUNT(*)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("NOT EXISTS"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({
+                "service": "deployments",
+                "dependency_count": 1
+            }),
+            json!({
+                "service": "experiments",
+                "dependency_count": 0
+            }),
+            json!({
+                "service": "legacy-sync",
+                "dependency_count": 0
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_noop_return_inside_scoped_subqueries_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

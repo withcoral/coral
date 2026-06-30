@@ -15,7 +15,7 @@
     "NullSemantics": 3,
     "OptionalMatch": 4,
     "Parameters": 3,
-    "PatternComprehension": 1,
+    "PatternComprehension": 2,
     "PathMetadata": 1,
     "PathValues": 4,
     "RelationshipProperties": 1,
@@ -886,6 +886,19 @@
           { "name": "Alice", "recent_friends": ["Carol"] },
           { "name": "Bob", "recent_friends": ["Carol"] },
           { "name": "Carol", "recent_friends": [] }
+        ]
+      }
+    },
+    {
+      "id": "pattern-comprehension-size-and-is-empty",
+      "feature": "PatternComprehension",
+      "query": "MATCH (p:Person) WHERE isEmpty([(p)-[:KNOWS]->(friend:Person) WHERE friend.name = 'Bob' | friend]) RETURN p.name AS person, size([(p)-[:KNOWS]->(friend:Person) | friend]) AS friend_count ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Bob", "friend_count": 1 },
+          { "person": "Carol", "friend_count": 0 }
         ]
       }
     },
