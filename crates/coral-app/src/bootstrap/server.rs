@@ -54,6 +54,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
+use crate::state::db::import_filesystem_feedback_reports;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -271,6 +272,7 @@ impl ServerBuilder {
             .then_some(installed_trace_store)
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
+        import_filesystem_feedback_reports(&coral_db, &layout).await?;
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -290,8 +292,11 @@ impl ServerBuilder {
             active_trace_store_dir.clone(),
             workspace_lifecycle_lock,
         );
-        let feedback_manager =
-            FeedbackManager::with_publisher(layout.clone(), self.config.feedback_publisher);
+        let feedback_manager = FeedbackManager::with_db(
+            layout.clone(),
+            self.config.feedback_publisher,
+            Arc::clone(&coral_db),
+        );
         let episode_store = EpisodeStore::new(layout.clone());
         let body_capture_max_bytes = telemetry_config
             .trace_history

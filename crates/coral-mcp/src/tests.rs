@@ -22,6 +22,7 @@ use rmcp::{
     service::RunningService,
 };
 use serde_json::{Map, Value, json};
+use sqlx::{Row, sqlite::SqliteConnectOptions};
 use tempfile::TempDir;
 use tonic::Request;
 
@@ -1410,25 +1411,12 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
     assert_eq!(structured["message"], "Feedback report stored.");
     assert!(structured.get("upload").is_none());
 
-    let raw = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
+    let db = open_feedback_database(&temp).await;
+    assert_feedback_row_matches(
+        &db,
+        structured["feedback_id"].as_str().expect("feedback id"),
     )
-    .expect("feedback file should exist");
-    let records = raw.lines().collect::<Vec<_>>();
-    assert_eq!(records.len(), 1);
-    let record: Value = serde_json::from_str(records[0]).expect("feedback JSONL should parse");
-    assert_eq!(record["id"], structured["feedback_id"]);
-    assert_eq!(record["workspace"], "default");
-    assert_eq!(record["trying_to_do"], "Fix failing tests");
-    assert_eq!(
-        record["tried"],
-        "Ran cargo test and inspected the failing assertion"
-    );
-    assert_eq!(
-        record["stuck"],
-        "The fixture shape does not match the documented contract"
-    );
+    .await;
 
     let blank_feedback = client
         .call_tool(
@@ -1446,14 +1434,43 @@ async fn mcp_feedback_tool_persists_blocked_agent_report() {
             .contains("missing string argument 'tried'")
     );
 
-    let raw_after_error = fs::read_to_string(
-        temp.path()
-            .join("coral-config/workspaces/default/feedback/reports.jsonl"),
-    )
-    .expect("feedback file should still exist");
-    assert_eq!(raw_after_error.lines().count(), 1);
+    let count = sqlx::query("select count(*) as count from feedback_reports")
+        .fetch_one(&db)
+        .await
+        .expect("count feedback rows")
+        .get::<i64, _>("count");
+    assert_eq!(count, 1);
 
     session.shutdown().await;
+}
+
+async fn open_feedback_database(temp: &TempDir) -> sqlx::SqlitePool {
+    sqlx::SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(temp.path().join("coral-config/coral.db"))
+            .create_if_missing(false),
+    )
+    .await
+    .expect("open feedback database")
+}
+
+async fn assert_feedback_row_matches(db: &sqlx::SqlitePool, feedback_id: &str) {
+    let record =
+        sqlx::query("select id, workspace_id, trying_to_do, tried, stuck from feedback_reports")
+            .fetch_one(db)
+            .await
+            .expect("feedback row should exist");
+    assert_eq!(record.get::<String, _>("id"), feedback_id);
+    assert_eq!(record.get::<String, _>("workspace_id"), "default");
+    assert_eq!(record.get::<String, _>("trying_to_do"), "Fix failing tests");
+    assert_eq!(
+        record.get::<String, _>("tried"),
+        "Ran cargo test and inspected the failing assertion"
+    );
+    assert_eq!(
+        record.get::<String, _>("stuck"),
+        "The fixture shape does not match the documented contract"
+    );
 }
 
 #[tokio::test]

@@ -75,7 +75,13 @@ async fn open_initialized_database(
 ) -> Result<CoralDb, AppError> {
     let db = open_bootstrap_db(layout).await?;
     db.migrate().await?;
-    import_config_source_catalog(&db, config_store, layout, now_unix_nanos_i64()?).await?;
+    let now_unix_nanos = now_unix_nanos_i64()?;
+    import_config_source_catalog(&db, config_store, layout, now_unix_nanos).await?;
+    let mut tx = db.begin().await?;
+    tx.workspaces()
+        .ensure(WorkspaceName::default().as_str(), now_unix_nanos)
+        .await?;
+    tx.commit().await?;
     Ok(db)
 }
 

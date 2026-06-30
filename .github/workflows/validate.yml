@@ -214,6 +214,9 @@ jobs:
             state::db::repositories::feedback_reports::tests::feedback_report_repository_round_trips_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
+            state::db::import::tests::concurrent_feedback_report_import_race_is_benign_postgres \
+            -- --ignored
+          cargo test --locked -p coral-app \
             state::db::migrations::tests::source_catalog_migration_contract_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \

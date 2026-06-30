@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -9,6 +10,7 @@ use crate::feedback::publisher::FeedbackPublisher;
 #[cfg(test)]
 use crate::feedback::publisher::NoopFeedbackPublisher;
 use crate::state::AppStateLayout;
+use crate::state::db::{CoralDb, DbRepos, FeedbackReportRecord};
 use crate::storage::fs::{self as storage_fs, FileLock};
 use crate::workspaces::WorkspaceName;
 
@@ -69,6 +71,7 @@ struct PersistedFeedbackReport<'a> {
 pub(crate) struct FeedbackManager {
     layout: AppStateLayout,
     publisher: Arc<dyn FeedbackPublisher>,
+    catalog_db: Option<Arc<CoralDb>>,
 }
 
 impl FeedbackManager {
@@ -77,11 +80,28 @@ impl FeedbackManager {
         Self::with_publisher(layout, Arc::new(NoopFeedbackPublisher))
     }
 
+    #[cfg(test)]
     pub(crate) fn with_publisher(
         layout: AppStateLayout,
         publisher: Arc<dyn FeedbackPublisher>,
     ) -> Self {
-        Self { layout, publisher }
+        Self {
+            layout,
+            publisher,
+            catalog_db: None,
+        }
+    }
+
+    pub(crate) fn with_db(
+        layout: AppStateLayout,
+        publisher: Arc<dyn FeedbackPublisher>,
+        catalog_db: Arc<CoralDb>,
+    ) -> Self {
+        Self {
+            layout,
+            publisher,
+            catalog_db: Some(catalog_db),
+        }
     }
 
     pub(crate) fn submit_feedback(
@@ -113,6 +133,19 @@ impl FeedbackManager {
     }
 
     fn append_report(&self, report: &FeedbackReport) -> Result<(), AppError> {
+        if let Some(db) = self.catalog_db.clone() {
+            let workspace = report.workspace.clone();
+            let record = feedback_record(report)?;
+            return run_feedback_db_operation(async move {
+                let mut tx = db.begin().await?;
+                if tx.workspaces().get(workspace.as_str()).await?.is_none() {
+                    return Err(AppError::WorkspaceNotFound(workspace.to_string()));
+                }
+                tx.feedback_reports().append(&workspace, &record).await?;
+                tx.commit().await?;
+                Ok(())
+            });
+        }
         let _lock = FileLock::exclusive(self.layout.state_lock())?;
         let file = self.layout.feedback_reports_file(&report.workspace);
         let persisted = PersistedFeedbackReport {
@@ -128,6 +161,55 @@ impl FeedbackManager {
         storage_fs::append_file_private(&file, &line)?;
         Ok(())
     }
+}
+
+fn feedback_record(report: &FeedbackReport) -> Result<FeedbackReportRecord, AppError> {
+    let created_at_unix_nanos = report.created_at.timestamp_nanos_opt().ok_or_else(|| {
+        AppError::FailedPrecondition("feedback timestamp exceeds nanosecond range".to_string())
+    })?;
+    Ok(FeedbackReportRecord {
+        id: report.id.clone(),
+        created_at_unix_nanos,
+        trying_to_do: report.trying_to_do.clone(),
+        tried: report.tried.clone(),
+        stuck: report.stuck.clone(),
+        publish_status: None,
+        publish_error: None,
+        published_at_unix_nanos: None,
+    })
+}
+
+fn run_feedback_db_operation<T, F>(operation: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T, AppError>> + Send + 'static,
+{
+    fn run_on_runtime<T, F>(operation: F) -> Result<T, AppError>
+    where
+        F: Future<Output = Result<T, AppError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!(
+                    "failed to create feedback database runtime: {error}"
+                ))
+            })?;
+        runtime.block_on(operation)
+    }
+
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || run_on_runtime(operation))
+            .join()
+            .map_err(|_panic| {
+                AppError::FailedPrecondition(
+                    "feedback database operation thread panicked".to_string(),
+                )
+            })?;
+    }
+
+    run_on_runtime(operation)
 }
 
 fn required_text(field: &str, value: &str) -> Result<String, AppError> {
@@ -153,8 +235,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{FeedbackManager, FeedbackReport, FeedbackUpload};
-    use crate::feedback::publisher::FeedbackPublisher;
+    use crate::feedback::publisher::{FeedbackPublisher, NoopFeedbackPublisher};
     use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
 
     #[tokio::test]
@@ -205,6 +288,95 @@ mod tests {
             error
                 .to_string()
                 .contains("missing string argument 'tried'")
+        );
+        assert!(!layout.feedback_reports_file(&workspace).exists());
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_with_db_appends_database_record_without_jsonl() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
+            .expect("layout should resolve");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default feedback test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::default();
+        let mut tx = db.begin().await.expect("begin workspace tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("ensure workspace");
+        tx.commit().await.expect("commit workspace tx");
+        let manager = FeedbackManager::with_db(
+            layout.clone(),
+            Arc::new(NoopFeedbackPublisher),
+            Arc::clone(&db),
+        );
+
+        let submission = manager
+            .submit_feedback(&workspace, " trying ", " tried ", " stuck ")
+            .expect("feedback should submit");
+
+        let mut session = db.as_ref();
+        let reports = session
+            .feedback_reports()
+            .list_workspace_reports(&workspace)
+            .await
+            .expect("list DB feedback reports");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].id, submission.report.id);
+        assert_eq!(reports[0].trying_to_do, "trying");
+        assert!(
+            !layout.feedback_reports_file(&workspace).exists(),
+            "DB-backed feedback writes should not append legacy JSONL"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_with_db_rejects_missing_workspace_without_creating_it() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral-config")))
+            .expect("layout should resolve");
+        let DatabaseConfig::Sqlite { path } = DatabaseConfig::load(&layout).expect("db config")
+        else {
+            panic!("default feedback test DB should be sqlite");
+        };
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+                .await
+                .expect("open sqlite"),
+        );
+        db.migrate().await.expect("migrate sqlite");
+        let workspace = WorkspaceName::parse("missing").expect("workspace");
+        let manager = FeedbackManager::with_db(
+            layout.clone(),
+            Arc::new(NoopFeedbackPublisher),
+            Arc::clone(&db),
+        );
+
+        let error = manager
+            .submit_feedback(&workspace, "trying", "tried", "stuck")
+            .expect_err("feedback should reject missing workspace");
+
+        assert!(
+            error.to_string().contains("workspace 'missing' not found"),
+            "unexpected error: {error}"
+        );
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .workspaces()
+                .get(workspace.as_str())
+                .await
+                .expect("get workspace")
+                .is_none()
         );
         assert!(!layout.feedback_reports_file(&workspace).exists());
     }
