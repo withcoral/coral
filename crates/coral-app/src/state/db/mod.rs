@@ -24,6 +24,7 @@ pub(crate) use coral_db::CoralDb;
 pub(crate) use error::DbError;
 pub(crate) use import::{
     import_config_source_catalog, import_filesystem_episodes, import_filesystem_feedback_reports,
+    import_legacy_credential_material,
 };
 pub(crate) use repositories::credential_documents::{
     CredentialDocumentRecord, CredentialDocumentWrite,

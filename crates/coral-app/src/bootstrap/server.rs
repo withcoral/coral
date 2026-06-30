@@ -56,7 +56,10 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
-use crate::state::db::{import_filesystem_episodes, import_filesystem_feedback_reports};
+use crate::state::db::{
+    import_filesystem_episodes, import_filesystem_feedback_reports,
+    import_legacy_credential_material,
+};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -251,6 +254,10 @@ impl ServerBuilder {
     /// Returns [`AppError`] if the config directory cannot be determined,
     /// required directories cannot be created, the config or credential backends
     /// fail to initialize, or the gRPC server cannot be started.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup wires ordered imports and services"
+    )]
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
@@ -291,6 +298,7 @@ impl ServerBuilder {
             Arc::clone(&coral_db),
             key_provider,
         );
+        import_legacy_credential_material(coral_db.as_ref(), &layout, &credential_store).await?;
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::with_db(

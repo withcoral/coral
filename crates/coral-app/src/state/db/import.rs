@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
 use coral_api::CORAL_EPISODE_INTENT_MAX_CHARS;
@@ -9,6 +10,7 @@ use serde::Deserialize;
 use super::session::DbRepos;
 use super::{CoralDb, DbError, MaterializationRecord};
 use crate::bootstrap::AppError;
+use crate::credentials::{CredentialSetId, CredentialStorageKind, CredentialStore};
 use crate::episode::EpisodeId;
 use crate::episode::store::{
     EpisodeStoreError, MAX_EPISODE_BYTES_PER_WORKSPACE, episode_record_bytes,
@@ -26,6 +28,18 @@ use coral_spec::parse_source_manifest_yaml;
 use uuid::Uuid;
 
 const LEGACY_SOURCE_CATALOG_IMPORT_MARKER: &str = "legacy_source_catalog_imported";
+
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceCatalogImportReport {
@@ -757,6 +771,158 @@ fn parse_legacy_episode_line(
     })
 }
 
+pub(crate) async fn import_legacy_credential_material(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+    database_store: &CredentialStore,
+) -> Result<usize, AppError> {
+    let legacy_store = CredentialStore::with_preference(
+        layout.clone(),
+        crate::credentials::CredentialStoragePreference::Auto,
+    );
+    import_legacy_credential_material_with_store(db, database_store, &legacy_store).await
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps credential import decisions together"
+)]
+async fn import_legacy_credential_material_with_store(
+    db: &CoralDb,
+    database_store: &CredentialStore,
+    legacy_store: &CredentialStore,
+) -> Result<usize, AppError> {
+    let mut imported = 0;
+    let mut session = db;
+    for workspace in session.workspaces().list().await? {
+        let workspace_name = WorkspaceName::parse(&workspace.id)?;
+        let sources = session
+            .sources()
+            .list_workspace_sources(&workspace_name)
+            .await?;
+        for source in sources {
+            let Some(storage) = source.credential_storage_for_material() else {
+                continue;
+            };
+            if storage == CredentialStorageKind::Database {
+                continue;
+            }
+            let credential_set_id = CredentialSetId::for_source(&source.name);
+            let material = match legacy_store.read_material(
+                &workspace_name,
+                &credential_set_id,
+                storage,
+            ) {
+                Ok(material) => material,
+                Err(error) => {
+                    tracing::warn!(
+                        workspace_name = %workspace_name,
+                        source_name = %source.name,
+                        %storage,
+                        detail = %error,
+                        "skipping legacy credential material import; re-add the source if credentials are still required"
+                    );
+                    continue;
+                }
+            };
+            match database_store.replace_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                &material,
+            ) {
+                Ok(()) => {}
+                Err(error @ AppError::Database(_)) => return Err(error),
+                Err(_error) => {
+                    tracing::warn!(
+                        workspace_name = %workspace_name,
+                        source_name = %source.name,
+                        %storage,
+                        "skipping legacy credential material import because database credential write could not be verified"
+                    );
+                    continue;
+                }
+            }
+            match database_store.read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+            ) {
+                Ok(imported_material) if imported_material == material => {}
+                Ok(_) => {
+                    tracing::warn!(
+                        workspace_name = %workspace_name,
+                        source_name = %source.name,
+                        %storage,
+                        "skipping legacy credential cleanup because database credential readback did not match legacy material"
+                    );
+                    remove_unverified_database_credential(
+                        database_store,
+                        &workspace_name,
+                        &credential_set_id,
+                    )?;
+                    continue;
+                }
+                Err(error @ AppError::Database(_)) => return Err(error),
+                Err(_error) => {
+                    tracing::warn!(
+                        workspace_name = %workspace_name,
+                        source_name = %source.name,
+                        %storage,
+                        "skipping legacy credential cleanup because database credential readback failed"
+                    );
+                    remove_unverified_database_credential(
+                        database_store,
+                        &workspace_name,
+                        &credential_set_id,
+                    )?;
+                    continue;
+                }
+            }
+            if !material.is_empty() {
+                imported += 1;
+            }
+            let mut updated = source.clone();
+            updated.credential_storage = Some(CredentialStorageKind::Database);
+            let mut tx = db.begin().await?;
+            tx.sources()
+                .upsert_source(&workspace_name, &updated, now_unix_nanos_i64()?)
+                .await?;
+            tx.commit().await?;
+            remove_legacy_credential_material(
+                legacy_store,
+                &workspace_name,
+                &credential_set_id,
+                storage,
+            );
+        }
+    }
+    Ok(imported)
+}
+
+fn remove_unverified_database_credential(
+    database_store: &CredentialStore,
+    workspace_name: &WorkspaceName,
+    credential_set_id: &CredentialSetId,
+) -> Result<(), AppError> {
+    match database_store.remove_material(
+        workspace_name,
+        credential_set_id,
+        CredentialStorageKind::Database,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error @ AppError::Database(_)) => Err(error),
+        Err(_error) => {
+            tracing::warn!(
+                %workspace_name,
+                %credential_set_id,
+                "failed to remove unverified database credential document"
+            );
+            Ok(())
+        }
+    }
+}
+
 fn filesystem_workspaces(layout: &AppStateLayout) -> Result<Vec<WorkspaceName>, AppError> {
     let root = layout.workspaces_root();
     let mut workspaces = Vec::new();
@@ -793,6 +959,22 @@ fn is_workspace_delete_rollback_dir(name: &str) -> bool {
         return false;
     };
     Uuid::parse_str(rollback_id).is_ok()
+}
+
+fn remove_legacy_credential_material(
+    legacy_store: &CredentialStore,
+    workspace_name: &WorkspaceName,
+    credential_set_id: &CredentialSetId,
+    storage: CredentialStorageKind,
+) {
+    if let Err(_error) = legacy_store.remove_material(workspace_name, credential_set_id, storage) {
+        tracing::warn!(
+            %workspace_name,
+            %credential_set_id,
+            %storage,
+            "credential material imported into database but legacy cleanup failed"
+        );
+    }
 }
 
 fn remove_episodes_file(path: &std::path::Path) {
@@ -874,14 +1056,22 @@ fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: 
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
 
     use super::{
         SourceCatalogImportReport, import_config_source_catalog, import_filesystem_episodes,
         import_filesystem_episodes_with_max_bytes, import_filesystem_feedback_reports,
+        import_legacy_credential_material, import_legacy_credential_material_with_store,
     };
-    use crate::credentials::CredentialStorageKind;
+    use crate::credentials::encryption::{
+        CredentialEncryptionKey, CredentialKeyProvider, LocalFileCredentialKeyProvider,
+    };
+    use crate::credentials::{
+        CredentialSetId, CredentialStorageKind, CredentialStoragePreference, CredentialStore,
+        CredentialsError,
+    };
     use crate::sources::SourceName;
     use crate::sources::materialization::{
         MaterializationInputs, build_v4_materialization_tmp, replace_v4_materialization,
@@ -897,6 +1087,21 @@ mod tests {
     use coral_spec::parse_source_manifest_yaml;
 
     const OPENAPI_FIXTURE: &str = r#"{"openapi":"3.0.3","servers":[{"url":"https://api.example.com"}],"paths":{"/issues":{"get":{"operationId":"issues/list","responses":{"200":{"content":{"application/json":{"schema":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"}}}}}}}}}}}}"#;
+
+    #[derive(Clone)]
+    struct WriteOnlyKeyProvider(CredentialEncryptionKey);
+
+    impl CredentialKeyProvider for WriteOnlyKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.0.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Err(CredentialsError::Crypto(format!(
+                "test key '{key_id}' unavailable"
+            )))
+        }
+    }
 
     #[tokio::test]
     async fn imports_config_source_catalog_into_database() {
@@ -1976,6 +2181,350 @@ not-json
         );
     }
 
+    #[tokio::test]
+    async fn imports_legacy_file_credentials_into_database() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        let db = Arc::new(open_sqlite(&layout).await);
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let legacy_store =
+            CredentialStore::with_preference(layout.clone(), CredentialStoragePreference::File);
+        let material = BTreeMap::from([("GITHUB_TOKEN".to_string(), "secret-token".to_string())]);
+        legacy_store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &material,
+            )
+            .expect("write legacy credential file");
+        let database_store = CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            Arc::new(LocalFileCredentialKeyProvider::new(&layout)),
+        );
+
+        let imported = import_legacy_credential_material(db.as_ref(), &layout, &database_store)
+            .await
+            .expect("import legacy credentials");
+
+        assert_eq!(imported, 1);
+        let mut session = db.as_ref();
+        let updated = session
+            .sources()
+            .get_source(&workspace, &source_name)
+            .await
+            .expect("get source")
+            .expect("source");
+        assert_eq!(
+            updated.credential_storage,
+            Some(CredentialStorageKind::Database)
+        );
+        assert_eq!(
+            database_store
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Database
+                )
+                .expect("read database material"),
+            material
+        );
+        assert!(
+            !layout.secret_file(&workspace, &source_name).exists(),
+            "legacy secrets.env should be removed after DB import"
+        );
+        let imported = import_legacy_credential_material(db.as_ref(), &layout, &database_store)
+            .await
+            .expect("rerun legacy credential import");
+        assert_eq!(imported, 0);
+    }
+
+    #[tokio::test]
+    async fn imports_keychain_backed_credentials_into_database() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::Keychain),
+            SourceOrigin::Imported,
+        );
+        let db = Arc::new(open_sqlite(&layout).await);
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let legacy_store = CredentialStore::with_available_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let material = BTreeMap::from([("GITHUB_TOKEN".to_string(), "secret-token".to_string())]);
+        legacy_store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Keychain,
+                &material,
+            )
+            .expect("write legacy keychain material");
+        let database_store = CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            Arc::new(LocalFileCredentialKeyProvider::new(&layout)),
+        );
+
+        let imported = import_legacy_credential_material_with_store(
+            db.as_ref(),
+            &database_store,
+            &legacy_store,
+        )
+        .await
+        .expect("import legacy credentials");
+
+        assert_eq!(imported, 1);
+        let mut session = db.as_ref();
+        let updated = session
+            .sources()
+            .get_source(&workspace, &source_name)
+            .await
+            .expect("get source")
+            .expect("source");
+        assert_eq!(
+            updated.credential_storage,
+            Some(CredentialStorageKind::Database)
+        );
+        assert_eq!(
+            database_store
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Database
+                )
+                .expect("read database material"),
+            material
+        );
+        assert!(
+            legacy_store
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Keychain
+                )
+                .expect("read legacy keychain material")
+                .is_empty(),
+            "legacy keychain material should be removed after verified DB import"
+        );
+    }
+
+    #[tokio::test]
+    async fn skips_corrupt_legacy_file_credentials() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        let db = Arc::new(open_sqlite(&layout).await);
+        seed_source(&db, &workspace, &source).await;
+        let secret_file = layout.secret_file(&workspace, &source_name);
+        fs::create_dir_all(secret_file.parent().expect("secret parent"))
+            .expect("create secret parent");
+        fs::write(&secret_file, "GITHUB_TOKEN\n").expect("write corrupt secrets");
+        let database_store = database_store(&layout, &db);
+
+        let imported = import_legacy_credential_material(db.as_ref(), &layout, &database_store)
+            .await
+            .expect("import legacy credentials");
+
+        assert_eq!(imported, 0);
+        assert_eq!(
+            db_source(&db, &workspace, &source_name)
+                .await
+                .credential_storage,
+            Some(CredentialStorageKind::File)
+        );
+        assert!(secret_file.exists());
+        assert!(
+            database_store
+                .read_material(
+                    &workspace,
+                    &CredentialSetId::for_source(&source_name),
+                    CredentialStorageKind::Database
+                )
+                .expect("read database material")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn keeps_legacy_file_when_database_readback_fails() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        let db = Arc::new(open_sqlite(&layout).await);
+        seed_source(&db, &workspace, &source).await;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let legacy_store =
+            CredentialStore::with_preference(layout.clone(), CredentialStoragePreference::File);
+        let material = BTreeMap::from([("GITHUB_TOKEN".to_string(), "secret-token".to_string())]);
+        legacy_store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &material,
+            )
+            .expect("write legacy credential file");
+        let key = CredentialEncryptionKey::from_static_bytes_for_test([41; 32]);
+        let database_store = CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            Arc::new(WriteOnlyKeyProvider(key)),
+        );
+
+        let imported = import_legacy_credential_material(db.as_ref(), &layout, &database_store)
+            .await
+            .expect("import legacy credentials");
+
+        assert_eq!(imported, 0);
+        assert_eq!(
+            db_source(&db, &workspace, &source_name)
+                .await
+                .credential_storage,
+            Some(CredentialStorageKind::File)
+        );
+        assert!(layout.secret_file(&workspace, &source_name).exists());
+        let mut session = db.as_ref();
+        assert!(
+            session
+                .credential_documents()
+                .get(&workspace, &source_name)
+                .await
+                .expect("get credential document")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run concurrent Postgres credential import coverage"]
+    async fn concurrent_credential_import_race_is_benign_postgres() {
+        let Some(url) = crate::bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let db = Arc::new(
+            CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+                .await
+                .expect("open postgres"),
+        );
+        db.migrate().await.expect("migrate postgres");
+        let workspace = WorkspaceName::parse(&format!("cred{}", uuid::Uuid::new_v4().simple()))
+            .expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        seed_source(&db, &workspace, &source).await;
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let material = BTreeMap::from([("GITHUB_TOKEN".to_string(), "secret-token".to_string())]);
+        CredentialStore::with_preference(layout.clone(), CredentialStoragePreference::File)
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::File,
+                &material,
+            )
+            .expect("write legacy credential file");
+        let first = database_store(&layout, &db);
+        let second = first.clone();
+
+        let (first_import, second_import) = tokio::join!(
+            import_legacy_credential_material(db.as_ref(), &layout, &first),
+            import_legacy_credential_material(db.as_ref(), &layout, &second)
+        );
+
+        first_import.expect("first import");
+        second_import.expect("second import");
+        assert_eq!(
+            first
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Database
+                )
+                .expect("read database material"),
+            material
+        );
+        assert_eq!(
+            db_source(&db, &workspace, &source_name)
+                .await
+                .credential_storage,
+            Some(CredentialStorageKind::Database)
+        );
+        assert!(!layout.secret_file(&workspace, &source_name).exists());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn import_succeeds_when_post_commit_config_cleanup_fails() {
@@ -2090,6 +2639,42 @@ not-json
             .expect("open sqlite");
         db.migrate().await.expect("migrate sqlite");
         db
+    }
+
+    fn database_store(layout: &AppStateLayout, db: &Arc<CoralDb>) -> CredentialStore {
+        CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+            Arc::clone(db),
+            Arc::new(LocalFileCredentialKeyProvider::new(layout)),
+        )
+    }
+
+    async fn seed_source(db: &CoralDb, workspace: &WorkspaceName, source: &InstalledSource) {
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(workspace, source, 7)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source");
+    }
+
+    async fn db_source(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> InstalledSource {
+        let mut session = db;
+        session
+            .sources()
+            .get_source(workspace, source_name)
+            .await
+            .expect("get source")
+            .expect("source")
     }
 
     fn episode_jsonl(
