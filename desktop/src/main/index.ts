@@ -3,14 +3,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
 import { configureMcpClient, mcpClients } from './mcp-config'
-import { startReefRendererServer, type ReefRendererServer } from './reef-renderer'
+import { startAppRendererServer, type AppRendererServer } from './app-renderer'
 import { startCoralSidecar, type CoralSidecar } from './sidecar'
 
 let mainWindow: BrowserWindow | null = null
 let sidecar: CoralSidecar | null = null
 let sidecarPromise: Promise<CoralSidecar> | null = null
-let reefRenderer: ReefRendererServer | null = null
-let reefRendererPromise: Promise<ReefRendererServer> | null = null
+let appRenderer: AppRendererServer | null = null
+let appRendererPromise: Promise<AppRendererServer> | null = null
 let quitting = false
 
 function currentDir(): string {
@@ -21,20 +21,20 @@ function rendererUrl(): string | null {
   return process.env.ELECTRON_RENDERER_URL ?? null
 }
 
-function ensureReefRenderer(): Promise<ReefRendererServer> {
-  if (!reefRendererPromise) {
-    reefRendererPromise = startReefRendererServer().then((started) => {
-      reefRenderer = started
+function ensureAppRenderer(): Promise<AppRendererServer> {
+  if (!appRendererPromise) {
+    appRendererPromise = startAppRendererServer().then((started) => {
+      appRenderer = started
       return started
     })
   }
-  return reefRendererPromise
+  return appRendererPromise
 }
 
 async function rendererEntryUrl(): Promise<string> {
   const devUrl = rendererUrl()
   if (devUrl) return devUrl
-  return (await ensureReefRenderer()).url
+  return (await ensureAppRenderer()).url
 }
 
 function escapeHtml(value: string): string {
@@ -122,7 +122,7 @@ function createMainWindow(): BrowserWindow {
     .catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       const escapedMessage = escapeHtml(message)
-      console.error(`[coral-renderer] failed to start Reef renderer: ${message}`)
+      console.error(`[coral-renderer] failed to start app renderer: ${message}`)
       void window.loadURL(
         `data:text/html;charset=utf-8,${encodeURIComponent(`<main style="font-family: system-ui; padding: 24px;"><h1>Coral failed to start</h1><p>${escapedMessage}</p></main>`)}`,
       )
@@ -148,13 +148,13 @@ function ensureSidecar(): Promise<CoralSidecar> {
 async function stopServices(): Promise<void> {
   const activeSidecar = sidecar
   const pendingSidecar = sidecar ? null : sidecarPromise
-  const activeRenderer = reefRenderer
-  const pendingRenderer = reefRenderer ? null : reefRendererPromise
+  const activeRenderer = appRenderer
+  const pendingRenderer = appRenderer ? null : appRendererPromise
 
   sidecar = null
   sidecarPromise = null
-  reefRenderer = null
-  reefRendererPromise = null
+  appRenderer = null
+  appRendererPromise = null
 
   await Promise.allSettled([
     activeSidecar?.stop(),
@@ -253,7 +253,7 @@ app.on('activate', () => {
 })
 
 app.on('before-quit', (event) => {
-  if (quitting || (!sidecar && !sidecarPromise && !reefRenderer && !reefRendererPromise)) return
+  if (quitting || (!sidecar && !sidecarPromise && !appRenderer && !appRendererPromise)) return
   event.preventDefault()
   void stopServices().finally(() => {
     quitting = true

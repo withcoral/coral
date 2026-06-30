@@ -34,7 +34,7 @@ await run('npm', ['ci', '--prefix', 'reef'])
 await run('npm', ['run', 'build', '--prefix', 'reef'], {
   env: {
     ...process.env,
-    CORAL_DESKTOP_REEF: '1',
+    CORAL_DESKTOP_APP: '1',
   },
 })
 await run('cargo', ['build', '--locked', '-p', 'coral-cli', '--release'])

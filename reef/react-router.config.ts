@@ -1,6 +1,6 @@
 import type { Config } from '@react-router/dev/config'
 
-const isDesktopBuild = process.env.CORAL_DESKTOP_REEF === '1'
+const isDesktopBuild = process.env.CORAL_DESKTOP_APP === '1'
 
 export default {
   future: {

@@ -31,11 +31,11 @@ function shutdown(signal = 'SIGTERM') {
   }
 }
 
-function waitForReefUrl(child) {
+function waitForAppUrl(child) {
   return new Promise((resolveWait, rejectWait) => {
     const urlPattern = /https?:\/\/(?:localhost|127\.0\.0\.1):\d+\/?/
     const timeout = setTimeout(() => {
-      rejectWait(new Error('Timed out waiting for the Reef dev server URL.'))
+      rejectWait(new Error('Timed out waiting for the app dev server URL.'))
     }, 30_000)
 
     function inspectOutput(chunk) {
@@ -52,7 +52,7 @@ function waitForReefUrl(child) {
     child.stderr?.on('data', inspectOutput)
     child.once('exit', (code, signal) => {
       clearTimeout(timeout)
-      rejectWait(new Error(`Reef dev server exited before ready (code=${code}, signal=${signal}).`))
+      rejectWait(new Error(`App dev server exited before ready (code=${code}, signal=${signal}).`))
     })
   })
 }
@@ -60,22 +60,22 @@ function waitForReefUrl(child) {
 process.once('SIGINT', () => shutdown('SIGINT'))
 process.once('SIGTERM', () => shutdown('SIGTERM'))
 
-const reef = spawnChild('npm', ['run', 'dev', '--prefix', 'reef'], {
+const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'reef'], {
   cwd: repoRoot,
   env: {
     ...process.env,
-    CORAL_DESKTOP_REEF: '1',
+    CORAL_DESKTOP_APP: '1',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 
 try {
-  const reefUrl = await waitForReefUrl(reef)
+  const appUrl = await waitForAppUrl(appDevServer)
   const electron = spawnChild(electronViteBin, ['dev', '--ignoreConfigWarning'], {
     cwd: desktopRoot,
     env: {
       ...process.env,
-      ELECTRON_RENDERER_URL: reefUrl,
+      ELECTRON_RENDERER_URL: appUrl,
     },
     stdio: 'inherit',
   })

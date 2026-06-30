@@ -5,7 +5,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import { app } from 'electron'
 import { repoRoot } from './sidecar'
 
-export interface ReefRendererServer {
+export interface AppRendererServer {
   root: string
   url: string
   stop(): Promise<void>
@@ -24,7 +24,7 @@ const MIME_TYPES: Record<string, string> = {
 }
 
 function rendererRoot(): string {
-  return app.isPackaged ? join(process.resourcesPath, 'reef') : resolve(repoRoot(), 'reef', 'build', 'client')
+  return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'reef', 'build', 'client')
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -103,7 +103,7 @@ function closeServer(server: Server): Promise<void> {
   })
 }
 
-export function startReefRendererServer(): Promise<ReefRendererServer> {
+export function startAppRendererServer(): Promise<AppRendererServer> {
   const root = rendererRoot()
   const server = createServer((request, response) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -121,7 +121,7 @@ export function startReefRendererServer(): Promise<ReefRendererServer> {
         sendFile(request, response, filePath)
       })
       .catch((error: unknown) => {
-        console.error('[reef-renderer] failed to serve renderer asset', error)
+        console.error('[app-renderer] failed to serve renderer asset', error)
         response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
         response.end('Internal server error')
       })
@@ -133,7 +133,7 @@ export function startReefRendererServer(): Promise<ReefRendererServer> {
       server.off('error', rejectStart)
       const address = server.address()
       if (!address || typeof address === 'string') {
-        rejectStart(new Error('Reef renderer server did not bind to a TCP port.'))
+        rejectStart(new Error('App renderer server did not bind to a TCP port.'))
         return
       }
       resolveStart({

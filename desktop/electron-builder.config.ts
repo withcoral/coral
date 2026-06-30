@@ -32,7 +32,7 @@ const config: Configuration = {
     },
     {
       from: '../reef/build/client/',
-      to: 'reef/',
+      to: 'app/',
       filter: ['**/*'],
     },
   ],
