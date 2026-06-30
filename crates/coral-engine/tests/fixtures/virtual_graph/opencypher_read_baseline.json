@@ -20,7 +20,7 @@
     "PatternComprehension": 2,
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
-    "RowModifiers": 2,
+    "RowModifiers": 14,
     "ScalarExpressions": 50,
     "TypeConversion": 3,
     "Union": 4,
@@ -4132,6 +4132,240 @@
         "rows": [
           {
             "match_despite_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-hidden-property",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-descending-property",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age AS age ORDER BY p.age DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "age": 41
+          },
+          {
+            "name": "Alice",
+            "age": 34
+          },
+          {
+            "name": "Bob",
+            "age": 29
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-projected-alias",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age AS years ORDER BY years ASC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "years": 29
+          },
+          {
+            "name": "Alice",
+            "years": 34
+          },
+          {
+            "name": "Carol",
+            "years": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-computed-alias",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.age + 1 AS next_age ORDER BY next_age DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "next_age": 42
+          },
+          {
+            "name": "Alice",
+            "next_age": 35
+          },
+          {
+            "name": "Bob",
+            "next_age": 30
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-hidden-expression",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY p.age + 1 DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-multiple-keys",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, r.since AS since ORDER BY person ASC, since DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "since": 2022
+          },
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "since": 2020
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "since": 2021
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-relationship-property",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend ORDER BY r.since DESC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Carol"
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol"
+          },
+          {
+            "person": "Alice",
+            "friend": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-boolean-tie-breaker",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.active AS active ORDER BY active DESC, name ASC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "active": true
+          },
+          {
+            "name": "Carol",
+            "active": true
+          },
+          {
+            "name": "Bob",
+            "active": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "order-by-aggregate-count",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person)-[:KNOWS]->(friend:Person) RETURN p.name AS person, count(friend) AS friend_count ORDER BY friend_count DESC, person ASC",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend_count": 2
+          },
+          {
+            "person": "Bob",
+            "friend_count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "skip-beyond-row-count",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 5",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "limit-zero",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name LIMIT 0",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "skip-limit-window",
+      "feature": "RowModifiers",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY name SKIP 1 LIMIT 1",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
           }
         ]
       }
