@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "CollectSubquery": 2,
-    "CountSubquery": 6,
+    "CountSubquery": 7,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
@@ -429,6 +429,18 @@
       "id": "count-subquery-predicate",
       "feature": "CountSubquery",
       "query": "MATCH (p:Person) WHERE COUNT { MATCH (p)-[:KNOWS]->(:Person) } > 1 RETURN p.name AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "count-subquery-distinct-predicate",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) WHERE COUNT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN DISTINCT friend.active } > 1 RETURN p.name AS person",
       "expected": {
         "kind": "rows",
         "ordered": true,

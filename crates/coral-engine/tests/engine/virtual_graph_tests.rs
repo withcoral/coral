@@ -5738,6 +5738,55 @@ async fn cypher_count_subqueries_work_in_scalar_predicates() {
 }
 
 #[tokio::test]
+async fn cypher_count_distinct_subqueries_work_in_scalar_predicates() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WHERE COUNT { \
+           MATCH (service)-[:DEPENDS_ON]->(target:Service) \
+           RETURN DISTINCT target.tier \
+         } > 1 \
+         RETURN service.name AS service",
+    )
+    .await
+    .expect("Cypher COUNT DISTINCT subquery predicate should execute");
+
+    assert!(
+        execution.translated_sql().contains("SELECT DISTINCT"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("LEFT JOIN (SELECT \"__coral_outer_key\", COUNT(*) AS \"__coral_value\"")
+            && execution
+                .translated_sql()
+                .contains("GROUP BY \"__coral_outer_key\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("COALESCE(\"__coral_scalar_subquery_0\".\"__coral_value\", 0) > 1"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"service": "billing-api"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_count_subquery_positive_threshold_predicates_lower_to_exists() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

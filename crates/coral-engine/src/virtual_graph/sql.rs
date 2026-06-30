@@ -322,6 +322,13 @@ impl<'a> Lowerer<'a> {
                 );
             }
         }
+        if let Some(predicate) = &self.validated.plan().predicate {
+            self.collect_predicate_expression_subquery_candidates(
+                predicate,
+                false,
+                &mut candidates,
+            );
+        }
         for order_key in &self.validated.plan().order_by {
             if let OrderExpression::Scalar(expression) = &order_key.expression {
                 self.collect_scalar_expression_subquery_candidates(
@@ -622,6 +629,9 @@ impl<'a> Lowerer<'a> {
                 }
             }
             PredicateExpression::ScalarComparison(predicate) => {
+                if !required && Self::scalar_predicate_renders_as_count_existence(predicate) {
+                    return;
+                }
                 self.collect_scalar_expression_subquery_candidates(
                     &predicate.lhs,
                     required,
@@ -651,6 +661,17 @@ impl<'a> Lowerer<'a> {
             | PredicateExpression::Presence(_)
             | PredicateExpression::PropertyKeyMembership(_) => {}
         }
+    }
+
+    fn scalar_predicate_renders_as_count_existence(predicate: &ScalarPredicate) -> bool {
+        let ScalarExpression::CountSubquery {
+            distinct_target: None,
+            ..
+        } = &predicate.lhs
+        else {
+            return false;
+        };
+        Self::count_existence_predicate(predicate.operator, &predicate.rhs).is_some()
     }
 
     fn render_precomputed_scalar_subquery_join(
