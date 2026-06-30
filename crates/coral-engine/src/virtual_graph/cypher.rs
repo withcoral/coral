@@ -29768,11 +29768,18 @@ fn compile_dynamic_label_expressions(
                 }
             }
         }
-        _ => Err(unsupported(path, DYNAMIC_LABEL_EXPRESSION_MESSAGE)),
+        _ => {
+            if let Some(value) =
+                compile_optional_static_list_value(expression, path.clone(), None, context)?
+            {
+                return compile_dynamic_label_static_list_value(value, path);
+            }
+            Err(unsupported(path, DYNAMIC_LABEL_EXPRESSION_MESSAGE))
+        }
     }
 }
 
-const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str = "dynamic label expressions require a string literal, scalar string parameter, non-empty literal string list, or non-empty list string parameter";
+const DYNAMIC_LABEL_EXPRESSION_MESSAGE: &str = "dynamic label expressions require a string literal, scalar string parameter, non-empty literal string list, folded static string-list expression, or non-empty list string parameter";
 
 fn compile_dynamic_label_literal_list(
     expressions: &[Expression],
@@ -29797,6 +29804,37 @@ fn compile_dynamic_label_literal_list(
                     "dynamic label literal lists require only strings",
                 )),
             }
+        })
+        .collect()
+}
+
+fn compile_dynamic_label_static_list_value(
+    value: StaticListValue,
+    path: impl Into<String>,
+) -> Result<Vec<String>, CoreError> {
+    let path = path.into();
+    if value.presence_variable.is_some() {
+        return Err(unsupported(
+            path,
+            "dynamic label list expressions cannot depend on optional graph bindings",
+        ));
+    }
+    if value.literals.is_empty() {
+        return Err(unsupported(
+            path,
+            "dynamic label list expressions require at least one string",
+        ));
+    }
+    value
+        .literals
+        .into_iter()
+        .enumerate()
+        .map(|(index, literal)| match literal {
+            Literal::String(label) => Ok(label),
+            _ => Err(unsupported(
+                format!("{path}[{index}]"),
+                "dynamic label list expressions require only strings",
+            )),
         })
         .collect()
 }
@@ -41719,6 +41757,74 @@ relationships:
     }
 
     #[test]
+    fn compiles_folded_dynamic_label_pattern_lists() {
+        let query = compile_cypher_query(
+            "MATCH (entity:$(split('Team,Service', ','))) \
+             RETURN entity.name AS name",
+        )
+        .expect("folded dynamic label pattern lists should compile");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("folded dynamic label lists should expand into a union query");
+        };
+        assert_eq!(
+            union.first.nodes.first().map(|node| node.label.as_str()),
+            Some("Team")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.nodes.first())
+                .map(|node| node.label.as_str()),
+            Some("Service")
+        );
+    }
+
+    #[test]
+    fn compiles_folded_dynamic_label_predicate_lists() {
+        let plan = compile_cypher(
+            "MATCH (service:Service) \
+             WHERE service:$(tail(['Team'] + split('Service', ','))) \
+             RETURN service.name AS service",
+        )
+        .expect("folded dynamic label predicate lists should compile");
+
+        assert_eq!(plan.predicate, Some(PredicateExpression::Boolean(true)));
+    }
+
+    #[test]
+    fn compiles_folded_dynamic_relationship_type_lists() {
+        let query = compile_cypher_query(
+            "MATCH (source:Service)-[:DEPENDS_ON|$(tail(['IGNORE'] + split('OWNS,DEPENDS_ON', ',')))]->(target:Service) \
+             RETURN target.name AS target",
+        )
+        .expect("folded dynamic relationship type lists should compile and deduplicate");
+
+        let GraphQuery::Union(union) = query else {
+            panic!("folded dynamic relationship type lists should expand into a union query");
+        };
+        assert_eq!(
+            union
+                .first
+                .relationships
+                .first()
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("DEPENDS_ON")
+        );
+        assert_eq!(union.branches.len(), 1);
+        assert_eq!(
+            union
+                .branches
+                .first()
+                .and_then(|branch| branch.plan.relationships.first())
+                .map(|relationship| relationship.relationship_type.as_str()),
+            Some("OWNS")
+        );
+    }
+
+    #[test]
     fn compiles_parameterized_dynamic_node_label_pattern_alternatives() {
         let parameters = BTreeMap::from([(
             "label".to_string(),
@@ -41909,6 +42015,22 @@ relationships:
             error
                 .to_string()
                 .contains("dynamic label literal lists require at least one string"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_folded_dynamic_label_lists_without_string_values() {
+        let error = compile_cypher_query(
+            "MATCH (service:$(range(1, 2))) \
+             RETURN service.name AS service",
+        )
+        .expect_err("dynamic label folded lists with non-string values should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic label list expressions require only strings"),
             "{error:?}"
         );
     }
