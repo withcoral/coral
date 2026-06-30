@@ -9,6 +9,7 @@ use tracing::{info_span, warn};
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
+use crate::functions::model::{FunctionName, InstalledFunction};
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -21,6 +22,7 @@ pub(crate) struct AppConfig {
     engine: PersistedEngineConfig,
     workspaces: WorkspaceCatalog,
     catalog: SourceCatalog,
+    functions: FunctionCatalog,
 }
 
 impl Default for AppConfig {
@@ -30,6 +32,7 @@ impl Default for AppConfig {
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         }
     }
 }
@@ -181,6 +184,14 @@ pub(crate) enum RawFeatureValue {
 struct PersistedWorkspaceConfig {
     #[serde(default)]
     sources: BTreeMap<String, PersistedInstalledSource>,
+    // The persisted TOML shape is `functions.<name> = {}` so existing workspace
+    // configs keep round-tripping even though installed functions are membership-only.
+    #[expect(
+        clippy::zero_sized_map_values,
+        reason = "persisted function membership uses the existing TOML map shape"
+    )]
+    #[serde(default)]
+    functions: BTreeMap<String, PersistedInstalledFunction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +256,23 @@ impl WorkspaceCatalog {
 
     pub(crate) fn remove(&mut self, workspace_name: &WorkspaceName) -> bool {
         self.0.remove(workspace_name)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedInstalledFunction {}
+
+impl PersistedInstalledFunction {
+    fn into_installed_function(function_name: FunctionName) -> InstalledFunction {
+        InstalledFunction {
+            name: function_name,
+        }
+    }
+}
+
+impl From<&InstalledFunction> for PersistedInstalledFunction {
+    fn from(_value: &InstalledFunction) -> Self {
+        Self {}
     }
 }
 
@@ -316,6 +344,73 @@ impl SourceCatalog {
         &mut self,
         workspace_name: &WorkspaceName,
     ) -> Option<BTreeMap<SourceName, InstalledSource>> {
+        self.0.remove(workspace_name)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FunctionCatalog(
+    BTreeMap<WorkspaceName, BTreeMap<FunctionName, InstalledFunction>>,
+);
+
+impl FunctionCatalog {
+    pub(crate) fn workspace_functions(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Vec<InstalledFunction> {
+        self.0
+            .get(workspace_name)
+            .map(|functions| functions.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn get_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Option<InstalledFunction> {
+        self.0
+            .get(workspace_name)
+            .and_then(|functions| functions.get(function_name))
+            .cloned()
+    }
+
+    pub(crate) fn upsert_function(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) {
+        self.0
+            .entry(workspace_name.clone())
+            .or_default()
+            .insert(function.name.clone(), function);
+    }
+
+    pub(crate) fn remove_function(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Option<InstalledFunction> {
+        let mut removed = None;
+        let remove_workspace = match self.0.get_mut(workspace_name) {
+            Some(functions) => {
+                removed = functions.remove(function_name);
+                functions.is_empty()
+            }
+            None => false,
+        };
+
+        if remove_workspace {
+            self.0.remove(workspace_name);
+        }
+
+        removed
+    }
+
+    pub(crate) fn remove_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<BTreeMap<FunctionName, InstalledFunction>> {
         self.0.remove(workspace_name)
     }
 }
@@ -533,6 +628,7 @@ impl ConfigStore {
                     .map(BTreeMap::into_values)
                     .map(Iterator::collect)
                     .unwrap_or_default();
+                config.functions.remove_workspace(workspace_name);
                 return Ok(Some(DeletedWorkspace {
                     workspace: WorkspaceRecord {
                         name: workspace_name.clone(),
@@ -626,6 +722,51 @@ impl ConfigStore {
     }
 }
 
+impl ConfigStore {
+    pub(crate) fn list_workspace_functions(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledFunction>, AppError> {
+        let config = self.load_config()?;
+        Ok(config.functions.workspace_functions(workspace_name))
+    }
+
+    pub(crate) fn get_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<InstalledFunction, AppError> {
+        let config = self.load_config()?;
+        config
+            .functions
+            .get_function(workspace_name, function_name)
+            .ok_or_else(|| AppError::InvalidInput(format!("function '{function_name}' not found")))
+    }
+
+    pub(crate) fn upsert_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function: InstalledFunction,
+    ) -> Result<(), AppError> {
+        self.update_config(|config| {
+            config.functions.upsert_function(workspace_name, function);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn remove_function(
+        &self,
+        workspace_name: &WorkspaceName,
+        function_name: &FunctionName,
+    ) -> Result<(), AppError> {
+        self.update_config(|config| {
+            config
+                .functions
+                .remove_function(workspace_name, function_name);
+            Ok(())
+        })
+    }
+}
 #[expect(
     clippy::indexing_slicing,
     reason = "toml_edit indexing creates or accesses document paths while rebuilding the config table"
@@ -677,6 +818,22 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
                 source_table.remove("credential_storage");
             }
             source_item["origin"] = value(source.origin.as_config_value());
+        }
+
+        for function_name in workspace.functions.keys() {
+            ensure_implicit_table(&mut doc["workspaces"]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_implicit_table(&mut doc["workspaces"][workspace_name]["functions"]);
+
+            let function_item = &mut doc["workspaces"][workspace_name]["functions"][function_name];
+            if !function_item.is_table() {
+                *function_item = toml_edit::table();
+            }
+            let function_table = function_item
+                .as_table_mut()
+                .expect("function config entry should be a table after initialization");
+            function_table.remove("origin");
+            function_table.remove("enabled");
         }
     }
 
@@ -762,6 +919,7 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
         let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
+        let mut functions = FunctionCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
             workspaces.insert(workspace_name.clone());
@@ -769,12 +927,20 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
             }
+            for (function_name, _function) in workspace_config.functions {
+                let function_name = FunctionName::parse(&function_name)?;
+                functions.upsert_function(
+                    &workspace_name,
+                    PersistedInstalledFunction::into_installed_function(function_name),
+                );
+            }
         }
         Ok(Self {
             version: value.version,
             engine: value.engine,
             workspaces,
             catalog,
+            functions,
         })
     }
 }
@@ -795,6 +961,17 @@ impl From<&AppConfig> for PersistedAppConfig {
                 workspace_config.sources.insert(
                     source.name.as_str().to_string(),
                     PersistedInstalledSource::from(source),
+                );
+            }
+        }
+        for (workspace_name, functions) in &value.functions.0 {
+            let workspace_config = workspaces
+                .entry(workspace_name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+            for function in functions.values() {
+                workspace_config.functions.insert(
+                    function.name.as_str().to_string(),
+                    PersistedInstalledFunction::from(function),
                 );
             }
         }
@@ -973,11 +1150,13 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, AppError, ConfigStore, PersistedAppConfig, PersistedEngineConfig,
-        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
-        WorkspaceCatalog, load_raw_feature_overrides, render_config, set_raw_feature_override,
+        AppConfig, AppError, ConfigStore, FunctionCatalog, PersistedAppConfig,
+        PersistedEngineConfig, PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue,
+        SourceCatalog, WorkspaceCatalog, load_raw_feature_overrides, render_config,
+        set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
+    use crate::functions::model::{FunctionName, InstalledFunction};
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
@@ -998,6 +1177,12 @@ mod tests {
             secrets: vec!["GITHUB_TOKEN".to_string()],
             credential_storage: None,
             origin: SourceOrigin::Imported,
+        }
+    }
+
+    fn installed_function(name: &str) -> InstalledFunction {
+        InstalledFunction {
+            name: FunctionName::parse(name).expect("function"),
         }
     }
 
@@ -1049,6 +1234,7 @@ mod tests {
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1070,6 +1256,7 @@ mod tests {
             engine: PersistedEngineConfig::default(),
             workspaces,
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1102,6 +1289,53 @@ version = 1
     }
 
     #[test]
+    fn renders_functions_under_workspace_keyed_tables() {
+        let workspace_name = default_workspace();
+        let mut functions = FunctionCatalog::default();
+        functions.upsert_function(&workspace_name, installed_function("review_queue"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+            functions,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(!raw.contains("origin = \"user\""));
+        assert!(!raw.contains("enabled = true"));
+    }
+
+    #[test]
+    fn removes_legacy_function_origin_and_enabled_when_rendering() {
+        let existing = r#"
+version = 1
+
+[workspaces.default.functions.review_queue]
+origin = "user"
+enabled = true
+"#;
+        let workspace_name = default_workspace();
+        let mut functions = FunctionCatalog::default();
+        functions.upsert_function(&workspace_name, installed_function("review_queue"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+            functions,
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
+
+        assert!(raw.contains("[workspaces.default.functions.review_queue]"));
+        assert!(!raw.contains("origin = \"user\""));
+        assert!(!raw.contains("enabled = true"));
+    }
+
+    #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -1114,6 +1348,7 @@ version = 1
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1154,11 +1389,12 @@ origin = "bundled"
     }
 
     #[test]
-    fn scoped_config_store_source_methods_do_not_require_workspace() {
+    fn scoped_config_store_methods_do_not_require_workspace() {
         let temp = TempDir::new().expect("temp dir");
         let store = ConfigStore::new(test_layout(&temp));
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
+        let function_name = FunctionName::parse("review_queue").expect("function");
 
         assert!(
             store
@@ -1187,10 +1423,37 @@ origin = "bundled"
             store.get_source(&missing_workspace, &source_name),
             Err(AppError::SourceNotFound(_))
         ));
+        assert!(
+            store
+                .list_workspace_functions(&missing_workspace)
+                .expect("list function definitions")
+                .is_empty()
+        );
+        assert!(matches!(
+            store.get_function(&missing_workspace, &function_name),
+            Err(AppError::InvalidInput(_))
+        ));
+        store
+            .upsert_function(&missing_workspace, installed_function("review_queue"))
+            .expect("upsert function definition");
+        assert_eq!(
+            store
+                .get_function(&missing_workspace, &function_name)
+                .expect("get function definition")
+                .name,
+            function_name
+        );
+        store
+            .remove_function(&missing_workspace, &function_name)
+            .expect("remove function definition");
+        assert!(matches!(
+            store.get_function(&missing_workspace, &function_name),
+            Err(AppError::InvalidInput(_))
+        ));
     }
 
     #[test]
-    fn remove_workspace_config_entries_returns_removed_sources() {
+    fn remove_workspace_config_entries_removes_sources_and_functions() {
         let temp = TempDir::new().expect("temp dir");
         let store = ConfigStore::new(test_layout(&temp));
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
@@ -1201,6 +1464,9 @@ origin = "bundled"
         store
             .upsert_source(&workspace_name, installed_source("github"))
             .expect("upsert source");
+        store
+            .upsert_function(&workspace_name, installed_function("review_queue"))
+            .expect("upsert function");
 
         let deleted = store
             .remove_workspace_config_entries(&workspace_name)
@@ -1216,6 +1482,33 @@ origin = "bundled"
                 .expect("list source definitions")
                 .is_empty()
         );
+        assert!(
+            store
+                .list_workspace_functions(&deleted.workspace.name)
+                .expect("list function definitions")
+                .is_empty()
+        );
+
+        let rendered = std::fs::read_to_string(store.layout.config_file()).expect("read config");
+        assert!(!rendered.contains("[workspaces.work.functions.review_queue]"));
+    }
+
+    #[test]
+    fn loads_functions_from_workspace_keyed_tables() {
+        let raw = r"
+version = 1
+
+	[workspaces.default.functions.review_queue]
+	";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace-keyed config should parse"),
+        )
+        .expect("config");
+        let functions = config.functions.workspace_functions(&default_workspace());
+
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name.as_str(), "review_queue");
     }
 
     #[test]
@@ -1347,6 +1640,7 @@ limit = 2147483648
             },
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1373,6 +1667,7 @@ flag = true
             },
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1399,6 +1694,7 @@ flag = true
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
@@ -1534,6 +1830,7 @@ max_concurrency = 0
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), None);
@@ -1640,6 +1937,7 @@ origin = "bundled"
             engine: PersistedEngineConfig::default(),
             workspaces: WorkspaceCatalog::default(),
             catalog,
+            functions: FunctionCatalog::default(),
         };
 
         let raw = render_config(&PersistedAppConfig::from(&config), Some(existing));
@@ -1721,6 +2019,18 @@ origin = "bundled"
         )
         .expect_err("invalid source key should fail");
         assert!(error.to_string().contains("source name"));
+
+        let invalid_function = r#"
+version = 1
+
+	[workspaces.default.functions."bad\\function"]
+	"#;
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(invalid_function)
+                .expect("quoted function key should parse"),
+        )
+        .expect_err("invalid function key should fail");
+        assert!(error.to_string().contains("function name"));
     }
 
     #[test]

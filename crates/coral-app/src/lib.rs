@@ -47,6 +47,7 @@ mod catalog;
 mod credentials;
 pub mod features;
 mod feedback;
+mod functions;
 mod identity;
 mod query;
 mod request_context;
