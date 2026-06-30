@@ -24,7 +24,7 @@
     "ScalarExpressions": 50,
     "TypeConversion": 3,
     "Union": 4,
-    "Unwind": 3,
+    "Unwind": 13,
     "VariableLengthPaths": 4,
     "Where": 14,
     "With": 14
@@ -3273,6 +3273,216 @@
           {
             "name": "Bob",
             "n": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-range",
+      "feature": "Unwind",
+      "query": "UNWIND range(1, 3) AS n MATCH (p:Person) WHERE p.name = 'Alice' RETURN n ORDER BY n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-list-concatenation",
+      "feature": "Unwind",
+      "query": "UNWIND ([1, 2] + [3, 4]) AS n MATCH (p:Person) WHERE p.name = 'Alice' RETURN n ORDER BY n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          },
+          {
+            "n": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-empty-list",
+      "feature": "Unwind",
+      "query": "UNWIND [] AS item MATCH (p:Person) RETURN item",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": []
+      }
+    },
+    {
+      "id": "unwind-duplicate-values-preserved",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 1, 2, 2, 3] AS n MATCH (p:Person) WHERE p.name = 'Alice' RETURN n ORDER BY n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "n": 1
+          },
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-distinct-values",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 1, 2, 2, 3] AS n MATCH (p:Person) WHERE p.name = 'Alice' RETURN DISTINCT n ORDER BY n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "n": 1
+          },
+          {
+            "n": 2
+          },
+          {
+            "n": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-double-cartesian-product",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2] AS x UNWIND ['a', 'b'] AS y MATCH (p:Person) WHERE p.name = 'Alice' RETURN x, y ORDER BY x, y",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "x": 1,
+            "y": "a"
+          },
+          {
+            "x": 1,
+            "y": "b"
+          },
+          {
+            "x": 2,
+            "y": "a"
+          },
+          {
+            "x": 2,
+            "y": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-where-filter",
+      "feature": "Unwind",
+      "query": "UNWIND range(1, 5) AS n MATCH (p:Person) WHERE p.name = 'Alice' AND n > 3 RETURN n ORDER BY n",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "n": 4
+          },
+          {
+            "n": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-split-source",
+      "feature": "Unwind",
+      "query": "UNWIND split('Alice,Bob', ',') AS name MATCH (p:Person) WHERE p.name = name RETURN name AS name, p.age AS age ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 34,
+            "name": "Alice"
+          },
+          {
+            "age": 29,
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-list-parameter",
+      "feature": "Unwind",
+      "query": "UNWIND $names AS name MATCH (p:Person) WHERE p.name = name RETURN name AS name, p.city AS city ORDER BY name",
+      "parameters": {
+        "names": [
+          "Alice",
+          "Carol"
+        ]
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "London",
+            "name": "Alice"
+          },
+          {
+            "city": "Paris",
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-match-aggregation",
+      "feature": "Unwind",
+      "query": "UNWIND ['London', '', 'Paris', 'Paris'] AS city MATCH (p:Person) WHERE p.city = city RETURN city AS city, count(p) AS people ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "",
+            "people": 1
+          },
+          {
+            "city": "London",
+            "people": 1
+          },
+          {
+            "city": "Paris",
+            "people": 2
           }
         ]
       }
