@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "CollectSubquery": 2,
-    "CountSubquery": 8,
+    "CountSubquery": 10,
     "ExistsSubquery": 2,
     "GraphMetadata": 5,
     "LiteralExpressions": 2,
@@ -450,9 +450,34 @@
       }
     },
     {
+      "id": "count-subquery-distinct-predicate-reversed",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) WHERE 1 < COUNT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN DISTINCT friend.active } RETURN p.name AS person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" }
+        ]
+      }
+    },
+    {
       "id": "count-subquery-node-distinct-predicate",
       "feature": "CountSubquery",
       "query": "MATCH (p:Person) WHERE COUNT { MATCH (other:Person) WHERE other.active = p.active RETURN DISTINCT other.city } > 1 RETURN p.name AS person ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "person": "Alice" },
+          { "person": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "count-subquery-node-distinct-predicate-reversed",
+      "feature": "CountSubquery",
+      "query": "MATCH (p:Person) WHERE 1 < COUNT { MATCH (other:Person) WHERE other.active = p.active RETURN DISTINCT other.city } RETURN p.name AS person ORDER BY person",
       "expected": {
         "kind": "rows",
         "ordered": true,

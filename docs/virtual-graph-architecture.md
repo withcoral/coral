@@ -496,11 +496,13 @@ The supported foundation subset is intentionally narrow:
   returned `NULL` row instead of using SQL `COUNT(DISTINCT ...)` null-filtering
   semantics. Correlated count projections, arbitrary-threshold top-level
   `WHERE` predicates, and hidden `ORDER BY` keys precompute grouped rows for
-  decorrelatable single-anchor relationship patterns and therefore require the
+  decorrelatable single-anchor relationship patterns and node-only patterns
+  with one local/outer equality correlation. The precompute path requires the
   distinct target to be renderable from scoped inner rows. Nested scoped count
-  predicates and non-precomputable relationship patterns remain on the scalar
-  count path until staged aggregate planning is available. `OPTIONAL MATCH`,
-  `WITH`, multi-item distinct counted returns, `RETURN` over graph objects,
+  predicates, node-only patterns with multi-key or non-equality correlations,
+  and non-precomputable relationship patterns remain on the scalar count path
+  until staged aggregate planning is available. `OPTIONAL MATCH`, `WITH`,
+  multi-item distinct counted returns, `RETURN` over graph objects,
   return pagination inside scoped subqueries, and `UNION` inside scoped
   subqueries still require staged planning and are rejected before SQL lowering;
 - compact `COUNT { pattern WHERE ... }` is normalized before AST construction to
