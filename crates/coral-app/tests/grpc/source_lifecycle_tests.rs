@@ -46,8 +46,7 @@ async fn import_source_persists_and_lists() {
 
     let config_raw =
         fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
-    assert!(config_raw.contains("[workspaces.default.sources.local_messages]"));
-    assert!(config_raw.contains("secrets = []"));
+    assert!(!config_raw.contains("[workspaces.default.sources.local_messages]"));
     assert!(!config_raw.contains("credential_storage"));
     assert!(!config_raw.contains("credential_set_id"));
     assert!(!config_raw.contains("[workspaces.default.credentials"));
@@ -96,6 +95,83 @@ async fn list_and_get_sources_read_database_after_config_becomes_invalid() {
         .source
         .expect("source response");
     assert_eq!(fetched.name, "local_messages");
+}
+
+#[tokio::test]
+async fn startup_import_preserves_non_default_workspace_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 1
+
+[workspaces.default.sources.default_messages]
+version = "0.1.0"
+variables = {}
+secrets = []
+origin = "imported"
+
+[workspaces.analytics.sources.analytics_messages]
+version = "0.1.0"
+variables = {}
+secrets = []
+origin = "imported"
+"#,
+    )
+    .expect("write config");
+
+    let default_manifest =
+        fixture_manifest_yaml(temp.path()).replace("local_messages", "default_messages");
+    let default_manifest_path = source_dir(&config_dir, "default_messages").join("manifest.yaml");
+    fs::create_dir_all(
+        default_manifest_path
+            .parent()
+            .expect("default manifest parent"),
+    )
+    .expect("create default source dir");
+    fs::write(default_manifest_path, default_manifest).expect("write default manifest");
+
+    let analytics_manifest =
+        fixture_manifest_yaml(temp.path()).replace("local_messages", "analytics_messages");
+    let analytics_manifest_path = config_dir
+        .join("workspaces")
+        .join("analytics")
+        .join("sources")
+        .join("analytics_messages")
+        .join("manifest.yaml");
+    fs::create_dir_all(
+        analytics_manifest_path
+            .parent()
+            .expect("analytics manifest parent"),
+    )
+    .expect("create analytics source dir");
+    fs::write(analytics_manifest_path, analytics_manifest).expect("write analytics manifest");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+
+    let default_sources = harness.list_sources().await;
+    assert_eq!(default_sources.len(), 1);
+    assert_eq!(default_sources[0].name, "default_messages");
+
+    let analytics_sources = harness
+        .source_client()
+        .list_sources(Request::new(coral_api::v1::ListSourcesRequest {
+            workspace: Some(Workspace {
+                name: "analytics".to_string(),
+            }),
+        }))
+        .await
+        .expect("list analytics sources")
+        .into_inner()
+        .sources;
+    assert_eq!(analytics_sources.len(), 1);
+    assert_eq!(analytics_sources[0].name, "analytics_messages");
+
+    let config_raw =
+        fs::read_to_string(config_dir.join("config.toml")).expect("read cleaned config");
+    assert!(!config_raw.contains("[workspaces.default.sources.default_messages]"));
+    assert!(!config_raw.contains("[workspaces.analytics.sources.analytics_messages]"));
 }
 
 #[tokio::test]
@@ -1585,15 +1661,13 @@ origin = "imported"
         "trace history retention should be preserved"
     );
 
-    // The pre-existing source must still be present.
+    // Source catalog state is migrated to DB, not kept in config.
     assert!(
-        config_raw.contains("[workspaces.default.sources.demo]"),
-        "pre-existing source should be preserved"
+        !config_raw.contains("[workspaces.default.sources.demo]"),
+        "pre-existing source should be removed from config after DB import"
     );
-
-    // The newly imported source must now also be present.
     assert!(
-        config_raw.contains("[workspaces.default.sources.local_messages]"),
-        "newly added source should be in config"
+        !config_raw.contains("[workspaces.default.sources.local_messages]"),
+        "newly added source should not be mirrored to config"
     );
 }

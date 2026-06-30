@@ -284,6 +284,7 @@ impl SourceCatalog {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn get_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -306,6 +307,7 @@ impl SourceCatalog {
             .insert(source.name.clone(), source);
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_source(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -562,13 +564,13 @@ impl ConfigStore {
         self.load_config_unlocked()
     }
 
-    /// Loads the source catalog without taking the app state lock.
-    ///
-    /// Callers must already hold the state lock in shared or exclusive mode
-    /// while using any filesystem-backed source artifacts derived from the
-    /// returned catalog.
-    pub(crate) fn load_catalog_unlocked(&self) -> Result<SourceCatalog, AppError> {
-        self.load_config_unlocked().map(|config| config.catalog)
+    pub(crate) fn clear_source_catalog_unlocked(&self) -> Result<(), AppError> {
+        let mut config = self.load_unlocked()?;
+        if config.catalog.0.is_empty() {
+            return Ok(());
+        }
+        config.catalog = SourceCatalog::default();
+        self.save_unlocked(&config)
     }
 
     fn update_config_unlocked<T>(
@@ -588,13 +590,6 @@ impl ConfigStore {
     ) -> Result<T, AppError> {
         let _lock = self.state_lock_exclusive()?;
         self.update_config_unlocked(update)
-    }
-
-    fn update_catalog_unlocked<T>(
-        &self,
-        update: impl FnOnce(&mut SourceCatalog) -> T,
-    ) -> Result<T, AppError> {
-        self.update_config_unlocked(|config| Ok(update(&mut config.catalog)))
     }
 
     #[cfg(test)]
@@ -697,19 +692,6 @@ impl ConfigStore {
         let _lock = self.state_lock_exclusive()?;
         self.restore_workspace_config_entries_unlocked(removed)
     }
-    /// Loads one installed source without taking the app state lock.
-    ///
-    /// Callers must already hold the state lock while using source artifacts
-    /// associated with the returned config entry.
-    pub(crate) fn get_source_unlocked(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<InstalledSource, AppError> {
-        self.load_catalog_unlocked()?
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
-    }
 
     #[cfg(test)]
     pub(crate) fn get_source(
@@ -724,17 +706,6 @@ impl ConfigStore {
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
-    /// Upserts one installed source without taking the app state lock.
-    ///
-    /// Callers must already hold the state lock in exclusive mode.
-    pub(crate) fn upsert_source_unlocked(
-        &self,
-        workspace_name: &WorkspaceName,
-        source: InstalledSource,
-    ) -> Result<(), AppError> {
-        self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
-    }
-
     #[cfg(test)]
     pub(crate) fn upsert_source(
         &self,
@@ -744,19 +715,6 @@ impl ConfigStore {
         self.update_config(|config| {
             config.catalog.upsert_source(workspace_name, source);
             Ok(())
-        })
-    }
-
-    /// Removes one installed source without taking the app state lock.
-    ///
-    /// Callers must already hold the state lock in exclusive mode.
-    pub(crate) fn remove_source_unlocked(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<(), AppError> {
-        self.update_catalog_unlocked(|catalog| {
-            catalog.remove_source(workspace_name, source_name);
         })
     }
 

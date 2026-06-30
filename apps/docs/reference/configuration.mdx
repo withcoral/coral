@@ -7,12 +7,14 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 
 ## Managed state
 
-Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
+Coral stores source installation state in its local database when you run commands such as `coral source add` and `coral source remove`.
 
 This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
 
 <Note>
-  Prefer the `coral source` commands for source state instead of editing workspace entries manually.
+  Prefer the `coral source` commands for source state instead of editing
+  source entries manually. Current Coral releases no longer use
+  `[workspaces.*.sources.*]` entries in `config.toml` as the source catalog.
 </Note>
 
 ## Database
@@ -51,21 +53,10 @@ run `coral workspace create NAME`, and Coral never falls back to a name of its
 own. `default` is an ordinary name you may create, remove, and select like any
 other.
 
-What `config.toml` holds is the per-workspace installation state for the things
-you install into a workspace — sources and functions:
-
-```toml
-[workspaces.work.sources.github]
-version = "1.0.0"
-variables = {}
-secrets = ["GITHUB_TOKEN"]
-origin = "bundled"
-```
-
-Coral writes these tables when you run commands such as `coral source add`.
-Creating an empty workspace writes no `[workspaces.<name>]` scaffolding, so a
-workspace with nothing installed in it appears in `coral workspace list` without
-appearing in `config.toml`.
+`config.toml` may still contain per-workspace function definitions, but it does
+not mirror the workspace or source catalogs. Creating an empty workspace or
+installing a source therefore adds no `[workspaces.<name>]` or
+`[workspaces.<name>.sources.<source>]` scaffolding.
 
 There is no active-workspace key in `config.toml`; use `CORAL_WORKSPACE` for a
 shell default or `--workspace <NAME>` for one command, as described in
@@ -73,6 +64,17 @@ shell default or `--workspace <NAME>` for one command, as described in
 Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
+
+Older `config.toml` source entries are imported into the database on startup and
+removed from `config.toml` after the import is validated. This source-catalog
+migration is one-way for current releases: downgrading to an older
+config-backed Coral build does not automatically restore those config entries.
+
+If you need to run an older build after this migration, re-add bundled sources
+with `coral source add <NAME>`. Re-add imported sources with
+`coral source add --file <PATH>`, using the existing manifest under the local
+state directory, such as
+`workspaces/<workspace>/sources/<source>/manifest.yaml`.
 
 ## Server
 

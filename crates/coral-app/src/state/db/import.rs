@@ -193,6 +193,7 @@ async fn import_config_source_catalog(
         .collect::<Vec<_>>();
     let source_count = import_config_sources(&mut tx, &source_entries, now_unix_nanos).await?;
     tx.commit().await?;
+    clear_legacy_source_catalog_config(config_store, source_entries.len());
 
     Ok(SourceCatalogImportReport {
         source_count,
@@ -290,6 +291,16 @@ where
     )))
 }
 
+fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: usize) {
+    if source_count != 0
+        && let Err(error) = config_store.clear_source_catalog_unlocked()
+    {
+        tracing::warn!(
+            detail = %error,
+            "source catalog imported into database but legacy config cleanup failed"
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -363,7 +374,7 @@ mod tests {
                 .get_source(&workspace, &source.name)
                 .await
                 .expect("get source"),
-            Some(source)
+            Some(source.clone())
         );
         assert!(
             session
@@ -379,6 +390,10 @@ mod tests {
                 .await
                 .expect("read source import marker")
         );
+        assert!(matches!(
+            config_store.get_source(&workspace, &source.name),
+            Err(crate::bootstrap::AppError::SourceNotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -481,8 +496,12 @@ mod tests {
                 .get_source(&workspace, &existing.name)
                 .await
                 .expect("get preserved source"),
-            Some(existing)
+            Some(existing.clone())
         );
+        assert!(matches!(
+            config_store.get_source(&workspace, &existing.name),
+            Err(crate::bootstrap::AppError::SourceNotFound(_))
+        ));
     }
 
     #[tokio::test]
