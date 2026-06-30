@@ -14,6 +14,7 @@ use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
@@ -447,6 +448,38 @@ pub(crate) struct TraceDetailRecord {
     pub(crate) spans: Vec<TraceSpanRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TraceQueryHistoryEntry {
+    pub(crate) trace_id: String,
+    pub(crate) span_id: String,
+    pub(crate) sql: String,
+    pub(crate) sources: Vec<String>,
+    pub(crate) tables: Vec<TraceQueryTableUsage>,
+    pub(crate) table_functions: Vec<TraceQueryTableFunctionUsage>,
+    pub(crate) row_count: u64,
+    pub(crate) end_time_unix_nanos: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TraceQueryTableUsage {
+    #[serde(rename = "source_name")]
+    pub(crate) source: String,
+    #[serde(rename = "schema_name")]
+    pub(crate) schema: String,
+    #[serde(rename = "table_name")]
+    pub(crate) table: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TraceQueryTableFunctionUsage {
+    #[serde(rename = "source_name")]
+    pub(crate) source: String,
+    #[serde(rename = "schema_name")]
+    pub(crate) schema: String,
+    #[serde(rename = "function_name")]
+    pub(crate) function: String,
+}
+
 struct TraceAggregate {
     trace_id: String,
     start_time_unix_nanos: i64,
@@ -492,6 +525,17 @@ struct TraceListAggregate {
 #[derive(Debug, Deserialize)]
 struct TraceSpanIdentityRecord {
     trace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct TraceQueryHistorySpanRecord {
+    trace_id: String,
+    span_id: String,
+    name: String,
+    #[serde(default)]
+    status: StoredTraceStatus,
+    end_time_unix_nanos: i64,
+    attributes_json: String,
 }
 
 impl TraceStore {
@@ -623,6 +667,36 @@ impl TraceStore {
 
         let summary = summary_from_spans(trace_id, &spans);
         Ok(TraceDetailRecord { summary, spans })
+    }
+
+    pub(crate) fn list_query_history_sync(
+        &self,
+    ) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+        self.prune_expired()?;
+        let files = self.jsonl_files_by_modified()?;
+        let mut entries_by_span = HashMap::new();
+
+        for file in files.iter().rev() {
+            for span in read_query_history_spans_file(&file.path)? {
+                let key = (span.trace_id.clone(), span.span_id.clone());
+                if entries_by_span.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = query_history_entry_from_span(&span) {
+                    entries_by_span.insert(key, entry);
+                }
+            }
+        }
+
+        let mut entries = entries_by_span.into_values().collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            right
+                .end_time_unix_nanos
+                .cmp(&left.end_time_unix_nanos)
+                .then_with(|| left.trace_id.cmp(&right.trace_id))
+                .then_with(|| left.span_id.cmp(&right.span_id))
+        });
+        Ok(entries)
     }
 
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
@@ -1036,6 +1110,49 @@ fn read_trace_spans_file(
     Ok(spans_by_id.into_values().collect())
 }
 
+fn read_query_history_spans_file(
+    path: &Path,
+) -> Result<Vec<TraceQueryHistorySpanRecord>, TraceStoreError> {
+    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut spans_by_id = HashMap::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() || !trimmed.contains(r#""name":"coral.query""#) {
+            continue;
+        }
+
+        match serde_json::from_str::<TraceQueryHistorySpanRecord>(trimmed) {
+            Ok(span) if span.name == "coral.query" => {
+                spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
+            Ok(_span) => {}
+            Err(_) if !complete_line => break,
+            Err(_) => {}
+        }
+    }
+
+    Ok(spans_by_id.into_values().collect())
+}
+
 fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
     let start_time_unix_nanos = spans
         .iter()
@@ -1253,6 +1370,64 @@ fn attr_u64(attributes: &JsonValue, key: &str) -> Option<u64> {
             .as_u64()
             .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok())),
         JsonValue::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn query_history_entry_from_span(
+    span: &TraceQueryHistorySpanRecord,
+) -> Option<TraceQueryHistoryEntry> {
+    let attributes = parse_attributes(&span.attributes_json)?;
+    let status = status_from_attributes(Some(&attributes)).unwrap_or(span.status);
+    if status != StoredTraceStatus::Ok {
+        return None;
+    }
+    let sql = attr_string(&attributes, "sql")?;
+    if sql.trim().is_empty() {
+        return None;
+    }
+    let row_count = attr_u64(&attributes, "row_count")?;
+    let sources = attr_string_array(&attributes, super::QUERY_TRACE_SOURCES_ATTR)?;
+    let tables =
+        attr_json_vec::<TraceQueryTableUsage>(&attributes, super::QUERY_TRACE_TABLES_ATTR)?;
+    let table_functions = attr_json_vec::<TraceQueryTableFunctionUsage>(
+        &attributes,
+        super::QUERY_TRACE_TABLE_FUNCTIONS_ATTR,
+    )?;
+
+    Some(TraceQueryHistoryEntry {
+        trace_id: span.trace_id.clone(),
+        span_id: span.span_id.clone(),
+        sql,
+        sources,
+        tables,
+        table_functions,
+        row_count,
+        end_time_unix_nanos: span.end_time_unix_nanos,
+    })
+}
+
+fn attr_string_array(attributes: &JsonValue, key: &str) -> Option<Vec<String>> {
+    match attributes.get(key)? {
+        JsonValue::Array(values) => values.iter().map(attr_array_string_value).collect(),
+        JsonValue::String(value) => serde_json::from_str(value).ok(),
+        _ => None,
+    }
+}
+
+fn attr_array_string_value(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(value) => Some(value.clone()),
+        JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn attr_json_vec<T: DeserializeOwned>(attributes: &JsonValue, key: &str) -> Option<Vec<T>> {
+    match attributes.get(key)? {
+        JsonValue::Array(values) => serde_json::from_value(JsonValue::Array(values.clone())).ok(),
+        JsonValue::String(value) => serde_json::from_str(value).ok(),
         _ => None,
     }
 }
@@ -1572,6 +1747,52 @@ mod tests {
         assert_eq!(summary.status, StoredTraceStatus::Ok);
         assert_eq!(summary.row_count, 1);
         assert!(summary.row_count_recorded);
+    }
+
+    #[test]
+    fn query_history_reads_successful_query_provenance_leniently() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        let mut legacy_record = trace_record("legacy-trace", "legacy-span");
+        legacy_record.attributes_json =
+            r#"{"sql":"SELECT old","status":"ok","row_count":1}"#.to_string();
+
+        let mut malformed_record = trace_record("malformed-trace", "malformed-span");
+        malformed_record.attributes_json =
+            query_history_attributes("SELECT malformed", "not-json", "[]", "[]", 1);
+
+        let mut valid_record = trace_record("valid-trace", "valid-span");
+        valid_record.end_time_unix_nanos = 42;
+        valid_record.attributes_json = query_history_attributes(
+            "SELECT title FROM github.issues",
+            r#"["github"]"#,
+            r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#,
+            r#"[{"source_name":"github","schema_name":"github","function_name":"search_issues"}]"#,
+            15,
+        );
+
+        let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        write_record_file_lines(&path, &[legacy_record, malformed_record, valid_record]);
+
+        let history = TraceStore::new(dir)
+            .list_query_history_sync()
+            .expect("query history");
+
+        assert_eq!(history.len(), 1);
+        let entry = history.first().expect("history entry");
+        assert_eq!(entry.sql, "SELECT title FROM github.issues");
+        assert_eq!(entry.sources, ["github"]);
+        assert_eq!(entry.row_count, 15);
+        assert_eq!(entry.tables.len(), 1);
+        let table = entry.tables.first().expect("table usage");
+        assert_eq!(table.source, "github");
+        assert_eq!(table.schema, "github");
+        assert_eq!(table.table, "issues");
+        assert_eq!(entry.table_functions.len(), 1);
+        let table_function = entry.table_functions.first().expect("table function usage");
+        assert_eq!(table_function.function, "search_issues");
     }
 
     #[test]
@@ -2119,5 +2340,31 @@ mod tests {
             trace_state: String::new(),
             is_remote: false,
         }
+    }
+
+    fn query_history_attributes(
+        sql: &str,
+        sources_json: &str,
+        tables_json: &str,
+        table_functions_json: &str,
+        row_count: u64,
+    ) -> String {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("sql".to_string(), json!(sql));
+        attributes.insert("status".to_string(), json!("ok"));
+        attributes.insert("row_count".to_string(), json!(row_count));
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_SOURCES_ATTR.to_string(),
+            json!(sources_json),
+        );
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_TABLES_ATTR.to_string(),
+            json!(tables_json),
+        );
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR.to_string(),
+            json!(table_functions_json),
+        );
+        serde_json::Value::Object(attributes).to_string()
     }
 }

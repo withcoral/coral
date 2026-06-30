@@ -277,6 +277,10 @@ impl SourceFunctionNode {
         self.args.iter().any(|arg| find_placeholder(arg).is_some())
     }
 
+    pub(crate) fn table_reference(&self) -> &TableReference {
+        &self.table_reference
+    }
+
     fn reject_unbound_parameters(&self) -> Result<()> {
         for (name, arg) in self.arg_names.iter().zip(&self.args) {
             if let Some(placeholder) = find_placeholder(arg) {

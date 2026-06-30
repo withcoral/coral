@@ -44,6 +44,7 @@ use tempfile as _;
 /// gRPC-Web surface.
 #[cfg(feature = "embedded-ui")]
 const DEFAULT_SERVER_PORT: u16 = 1457;
+const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -562,15 +563,39 @@ async fn run_app_command(
             let features = coral_app::features::FeatureStore::discover(None)
                 .and_then(|store| store.load_with_overrides(feature_overrides))
                 .map_err(anyhow::Error::from)?;
-            let source_names = match coral_app::bootstrap::default_workspace_source_names() {
-                Ok(source_names) => source_names,
-                Err(error) => {
-                    eprintln!(
-                        "warning: failed to load source names for MCP initialize instructions: {error}"
-                    );
-                    Vec::new()
-                }
-            };
+            let (source_names, query_examples) =
+                match coral_app::bootstrap::default_workspace_mcp_startup_context(
+                    MCP_INITIAL_QUERY_EXAMPLE_LIMIT,
+                ) {
+                    Ok(context) => (
+                        context.source_names().to_vec(),
+                        context
+                            .query_history()
+                            .iter()
+                            .map(|entry| {
+                                coral_mcp::McpQueryExample::new(entry.sql())
+                                    .with_sources(entry.sources().iter().cloned())
+                                    .with_row_count(entry.row_count())
+                            })
+                            .collect(),
+                    ),
+                    Err(error) => {
+                        eprintln!(
+                            "warning: failed to load MCP startup context for initialize instructions: {error}"
+                        );
+                        let source_names =
+                            match coral_app::bootstrap::default_workspace_source_names() {
+                                Ok(source_names) => source_names,
+                                Err(error) => {
+                                    eprintln!(
+                                        "warning: failed to load source names for MCP initialize instructions: {error}"
+                                    );
+                                    Vec::new()
+                                }
+                            };
+                        (source_names, Vec::new())
+                    }
+                };
             Box::pin(coral_mcp::run_stdio_with_client(
                 app,
                 coral_mcp::McpOptions {
@@ -578,6 +603,7 @@ async fn run_app_command(
                     episodes_enabled: features.enabled(coral_app::features::Feature::Episodes),
                     trace_parent: ctx.and_then(|ctx| ctx.trace_parent.clone()),
                     source_names,
+                    query_examples,
                 },
             ))
             .await

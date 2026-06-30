@@ -10,10 +10,14 @@
 
 mod harness;
 
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
+use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, import_source_response};
+use coral_app::{ServerBuilder, shutdown_tracing};
+use coral_client::{AppClient, default_workspace};
 use harness::MockServer;
 use jsonschema::JSONSchema;
 use rmcp::{
@@ -28,6 +32,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use tonic::Request;
 
 const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -78,6 +83,68 @@ async fn start_mcp_client_with_args(
     )?;
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+fn write_real_fixture_manifest(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let source_dir = root.join("fixture-source");
+    let data_dir = root.join("fixture-data");
+    fs::create_dir_all(&source_dir)?;
+    fs::create_dir_all(&data_dir)?;
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )?;
+    Ok(format!(
+        r#"
+name: local_messages
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Fixture messages
+    format: jsonl
+    source:
+      location: file://{}/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: text
+        type: Utf8
+"#,
+        data_dir.display()
+    ))
+}
+
+async fn import_real_fixture_source(
+    app: &AppClient,
+    manifest_yaml: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut source_client = app.source_client();
+    let mut stream = source_client
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await?
+        .into_inner();
+    stream
+        .message()
+        .await?
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response");
+    Ok(())
 }
 
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
@@ -277,6 +344,94 @@ origin = "bundled"
         child.wait().await?;
     }
     server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_initialize_includes_trace_backed_query_examples()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::TempDir::new()?;
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"
+[credentials]
+storage = "file"
+"#,
+    )?;
+    let server = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .with_noop_feedback_uploads()
+        .start()
+        .await?;
+    let app = AppClient::connect(server.endpoint_uri()).await?;
+    import_real_fixture_source(&app, write_real_fixture_manifest(temp.path())?).await?;
+    let sql = "SELECT text FROM local_messages.messages ORDER BY text";
+    app.query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: sql.to_string(),
+        }))
+        .await?;
+    shutdown_tracing();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", &config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-query-history-init-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: local_messages."),
+        "initialize instructions should include connected source names: {instructions}"
+    );
+    assert!(
+        instructions.contains("Recent successful Coral SQL examples"),
+        "initialize instructions should include query examples heading: {instructions}"
+    );
+    assert!(
+        instructions.contains(&format!(
+            "1. sources: local_messages; row_count: 2\n```sql\n{sql}\n```"
+        )),
+        "initialize instructions should include the traced query metadata and SQL: {instructions}"
+    );
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await?;
     Ok(())
 }
 

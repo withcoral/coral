@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use coral_engine::{
-    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, RuntimeSourcePackage,
-    SourceValidationReport, StatusCode, TableInfo,
+    CatalogInfo, CoralQuery, CoreError, DescribeTableInfo, QueryExecution,
+    QueryExecutionProvenance, QueryPlan, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
+    RuntimeSourcePackage, SourceValidationReport, StatusCode, TableInfo,
 };
 use coral_spec::{ManifestInputKind, ManifestInputSpec};
 use opentelemetry::trace::Status as OtelStatus;
+use serde_json::json;
 use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
@@ -98,6 +99,7 @@ impl QueryManager {
                     .map_err(QueryManagerError::Core)
             },
             |tables| Some(u64::try_from(tables.len()).unwrap_or(u64::MAX)),
+            |_, _| {},
         )
         .await
     }
@@ -140,6 +142,7 @@ impl QueryManager {
                     .unwrap_or(u64::MAX),
                 )
             },
+            |_, _| {},
         )
         .await
     }
@@ -173,6 +176,7 @@ impl QueryManager {
                     .map_err(QueryManagerError::Core)
             },
             |_| None,
+            |_, _| {},
         )
         .await
     }
@@ -204,6 +208,7 @@ impl QueryManager {
                     .map_err(QueryManagerError::Core)
             },
             |execution| Some(u64::try_from(execution.row_count()).unwrap_or(u64::MAX)),
+            |span, execution| record_query_provenance(span, execution.provenance()),
         )
         .await
     }
@@ -235,6 +240,7 @@ impl QueryManager {
                     .map_err(QueryManagerError::Core)
             },
             |_| None,
+            |_, _| {},
         )
         .await
     }
@@ -458,6 +464,7 @@ async fn run_query_operation<T, Fut, RowCount>(
     episode_id: Option<&EpisodeId>,
     query: Fut,
     row_count: RowCount,
+    record_success_fields: impl FnOnce(&tracing::Span, &T),
 ) -> Result<T, QueryManagerError>
 where
     Fut: Future<Output = Result<T, QueryManagerError>>,
@@ -480,6 +487,9 @@ where
         query_span.set_status(OtelStatus::Ok);
         if let Some(row_count) = row_count {
             query_span.record("row_count", row_count);
+        }
+        if let Ok(value) = &result {
+            record_success_fields(&query_span, value);
         }
     } else if let Err(error) = &result {
         let error_kind = query_error_kind(error);
@@ -513,6 +523,9 @@ fn create_query_span(
         // `OpenEpisode`; never carries the intent text itself.
         episode.id = tracing::field::Empty,
         row_count = tracing::field::Empty,
+        coral.query.sources = tracing::field::Empty,
+        coral.query.tables = tracing::field::Empty,
+        coral.query.table_functions = tracing::field::Empty,
         status = tracing::field::Empty,
         error.kind = tracing::field::Empty,
         error.type = tracing::field::Empty,
@@ -522,6 +535,54 @@ fn create_query_span(
         span.record("episode.id", episode_id.as_str());
     }
     span
+}
+
+fn record_query_provenance(span: &tracing::Span, provenance: &QueryExecutionProvenance) {
+    record_json_field(
+        span,
+        crate::telemetry::QUERY_TRACE_SOURCES_ATTR,
+        provenance.sources(),
+    );
+    record_json_field(
+        span,
+        crate::telemetry::QUERY_TRACE_TABLES_ATTR,
+        &provenance
+            .tables()
+            .iter()
+            .map(|table| {
+                json!({
+                    "source_name": table.source_name(),
+                    "schema_name": table.schema_name(),
+                    "table_name": table.table_name(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    );
+    record_json_field(
+        span,
+        crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR,
+        &provenance
+            .table_functions()
+            .iter()
+            .map(|function| {
+                json!({
+                    "source_name": function.source_name(),
+                    "schema_name": function.schema_name(),
+                    "function_name": function.function_name(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    );
+}
+
+fn record_json_field<T: serde::Serialize + ?Sized>(
+    span: &tracing::Span,
+    field: &'static str,
+    value: &T,
+) {
+    if let Ok(encoded) = serde_json::to_string(value) {
+        span.record(field, encoded.as_str());
+    }
 }
 
 fn query_error_kind(error: &QueryManagerError) -> &'static str {
@@ -620,7 +681,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use coral_engine::{
-        EngineExtensions, QueryExecution, SourceInputResolutionContext, SourceInputResolver,
+        EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
+        QueryTableUsage, SourceInputResolutionContext, SourceInputResolver,
         SourceInputResolverError,
     };
     use coral_spec::parse_source_manifest_yaml;
@@ -739,6 +801,70 @@ mod tests {
         assert_catalog_episode_spans(&spans);
     }
 
+    #[test]
+    fn query_provenance_records_trace_attributes() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("query-provenance-trace-test");
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let span = create_query_span(
+            QueryOperation::ExecuteSql,
+            &WorkspaceName::default(),
+            "SELECT title FROM github.issues",
+            None,
+        );
+        let provenance = QueryExecutionProvenance::new(
+            "SELECT title FROM github.issues",
+            vec!["github".to_string()],
+            vec![QueryTableUsage::new("github", "github", "issues")],
+            vec![QueryTableFunctionUsage::new(
+                "github",
+                "github",
+                "search_issues",
+            )],
+        );
+        record_query_provenance(&span, &provenance);
+        drop(span);
+
+        provider.force_flush().expect("flush spans");
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let query_span = spans
+            .iter()
+            .find(|span| span.name == "coral.query")
+            .expect("coral.query span recorded");
+
+        assert_eq!(
+            span_attr(query_span, crate::telemetry::QUERY_TRACE_SOURCES_ATTR),
+            Some(r#"["github"]"#.to_string())
+        );
+        assert_eq!(
+            span_attr(query_span, crate::telemetry::QUERY_TRACE_TABLES_ATTR),
+            Some(
+                r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            span_attr(
+                query_span,
+                crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR
+            ),
+            Some(
+                r#"[{"source_name":"github","schema_name":"github","function_name":"search_issues"}]"#
+                    .to_string()
+            )
+        );
+    }
+
     async fn call_catalog_tools_with_episode(service: &crate::catalog::service::CatalogService) {
         use coral_api::v1::catalog_service_server::CatalogService as CatalogServiceApi;
         use coral_api::v1::{
@@ -846,6 +972,13 @@ mod tests {
                 .iter()
                 .any(|operation| operation == "list_tables")
         );
+    }
+
+    fn span_attr(span: &opentelemetry_sdk::trace::SpanData, name: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == name)
+            .map(|attribute| attribute.value.as_str().into_owned())
     }
 
     fn execution_to_rows(execution: &QueryExecution) -> Vec<Value> {

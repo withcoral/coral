@@ -1180,6 +1180,42 @@ async fn source_scoped_table_function_builds_http_search_request() {
 }
 
 #[tokio::test]
+async fn execution_provenance_records_source_scoped_table_functions() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .and(query_param("q", "flaky cleanup repo:withcoral/coral"))
+        .and(query_param("search_type", "hybrid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [{
+                "title": "Flaky workspace cleanup",
+                "score": 9.5
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let source = build_source(search_function_manifest("search", &server.uri()));
+    let sql = "SELECT title, score \
+               FROM search.search_issues(mode => 'hybrid', q => 'flaky cleanup repo:withcoral/coral')";
+    let execution = CoralQuery::execute_sql(&[source], test_runtime(), sql)
+        .await
+        .expect("query should succeed");
+
+    let provenance = execution.provenance();
+    assert_eq!(provenance.sql(), sql);
+    assert_eq!(provenance.sources(), ["search".to_string()]);
+    assert!(provenance.tables().is_empty());
+    assert_eq!(provenance.table_functions().len(), 1);
+    let function = &provenance.table_functions()[0];
+    assert_eq!(function.source_name(), "search");
+    assert_eq!(function.schema_name(), "search");
+    assert_eq!(function.function_name(), "search_issues");
+    assert_eq!(provenance.row_count(), 1);
+}
+
+#[tokio::test]
 async fn validate_source_accepts_function_only_http_source_and_runs_queries() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
