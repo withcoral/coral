@@ -23,7 +23,7 @@
     "ReturnDistinct": 3,
     "ReturnProjection": 12,
     "RowModifiers": 24,
-    "ScalarExpressions": 60,
+    "ScalarExpressions": 70,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -2237,6 +2237,166 @@
             "grouped_true": true,
             "not_or": false,
             "not_and": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-xor-before-or-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true OR true XOR true AS a, true OR (true XOR true) AS b, (true OR true) XOR true AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-and-before-xor-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true XOR false AND false AS a, true XOR (false AND false) AS b, (true XOR false) AND false AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-comparison-before-or-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true OR false = false AS a, true OR (false = false) AS b, (true OR false) = false AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-comparison-before-and-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN false AND true = false AS a, false AND (true = false) AS b, (false AND true) = false AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": false,
+            "b": false,
+            "c": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-null-predicate-before-comparison-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN false = true IS NULL AS a, false = (true IS NULL) AS b, (false = true) IS NULL AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-null-predicate-before-not-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN NOT false IS NULL AS a, NOT (false IS NULL) AS b, (NOT false) IS NULL AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-null-predicate-before-or-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN true OR false IS NULL AS a, true OR (false IS NULL) AS b, (true OR false) IS NULL AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": true,
+            "b": true,
+            "c": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-list-predicate-before-comparison-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN false = true IN [true, false] AS a, false = (true IN [true, false]) AS b, (false = true) IN [true, false] AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": false,
+            "b": false,
+            "c": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-list-predicate-before-not-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN NOT true IN [true, false] AS a, NOT (true IN [true, false]) AS b, (NOT true) IN [true, false] AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": false,
+            "b": false,
+            "c": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "precedence-list-predicate-before-and-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN false AND true IN [true, false] AS a, false AND (true IN [true, false]) AS b, (false AND true) IN [true, false] AS c",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": false,
+            "b": false,
+            "c": true
           }
         ]
       }
