@@ -5,15 +5,32 @@ use coral_api::v1::{
     TableFunctionResultColumn as ProtoTableFunctionResultColumn, TableSummary as ProtoTableSummary,
     catalog_item,
 };
+use rmcp::{
+    ErrorData,
+    model::{Tool, ToolAnnotations},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
-use super::schema::tool_output_schema;
+use super::arguments::{
+    optional_bool_argument, optional_non_empty_string_argument, optional_string_argument,
+    required_string_argument,
+};
+use super::context::ToolDescriptionContext;
+use super::discovery::{
+    DefaultPaginationInput, Pagination, SearchPaginationInput, parse_pagination,
+    parse_search_pagination,
+};
+use super::schema::{tool_input_schema, tool_output_schema};
+use super::tool_names::ToolName;
 use super::values::{
     MissingTableSummaryValue, format_schema_table_equivalent, format_sql_identifier,
 };
+
+const DEFAULT_IGNORE_CASE: bool = true;
+const DEFAULT_REQUIRED_ONLY: bool = false;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -22,34 +39,287 @@ pub(crate) enum CatalogToolKind {
     TableFunction,
 }
 
+#[derive(JsonSchema)]
+pub(crate) struct ListCatalogArguments {
+    #[schemars(description = "Optional exact SQL schema name to list.")]
+    pub(crate) schema: Option<String>,
+    #[schemars(
+        description = "Optional item kind to list. Omit or pass null to list all catalog items."
+    )]
+    pub(crate) kind: Option<CatalogToolKind>,
+    #[schemars(flatten, with = "DefaultPaginationInput")]
+    pub(crate) pagination: Pagination,
+}
+
+#[derive(JsonSchema)]
+pub(crate) struct SearchCatalogArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Rust regex pattern to match database catalog metadata."
+    )]
+    pub(crate) pattern: String,
+    #[schemars(description = "Optional exact SQL schema name to search.")]
+    pub(crate) schema: Option<String>,
+    #[schemars(
+        description = "Optional item kind to search. Omit or pass null to search all catalog items."
+    )]
+    pub(crate) kind: Option<CatalogToolKind>,
+    #[serde(default = "default_ignore_case")]
+    #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
+    pub(crate) ignore_case: bool,
+    #[schemars(flatten, with = "SearchPaginationInput")]
+    pub(crate) pagination: Pagination,
+}
+
+#[derive(JsonSchema)]
+pub(crate) struct DescribeTableArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact SQL schema name."
+    )]
+    pub(crate) schema: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact table name within the SQL schema."
+    )]
+    pub(crate) table: String,
+}
+
+#[derive(JsonSchema)]
+pub(crate) struct ListColumnsArguments {
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact SQL schema name."
+    )]
+    pub(crate) schema: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Exact table name within the SQL schema."
+    )]
+    pub(crate) table: String,
+    #[schemars(
+        length(min = 1),
+        pattern(r"\S"),
+        description = "Optional Rust regex matched against column names, descriptions, and data types."
+    )]
+    pub(crate) pattern: Option<String>,
+    #[serde(default = "default_ignore_case")]
+    #[schemars(description = "Whether regex matching is case-insensitive. Defaults to true.")]
+    pub(crate) ignore_case: bool,
+    #[serde(default = "default_required_only")]
+    #[schemars(description = "Only return columns that are required filters. Defaults to false.")]
+    pub(crate) required_only: bool,
+    #[schemars(flatten, with = "DefaultPaginationInput")]
+    pub(crate) pagination: Pagination,
+}
+
+pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
+    Tool::new(
+        ToolName::ListCatalog.as_str(),
+        format!(
+            "List database catalog items for Coral sources. {} {} table(s) and {} table function(s) are currently visible.",
+            context.connected_sources_sentence(),
+            context.visible_table_count,
+            context.visible_function_count
+        ),
+        tool_input_schema::<ListCatalogArguments>(),
+    )
+    .with_raw_output_schema(list_catalog_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("List Catalog")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
+    Tool::new(
+        ToolName::SearchCatalog.as_str(),
+        search_catalog_description(context),
+        tool_input_schema::<SearchCatalogArguments>(),
+    )
+    .with_raw_output_schema(search_catalog_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Search Catalog")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn describe_table_tool() -> Tool {
+    Tool::new(
+        ToolName::DescribeTable.as_str(),
+        "Describe one database table without returning full column definitions.",
+        tool_input_schema::<DescribeTableArguments>(),
+    )
+    .with_raw_output_schema(describe_table_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Describe Table")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn list_columns_tool() -> Tool {
+    Tool::new(
+        ToolName::ListColumns.as_str(),
+        "List columns for one database table with optional regex and required-filter narrowing.",
+        tool_input_schema::<ListColumnsArguments>(),
+    )
+    .with_raw_output_schema(list_columns_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("List Columns")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
+
+pub(crate) fn list_catalog_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ListCatalogArguments, ErrorData> {
+    Ok(ListCatalogArguments {
+        schema: optional_string_argument(arguments, "schema")?,
+        kind: optional_catalog_kind_argument(arguments)?,
+        pagination: parse_pagination(arguments)?,
+    })
+}
+
+pub(crate) fn search_catalog_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<SearchCatalogArguments, ErrorData> {
+    Ok(SearchCatalogArguments {
+        pattern: required_string_argument(arguments, "pattern")?,
+        schema: optional_string_argument(arguments, "schema")?,
+        kind: optional_catalog_kind_argument(arguments)?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", DEFAULT_IGNORE_CASE)?,
+        pagination: parse_search_pagination(arguments)?,
+    })
+}
+
+pub(crate) fn describe_table_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<DescribeTableArguments, ErrorData> {
+    Ok(DescribeTableArguments {
+        schema: required_string_argument(arguments, "schema")?,
+        table: required_string_argument(arguments, "table")?,
+    })
+}
+
+pub(crate) fn list_columns_arguments(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<ListColumnsArguments, ErrorData> {
+    Ok(ListColumnsArguments {
+        schema: required_string_argument(arguments, "schema")?,
+        table: required_string_argument(arguments, "table")?,
+        pattern: optional_non_empty_string_argument(arguments, "pattern")?,
+        ignore_case: optional_bool_argument(arguments, "ignore_case", DEFAULT_IGNORE_CASE)?,
+        required_only: optional_bool_argument(arguments, "required_only", DEFAULT_REQUIRED_ONLY)?,
+        pagination: parse_pagination(arguments)?,
+    })
+}
+
+fn optional_catalog_kind_argument(
+    arguments: Option<&Map<String, Value>>,
+) -> Result<Option<CatalogToolKind>, ErrorData> {
+    let Some(kind) = optional_string_argument(arguments, "kind")? else {
+        return Ok(None);
+    };
+    serde_json::from_value(Value::String(kind))
+        .map(Some)
+        .map_err(|error| {
+            ErrorData::invalid_params(format!("invalid argument 'kind': {error}"), None)
+        })
+}
+
+fn search_catalog_description(context: &ToolDescriptionContext) -> String {
+    format!(
+        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
+        context.connected_sources_sentence(),
+        context.visible_table_count,
+        context.visible_function_count
+    )
+}
+
+fn default_ignore_case() -> bool {
+    DEFAULT_IGNORE_CASE
+}
+
+fn default_required_only() -> bool {
+    DEFAULT_REQUIRED_ONLY
+}
+
 pub(crate) fn describe_table_value(
     schema: &str,
     table: &str,
     response: &DescribeTableResponse,
 ) -> Value {
+    serde_json::to_value(describe_table_output(schema, table, response))
+        .expect("describe table output value serializes")
+}
+
+fn describe_table_output<'a>(
+    schema: &'a str,
+    table: &'a str,
+    response: &'a DescribeTableResponse,
+) -> DescribeTableOutput<'a> {
     if let Some(table) = &response.table {
-        return describe_found_table_value(table);
+        return DescribeTableOutput::Found(FoundTableValue::from(table));
     }
-    describe_missing_table_value(
+    DescribeTableOutput::Missing(missing_table_value(
         schema,
         table,
         &response.available_schemas,
         &response.same_schema_tables,
         &response.suggestions,
-    )
+    ))
 }
 
-fn describe_found_table_value(table: &ProtoTable) -> Value {
-    serde_json::to_value(FoundTableValue::from(table)).expect("found table value serializes")
-}
-
-fn describe_missing_table_value(
+pub(crate) fn list_columns_table_fallback_value(
     schema: &str,
     table: &str,
-    available_schemas: &[String],
-    same_schema_tables: &[ProtoTableSummary],
-    suggestions: &[ProtoTableSummary],
+    response: &DescribeTableResponse,
 ) -> Value {
+    serde_json::to_value(list_columns_table_fallback_output(schema, table, response))
+        .expect("list columns table fallback output value serializes")
+}
+
+fn list_columns_table_fallback_output<'a>(
+    schema: &'a str,
+    table: &'a str,
+    response: &'a DescribeTableResponse,
+) -> ListColumnsOutput<'a> {
+    if let Some(table) = &response.table {
+        return ListColumnsOutput::Found(FoundTableValue::from(table));
+    }
+    ListColumnsOutput::Missing(missing_table_value(
+        schema,
+        table,
+        &response.available_schemas,
+        &response.same_schema_tables,
+        &response.suggestions,
+    ))
+}
+
+fn missing_table_value<'a>(
+    schema: &'a str,
+    table: &'a str,
+    available_schemas: &'a [String],
+    same_schema_tables: &'a [ProtoTableSummary],
+    suggestions: &'a [ProtoTableSummary],
+) -> MissingTableValue<'a> {
     let same_schema_tables = same_schema_tables
         .iter()
         .map(MissingTableSummaryValue::from)
@@ -75,12 +345,12 @@ fn describe_missing_table_value(
         }
     };
     let mut suggested_calls = vec![SuggestedCall {
-        tool: SuggestedCallTool::SearchCatalog,
+        tool: CatalogSuggestedTool::SearchCatalog,
         arguments: search_arguments,
     }];
     if !same_schema_tables.is_empty() {
         suggested_calls.push(SuggestedCall {
-            tool: SuggestedCallTool::ListCatalog,
+            tool: CatalogSuggestedTool::ListCatalog,
             arguments: SuggestedCallArguments {
                 pattern: None,
                 schema: Some(schema),
@@ -89,19 +359,18 @@ fn describe_missing_table_value(
             },
         });
     }
-    serde_json::to_value(MissingTableValue {
+    MissingTableValue {
         found: false,
         requested: RequestedTable { schema, table },
         available_schemas,
         same_schema_tables,
         suggestions,
         suggested_calls,
-    })
-    .expect("missing table value serializes")
+    }
 }
 
 pub(crate) fn describe_table_output_schema() -> Arc<Map<String, Value>> {
-    tool_output_schema::<DescribeTableOutputValue<'static>>()
+    tool_output_schema::<DescribeTableOutput<'static>>()
 }
 
 pub(crate) fn search_catalog_value(response: &SearchCatalogResponse) -> Value {
@@ -185,17 +454,17 @@ pub(crate) fn list_columns_value(
         .iter()
         .filter_map(column_search_result_value)
         .collect::<Vec<_>>();
-    serde_json::to_value(ListColumnsPageValue::new(
+    serde_json::to_value(ListColumnsOutput::Page(ListColumnsPageValue::new(
         schema,
         table,
         columns,
         &pagination,
-    ))
+    )))
     .expect("list columns page value serializes")
 }
 
 pub(crate) fn list_columns_output_schema() -> Arc<Map<String, Value>> {
-    tool_output_schema::<ListColumnsOutputValue<'static>>()
+    tool_output_schema::<ListColumnsOutput<'static>>()
 }
 
 fn column_search_result_value(result: &ColumnSearchResult) -> Option<ColumnSearchValue<'_>> {
@@ -213,26 +482,18 @@ fn column_search_result_value(result: &ColumnSearchResult) -> Option<ColumnSearc
     })
 }
 
-#[derive(JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(extend("type" = "object"))]
-#[expect(
-    dead_code,
-    reason = "schema-only enum for the describe_table output contract"
-)]
-enum DescribeTableOutputValue<'a> {
+enum DescribeTableOutput<'a> {
     Found(FoundTableValue<'a>),
     Missing(MissingTableValue<'a>),
 }
 
-#[derive(JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(extend("type" = "object"))]
-#[expect(
-    dead_code,
-    reason = "schema-only enum for the list_columns output contract"
-)]
-enum ListColumnsOutputValue<'a> {
+enum ListColumnsOutput<'a> {
     Page(ListColumnsPageValue<'a>),
     Found(FoundTableValue<'a>),
     Missing(MissingTableValue<'a>),
@@ -412,13 +673,13 @@ struct RequestedTable<'a> {
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 struct SuggestedCall<'a> {
-    tool: SuggestedCallTool,
+    tool: CatalogSuggestedTool,
     arguments: SuggestedCallArguments<'a>,
 }
 
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-enum SuggestedCallTool {
+enum CatalogSuggestedTool {
     SearchCatalog,
     ListCatalog,
 }
@@ -581,4 +842,67 @@ struct ColumnSearchValue<'a> {
     ordinal_position: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     matched_fields: Option<&'a [String]>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value};
+
+    use super::{
+        DEFAULT_IGNORE_CASE, DEFAULT_REQUIRED_ONLY, list_catalog_arguments, list_columns_arguments,
+        search_catalog_arguments,
+    };
+    use crate::surface::discovery::{
+        DEFAULT_PAGINATION_LIMIT, DEFAULT_PAGINATION_OFFSET, DEFAULT_SEARCH_PAGINATION_LIMIT,
+    };
+
+    #[test]
+    fn catalog_kind_argument_accepts_null_as_all_kinds() {
+        let mut arguments = Map::new();
+        arguments.insert("kind".to_string(), Value::Null);
+        let list = list_catalog_arguments(Some(&arguments)).expect("list arguments");
+        assert_eq!(list.kind, None);
+
+        arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
+        let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
+        assert_eq!(search.kind, None);
+    }
+
+    #[test]
+    fn list_columns_pattern_accepts_null_as_omitted() {
+        let arguments = Map::from_iter([
+            ("schema".to_string(), Value::String("github".to_string())),
+            ("table".to_string(), Value::String("issues".to_string())),
+            ("pattern".to_string(), Value::Null),
+        ]);
+
+        let parsed = list_columns_arguments(Some(&arguments)).expect("list columns args");
+
+        assert_eq!(parsed.pattern, None);
+    }
+
+    #[test]
+    fn catalog_argument_defaults_use_shared_constants() {
+        let search_arguments =
+            Map::from_iter([("pattern".to_string(), Value::String("issue".to_string()))]);
+
+        let search = search_catalog_arguments(Some(&search_arguments)).expect("search args");
+
+        assert_eq!(search.ignore_case, DEFAULT_IGNORE_CASE);
+        assert_eq!(search.pagination.limit, DEFAULT_SEARCH_PAGINATION_LIMIT);
+        assert_eq!(search.pagination.offset, DEFAULT_PAGINATION_OFFSET);
+
+        let list_columns_arguments = Map::from_iter([
+            ("schema".to_string(), Value::String("github".to_string())),
+            ("table".to_string(), Value::String("issues".to_string())),
+        ]);
+
+        let list_columns = super::list_columns_arguments(Some(&list_columns_arguments))
+            .expect("list columns args");
+
+        assert_eq!(list_columns.ignore_case, DEFAULT_IGNORE_CASE);
+        assert_eq!(list_columns.required_only, DEFAULT_REQUIRED_ONLY);
+        assert_eq!(list_columns.pagination.limit, DEFAULT_PAGINATION_LIMIT);
+        assert_eq!(list_columns.pagination.offset, DEFAULT_PAGINATION_OFFSET);
+    }
 }

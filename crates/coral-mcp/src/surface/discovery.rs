@@ -1,4 +1,5 @@
 use rmcp::ErrorData;
+use schemars::JsonSchema;
 use serde_json::{Map, Value};
 
 pub(crate) const MIN_PAGINATION_LIMIT: u32 = 1;
@@ -12,6 +13,46 @@ pub(crate) const DEFAULT_PAGINATION_OFFSET: u32 = 0;
 pub(crate) struct Pagination {
     pub(crate) limit: u32,
     pub(crate) offset: u32,
+}
+
+#[derive(JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "schema-only struct for flattened default pagination inputs"
+)]
+pub(crate) struct DefaultPaginationInput {
+    #[serde(default = "default_pagination_limit")]
+    #[schemars(
+        range(min = MIN_PAGINATION_LIMIT, max = MAX_PAGINATION_LIMIT),
+        description = "Maximum items to return, from 1 to 200. Defaults to 50."
+    )]
+    limit: u32,
+    #[serde(default = "default_pagination_offset")]
+    #[schemars(
+        range(min = DEFAULT_PAGINATION_OFFSET, max = u32::MAX),
+        description = "Number of matching items to skip. Defaults to 0."
+    )]
+    offset: u32,
+}
+
+#[derive(JsonSchema)]
+#[expect(
+    dead_code,
+    reason = "schema-only struct for flattened search pagination inputs"
+)]
+pub(crate) struct SearchPaginationInput {
+    #[serde(default = "default_search_pagination_limit")]
+    #[schemars(
+        range(min = MIN_PAGINATION_LIMIT, max = MAX_SEARCH_PAGINATION_LIMIT),
+        description = "Maximum catalog items to return, from 1 to 100. Defaults to 20."
+    )]
+    limit: u32,
+    #[serde(default = "default_pagination_offset")]
+    #[schemars(
+        range(min = DEFAULT_PAGINATION_OFFSET, max = u32::MAX),
+        description = "Number of matching catalog items to skip. Defaults to 0."
+    )]
+    offset: u32,
 }
 
 pub(crate) fn parse_pagination(
@@ -78,4 +119,16 @@ fn optional_u32_argument(
             None,
         )
     })
+}
+
+fn default_pagination_limit() -> u32 {
+    DEFAULT_PAGINATION_LIMIT
+}
+
+fn default_search_pagination_limit() -> u32 {
+    DEFAULT_SEARCH_PAGINATION_LIMIT
+}
+
+fn default_pagination_offset() -> u32 {
+    DEFAULT_PAGINATION_OFFSET
 }

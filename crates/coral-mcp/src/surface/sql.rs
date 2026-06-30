@@ -1,11 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use rmcp::ErrorData;
+use rmcp::model::{Tool, ToolAnnotations};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{ToolError, ToolErrorWithData, schema::tool_input_schema, schema::tool_output_schema};
+use super::context::ToolDescriptionContext;
+use super::errors::{ToolError, ToolErrorWithData};
+use super::schema::{tool_input_schema, tool_output_schema};
+use super::tool_names::ToolName;
 
 pub(crate) const MAX_SQL_BATCH_QUERIES: usize = 10;
 const MAX_SQL_BATCH_RESULT_INDEX: usize = MAX_SQL_BATCH_QUERIES - 1;
@@ -161,6 +165,22 @@ pub(crate) fn sql_arguments(
     Ok(SqlArguments { queries })
 }
 
+pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
+    Tool::new(
+        ToolName::Sql.as_str(),
+        sql_tool_description(context),
+        sql_input_schema(),
+    )
+    .with_raw_output_schema(sql_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Run SQL")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+    )
+}
+
 pub(crate) fn sql_input_schema() -> Arc<Map<String, Value>> {
     tool_input_schema::<SqlArguments>()
 }
@@ -174,4 +194,19 @@ fn json_object_array_schema(_generator: &mut schemars::SchemaGenerator) -> schem
         "type": "array",
         "items": { "type": "object" }
     })
+}
+
+fn sql_tool_description(context: &ToolDescriptionContext) -> String {
+    if context.visible_table_count == 0 {
+        format!(
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            context.connected_sources_sentence()
+        )
+    } else {
+        format!(
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database across connected Coral sources/schemas using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates inside one query when work is dependent.",
+            context.connected_sources_sentence(),
+            context.visible_table_count
+        )
+    }
 }
