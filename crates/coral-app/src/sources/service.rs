@@ -83,12 +83,12 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let sources = sources
-                .discover_sources(&workspace_name)
-                .map_err(app_status)?
-                .into_iter()
-                .map(candidate_source_to_proto)
-                .collect();
+            let sources =
+                run_blocking_source_operation(move || sources.discover_sources(&workspace_name))
+                    .await?
+                    .into_iter()
+                    .map(candidate_source_to_proto)
+                    .collect();
             Ok(Response::new(DiscoverSourcesResponse { sources }))
         })
         .await
@@ -103,12 +103,14 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let sources: Vec<_> = sources
-                .list_workspace_sources(&workspace_name)
-                .map_err(app_status)?
-                .into_iter()
-                .map(|source| installed_source_to_proto(&workspace_name, source))
-                .collect();
+            let response_workspace_name = workspace_name.clone();
+            let sources: Vec<_> = run_blocking_source_operation(move || {
+                sources.list_workspace_sources(&workspace_name)
+            })
+            .await?
+            .into_iter()
+            .map(|source| installed_source_to_proto(&response_workspace_name, source))
+            .collect();
             Ok(Response::new(ListSourcesResponse { sources }))
         })
         .await
@@ -123,12 +125,14 @@ impl SourceServiceApi for SourceService {
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
+            let response_workspace_name = workspace_name.clone();
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let source = sources
-                .get_source(&workspace_name, &source_name)
-                .map_err(app_status)?;
+            let source = run_blocking_source_operation(move || {
+                sources.get_source(&workspace_name, &source_name)
+            })
+            .await?;
             Ok(Response::new(GetSourceResponse {
-                source: Some(installed_source_to_proto(&workspace_name, source)),
+                source: Some(installed_source_to_proto(&response_workspace_name, source)),
             }))
         })
         .await
@@ -144,9 +148,10 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
-            let source = sources
-                .get_source_info(&workspace_name, &source_name)
-                .map_err(app_status)?;
+            let source = run_blocking_source_operation(move || {
+                sources.get_source_info(&workspace_name, &source_name)
+            })
+            .await?;
             Ok(Response::new(GetSourceInfoResponse {
                 source_info: Some(candidate_source_to_proto(source)),
             }))
