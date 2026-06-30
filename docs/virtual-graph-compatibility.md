@@ -149,7 +149,7 @@ compatibility baseline gates:
 
 - `coral-opencypher-read-baseline`: 301 openCypher-style read scenarios with
   declared feature floors.
-- `coral-graphql-read-baseline`: 30 GraphQL read-adapter scenarios with declared
+- `coral-graphql-read-baseline`: 35 GraphQL read-adapter scenarios with declared
   feature floors.
 
 Both gates run end-to-end through parsing, graph validation, SQL lowering,

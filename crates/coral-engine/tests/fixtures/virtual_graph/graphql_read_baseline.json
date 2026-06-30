@@ -4,13 +4,13 @@
   "minimum_feature_counts": {
     "Aggregation": 6,
     "BooleanFilters": 1,
-    "ErrorHandling": 4,
+    "ErrorHandling": 5,
     "GeneratedClientShape": 5,
     "IdentityFields": 1,
     "NestedRelationships": 1,
     "RelationshipExistence": 1,
     "RootSelection": 2,
-    "RowModifiers": 1,
+    "RowModifiers": 5,
     "ScalarFilters": 8
   },
   "scenarios": [
@@ -160,6 +160,61 @@
         "ordered": true,
         "rows": [
           { "name": "Alice", "age": 34 }
+        ]
+      }
+    },
+    {
+      "id": "orderby-descending-alias",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: age, direction: DESCENDING }]) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol", "age": 41 },
+          { "name": "Alice", "age": 34 },
+          { "name": "Bob", "age": 29 }
+        ]
+      }
+    },
+    {
+      "id": "orderby-ascending-alias",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASCENDING }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice" },
+          { "name": "Bob" },
+          { "name": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "orderby-shorthand-object",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: { age: DESC }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Carol" },
+          { "name": "Alice" },
+          { "name": "Bob" }
+        ]
+      }
+    },
+    {
+      "id": "root-distinct-projection",
+      "feature": "RowModifiers",
+      "query": "query { Person(distinct: true, orderBy: [{ field: city, direction: ASC }]) { city } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "city": "London" },
+          { "city": "Paris" }
         ]
       }
     },
@@ -369,6 +424,15 @@
       "expected": {
         "kind": "error",
         "contains": "unsupported GraphQL directive '@uppercase'"
+      }
+    },
+    {
+      "id": "orderby-invalid-direction-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person(orderBy: [{ field: age, direction: SIDEWAYS }]) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "orderBy direction must be"
       }
     }
   ]
