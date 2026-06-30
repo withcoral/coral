@@ -21,7 +21,7 @@
     "RelationshipProperties": 1,
     "ReturnDistinct": 3,
     "RowModifiers": 2,
-    "ScalarExpressions": 33,
+    "ScalarExpressions": 41,
     "TypeConversion": 3,
     "Union": 4,
     "Unwind": 3,
@@ -1189,6 +1189,149 @@
             "status": "active"
           }
         ]
+      }
+    },
+    {
+      "id": "simple-case-city-bucket",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, CASE p.city WHEN 'London' THEN 'local' WHEN 'Paris' THEN 'remote' WHEN '' THEN 'missing' ELSE 'other' END AS city_bucket ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "city_bucket": "local"
+          },
+          {
+            "name": "Bob",
+            "city_bucket": "missing"
+          },
+          {
+            "name": "Carol",
+            "city_bucket": "remote"
+          }
+        ]
+      }
+    },
+    {
+      "id": "simple-case-where-predicate",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE CASE p.city WHEN '' THEN 'missing' ELSE p.city END <> 'missing' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "searched-case-where-threshold",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.age >= CASE WHEN p.active THEN 34 ELSE 30 END RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "simple-case-null-result-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name, CASE p.city WHEN '' THEN null ELSE p.city END AS city_or_null ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "city_or_null": "London"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol",
+            "city_or_null": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "searched-case-relationship-properties",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, CASE WHEN r.strength >= 0.8 THEN 'strong' WHEN r.since >= 2021 THEN 'recent' ELSE 'weak' END AS relation_bucket ORDER BY relation_bucket, person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "relation_bucket": "recent"
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "relation_bucket": "recent"
+          },
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "relation_bucket": "strong"
+          }
+        ]
+      }
+    },
+    {
+      "id": "searched-case-hidden-order-key",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN p.name AS name ORDER BY CASE WHEN p.city = '' THEN 0 WHEN p.city = 'London' THEN 1 ELSE 2 END, name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "searched-case-mixed-result-types-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN CASE WHEN p.active THEN p.name ELSE p.age END AS mixed_case",
+      "expected": {
+        "kind": "error",
+        "contains": "CASE result branches"
+      }
+    },
+    {
+      "id": "simple-case-mixed-result-types-rejected",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) RETURN CASE p.city WHEN 'London' THEN 1 ELSE p.city END AS mixed_case",
+      "expected": {
+        "kind": "error",
+        "contains": "CASE result branches"
       }
     },
     {
