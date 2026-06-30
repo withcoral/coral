@@ -6,15 +6,21 @@
 
 use std::fs;
 
-use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable};
+use coral_api::v1::ExecuteSqlRequest;
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
+use tempfile::TempDir;
 use tonic::Request;
 
-use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
+use crate::harness::{
+    GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml, source_dir,
+};
 
 #[tokio::test]
 async fn broken_source_does_not_block_healthy_sources() {
-    let harness = GrpcHarness::new().await;
+    let temp_dir = TempDir::new().expect("config root");
+    let config_dir = temp_dir.path().join("coral-config");
+    seed_broken_secured_messages_source(&config_dir);
+    let harness = GrpcHarness::start_with_owned_config_dir(temp_dir, config_dir).await;
 
     harness
         .import_source(
@@ -23,30 +29,6 @@ async fn broken_source_does_not_block_healthy_sources() {
             Vec::new(),
         )
         .await;
-    harness
-        .import_source(
-            fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
-            }],
-        )
-        .await;
-
-    fs::remove_file(
-        harness
-            .config_dir()
-            .join("workspaces")
-            .join("default")
-            .join("sources")
-            .join("secured_messages")
-            .join("secrets.env"),
-    )
-    .expect("remove broken source secret file");
 
     let tables = harness.list_tables().await;
     assert!(
@@ -88,4 +70,27 @@ async fn broken_source_does_not_block_healthy_sources() {
         .await
         .expect_err("broken source query should fail");
     assert_eq!(broken.code(), tonic::Code::NotFound);
+}
+
+fn seed_broken_secured_messages_source(config_dir: &std::path::Path) {
+    fs::create_dir_all(config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"version = 1
+
+[workspaces.default.sources.secured_messages]
+version = "0.1.0"
+variables = { API_BASE = "https://example.com" }
+secrets = ["API_TOKEN"]
+origin = "imported"
+"#,
+    )
+    .expect("write legacy source config");
+    let source_dir = source_dir(config_dir, "secured_messages");
+    fs::create_dir_all(&source_dir).expect("create source dir");
+    fs::write(
+        source_dir.join("manifest.yaml"),
+        fixture_manifest_with_inputs_yaml(),
+    )
+    .expect("write manifest");
 }

@@ -27,27 +27,12 @@ use crate::harness::{GrpcHarness, fixture_manifest_yaml, source_dir};
 #[tokio::test]
 async fn query_refreshes_expired_oauth_access_token_at_request_time() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
         &fixture.token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
 
     let rows = harness
         .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
@@ -74,38 +59,33 @@ async fn query_refreshes_expired_oauth_access_token_at_request_time() {
         Some("stored-client")
     );
 
-    let material = fs::read_to_string(secret_path).expect("read refreshed material");
-    assert!(material.contains("API_TOKEN=refreshed-token"), "{material}");
-    assert!(
-        material.contains("__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token"),
-        "{material}"
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
+        .await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        fixture.token_forms().len(),
+        1,
+        "refreshed material should be reused without a second token request"
+    );
+    assert_eq!(
+        fixture.message_authorizations(),
+        vec![
+            "Bearer refreshed-token".to_string(),
+            "Bearer refreshed-token".to_string()
+        ]
     );
 }
 
 #[tokio::test]
 async fn db_loaded_source_persists_oauth_refresh_after_config_source_section_is_removed() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
         &fixture.token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
     remove_config_source_section(harness.config_dir(), "refreshed_messages");
 
     let rows = harness
@@ -125,11 +105,13 @@ async fn db_loaded_source_persists_oauth_refresh_after_config_source_section_is_
         Some("stored-refresh-token")
     );
 
-    let material = fs::read_to_string(secret_path).expect("read refreshed material");
-    assert!(material.contains("API_TOKEN=refreshed-token"), "{material}");
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
+        .await;
+    assert_eq!(rows.len(), 1);
     assert!(
-        material.contains("__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token"),
-        "{material}"
+        fixture.token_forms().len() == 1,
+        "refreshed DB material should be reused without another token request"
     );
 }
 
@@ -137,30 +119,17 @@ async fn db_loaded_source_persists_oauth_refresh_after_config_source_section_is_
 async fn restarted_db_loaded_source_persists_oauth_refresh_after_config_source_section_is_removed()
 {
     let fixture = RefreshingHttpFixture::new().await;
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    let secret_path = source_dir(&config_dir, "refreshed_messages").join("secrets.env");
+    let material = expired_api_token_material(&fixture.token_url, Some("stored-refresh-token"));
+    let (_temp_dir, config_dir) = seed_legacy_source_config(
+        "refreshed_messages",
+        &oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+        &[("API_BASE", fixture.base_url.as_str())],
+        &["API_TOKEN"],
+        &material,
+    );
 
     {
         let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
-        harness
-            .import_source(
-                oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-                vec![SourceVariable {
-                    key: "API_BASE".to_string(),
-                    value: fixture.base_url.clone(),
-                }],
-                vec![SourceSecret {
-                    key: "API_TOKEN".to_string(),
-                    value: "expired-token".to_string(),
-                }],
-            )
-            .await;
-        seed_expired_api_token_material(
-            &secret_path,
-            &fixture.token_url,
-            Some("stored-refresh-token"),
-        );
         harness.shutdown().await;
     }
     remove_config_source_section(&config_dir, "refreshed_messages");
@@ -176,31 +145,25 @@ async fn restarted_db_loaded_source_persists_oauth_refresh_after_config_source_s
         fixture.message_authorizations(),
         vec!["Bearer refreshed-token".to_string()]
     );
-    let material = fs::read_to_string(secret_path).expect("read refreshed material");
-    assert!(material.contains("API_TOKEN=refreshed-token"), "{material}");
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
+        .await;
+    assert_eq!(rows.len(), 1);
     assert!(
-        material.contains("__coral_oauth.QVBJX1RPS0VO.refresh_token=rotated-refresh-token"),
-        "{material}"
+        fixture.token_forms().len() == 1,
+        "refreshed DB material should survive restart without another token request"
     );
 }
 
 #[tokio::test]
 async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
+        &fixture.token_url,
+        Some("stored-refresh-token"),
+    )
+    .await;
     harness
         .import_source(
             fixture_manifest_yaml(harness.temp_path()),
@@ -208,13 +171,6 @@ async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
             Vec::new(),
         )
         .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
-        &fixture.token_url,
-        Some("stored-refresh-token"),
-    );
 
     let rows = harness
         .execute_sql_rows("SELECT text FROM local_messages.messages ORDER BY text")
@@ -236,27 +192,12 @@ async fn query_against_other_source_does_not_refresh_expired_oauth_source() {
 #[tokio::test]
 async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
         &fixture.token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
 
     let tables = harness.list_tables().await;
     let refreshed_tables = tables
@@ -270,34 +211,18 @@ async fn list_catalog_does_not_refresh_expired_oauth_access_token() {
         fixture.token_forms().is_empty(),
         "passive catalog discovery should not call the token endpoint"
     );
-    let material = fs::read_to_string(secret_path).expect("read material");
-    assert!(material.contains("API_TOKEN=expired-token"), "{material}");
 }
 
 #[tokio::test]
 async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
-        &format!("{}/token-fail", fixture.base_url),
+    let failed_token_url = format!("{}/token-fail", fixture.base_url);
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
+        &failed_token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
 
     let status = harness
         .query_client()
@@ -320,23 +245,8 @@ async fn query_surfaces_oauth_refresh_failure_instead_of_skipping_source() {
 #[tokio::test]
 async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnect() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(&secret_path, &fixture.token_url, None);
+    let harness =
+        start_harness_with_expired_api_token_source(&fixture, &fixture.token_url, None).await;
 
     let status = harness
         .query_client()
@@ -361,27 +271,12 @@ async fn expired_oauth_access_token_without_refresh_token_tells_user_to_reconnec
 #[tokio::test]
 async fn concurrent_queries_share_one_expired_oauth_refresh() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
         &fixture.token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
 
     let (first, second) = tokio::join!(
         harness.execute_sql_rows("SELECT id FROM refreshed_messages.messages"),
@@ -408,29 +303,16 @@ async fn concurrent_queries_share_one_expired_oauth_refresh() {
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_servers_share_one_expired_oauth_refresh() {
     let fixture = RefreshingHttpFixture::new().await;
-    let config_root = TempDir::new().expect("config root");
-    let config_dir = config_root.path().join("coral-config");
-    let first_harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
-    first_harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(&config_dir, "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
-        &fixture.token_url,
-        Some("stored-refresh-token"),
+    let material = expired_api_token_material(&fixture.token_url, Some("stored-refresh-token"));
+    let (config_root, config_dir) = seed_legacy_source_config(
+        "refreshed_messages",
+        &oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+        &[("API_BASE", fixture.base_url.as_str())],
+        &["API_TOKEN"],
+        &material,
     );
+    let first_harness =
+        GrpcHarness::start_with_owned_config_dir(config_root, config_dir.clone()).await;
 
     let second_harness = GrpcHarness::start_with_config_dir(config_dir).await;
     let (first, second) = tokio::join!(
@@ -458,27 +340,12 @@ async fn concurrent_servers_share_one_expired_oauth_refresh() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_credential_replacement_waits_for_in_flight_refresh() {
     let fixture = RefreshingHttpFixture::new_blocked_token_response().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "expired-token".to_string(),
-            }],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "refreshed_messages").join("secrets.env");
-    seed_expired_api_token_material(
-        &secret_path,
+    let harness = start_harness_with_expired_api_token_source(
+        &fixture,
         &fixture.token_url,
         Some("stored-refresh-token"),
-    );
+    )
+    .await;
 
     let mut query_client = harness.query_client();
     let query = tokio::spawn(async move {
@@ -542,45 +409,31 @@ async fn manual_credential_replacement_waits_for_in_flight_refresh() {
         fixture.message_authorizations(),
         vec!["Bearer refreshed-token".to_string()]
     );
-    let material = fs::read_to_string(secret_path).expect("read material");
-    assert!(material.contains("API_TOKEN=manual-token"), "{material}");
+    let rows = harness
+        .execute_sql_rows("SELECT id FROM refreshed_messages.messages")
+        .await;
+    assert_eq!(rows.len(), 1);
     assert!(
-        !material.contains("API_TOKEN=refreshed-token"),
-        "stale refresh should not overwrite manual replacement: {material}"
+        fixture.token_forms().len() == 1,
+        "manual replacement should not trigger a second refresh"
+    );
+    assert_eq!(
+        fixture.message_authorizations(),
+        vec![
+            "Bearer refreshed-token".to_string(),
+            "Bearer manual-token".to_string()
+        ],
+        "stale refresh should not overwrite manual replacement"
     );
 }
 
 #[tokio::test]
 async fn successful_refresh_is_persisted_before_later_oauth_input_failure() {
     let fixture = RefreshingHttpFixture::new().await;
-    let harness = GrpcHarness::new().await;
-    harness
-        .import_source(
-            two_oauth_inputs_manifest_yaml(&fixture.base_url, &fixture.token_url),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: fixture.base_url.clone(),
-            }],
-            vec![
-                SourceSecret {
-                    key: "API_TOKEN".to_string(),
-                    value: "expired-primary-token".to_string(),
-                },
-                SourceSecret {
-                    key: "SECOND_TOKEN".to_string(),
-                    value: "expired-secondary-token".to_string(),
-                },
-            ],
-        )
-        .await;
-
-    let secret_path = source_dir(harness.config_dir(), "multi_oauth_messages").join("secrets.env");
     let primary_prefix = oauth_metadata_prefix("API_TOKEN");
     let secondary_prefix = oauth_metadata_prefix("SECOND_TOKEN");
-    fs::write(
-        &secret_path,
-        format!(
-            "\
+    let material = format!(
+        "\
 API_TOKEN=expired-primary-token
 SECOND_TOKEN=expired-secondary-token
 {primary_prefix}method=oauth
@@ -594,13 +447,19 @@ SECOND_TOKEN=expired-secondary-token
 {secondary_prefix}client_id=stored-client
 {secondary_prefix}token_url={}/token-fail
 ",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.token_url,
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-            fixture.base_url,
-        ),
+        (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+        fixture.token_url,
+        (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+        fixture.base_url,
+    );
+    let harness = start_harness_with_legacy_source(
+        "multi_oauth_messages",
+        &two_oauth_inputs_manifest_yaml(&fixture.base_url, &fixture.token_url),
+        &[("API_BASE", fixture.base_url.as_str())],
+        &["API_TOKEN", "SECOND_TOKEN"],
+        &material,
     )
-    .expect("seed expired oauth material");
+    .await;
 
     let status = harness
         .query_client()
@@ -625,45 +484,133 @@ SECOND_TOKEN=expired-secondary-token
         "second failing refresh should be attempted: {forms:?}"
     );
 
-    let material = fs::read_to_string(secret_path).expect("read partially refreshed material");
-    assert!(
-        material.contains("API_TOKEN=refreshed-token"),
-        "first refresh should be durable even when a later refresh fails: {material}"
+    let status = harness
+        .query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: "SELECT id FROM multi_oauth_messages.messages".to_string(),
+        }))
+        .await
+        .expect_err("second OAuth refresh should still fail query");
+    assert_eq!(status.code(), Code::FailedPrecondition);
+    let forms = fixture.token_forms();
+    assert_eq!(
+        forms
+            .iter()
+            .filter(|form| {
+                form.get("refresh_token").map(String::as_str)
+                    == Some("stored-primary-refresh-token")
+            })
+            .count(),
+        1,
+        "successful first refresh should be persisted and not repeated: {forms:?}"
     );
     assert!(
-        material.contains(&format!(
-            "{primary_prefix}refresh_token=rotated-refresh-token"
-        )),
-        "rotated refresh token should be durable even when a later refresh fails: {material}"
-    );
-    assert!(
-        material.contains("SECOND_TOKEN=expired-secondary-token"),
-        "failed second refresh should not overwrite its source secret: {material}"
+        forms
+            .iter()
+            .filter(|form| {
+                form.get("refresh_token").map(String::as_str)
+                    == Some("stored-secondary-refresh-token")
+            })
+            .count()
+            >= 2,
+        "failed second refresh should remain unchanged and retryable: {forms:?}"
     );
 }
 
-fn seed_expired_api_token_material(
-    secret_path: &Path,
+async fn start_harness_with_expired_api_token_source(
+    fixture: &RefreshingHttpFixture,
     token_url: &str,
     refresh_token: Option<&str>,
-) {
+) -> GrpcHarness {
+    let material = expired_api_token_material(token_url, refresh_token);
+    start_harness_with_legacy_source(
+        "refreshed_messages",
+        &oauth_refresh_manifest_yaml(&fixture.base_url, &fixture.token_url),
+        &[("API_BASE", fixture.base_url.as_str())],
+        &["API_TOKEN"],
+        &material,
+    )
+    .await
+}
+
+async fn start_harness_with_legacy_source(
+    source_name: &str,
+    manifest_yaml: &str,
+    variables: &[(&str, &str)],
+    secrets: &[&str],
+    credential_material: &str,
+) -> GrpcHarness {
+    let (temp_dir, config_dir) = seed_legacy_source_config(
+        source_name,
+        manifest_yaml,
+        variables,
+        secrets,
+        credential_material,
+    );
+    GrpcHarness::start_with_owned_config_dir(temp_dir, config_dir).await
+}
+
+fn seed_legacy_source_config(
+    source_name: &str,
+    manifest_yaml: &str,
+    variables: &[(&str, &str)],
+    secrets: &[&str],
+    credential_material: &str,
+) -> (TempDir, std::path::PathBuf) {
+    let temp_dir = TempDir::new().expect("config root");
+    let config_dir = temp_dir.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    let variables_toml = variables
+        .iter()
+        .map(|(key, value)| format!("{key} = {}", toml_string(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let secrets_toml = secrets
+        .iter()
+        .map(|secret| toml_string(secret))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            r#"version = 1
+
+[workspaces.default.sources.{source_name}]
+version = "0.1.0"
+variables = {{{variables_toml}}}
+secrets = [{secrets_toml}]
+origin = "imported"
+"#
+        ),
+    )
+    .expect("write legacy source config");
+    let source_dir = source_dir(&config_dir, source_name);
+    fs::create_dir_all(&source_dir).expect("create legacy source dir");
+    fs::write(source_dir.join("manifest.yaml"), manifest_yaml).expect("write legacy manifest");
+    fs::write(source_dir.join("secrets.env"), credential_material)
+        .expect("write legacy credential material");
+    (temp_dir, config_dir)
+}
+
+fn toml_string(value: &str) -> String {
+    format!("{value:?}")
+}
+
+fn expired_api_token_material(token_url: &str, refresh_token: Option<&str>) -> String {
     let refresh_token_line = refresh_token
         .map(|refresh_token| format!("__coral_oauth.QVBJX1RPS0VO.refresh_token={refresh_token}\n"))
         .unwrap_or_default();
-    fs::write(
-        secret_path,
-        format!(
-            "\
+    format!(
+        "\
 API_TOKEN=expired-token
 __coral_oauth.QVBJX1RPS0VO.method=oauth
 __coral_oauth.QVBJX1RPS0VO.access_token_expires_at={}
 {refresh_token_line}__coral_oauth.QVBJX1RPS0VO.client_id=stored-client
 __coral_oauth.QVBJX1RPS0VO.token_url={token_url}
 ",
-            (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
-        ),
+        (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
     )
-    .expect("seed expired oauth material");
 }
 
 fn remove_config_source_section(config_dir: &Path, source_name: &str) {

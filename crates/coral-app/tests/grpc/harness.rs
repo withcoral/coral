@@ -40,6 +40,13 @@ impl GrpcHarness {
         Self::start_with_parts(temp_dir, config_dir).await
     }
 
+    pub(crate) async fn start_with_owned_config_dir(
+        temp_dir: TempDir,
+        config_dir: PathBuf,
+    ) -> Self {
+        Self::start_with_parts(temp_dir, config_dir).await
+    }
+
     async fn start_with_parts(temp_dir: TempDir, config_dir: PathBuf) -> Self {
         ensure_file_credentials_config(&config_dir);
         let server = ServerBuilder::new()
