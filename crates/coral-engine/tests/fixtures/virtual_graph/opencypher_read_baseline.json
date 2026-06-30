@@ -13,7 +13,7 @@
     "Match": 15,
     "MathematicalFunctions": 18,
     "NullSemantics": 14,
-    "OptionalMatch": 4,
+    "OptionalMatch": 15,
     "Parameters": 3,
     "PathMetadata": 1,
     "PathValues": 4,
@@ -876,6 +876,278 @@
           {
             "person": "Carol",
             "friend": "none"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-local-where-preserves-row",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(friend:Person) WHERE friend.city = 'Paris' RETURN p.name AS person, friend.name AS paris_friend ORDER BY person, paris_friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "paris_friend": "Carol"
+          },
+          {
+            "person": "Bob",
+            "paris_friend": "Carol"
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-local-where-all-fail-preserves-rows",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(friend:Person) WHERE r.since > 2025 RETURN p.name AS person, friend.name AS friend, r.since AS since ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob"
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-relationship-property-projection",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, r.since AS since ORDER BY person, since",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "since": 2020
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "since": 2022
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "since": 2021
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-counts-zero-for-unmatched",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, count(friend) AS friend_count ORDER BY friend_count DESC, person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend_count": 2
+          },
+          {
+            "person": "Bob",
+            "friend_count": 1
+          },
+          {
+            "person": "Carol",
+            "friend_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-count-with-local-where",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(friend:Person) WHERE r.strength >= 0.7 RETURN p.name AS person, count(r) AS strong_count ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "strong_count": 1
+          },
+          {
+            "person": "Bob",
+            "strong_count": 1
+          },
+          {
+            "person": "Carol",
+            "strong_count": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-reverse-inbound",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)<-[:KNOWS]-(source:Person) RETURN p.name AS person, source.name AS source ORDER BY person, source",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice"
+          },
+          {
+            "person": "Bob",
+            "source": "Alice"
+          },
+          {
+            "person": "Carol",
+            "source": "Alice"
+          },
+          {
+            "person": "Carol",
+            "source": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-between-bound-endpoints",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person), (target:Person) WHERE p.name IN ['Alice', 'Bob'] AND target.name IN ['Bob', 'Carol'] OPTIONAL MATCH (p)-[r:KNOWS]->(target) RETURN p.name AS person, target.name AS target, r.since AS since ORDER BY person, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "target": "Bob",
+            "since": 2020
+          },
+          {
+            "person": "Alice",
+            "target": "Carol",
+            "since": 2022
+          },
+          {
+            "person": "Bob",
+            "target": "Bob"
+          },
+          {
+            "person": "Bob",
+            "target": "Carol",
+            "since": 2021
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-multiple-clauses",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(outgoing:Person) OPTIONAL MATCH (p)<-[:KNOWS]-(incoming:Person) RETURN p.name AS person, outgoing.name AS outgoing, incoming.name AS incoming ORDER BY person, outgoing, incoming",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "outgoing": "Bob"
+          },
+          {
+            "person": "Alice",
+            "outgoing": "Carol"
+          },
+          {
+            "person": "Bob",
+            "outgoing": "Carol",
+            "incoming": "Alice"
+          },
+          {
+            "person": "Carol",
+            "incoming": "Alice"
+          },
+          {
+            "person": "Carol",
+            "incoming": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-followed-by-required-match",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) MATCH (friend)-[:KNOWS]->(foaf:Person) RETURN p.name AS person, friend.name AS friend, foaf.name AS foaf ORDER BY person, friend, foaf",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "foaf": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-inline-relationship-property",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS {since: 2022}]->(friend:Person) RETURN p.name AS person, friend.name AS friend, r.strength AS strength ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "strength": 0.3
+          },
+          {
+            "person": "Bob"
+          },
+          {
+            "person": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-named-path-length",
+      "feature": "OptionalMatch",
+      "query": "MATCH (p:Person) OPTIONAL MATCH path = (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, length(path) AS hops ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob",
+            "hops": 1
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol",
+            "hops": 1
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol",
+            "hops": 1
+          },
+          {
+            "person": "Carol"
           }
         ]
       }
