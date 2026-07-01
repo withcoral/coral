@@ -2215,8 +2215,9 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
+            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
             layout,
-            crate::workspaces::WorkspaceLifecycleLock::default(),
+            WorkspaceLifecycleLock::default(),
         );
 
         let workspace_name = default_workspace();
