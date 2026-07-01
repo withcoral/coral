@@ -11,9 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
 
 use crate::{
-    ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
-    ValidatedSourceManifest,
-    backends::file::{FileObjectStoreSpec, s3_endpoint_dns_suffix_for_region},
+    ManifestError, ManifestInputSpec, McpServerSpec, ParsedTemplate, Result, TemplateNamespace,
+    TemplatePart, ValidatedSourceManifest,
+    backends::file::{
+        FileObjectStoreSpec, s3_endpoint_dns_suffix_for_region, validate_s3_region_name,
+    },
     v4::{SurfaceDescriptor, openapi_document_metadata},
 };
 
@@ -39,9 +41,8 @@ impl ValidatedSourceManifest {
     /// endpoints. This compatibility helper returns only concrete hosts; use
     /// [`ValidatedSourceManifest::outbound_host_review`] when callers also need
     /// to surface unresolved input-driven endpoints.
-    #[must_use]
-    pub fn outbound_hosts(&self) -> Vec<String> {
-        self.outbound_host_review().hosts
+    pub fn outbound_hosts(&self) -> Result<Vec<String>> {
+        Ok(self.outbound_host_review()?.hosts)
     }
 
     /// Returns every network host this source will contact after substituting
@@ -51,28 +52,26 @@ impl ValidatedSourceManifest {
     /// returns only concrete hosts; use
     /// [`ValidatedSourceManifest::outbound_host_review_with_input_values`] when
     /// callers also need to surface unresolved input-driven endpoints.
-    #[must_use]
     pub fn outbound_hosts_with_input_values(
         &self,
         source_inputs: &BTreeMap<String, String>,
-    ) -> Vec<String> {
-        self.outbound_host_review_with_input_values(source_inputs)
-            .hosts
+    ) -> Result<Vec<String>> {
+        Ok(self
+            .outbound_host_review_with_input_values(source_inputs)?
+            .hosts)
     }
 
     /// Returns concrete and unresolved outbound-host review data.
-    #[must_use]
-    pub fn outbound_host_review(&self) -> OutboundHostReview {
+    pub fn outbound_host_review(&self) -> Result<OutboundHostReview> {
         self.outbound_host_review_with_input_values(&BTreeMap::new())
     }
 
     /// Returns concrete and unresolved outbound-host review data after
     /// substituting resolved non-secret source input values.
-    #[must_use]
     pub fn outbound_host_review_with_input_values(
         &self,
         source_inputs: &BTreeMap<String, String>,
-    ) -> OutboundHostReview {
+    ) -> Result<OutboundHostReview> {
         let mut hosts = BTreeSet::new();
         let mut unresolved_hosts = BTreeSet::new();
         let inputs = self.declared_inputs();
@@ -111,14 +110,16 @@ impl ValidatedSourceManifest {
 
         if let Some(file) = self.as_file() {
             for table in &file.tables {
+                let table_context = format!("{}.{}", self.schema_name(), table.name());
                 collect_file_source_hosts(
+                    &table_context,
                     &mut hosts,
                     &mut unresolved_hosts,
                     &render_with_input_values(&table.source.location, inputs, source_inputs),
                     table.source.object_store.as_ref(),
                     inputs,
                     source_inputs,
-                );
+                )?;
             }
         }
 
@@ -166,10 +167,10 @@ impl ValidatedSourceManifest {
             }
         }
 
-        OutboundHostReview {
+        Ok(OutboundHostReview {
             hosts: hosts.into_iter().collect(),
             unresolved_hosts: unresolved_hosts.into_iter().collect(),
-        }
+        })
     }
 }
 
@@ -248,34 +249,44 @@ fn render_with_input_values(
 }
 
 fn collect_file_source_hosts(
+    table_context: &str,
     hosts: &mut BTreeSet<String>,
     unresolved_hosts: &mut BTreeSet<String>,
     rendered_location: &str,
     object_store: Option<&FileObjectStoreSpec>,
     inputs: &[ManifestInputSpec],
     source_inputs: &BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let rendered_location = rendered_location.trim();
     if rendered_location.is_empty() || has_scheme(rendered_location, "file") {
-        return;
+        return Ok(());
     }
     if has_scheme(rendered_location, "s3") {
-        collect_s3_service_host(hosts, unresolved_hosts, object_store, inputs, source_inputs);
-        return;
+        collect_s3_service_host(
+            table_context,
+            hosts,
+            unresolved_hosts,
+            object_store,
+            inputs,
+            source_inputs,
+        )?;
+        return Ok(());
     }
     // File-source validation rejects unsupported remote schemes before this
     // point. Keep a defensive host extraction path so future supported schemes
     // are still visible during setup.
     collect_host(hosts, unresolved_hosts, rendered_location);
+    Ok(())
 }
 
 fn collect_s3_service_host(
+    table_context: &str,
     hosts: &mut BTreeSet<String>,
     unresolved_hosts: &mut BTreeSet<String>,
     object_store: Option<&FileObjectStoreSpec>,
     inputs: &[ManifestInputSpec],
     source_inputs: &BTreeMap<String, String>,
-) {
+) -> Result<()> {
     let region = match object_store {
         Some(FileObjectStoreSpec::S3 {
             region: Some(region),
@@ -285,18 +296,24 @@ fn collect_s3_service_host(
     };
     let region = region.trim();
     if region.is_empty() {
-        return;
+        return Ok(());
     }
     if is_unresolved_host(region) {
         unresolved_hosts.insert(format!("{UNRESOLVED_S3_REGION_HOST_PREFIX}{region}"));
-        return;
+        return Ok(());
     }
+    validate_s3_region_name(region).map_err(|error| {
+        ManifestError::validation(format!(
+            "{table_context} source.object_store.region {error}"
+        ))
+    })?;
     let host = format!("s3.{region}.{}", s3_endpoint_dns_suffix_for_region(region));
     if is_unresolved_host(&host) {
         unresolved_hosts.insert(host);
     } else {
         hosts.insert(host);
     }
+    Ok(())
 }
 
 fn render_string_template_with_input_values(
@@ -390,6 +407,7 @@ mod tests {
         parse_source_manifest_yaml(manifest_yaml)
             .expect("manifest should parse")
             .outbound_hosts()
+            .expect("outbound hosts should resolve")
     }
 
     #[test]
@@ -476,7 +494,9 @@ tables:
         )]);
 
         assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
+            manifest
+                .outbound_hosts_with_input_values(&source_inputs)
+                .expect("outbound hosts should resolve"),
             vec!["gitlab.internal".to_string()]
         );
     }
@@ -512,13 +532,17 @@ tables:
             "  https://gitlab.internal/api/v4  ".to_string(),
         )]);
         assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
+            manifest
+                .outbound_hosts_with_input_values(&source_inputs)
+                .expect("outbound hosts should resolve"),
             vec!["gitlab.internal".to_string()]
         );
 
         let source_inputs = BTreeMap::from([("API_BASE".to_string(), "   ".to_string())]);
         assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
+            manifest
+                .outbound_hosts_with_input_values(&source_inputs)
+                .expect("outbound hosts should resolve"),
             vec!["api.github.com".to_string()]
         );
     }
@@ -548,7 +572,9 @@ tables:
 "#,
         )
         .expect("manifest should parse");
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
 
         assert!(review.hosts.is_empty());
         assert_eq!(
@@ -573,7 +599,9 @@ surfaces:
         .expect("manifest should parse");
 
         assert_eq!(
-            manifest.outbound_hosts(),
+            manifest
+                .outbound_hosts()
+                .expect("outbound hosts should resolve"),
             vec![
                 "api.example.com".to_string(),
                 "specs.example.com".to_string()
@@ -608,7 +636,9 @@ surfaces:
         .expect("manifest should parse");
 
         assert_eq!(
-            manifest.outbound_hosts(),
+            manifest
+                .outbound_hosts()
+                .expect("outbound hosts should resolve"),
             vec!["api.example.com".to_string()]
         );
         std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
@@ -646,7 +676,9 @@ surfaces:
         ))
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert_eq!(review.hosts, vec!["api.example.com".to_string()]);
         assert!(review.unresolved_hosts.is_empty());
         std::fs::remove_file(openapi_file).expect("remove OpenAPI fixture");
@@ -678,7 +710,9 @@ surfaces:
         ))
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert!(review.hosts.is_empty());
         assert_eq!(
             review.unresolved_hosts,
@@ -701,7 +735,9 @@ surfaces:
         )
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert_eq!(review.hosts, vec!["specs.example.com".to_string()]);
         assert_eq!(
             review.unresolved_hosts,
@@ -725,7 +761,9 @@ surfaces:
         )
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert_eq!(review.hosts, vec!["mcp.example.com:8443".to_string()]);
         assert!(review.unresolved_hosts.is_empty());
     }
@@ -746,7 +784,9 @@ surfaces:
         )
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert!(review.hosts.is_empty());
         assert!(review.unresolved_hosts.is_empty());
     }
@@ -1038,7 +1078,9 @@ tables:
         )
         .expect("manifest should parse");
 
-        let review = manifest.outbound_host_review();
+        let review = manifest
+            .outbound_host_review()
+            .expect("outbound host review should resolve");
         assert!(review.hosts.is_empty());
         assert_eq!(
             review.unresolved_hosts,
@@ -1047,8 +1089,98 @@ tables:
 
         let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "eu-west-1".to_string())]);
         assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
+            manifest
+                .outbound_hosts_with_input_values(&source_inputs)
+                .expect("outbound hosts should resolve"),
             vec!["s3.eu-west-1.amazonaws.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_rendered_s3_region_before_host_review() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: us-east-1
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+        let source_inputs = BTreeMap::from([(
+            "AWS_REGION".to_string(),
+            "cn-north-1.evil.example/path".to_string(),
+        )]);
+
+        let error = manifest
+            .outbound_hosts_with_input_values(&source_inputs)
+            .expect_err("invalid rendered S3 region should fail before host review");
+
+        assert!(
+            error.to_string().contains(
+                "demo.events source.object_store.region must contain only lowercase ASCII letters"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_defaulted_s3_region_before_host_review() {
+        let manifest = parse_source_manifest_yaml(
+            r#"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: file
+inputs:
+  AWS_REGION:
+    kind: variable
+    default: cn-north-1.evil.example/path
+tables:
+  - name: events
+    description: Demo events
+    format: jsonl
+    source:
+      location: s3://example-bucket/events/
+      object_store:
+        type: s3
+        region: "{{input.AWS_REGION}}"
+        auth:
+          type: instance_profile
+    columns:
+      - name: kind
+        type: Utf8
+"#,
+        )
+        .expect("manifest should parse");
+
+        let error = manifest
+            .outbound_hosts()
+            .expect_err("invalid defaulted S3 region should fail before host review");
+
+        assert!(
+            error.to_string().contains(
+                "demo.events source.object_store.region must contain only lowercase ASCII letters"
+            ),
+            "unexpected error: {error}"
         );
     }
 
@@ -1083,7 +1215,9 @@ tables:
 
         let source_inputs = BTreeMap::from([("AWS_REGION".to_string(), "cn-north-1".to_string())]);
         assert_eq!(
-            manifest.outbound_hosts_with_input_values(&source_inputs),
+            manifest
+                .outbound_hosts_with_input_values(&source_inputs)
+                .expect("outbound hosts should resolve"),
             vec!["s3.cn-north-1.amazonaws.com.cn".to_string()]
         );
     }
@@ -1117,7 +1251,9 @@ tables:
         )
         .expect("a secret in the base_url path should be allowed");
         assert_eq!(
-            manifest.outbound_hosts(),
+            manifest
+                .outbound_hosts()
+                .expect("outbound hosts should resolve"),
             vec!["api.telegram.org".to_string()]
         );
     }

@@ -195,6 +195,21 @@ fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &
     // variable supplies the host, e.g. `http://{{input.HOST}}/oauth/token`.
     // Validate the known scheme here; the fully rendered URL is validated by
     // `render_oauth_endpoint_url` before any OAuth request is made.
+    if let Some(scheme) = raw_prefix.strip_suffix(':')
+        && is_url_scheme_name(scheme)
+    {
+        return validate_https_or_loopback_unresolved_host_scheme(context, scheme)
+            .map_err(ManifestError::validation);
+    }
+    if let Some((scheme, authority_prefix)) = raw_prefix.split_once("://") {
+        let authority_may_continue = !authority_prefix
+            .chars()
+            .any(|ch| matches!(ch, '/' | '?' | '#'));
+        if authority_may_continue {
+            return validate_https_or_loopback_unresolved_host_scheme(context, scheme)
+                .map_err(ManifestError::validation);
+        }
+    }
     let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
     if let Ok(url) = Url::parse(parse_prefix) {
         return validate_https_or_loopback_scheme_name(
@@ -209,6 +224,17 @@ fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &
     };
     validate_https_or_loopback_unresolved_host_scheme(context, scheme)
         .map_err(ManifestError::validation)
+}
+
+fn is_url_scheme_name(value: &str) -> bool {
+    let Some(first) = value.chars().next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && value
+            .chars()
+            .skip(1)
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -2123,6 +2149,27 @@ tables: []
     }
 
     #[test]
+    fn defers_oauth_endpoint_url_parsing_for_required_variables_after_path_colon() {
+        collect(
+            &oauth_input(
+                r"
+              id:
+                default: default-client
+",
+            )
+            .replace(
+                "  API_TOKEN:\n",
+                "  OUTLOOK_PATH_SUFFIX:\n    kind: variable\n  API_TOKEN:\n",
+            )
+            .replace(
+                "https://provider.example.com/oauth/token",
+                "https://provider.example.com/oauth:{{input.OUTLOOK_PATH_SUFFIX}}/token",
+            ),
+        )
+        .expect("required variable after path colon should be deferred");
+    }
+
+    #[test]
     fn defers_oauth_endpoint_url_parsing_when_required_variable_supplies_authority() {
         let inputs = collect(
             &oauth_input(DEFAULT_OAUTH_CLIENT)
@@ -2195,6 +2242,52 @@ tables: []
                 ),
         )
         .expect_err("plain HTTP scheme should fail when host is unresolved");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https when the host is supplied by a required input"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_plain_http_oauth_endpoint_templates_without_authority_slashes() {
+        let error = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "http:{{input.OAUTH_HOST}}/oauth/token",
+                ),
+        )
+        .expect_err("plain HTTP scheme prefix should fail with unresolved authority");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https when the host is supplied by a required input"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_plain_http_loopback_prefix_when_variable_can_extend_authority() {
+        let error = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST_SUFFIX:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "http://localhost{{input.OAUTH_HOST_SUFFIX}}/oauth/token",
+                ),
+        )
+        .expect_err("plain HTTP loopback prefix should fail when authority is unresolved");
 
         assert!(
             error

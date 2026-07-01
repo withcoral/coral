@@ -113,8 +113,10 @@ pub(crate) async fn resolve_bundled_source_hosts(
 pub(crate) fn resolve_manifest_source_hosts(
     manifest: &ValidatedSourceManifest,
     variables: &[SourceVariable],
-) -> OutboundHostReview {
-    manifest.outbound_host_review_with_input_values(&source_variables_map(variables))
+) -> Result<OutboundHostReview, anyhow::Error> {
+    manifest
+        .outbound_host_review_with_input_values(&source_variables_map(variables))
+        .map_err(Into::into)
 }
 
 pub(crate) async fn list_sources(

@@ -1045,7 +1045,7 @@ async fn run_source_add_file(
             source_ops::CredentialPromptMode::EnvFirst,
             |variables| {
                 let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables);
-                async move { Ok(hosts) }
+                async move { hosts }
             },
         )
         .await?;
@@ -1067,7 +1067,7 @@ async fn run_source_add_file(
         );
         let (variables, secrets) =
             source_ops::collect_inputs_from_env(manifest.declared_inputs(), interactive_command)?;
-        let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables);
+        let hosts = source_ops::resolve_manifest_source_hosts(&manifest, &variables)?;
         source_ops::print_source_hosts(&hosts);
         Ok(Some(
             source_ops::import_source(app, workspace, manifest_yaml, variables, secrets).await?,

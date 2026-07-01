@@ -292,7 +292,9 @@ impl SourceManager {
             .filter(|binding| !binding.value.is_empty())
             .map(|binding| (binding.key.clone(), binding.value.clone()))
             .collect::<BTreeMap<_, _>>();
-        Ok(manifest.outbound_host_review_with_input_values(&source_variables))
+        manifest
+            .outbound_host_review_with_input_values(&source_variables)
+            .map_err(|error| AppError::InvalidInput(error.to_string()))
     }
 
     pub(crate) fn create_bundled_source(
