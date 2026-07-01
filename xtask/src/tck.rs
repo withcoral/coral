@@ -534,7 +534,7 @@ mod tests {
             .expect("GraphQL baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 99);
+        assert_eq!(report.scenario_count, 103);
         assert_eq!(report.expected_error_count, 15);
         assert_eq!(report.feature_counts.get("Aggregation"), Some(&13));
         assert_eq!(report.feature_counts.get("RootSelection"), Some(&4));

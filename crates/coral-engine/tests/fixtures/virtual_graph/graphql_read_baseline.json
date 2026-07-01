@@ -5,7 +5,7 @@
     "Aggregation": 13,
     "BooleanFilters": 8,
     "ErrorHandling": 15,
-    "GeneratedClientShape": 5,
+    "GeneratedClientShape": 9,
     "IdentityFields": 6,
     "NestedRelationships": 15,
     "RelationshipExistence": 5,
@@ -1517,6 +1517,69 @@
       "expected": {
         "kind": "error",
         "contains": "mutations and subscriptions are not supported"
+      }
+    },
+    {
+      "id": "fragment-chained-spread",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { ...Outer } } fragment Outer on Person { name ...Inner } fragment Inner on Person { age city }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34,
+            "city": "London"
+          }
+        ]
+      }
+    },
+    {
+      "id": "inline-fragment-on-node",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name ... on Person { age } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-target-typename",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Bob\" } }) { name out_KNOWS(to: Person) { __typename target: name } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "person1___typename": "Person",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "relationship-edge-typename",
+      "feature": "GeneratedClientShape",
+      "query": "query { Person(where: { name: { eq: \"Bob\" } }) { name out_KNOWS(to: Person) { target: name _edge { edgeType: __typename } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "target": "Carol",
+            "edgeType": "KNOWS"
+          }
+        ]
       }
     }
   ]
