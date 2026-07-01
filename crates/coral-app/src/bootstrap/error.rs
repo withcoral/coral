@@ -268,6 +268,28 @@ mod tests {
     }
 
     #[test]
+    fn app_status_attaches_structured_reason_for_workspace_not_found() {
+        let status = app_status(AppError::WorkspaceNotFound("work".to_string()));
+        assert_eq!(status.code(), Code::NotFound);
+
+        let details = status.get_error_details_vec();
+        let info = details
+            .iter()
+            .find_map(|detail| match detail {
+                ErrorDetail::ErrorInfo(info) => Some(info),
+                _ => None,
+            })
+            .expect("workspace-not-found status must carry an ErrorInfo detail");
+        assert_eq!(info.reason, CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND);
+        assert_eq!(info.domain, CORAL_ERROR_DOMAIN);
+        assert!(
+            info.metadata.is_empty(),
+            "WORKSPACE_NOT_FOUND must not carry unbounded identifier metadata: {:?}",
+            info.metadata
+        );
+    }
+
+    #[test]
     fn app_status_does_not_attach_structured_reason_for_io_not_found() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "manifest missing");
         let status = app_status(AppError::Io(io_error));

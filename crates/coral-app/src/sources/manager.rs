@@ -480,10 +480,12 @@ impl SourceManager {
             },
             credential_material,
         };
+        let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
         if let Some(credential_storage) = credential_storage
             && let Err(error) =
                 credential_guard.remove_material_with_state_lock_held(credential_storage)
         {
+            let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 source_name,
@@ -491,22 +493,14 @@ impl SourceManager {
                 None,
                 &credential_guard,
             );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source credentials for '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
+            }
             return Err(error);
         }
-        let source_dir_backup = match fs::DirectoryBackup::move_for_delete(&source_dir, source_name)
-        {
-            Ok(backup) => backup,
-            Err(error) => {
-                self.restore_source_rollback_state_with_state_lock_held(
-                    workspace_name,
-                    source_name,
-                    Some(previous),
-                    None,
-                    &credential_guard,
-                );
-                return Err(error.into());
-            }
-        };
         if let Err(error) = self
             .config_store
             .remove_source_unlocked(workspace_name, source_name)
@@ -1999,6 +1993,81 @@ tables:
             )
             .expect("read material after delete");
         assert!(material.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_source_preserves_credentials_when_directory_staging_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(config_store.clone(), credential_manager.clone(), layout);
+
+        let workspace_name = default_workspace();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let source_dir = manager.layout.source_dir(&workspace_name, &source_name);
+        let source_parent = source_dir.parent().expect("source parent");
+        let original_permissions = std::fs::metadata(source_parent)
+            .expect("source parent metadata")
+            .permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_mode(0o500);
+        std::fs::set_permissions(source_parent, readonly_permissions)
+            .expect("make source parent unwritable");
+
+        let delete_result = manager.delete_source(&workspace_name, &source_name);
+
+        std::fs::set_permissions(source_parent, original_permissions)
+            .expect("restore source parent permissions");
+        let error = delete_result.expect_err("directory staging should fail");
+        assert!(
+            matches!(error, crate::bootstrap::AppError::Io(_)),
+            "unexpected delete error: {error}"
+        );
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read credential material after staging failure");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("secret-token"),
+            "credential material should be preserved when directory staging fails"
+        );
+        assert!(
+            config_store
+                .get_source(&workspace_name, &source_name)
+                .is_ok(),
+            "source config should be preserved when directory staging fails"
+        );
+        assert!(
+            source_dir.exists(),
+            "source directory should remain when staging fails"
+        );
     }
 
     fn manifest_with_oauth_secret(token_url: &str, redirect_port: u16) -> String {
