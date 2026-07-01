@@ -75,7 +75,7 @@ async fn open_initialized_database(
 ) -> Result<CoralDb, AppError> {
     let db = open_bootstrap_db(layout).await?;
     db.migrate().await?;
-    import_config_source_catalog(&db, config_store, now_unix_nanos_i64()?).await?;
+    import_config_source_catalog(&db, config_store, layout, now_unix_nanos_i64()?).await?;
     Ok(db)
 }
 

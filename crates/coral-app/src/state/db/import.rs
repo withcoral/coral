@@ -1,9 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::ErrorKind;
 
 use super::CoralDb;
 use super::session::DbRepos;
 use crate::bootstrap::AppError;
-use crate::state::ConfigStore;
+use crate::sources::catalog::validate_imported_manifest_database_persistence;
+use crate::sources::model::SourceOrigin;
+use crate::state::{AppStateLayout, ConfigStore};
+use crate::workspaces::WorkspaceName;
 
 const LEGACY_SOURCE_CATALOG_IMPORT_MARKER: &str = "legacy_source_catalog_imported";
 
@@ -16,6 +21,7 @@ pub(crate) struct SourceCatalogImportReport {
 pub(crate) async fn import_config_source_catalog(
     db: &CoralDb,
     config_store: &ConfigStore,
+    layout: &AppStateLayout,
     now_unix_nanos: i64,
 ) -> Result<SourceCatalogImportReport, AppError> {
     let _state_lock = config_store.state_lock_exclusive()?;
@@ -30,6 +36,7 @@ pub(crate) async fn import_config_source_catalog(
         .await?
     {
         tx.commit().await?;
+        import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
         clear_legacy_source_catalog_config(config_store, entries.len());
         return Ok(SourceCatalogImportReport {
             workspace_count: 0,
@@ -48,6 +55,15 @@ pub(crate) async fn import_config_source_catalog(
         {
             continue;
         }
+        let manifest_yaml = match source.origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => {
+                read_optional_imported_manifest_file(layout, workspace_name, &source.name)?
+            }
+        };
+        if let Some(manifest_yaml) = manifest_yaml.as_deref() {
+            validate_imported_manifest_database_persistence(manifest_yaml, &source.variables)?;
+        }
         workspaces.insert(workspace_name.clone());
         tx.workspaces()
             .ensure(workspace_name.as_str(), now_unix_nanos)
@@ -55,6 +71,11 @@ pub(crate) async fn import_config_source_catalog(
         tx.sources()
             .upsert_source(workspace_name, source, now_unix_nanos)
             .await?;
+        if let Some(manifest_yaml) = manifest_yaml {
+            tx.source_manifests()
+                .upsert(workspace_name, &source.name, &manifest_yaml, now_unix_nanos)
+                .await?;
+        }
         let imported = tx
             .sources()
             .get_source(workspace_name, &source.name)
@@ -74,12 +95,137 @@ pub(crate) async fn import_config_source_catalog(
     }
     tx.commit().await?;
 
+    import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
     clear_legacy_source_catalog_config(config_store, entries.len());
 
     Ok(SourceCatalogImportReport {
         workspace_count: workspaces.len(),
         source_count,
     })
+}
+
+async fn import_filesystem_source_manifests(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+    now_unix_nanos: i64,
+) -> Result<(), AppError> {
+    let mut session = db;
+    let workspaces = session.workspaces().list().await?;
+    for workspace in workspaces {
+        let workspace_name = WorkspaceName::parse(&workspace.id)?;
+        let sources = session
+            .sources()
+            .list_workspace_sources(&workspace_name)
+            .await?;
+        for source in sources
+            .into_iter()
+            .filter(|source| source.origin == SourceOrigin::Imported)
+        {
+            if session
+                .source_manifests()
+                .get(&workspace_name, &source.name)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+
+            let Some(manifest_yaml) = read_validated_manifest_for_backfill(
+                layout,
+                &workspace_name,
+                &source.name,
+                &source.variables,
+            ) else {
+                continue;
+            };
+            let mut tx = db.begin().await?;
+            tx.source_manifests()
+                .upsert(
+                    &workspace_name,
+                    &source.name,
+                    &manifest_yaml,
+                    now_unix_nanos,
+                )
+                .await?;
+            tx.commit().await?;
+        }
+    }
+    Ok(())
+}
+
+fn read_validated_manifest_for_backfill(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &crate::sources::SourceName,
+    source_variables: &BTreeMap<String, String>,
+) -> Option<String> {
+    let manifest_yaml = match read_optional_imported_manifest_file(
+        layout,
+        workspace_name,
+        source_name,
+    ) {
+        Ok(Some(manifest_yaml)) => manifest_yaml,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                detail = %error,
+                "skipping imported source manifest database backfill because the legacy manifest could not be read"
+            );
+            return None;
+        }
+    };
+
+    if let Err(error) =
+        validate_imported_manifest_database_persistence(&manifest_yaml, source_variables)
+    {
+        tracing::warn!(
+            workspace = %workspace_name,
+            source = %source_name,
+            detail = %error,
+            "skipping imported source manifest database backfill because the legacy manifest is invalid"
+        );
+        return None;
+    }
+
+    Some(manifest_yaml)
+}
+
+fn read_imported_manifest_file(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &crate::sources::SourceName,
+) -> Result<String, AppError> {
+    let manifest_path = layout.manifest_file(workspace_name, source_name);
+    fs::read_to_string(&manifest_path).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            AppError::SourceNotFound(format!(
+                "manifest for imported source '{workspace_name}:{source_name}' at {}",
+                manifest_path.display()
+            ))
+        } else {
+            AppError::Io(error)
+        }
+    })
+}
+
+fn read_optional_imported_manifest_file(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &crate::sources::SourceName,
+) -> Result<Option<String>, AppError> {
+    match read_imported_manifest_file(layout, workspace_name, source_name) {
+        Ok(manifest_yaml) => Ok(Some(manifest_yaml)),
+        Err(AppError::SourceNotFound(message)) => {
+            tracing::warn!(
+                detail = %message,
+                "imported source manifest file is missing; source metadata will remain without a database manifest row"
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: usize) {
@@ -96,6 +242,7 @@ fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
 
     use tempfile::tempdir;
 
@@ -126,9 +273,11 @@ mod tests {
         config_store
             .upsert_source(&workspace, source.clone())
             .expect("write config source");
+        let manifest_yaml = imported_manifest_yaml("github", "1.2.3");
+        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
         let db = open_sqlite(&layout).await;
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect("import source catalog");
 
@@ -154,7 +303,61 @@ mod tests {
                 .get_source(&workspace, &source.name)
                 .await
                 .expect("get source"),
-            Some(source)
+            Some(source.clone())
+        );
+        assert_eq!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get source manifest")
+                .expect("source manifest")
+                .manifest_yaml,
+            manifest_yaml
+        );
+        assert!(
+            layout.manifest_file(&workspace, &source.name).exists(),
+            "legacy manifest file should be preserved for rollback compatibility"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_imported_config_manifest_rolls_back_catalog_import() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = unsafe_secret_endpoint_source();
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        let manifest_yaml = unsafe_secret_endpoint_manifest_yaml("github", "1.2.3");
+        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
+        let db = open_sqlite(&layout).await;
+
+        let error = import_config_source_catalog(&db, &config_store, &layout, 11)
+            .await
+            .expect_err("unsafe legacy manifest should fail active config import");
+        let crate::bootstrap::AppError::InvalidInput(message) = error else {
+            panic!("expected invalid input error, got {error:?}");
+        };
+        assert!(message.contains("base_url must use https"));
+        let mut session = &db;
+        assert!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get source after rollback")
+                .is_none()
+        );
+        assert!(
+            !session
+                .app_state_markers()
+                .contains(super::LEGACY_SOURCE_CATALOG_IMPORT_MARKER)
+                .await
+                .expect("legacy marker should not be inserted")
         );
     }
 
@@ -191,7 +394,7 @@ mod tests {
         let db = open_sqlite(&layout).await;
         fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
             .expect("make config dir read-only");
-        let report = import_config_source_catalog(&db, &config_store, 11).await;
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11).await;
         fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o700))
             .expect("restore config dir permissions");
         assert_eq!(
@@ -218,7 +421,7 @@ mod tests {
             tx.commit().await.expect("commit delete tx");
         }
 
-        let report = import_config_source_catalog(&db, &config_store, 99)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 99)
             .await
             .expect("stale config should not reimport after marker");
 
@@ -268,7 +471,7 @@ mod tests {
                 .expect("seed db source");
             tx.commit().await.expect("commit tx");
         }
-        let report = import_config_source_catalog(&db, &config_store, 22)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 22)
             .await
             .expect("import empty source catalog");
 
@@ -330,7 +533,7 @@ mod tests {
             tx.commit().await.expect("commit tx");
         }
 
-        let report = import_config_source_catalog(&db, &config_store, 22)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 22)
             .await
             .expect("import source catalog");
 
@@ -375,7 +578,7 @@ mod tests {
         let config_store = ConfigStore::new(layout.clone());
         let db = open_sqlite(&layout).await;
 
-        let report = import_config_source_catalog(&db, &config_store, 11)
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
             .expect("import empty catalog");
 
@@ -393,6 +596,326 @@ mod tests {
                 .list()
                 .await
                 .expect("list workspaces")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_config_catalog_does_not_complete_legacy_import() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let db = open_sqlite(&layout).await;
+
+        let empty_report = import_config_source_catalog(&db, &config_store, &layout, 11)
+            .await
+            .expect("import empty catalog");
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source after empty import");
+        let source_report = import_config_source_catalog(&db, &config_store, &layout, 99)
+            .await
+            .expect("import source catalog after empty import");
+
+        assert_eq!(
+            empty_report,
+            SourceCatalogImportReport {
+                workspace_count: 0,
+                source_count: 0,
+            }
+        );
+        assert_eq!(
+            source_report,
+            SourceCatalogImportReport {
+                workspace_count: 1,
+                source_count: 1,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get source"),
+            Some(source)
+        );
+    }
+
+    #[tokio::test]
+    async fn imported_config_source_without_manifest_file_keeps_source_without_manifest_row() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Imported);
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        let db = open_sqlite(&layout).await;
+
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
+            .await
+            .expect("missing imported manifest should not block source catalog import");
+
+        assert_eq!(
+            report,
+            SourceCatalogImportReport {
+                workspace_count: 1,
+                source_count: 1,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get source"),
+            Some(source.clone())
+        );
+        assert_eq!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get missing source manifest"),
+            None
+        );
+        assert_eq!(
+            config_store
+                .load_config_unlocked()
+                .expect("legacy config should be cleaned after source catalog import")
+                .source_catalog_entries(),
+            Vec::new()
+        );
+
+        let second_report = import_config_source_catalog(&db, &config_store, &layout, 22)
+            .await
+            .expect("missing imported manifest should not block later backfill attempts");
+        assert_eq!(
+            second_report,
+            SourceCatalogImportReport {
+                workspace_count: 0,
+                source_count: 0,
+            }
+        );
+        assert_eq!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get still-missing source manifest"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn backfills_manifest_for_already_imported_database_source() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            [],
+            None,
+            SourceOrigin::Imported,
+        );
+        let manifest_yaml = imported_manifest_yaml("github", "1.2.3");
+        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
+        let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("write source without manifest row");
+        tx.app_state_markers()
+            .insert(super::LEGACY_SOURCE_CATALOG_IMPORT_MARKER, 7)
+            .await
+            .expect("insert source import marker");
+        tx.commit().await.expect("commit source");
+
+        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
+            .await
+            .expect("backfill manifest");
+
+        assert_eq!(
+            report,
+            SourceCatalogImportReport {
+                workspace_count: 0,
+                source_count: 0,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get source manifest")
+                .expect("source manifest")
+                .manifest_yaml,
+            manifest_yaml
+        );
+        assert!(
+            layout.manifest_file(&workspace, &source.name).exists(),
+            "legacy manifest file should be preserved after DB backfill"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_filesystem_manifest_backfill_skips_source_manifest() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = unsafe_secret_endpoint_source();
+        let manifest_yaml = unsafe_secret_endpoint_manifest_yaml("github", "1.2.3");
+        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
+        let db = open_sqlite(&layout).await;
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("write source without manifest row");
+        tx.app_state_markers()
+            .insert(super::LEGACY_SOURCE_CATALOG_IMPORT_MARKER, 7)
+            .await
+            .expect("insert source import marker");
+        tx.commit().await.expect("commit source");
+
+        import_config_source_catalog(&db, &config_store, &layout, 11)
+            .await
+            .expect("invalid backfill manifest should not fail bootstrap import");
+
+        let mut session = &db;
+        assert!(
+            session
+                .source_manifests()
+                .get(&workspace, &source.name)
+                .await
+                .expect("get skipped source manifest")
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn import_succeeds_when_post_commit_config_cleanup_fails() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        drop(
+            config_store
+                .state_lock_exclusive()
+                .expect("create state lock before making config dir read-only"),
+        );
+
+        let db_path = temp.path().join("db").join("coral.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path: db_path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+
+        let original_mode = fs::metadata(layout.config_dir())
+            .expect("config dir metadata")
+            .permissions()
+            .mode();
+        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
+            .expect("make config dir read-only");
+
+        let result = import_config_source_catalog(&db, &config_store, &layout, 11).await;
+
+        fs::set_permissions(
+            layout.config_dir(),
+            fs::Permissions::from_mode(original_mode),
+        )
+        .expect("restore config dir permissions");
+
+        assert_eq!(
+            result.expect("cleanup failure should not fail committed import"),
+            SourceCatalogImportReport {
+                workspace_count: 1,
+                source_count: 1,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get imported source"),
+            Some(source.clone())
+        );
+        assert_eq!(
+            config_store
+                .load_config_unlocked()
+                .expect("legacy config should still load after failed cleanup")
+                .source_catalog_entries()
+                .len(),
+            1
+        );
+
+        let mut tx = db.begin().await.expect("begin delete tx");
+        tx.sources()
+            .remove_source(&workspace, &source.name)
+            .await
+            .expect("delete db source");
+        tx.commit().await.expect("commit delete tx");
+
+        let report = import_config_source_catalog(&db, &config_store, &layout, 99)
+            .await
+            .expect("stale config should not reimport after marker");
+
+        assert_eq!(
+            report,
+            SourceCatalogImportReport {
+                workspace_count: 0,
+                source_count: 0,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("source should remain deleted"),
+            None
+        );
+        assert!(
+            config_store
+                .load_config_unlocked()
+                .expect("load cleaned stale config")
+                .source_catalog_entries()
                 .is_empty()
         );
     }
@@ -428,5 +951,60 @@ mod tests {
             credential_storage,
             origin,
         }
+    }
+
+    fn write_manifest_file(
+        layout: &AppStateLayout,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        manifest_yaml: &str,
+    ) {
+        let manifest_path = layout.manifest_file(workspace, source_name);
+        fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create manifest parent");
+        fs::write(manifest_path, manifest_yaml).expect("write manifest file");
+    }
+
+    fn imported_manifest_yaml(name: &str, version: &str) -> String {
+        format!(
+            r"
+name: {name}
+version: {version}
+dsl_version: 3
+backend: http
+base_url: https://example.com
+tables:
+  - name: messages
+    description: Demo messages
+    request:
+      method: GET
+      path: /messages
+    response: {{}}
+    columns:
+      - name: id
+        type: Utf8
+"
+        )
+    }
+
+    fn unsafe_secret_endpoint_source() -> InstalledSource {
+        source(
+            "github",
+            Some("1.2.3"),
+            [("API_BASE", "http://api.example.com")],
+            ["API_TOKEN"],
+            Some(CredentialStorageKind::Keychain),
+            SourceOrigin::Imported,
+        )
+    }
+
+    fn unsafe_secret_endpoint_manifest_yaml(name: &str, version: &str) -> String {
+        imported_manifest_yaml(name, version).replacen(
+            "base_url: https://example.com",
+            r#"base_url: "{{input.API_BASE}}"
+inputs: { API_BASE: { kind: variable }, API_TOKEN: { kind: secret } }
+auth: { type: HeaderAuth, headers: [{ name: Authorization, from: template, template: "Bearer {{input.API_TOKEN}}" }] }"#,
+            1,
+        )
     }
 }
