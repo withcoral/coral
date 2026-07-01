@@ -19,6 +19,8 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
+use crate::{SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation};
+
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
 pub(crate) trait RowFetcher: fmt::Debug + Send + Sync {
@@ -32,6 +34,52 @@ pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 /// Converts fetched JSON rows into a projected `RecordBatch`.
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
 
+#[derive(Clone)]
+struct SourceObservationConfig {
+    surface_kind: SourceObservationSurfaceKind,
+    publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+}
+
+fn observe_source_scan_batch(
+    source_name: String,
+    surface_name: String,
+    observation: SourceObservationConfig,
+    converter: Converter,
+) -> Converter {
+    Arc::new(move |items| {
+        let batch = converter(items)?;
+        publish_source_scan_batch(&source_name, &surface_name, &observation, &batch);
+        Ok(batch)
+    })
+}
+
+fn publish_source_scan_batch(
+    source_name: &str,
+    surface_name: &str,
+    observation: &SourceObservationConfig,
+    batch: &RecordBatch,
+) {
+    let event = SourceScanObservation {
+        source_name,
+        surface_kind: observation.surface_kind,
+        surface_name,
+        batch,
+    };
+    for publisher in &observation.publishers {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publisher.publish_source_scan(event);
+        }))
+        .is_err()
+        {
+            tracing::warn!(
+                source = source_name,
+                surface = surface_name,
+                "source observation publisher panicked; dropping source-scan observation"
+            );
+        }
+    }
+}
+
 /// Execution-plan node for backends that fetch JSON rows and convert them into
 /// `Arrow` record batches.
 pub(crate) struct JsonExec {
@@ -42,6 +90,7 @@ pub(crate) struct JsonExec {
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
+    source_observation: Option<SourceObservationConfig>,
 }
 
 impl fmt::Debug for JsonExec {
@@ -89,7 +138,24 @@ impl JsonExec {
             fetcher,
             converter,
             projection,
+            source_observation: None,
         })
+    }
+
+    /// Publishes typed source-scan observations after JSON conversion and
+    /// before `DataFusion` projection. This is a shared execution hook; backend
+    /// adapters should only pass through metadata and publishers.
+    #[must_use]
+    pub(crate) fn with_source_observation(
+        mut self,
+        surface_kind: SourceObservationSurfaceKind,
+        publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    ) -> Self {
+        self.source_observation = (!publishers.is_empty()).then_some(SourceObservationConfig {
+            surface_kind,
+            publishers,
+        });
+        self
     }
 }
 
@@ -140,7 +206,15 @@ impl ExecutionPlan for JsonExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let fetcher = self.fetcher.clone();
-        let converter = self.converter.clone();
+        let converter = match self.source_observation.clone() {
+            Some(observation) => observe_source_scan_batch(
+                self.source_name.clone(),
+                self.table_name.clone(),
+                observation,
+                self.converter.clone(),
+            ),
+            None => self.converter.clone(),
+        };
         let projected_schema = self.projected_schema.clone();
         let projection = self.projection.clone();
         // Emit the fetched rows in `batch_size`-row chunks rather than a single

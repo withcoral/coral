@@ -48,7 +48,8 @@ use crate::{
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
     QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, TableFunctionInfo, TableInfo, UdfRuntimeDefinition,
+    SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
+    UdfRuntimeDefinition,
 };
 
 pub(crate) struct QueryRuntimeAdapter {
@@ -77,14 +78,20 @@ struct FallbackRuntime {
 }
 
 #[derive(Clone)]
+struct RuntimeExtensionHooks {
+    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+}
+
+#[derive(Clone)]
 struct FallbackRuntimeConfig {
     sources: Vec<QuerySource>,
     runtime_context: QueryRuntimeContext,
     dependent_join: DependentJoinConfig,
     memory: QueryMemoryConfig,
     udfs: Vec<UdfRuntimeDefinition>,
-    request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    extension_hooks: RuntimeExtensionHooks,
 }
 
 struct RegisteredRuntime {
@@ -99,8 +106,7 @@ struct RegisteredRuntime {
 struct RuntimeBuildInputs<'a> {
     sources: &'a [QuerySource],
     runtime_context: &'a QueryRuntimeContext,
-    request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    extension_hooks: &'a RuntimeExtensionHooks,
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
@@ -132,8 +138,11 @@ async fn build_runtime_inner(
         mut extensions,
         udfs,
     } = runtime;
-    let request_authenticators = extensions.request_authenticators.clone();
-    let source_input_resolver = extensions.source_input_resolver.clone();
+    let extension_hooks = RuntimeExtensionHooks {
+        request_authenticators: extensions.request_authenticators.clone(),
+        source_input_resolver: extensions.source_input_resolver.clone(),
+        source_observation_publishers: extensions.source_observation_publishers.clone(),
+    };
     let udfs_installed = !udfs.is_empty();
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
@@ -149,16 +158,14 @@ async fn build_runtime_inner(
             dependent_join: dependent_join.clone(),
             memory: memory.clone(),
             udfs: udfs.clone(),
-            request_authenticators: request_authenticators.clone(),
-            source_input_resolver: source_input_resolver.clone(),
+            extension_hooks: extension_hooks.clone(),
         })
     });
 
     let primary = build_registered_runtime(RuntimeBuildInputs {
         sources,
         runtime_context: &runtime_context,
-        request_authenticators: &request_authenticators,
-        source_input_resolver,
+        extension_hooks: &extension_hooks,
         source_decorators: extensions.source_decorators.as_mut_slice(),
         dependent_join: &dependent_join,
         memory: &memory,
@@ -189,8 +196,7 @@ async fn build_registered_runtime(
         &ctx,
         config.sources,
         config.runtime_context,
-        config.request_authenticators,
-        config.source_input_resolver,
+        config.extension_hooks,
         config.source_decorators,
     )
     .await?;
@@ -331,8 +337,7 @@ async fn register_runtime_sources(
     ctx: &SessionContext,
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
-    request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
-    source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    extension_hooks: &RuntimeExtensionHooks,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
@@ -340,8 +345,9 @@ async fn register_runtime_sources(
         match compile_query_source(
             source,
             runtime_context,
-            request_authenticators,
-            source_input_resolver.clone(),
+            &extension_hooks.request_authenticators,
+            extension_hooks.source_input_resolver.clone(),
+            &extension_hooks.source_observation_publishers,
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
@@ -1114,8 +1120,7 @@ impl FallbackRuntimeConfig {
         build_registered_runtime(RuntimeBuildInputs {
             sources: &self.sources,
             runtime_context: &self.runtime_context,
-            request_authenticators: &self.request_authenticators,
-            source_input_resolver: self.source_input_resolver.clone(),
+            extension_hooks: &self.extension_hooks,
             source_decorators: source_decorators.as_mut_slice(),
             dependent_join: &dependent_join,
             memory: &self.memory,
@@ -1295,8 +1300,11 @@ mod tests {
                 limit: Some(MemorySize::from_str("1Ki").unwrap()),
             },
             udfs: Vec::new(),
-            request_authenticators: HashMap::new(),
-            source_input_resolver: None,
+            extension_hooks: RuntimeExtensionHooks {
+                request_authenticators: HashMap::new(),
+                source_input_resolver: None,
+                source_observation_publishers: Vec::new(),
+            },
         };
 
         let runtime = fallback

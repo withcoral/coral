@@ -4,7 +4,9 @@ use crate::runtime::registry::{CompiledQuerySource, register_sources_blocking};
 use crate::runtime::source_functions::SourceFunctionRegistry;
 use crate::{
     QuerySource, SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation,
 };
+use datafusion::arrow::array::{RecordBatch, StringArray};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -69,6 +71,42 @@ impl McpToolCaller for FakeMcpTableCaller {
                 { "id": "3", "title": "Bug C", "state": "closed" }
             ]
         }))
+    }
+}
+
+#[derive(Default)]
+struct RecordingSourceObservationPublisher {
+    observations: Mutex<Vec<RecordedSourceObservation>>,
+}
+
+struct RecordedSourceObservation {
+    source_name: String,
+    surface_kind: SourceObservationSurfaceKind,
+    surface_name: String,
+    column_names: Vec<String>,
+    row_count: usize,
+    batch: RecordBatch,
+}
+
+impl SourceObservationPublisher for RecordingSourceObservationPublisher {
+    fn publish_source_scan(&self, observation: SourceScanObservation<'_>) {
+        self.observations
+            .lock()
+            .expect("observations lock")
+            .push(RecordedSourceObservation {
+                source_name: observation.source_name.to_string(),
+                surface_kind: observation.surface_kind,
+                surface_name: observation.surface_name.to_string(),
+                column_names: observation
+                    .batch
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+                row_count: observation.batch.num_rows(),
+                batch: observation.batch.clone(),
+            });
     }
 }
 
@@ -300,8 +338,38 @@ fn compile_sources_with_mcp_manifest(
         source_input_resolution.variables(),
     ));
     let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
-    let compiled =
-        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        Vec::new(),
+    );
+    vec![CompiledQuerySource { source, compiled }]
+}
+
+fn compile_sources_with_observation_publishers(
+    manifest: coral_spec::ValidatedSourceManifest,
+    caller: Arc<dyn McpToolCaller>,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+) -> Vec<CompiledQuerySource> {
+    let mcp_manifest = manifest.as_mcp().expect("mcp manifest").clone();
+    let variables = BTreeMap::new();
+    let source = QuerySource::new(manifest, variables.clone(), BTreeMap::new());
+    let source_input_resolution = SourceInputResolutionContext::from_query_source(&source);
+    let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
+        &mcp_manifest.declared_inputs,
+        source_input_resolution.secrets(),
+        source_input_resolution.variables(),
+    ));
+    let source_inputs = Arc::new(McpSourceInputs::static_inputs(resolved_inputs));
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        source_observation_publishers,
+    );
     vec![CompiledQuerySource { source, compiled }]
 }
 
@@ -328,8 +396,13 @@ fn compile_sources_with_inputs(
         )),
         None => Arc::new(McpSourceInputs::static_inputs(resolved_inputs)),
     };
-    let compiled =
-        compile_source_with_caller(mcp_manifest, source_input_resolution, source_inputs, caller);
+    let compiled = compile_source_with_caller(
+        mcp_manifest,
+        source_input_resolution,
+        source_inputs,
+        caller,
+        Vec::new(),
+    );
     vec![CompiledQuerySource { source, compiled }]
 }
 
@@ -748,6 +821,72 @@ async fn applies_projection_and_limit_to_mcp_table_scan() {
     let schema = batches.first().expect("at least one batch").schema();
     assert_eq!(schema.fields().len(), 1);
     assert_eq!(schema.field(0).name(), "title");
+}
+
+#[tokio::test]
+async fn source_scan_observation_sees_full_mcp_batch_before_projection() {
+    let ctx = SessionContext::new();
+    let caller = Arc::new(FakeMcpTableCaller {
+        calls: Mutex::new(Vec::new()),
+    });
+    let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+    register_test_sources(
+        &ctx,
+        compile_sources_with_observation_publishers(
+            mcp_table_manifest(),
+            caller,
+            vec![publisher.clone() as Arc<dyn SourceObservationPublisher>],
+        ),
+    );
+
+    let batches = ctx
+        .sql("SELECT title FROM test_mcp.issues WHERE id = '2'")
+        .await
+        .expect("query should plan")
+        .collect()
+        .await
+        .expect("query should execute");
+
+    let rendered = pretty_format_batches(&batches)
+        .expect("batches should render")
+        .to_string();
+    assert!(rendered.contains("| Bug B"));
+    assert!(!rendered.contains("| Bug A"));
+    assert!(!rendered.contains("| Bug C"));
+    assert_eq!(
+        batches
+            .first()
+            .expect("projected result batch")
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        ["title"]
+    );
+
+    let observations = publisher.observations.lock().expect("observations lock");
+    let issue_scan = observations
+        .iter()
+        .find(|observation| {
+            observation.source_name == "test_mcp" && observation.surface_name == "issues"
+        })
+        .expect("issues scan should be observed");
+
+    assert_eq!(issue_scan.surface_kind, SourceObservationSurfaceKind::Table);
+    assert_eq!(issue_scan.column_names, ["id", "title", "state"]);
+    assert_eq!(issue_scan.row_count, 3);
+
+    let observed_ids = issue_scan
+        .batch
+        .column_by_name("id")
+        .expect("id column")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("id string array")
+        .iter()
+        .collect::<Vec<_>>();
+    assert_eq!(observed_ids, [Some("1"), Some("2"), Some("3")]);
 }
 
 /// Returns the ClickHouse-style success/error union and records each MCP

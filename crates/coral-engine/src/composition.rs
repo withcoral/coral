@@ -23,6 +23,10 @@ pub struct EngineExtensions {
     pub source_decorators: Vec<Box<dyn SourceDecorator>>,
     /// Post-query observers invoked after successful SQL result collection.
     pub query_result_observers: Vec<Arc<dyn QueryResultObserver>>,
+    /// Source-scan observers invoked while shared source execution materializes
+    /// typed rows. Publishers must be non-blocking and must not treat delivery
+    /// as durable persistence.
+    pub source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
     /// Request-time custom authenticators keyed by `auth.authenticator`.
     pub request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     /// Request-time resolver for app-managed source inputs.
@@ -72,6 +76,38 @@ pub enum QueryResultObserverError {
     /// The observer could not proceed because a precondition was unmet.
     #[error("{0}")]
     FailedPrecondition(String),
+}
+
+/// Logical surface kind for a source-scan observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceObservationSurfaceKind {
+    /// A manifest-declared table scan.
+    Table,
+    /// A manifest-declared table-function scan.
+    Function,
+}
+
+/// One typed source-scan batch observed during shared source execution.
+#[derive(Debug, Clone, Copy)]
+pub struct SourceScanObservation<'a> {
+    /// Source/schema name.
+    pub source_name: &'a str,
+    /// Kind of source surface.
+    pub surface_kind: SourceObservationSurfaceKind,
+    /// Table or function name within the source.
+    pub surface_name: &'a str,
+    /// Typed, table-shaped batch. Consumers that need to retain data must clone
+    /// or enqueue it themselves.
+    pub batch: &'a RecordBatch,
+}
+
+/// Non-blocking sink for source-scan observations.
+pub trait SourceObservationPublisher: Send + Sync {
+    /// Publishes one typed source-scan batch.
+    ///
+    /// Implementations must return promptly. Dropping observations under load is
+    /// preferable to delaying SQL execution.
+    fn publish_source_scan(&self, observation: SourceScanObservation<'_>);
 }
 
 impl QueryResultObserverError {
