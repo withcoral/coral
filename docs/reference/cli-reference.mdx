@@ -187,7 +187,7 @@ coral source remove github
 
 Manage local workspaces. Workspaces isolate installed source metadata and
 workspace-scoped artifacts such as source manifests, local credential material,
-feedback reports, and episode logs.
+feedback reports, episode logs, and workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
 installation in that workspace. Reusable global source specs and reusable
@@ -212,7 +212,10 @@ coral workspace create work
 
 ### `coral workspace remove <NAME>`
 
-Remove a workspace and its workspace-scoped source/artifact directory.
+Remove a workspace and its workspace-scoped source/artifact directory. When
+trace history is enabled, this also prunes local trace records attributed to
+that workspace. If trace cleanup fails, workspace removal fails and leaves the
+workspace configured.
 
 ```shellscript
 coral workspace remove work

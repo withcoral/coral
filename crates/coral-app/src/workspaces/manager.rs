@@ -1,31 +1,56 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId};
-use crate::state::AppStateLayout;
 use crate::storage::fs::DirectoryBackup;
-use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
+use crate::workspaces::{
+    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspacePaths, WorkspaceRecord,
+    WorkspaceStore,
+};
 
 /// App-owned workspace lifecycle behavior.
 #[derive(Clone)]
 pub(crate) struct WorkspaceManager {
     store: Arc<dyn WorkspaceStore>,
     credential_manager: CredentialManager,
-    layout: AppStateLayout,
+    paths: Arc<dyn WorkspacePaths>,
+    trace_store_dir: Option<PathBuf>,
+    lifecycle_lock: WorkspaceLifecycleLock,
 }
 
 impl WorkspaceManager {
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        store: impl WorkspaceStore,
+        credential_manager: CredentialManager,
+        paths: impl WorkspacePaths,
+        trace_store_dir: Option<PathBuf>,
+    ) -> Self {
+        Self::new(
+            store,
+            credential_manager,
+            paths,
+            trace_store_dir,
+            WorkspaceLifecycleLock::default(),
+        )
+    }
+
     pub(crate) fn new(
         store: impl WorkspaceStore,
         credential_manager: CredentialManager,
-        layout: AppStateLayout,
+        paths: impl WorkspacePaths,
+        trace_store_dir: Option<PathBuf>,
+        lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self {
             store: Arc::new(store),
             credential_manager,
-            layout,
+            paths: Arc::new(paths),
+            trace_store_dir,
+            lifecycle_lock,
         }
     }
 
@@ -37,10 +62,11 @@ impl WorkspaceManager {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
         self.store.create_workspace(workspace_name)
     }
 
-    pub(crate) fn delete_workspace(
+    pub(crate) async fn delete_workspace(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<WorkspaceRecord, AppError> {
@@ -50,17 +76,22 @@ impl WorkspaceManager {
             ));
         }
 
-        let deleted = self
-            .store
-            .delete_workspace(workspace_name)?
-            .ok_or_else(|| AppError::WorkspaceNotFound(workspace_name.to_string()))?;
-        self.cleanup_deleted_workspace_artifacts(&deleted);
-        Ok(deleted.workspace)
-    }
+        let (deleted, workspace_dir_backup) = {
+            let _lifecycle_guard = self.lifecycle_lock.lock();
+            let deleted = self
+                .store
+                .delete_workspace(workspace_name)?
+                .ok_or_else(|| AppError::WorkspaceNotFound(workspace_name.to_string()))?;
+            self.remove_deleted_workspace_credentials(&deleted);
+            let workspace_dir_backup = self.stage_deleted_workspace_dir(&deleted.workspace.name);
+            (deleted, workspace_dir_backup)
+        };
 
-    fn cleanup_deleted_workspace_artifacts(&self, deleted: &DeletedWorkspace) {
-        self.remove_deleted_workspace_credentials(deleted);
-        self.remove_deleted_workspace_dir(&deleted.workspace.name);
+        let deleted_workspace_name = deleted.workspace.name.clone();
+        Self::commit_deleted_workspace_dir(&deleted_workspace_name, workspace_dir_backup);
+        self.prune_deleted_workspace_traces(&deleted_workspace_name)
+            .await;
+        Ok(deleted.workspace)
     }
 
     fn remove_deleted_workspace_credentials(&self, deleted: &DeletedWorkspace) {
@@ -97,24 +128,54 @@ impl WorkspaceManager {
         }
     }
 
-    fn remove_deleted_workspace_dir(&self, workspace_name: &WorkspaceName) {
-        let workspace_dir = self.layout.workspace_dir(workspace_name);
-        let backup = match DirectoryBackup::move_for_delete(&workspace_dir, workspace_name) {
-            Ok(backup) => backup,
+    fn stage_deleted_workspace_dir(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<DirectoryBackup> {
+        let workspace_dir = self.workspace_dir(workspace_name);
+        match DirectoryBackup::move_for_delete(&workspace_dir, workspace_name) {
+            Ok(backup) => Some(backup),
             Err(error) => {
                 warn!(
                     workspace = %workspace_name,
                     workspace_dir = %workspace_dir.display(),
                     "workspace deleted, but failed to stage workspace directory cleanup: {error}"
                 );
-                return;
+                None
             }
+        }
+    }
+
+    fn commit_deleted_workspace_dir(
+        workspace_name: &WorkspaceName,
+        backup: Option<DirectoryBackup>,
+    ) {
+        let Some(backup) = backup else {
+            return;
         };
         if let Err(error) = backup.commit() {
             warn!(
                 workspace = %workspace_name,
                 backup_path = %backup.backup_path().display(),
                 "workspace deleted, but failed to remove workspace artifact backup: {error}"
+            );
+        }
+    }
+
+    fn workspace_dir(&self, workspace_name: &WorkspaceName) -> std::path::PathBuf {
+        self.paths.workspace_dir(workspace_name)
+    }
+
+    async fn prune_deleted_workspace_traces(&self, workspace_name: &WorkspaceName) {
+        let Some(trace_store_dir) = &self.trace_store_dir else {
+            return;
+        };
+        if let Err(error) =
+            crate::telemetry::delete_workspace_traces(trace_store_dir.clone(), workspace_name).await
+        {
+            warn!(
+                workspace = %workspace_name,
+                "workspace deleted, but failed to prune local trace history: {error}"
             );
         }
     }
@@ -148,15 +209,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn delete_workspace_commits_config_then_cleans_artifacts() {
+    #[tokio::test]
+    async fn delete_workspace_commits_config_then_cleans_artifacts() {
         let temp = TempDir::new().expect("temp dir");
         let layout = test_layout(&temp);
         let store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager =
-            WorkspaceManager::new(store.clone(), credential_manager.clone(), layout.clone());
+        let manager = WorkspaceManager::new_for_tests(
+            store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+        );
         let workspace_name = WorkspaceName::parse("work").expect("workspace");
         let source = installed_source("github");
         let credential_set_id = CredentialSetId::for_source(&source.name);
@@ -184,6 +249,7 @@ mod tests {
 
         let deleted = manager
             .delete_workspace(&workspace_name)
+            .await
             .expect("delete workspace");
 
         assert_eq!(deleted.name, workspace_name);

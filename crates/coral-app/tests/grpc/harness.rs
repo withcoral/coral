@@ -18,6 +18,7 @@ use tonic::Request;
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
+    local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
 }
@@ -46,12 +47,14 @@ impl GrpcHarness {
             .start()
             .await
             .expect("start server");
+        let local_trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
         Self {
             temp_dir,
             config_dir,
+            local_trace_store_dir,
             app,
             _server: server,
         }
@@ -63,6 +66,10 @@ impl GrpcHarness {
 
     pub(crate) fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    pub(crate) fn local_trace_store_dir(&self) -> Option<&Path> {
+        self.local_trace_store_dir.as_deref()
     }
 
     pub(crate) fn source_client(&self) -> SourceClient {

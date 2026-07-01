@@ -1,33 +1,70 @@
 use std::{collections::HashMap, sync::Arc};
 
 use rmcp::ErrorData;
+use rmcp::model::{Tool, ToolAnnotations};
+use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-use super::{ToolError, schema::json_object_schema, tool_error_output_schema};
+use super::context::ToolDescriptionContext;
+use super::errors::{ToolError, ToolErrorWithData};
+use super::schema::{tool_input_schema, tool_output_schema};
+use super::tool_names::ToolName;
 
 pub(crate) const MAX_SQL_BATCH_QUERIES: usize = 10;
 const MAX_SQL_BATCH_RESULT_INDEX: usize = MAX_SQL_BATCH_QUERIES - 1;
 
+#[derive(JsonSchema)]
 pub(crate) struct SqlArguments {
+    #[schemars(
+        length(min = 1, max = MAX_SQL_BATCH_QUERIES),
+        inner(length(min = 1)),
+        description = "One to ten independent read-only SQL statements to execute against Coral. Entries must not depend on one another's rows, errors, or side effects."
+    )]
     pub(crate) queries: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct SqlBatchValue {
+    #[schemars(range(min = 1, max = MAX_SQL_BATCH_QUERIES))]
     total_count: usize,
+    #[schemars(range(min = 0, max = MAX_SQL_BATCH_QUERIES))]
     success_count: usize,
+    #[schemars(range(min = 0, max = MAX_SQL_BATCH_QUERIES))]
     error_count: usize,
+    #[schemars(length(min = 1, max = MAX_SQL_BATCH_QUERIES))]
     results: Vec<SqlQueryResultValue>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, JsonSchema)]
 #[serde(tag = "status")]
 pub(crate) enum SqlQueryResultValue {
     #[serde(rename = "success")]
-    Success { index: usize, rows: Vec<Value> },
+    Success {
+        #[schemars(range(min = 0, max = MAX_SQL_BATCH_RESULT_INDEX))]
+        index: usize,
+        #[schemars(schema_with = "json_object_array_schema")]
+        rows: Vec<Value>,
+    },
     #[serde(rename = "error")]
-    Error { index: usize, error: ToolError },
+    Error {
+        #[schemars(range(min = 0, max = MAX_SQL_BATCH_RESULT_INDEX))]
+        index: usize,
+        error: ToolError,
+    },
+}
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[schemars(extend("type" = "object"))]
+#[expect(
+    dead_code,
+    reason = "schema-only enum for the SQL tool output contract"
+)]
+enum SqlToolOutputSchema {
+    Success(SqlBatchValue),
+    PartialFailure(ToolErrorWithData<SqlBatchValue>),
 }
 
 impl SqlBatchValue {
@@ -128,87 +165,48 @@ pub(crate) fn sql_arguments(
     Ok(SqlArguments { queries })
 }
 
+pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
+    Tool::new(
+        ToolName::Sql.as_str(),
+        sql_tool_description(context),
+        sql_input_schema(),
+    )
+    .with_raw_output_schema(sql_output_schema())
+    .with_annotations(
+        ToolAnnotations::with_title("Run SQL")
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(true),
+    )
+}
+
 pub(crate) fn sql_input_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["queries"],
-        "properties": {
-            "queries": {
-                "type": "array",
-                "description": "One to ten independent read-only SQL statements to execute against Coral. Entries must not depend on one another's rows, errors, or side effects.",
-                "minItems": 1,
-                "maxItems": MAX_SQL_BATCH_QUERIES,
-                "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "pattern": r"\S"
-                }
-            }
-        }
-    }))
+    tool_input_schema::<SqlArguments>()
 }
 
 pub(crate) fn sql_output_schema() -> Arc<Map<String, Value>> {
-    let result_index_max = MAX_SQL_BATCH_RESULT_INDEX;
-    json_object_schema(&json!({
-        "type": "object",
-        "oneOf": [
-            { "$ref": "#/$defs/sql_batch" },
-            {
-                "type": "object",
-                "required": ["error", "data"],
-                "additionalProperties": false,
-                "properties": {
-                    "error": { "$ref": "#/$defs/tool_error" },
-                    "data": { "$ref": "#/$defs/sql_batch" }
-                }
-            }
-        ],
-        "$defs": {
-            "sql_batch": sql_batch_output_schema(result_index_max),
-            "tool_error": tool_error_output_schema()
-        }
-    }))
+    tool_output_schema::<SqlToolOutputSchema>()
 }
 
-fn sql_batch_output_schema(result_index_max: usize) -> Value {
-    json!({
-        "type": "object",
-        "required": ["total_count", "success_count", "error_count", "results"],
-        "additionalProperties": false,
-        "properties": {
-            "total_count": { "type": "integer", "minimum": 1, "maximum": MAX_SQL_BATCH_QUERIES },
-            "success_count": { "type": "integer", "minimum": 0, "maximum": MAX_SQL_BATCH_QUERIES },
-            "error_count": { "type": "integer", "minimum": 0, "maximum": MAX_SQL_BATCH_QUERIES },
-            "results": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": MAX_SQL_BATCH_QUERIES,
-                "items": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "required": ["index", "status", "rows"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "index": { "type": "integer", "minimum": 0, "maximum": result_index_max },
-                                "status": { "const": "success" },
-                                "rows": { "type": "array", "items": { "type": "object" } }
-                            }
-                        },
-                        {
-                            "type": "object",
-                            "required": ["index", "status", "error"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "index": { "type": "integer", "minimum": 0, "maximum": result_index_max },
-                                "status": { "const": "error" },
-                                "error": { "$ref": "#/$defs/tool_error" }
-                            }
-                        }
-                    ]
-                }
-            }
-        },
+fn json_object_array_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": { "type": "object" }
     })
+}
+
+fn sql_tool_description(context: &ToolDescriptionContext) -> String {
+    if context.visible_table_count == 0 {
+        format!(
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
+            context.connected_sources_sentence()
+        )
+    } else {
+        format!(
+            "Execute 1 to 10 independent read-only SQL queries against the Coral database across connected Coral sources/schemas using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates inside one query when work is dependent.",
+            context.connected_sources_sentence(),
+            context.visible_table_count
+        )
+    }
 }
