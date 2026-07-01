@@ -25,6 +25,8 @@ pub enum CredentialsError {
     Io(#[from] io::Error),
     #[error("invalid credential material: {0}")]
     Parse(String),
+    #[error("credential encryption failed: {0}")]
+    Crypto(String),
     #[error("credential storage unavailable: {0}")]
     Unavailable(String),
     #[error("credential snapshot storage mismatch: snapshot is {snapshot}, requested {requested}")]
