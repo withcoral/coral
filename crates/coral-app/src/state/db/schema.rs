@@ -7,9 +7,12 @@ pub(in crate::state::db) enum Workspaces {
     CreatedAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+    )
 )]
 #[derive(Iden)]
 pub(in crate::state::db) enum Sources {
@@ -23,9 +26,12 @@ pub(in crate::state::db) enum Sources {
     UpdatedAtUnixNanos,
 }
 
-#[expect(
-    dead_code,
-    reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+    )
 )]
 #[derive(Iden)]
 pub(in crate::state::db) enum SourceVariables {
@@ -36,9 +42,12 @@ pub(in crate::state::db) enum SourceVariables {
     Value,
 }
 
-#[expect(
-    dead_code,
-    reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "source catalog schema lands before the source repository in the stacked PR sequence"
+    )
 )]
 #[derive(Iden)]
 pub(in crate::state::db) enum SourceSecretKeys {

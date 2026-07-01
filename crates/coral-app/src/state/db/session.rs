@@ -11,9 +11,12 @@ use crate::state::db::repositories::workspaces::WorkspacesRepo;
 pub(crate) trait DbSession {
     async fn execute(&mut self, statement: InsertStatement) -> Result<(), DbError>;
 
-    #[expect(
-        dead_code,
-        reason = "delete execution is used by the source repository in the next stacked PR"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "delete execution is used by the source repository in the next stacked PR"
+        )
     )]
     async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
 
