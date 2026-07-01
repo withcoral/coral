@@ -1,8 +1,11 @@
 //! Application-level envelope encryption for DB-backed credential material.
 
-#![expect(
-    dead_code,
-    reason = "Credential DB runtime wiring lands in a later stack branch; this branch isolates cryptographic primitives for review."
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Credential DB runtime wiring lands in a later stack branch; this branch isolates cryptographic primitives for review."
+    )
 )]
 
 use std::collections::BTreeMap;
