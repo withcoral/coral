@@ -1,6 +1,7 @@
 //! Internal credential-set identity and lifecycle helpers.
 
 pub(crate) mod config;
+pub(crate) mod encryption;
 pub(crate) mod oauth;
 mod store;
 

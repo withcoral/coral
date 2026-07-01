@@ -130,6 +130,10 @@ impl AppStateLayout {
             .join(INSTALLED_FUNCTION_FILE_NAME)
     }
 
+    pub(crate) fn credential_encryption_key_file(&self) -> PathBuf {
+        self.config_dir.join("credentials").join("encryption.key")
+    }
+
     pub(crate) fn search_dir(&self, workspace_name: &WorkspaceName) -> PathBuf {
         self.workspace_dir(workspace_name).join("search")
     }

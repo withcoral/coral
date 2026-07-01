@@ -1246,6 +1246,7 @@ dependencies = [
  "prost",
  "regex",
  "reqwest 0.13.4",
+ "ring",
  "rusqlite",
  "sea-query",
  "sea-query-sqlx",
