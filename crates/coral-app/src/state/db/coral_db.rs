@@ -6,6 +6,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use super::backend::{CoralDbBackend, PostgresCoralDb, SqliteCoralDb};
 use super::{DbError, ResolvedDatabaseConfig};
+use crate::storage::fs as storage_fs;
 
 #[derive(Debug)]
 pub(crate) struct CoralDb {
@@ -34,14 +35,13 @@ impl CoralDb {
 }
 
 async fn open_sqlite(path: &Path) -> Result<CoralDb, DbError> {
-    let parent = path
-        .parent()
+    path.parent()
         .ok_or_else(|| DbError::MissingDatabaseParent(path.to_path_buf()))?;
-    std::fs::create_dir_all(parent)?;
+    storage_fs::ensure_file_private(path)?;
 
     let options = SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(true);
+        .create_if_missing(false);
     let pool = SqlitePoolOptions::new().connect_with(options).await?;
     Ok(CoralDb {
         backend: CoralDbBackend::Sqlite(SqliteCoralDb { pool }),
@@ -108,6 +108,30 @@ fn postgres_ssl_mode_authenticates_server(ssl_mode: PgSslMode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::postgres_connect_options;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sqlite_open_creates_and_tightens_private_database_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let database_file = temp.path().join("state").join("coral.db");
+        for mode in [None, Some(0o644)] {
+            if let Some(mode) = mode {
+                std::fs::set_permissions(&database_file, std::fs::Permissions::from_mode(mode))
+                    .expect("loosen database permissions");
+            }
+            super::open_sqlite(&database_file)
+                .await
+                .expect("open sqlite");
+            let actual_mode = std::fs::metadata(&database_file)
+                .expect("database metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(actual_mode, 0o600);
+        }
+    }
 
     #[test]
     fn postgres_options_reject_remote_tcp_without_required_tls() {
