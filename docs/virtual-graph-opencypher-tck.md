@@ -277,14 +277,15 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 90 representative read-only scenarios:
+The GraphQL baseline currently contains 94 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
 - `ScalarFilters`: 17 scenarios for scalar operator objects, shorthand equality,
   list membership, int/float coercion boundary filtering, null checks,
   empty-result filters, negated string predicates, and regex `matches`.
-- `BooleanFilters`: 6 scenarios for `and`/`or` arrays, nested and/or, `not`
+- `BooleanFilters`: 8 scenarios for `and`/`or` arrays, nested and/or, deep
+  three-level boolean composition, nested `xor` inside `and`, `not`
   composition, `xor`, and uppercase operator aliases.
 - `RowModifiers`: 11 scenarios for root ordering, multi-key ordering, offset,
   limit, pagination edge windows including offset-beyond-count, limit `0`, and
@@ -308,8 +309,10 @@ The GraphQL baseline currently contains 90 representative read-only scenarios:
   negated existence.
 - `GeneratedClientShape`: 5 scenarios for fragments, `__typename`, and
   `@skip`/`@include` directives.
-- `ErrorHandling`: 8 expected rejections for unknown graph-declared properties,
-  `_id` string predicates, and aggregate argument misuse.
+- `ErrorHandling`: 10 expected rejections for unknown graph-declared properties,
+  `_id` string predicates, aggregate argument misuse, and empty `and`/`or`
+  boolean arrays, which GraphQL filters reject instead of treating as vacuous
+  truth or falsehood.
 
 The same fixture-level contract applies: ids must be unique, every feature
 bucket must be declared, and each bucket must stay at or above its floor.

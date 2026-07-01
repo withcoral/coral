@@ -3,8 +3,8 @@
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
     "Aggregation": 13,
-    "BooleanFilters": 6,
-    "ErrorHandling": 8,
+    "BooleanFilters": 8,
+    "ErrorHandling": 10,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
     "NestedRelationships": 15,
@@ -856,7 +856,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "friend": "Bob", "fof": "Carol" }
+          {
+            "name": "Alice",
+            "friend": "Bob",
+            "fof": "Carol"
+          }
         ]
       }
     },
@@ -868,9 +872,21 @@
         "kind": "rows",
         "ordered": false,
         "rows": [
-          { "name": "Alice", "friend": "Bob", "knowerOfFriend": "Alice" },
-          { "name": "Alice", "friend": "Carol", "knowerOfFriend": "Bob" },
-          { "name": "Alice", "friend": "Carol", "knowerOfFriend": "Alice" }
+          {
+            "name": "Alice",
+            "friend": "Bob",
+            "knowerOfFriend": "Alice"
+          },
+          {
+            "name": "Alice",
+            "friend": "Carol",
+            "knowerOfFriend": "Bob"
+          },
+          {
+            "name": "Alice",
+            "friend": "Carol",
+            "knowerOfFriend": "Alice"
+          }
         ]
       }
     },
@@ -882,7 +898,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "friend": "Bob", "fof": "Carol" }
+          {
+            "name": "Alice",
+            "friend": "Bob",
+            "fof": "Carol"
+          }
         ]
       }
     },
@@ -1403,6 +1423,55 @@
             "name": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "boolean-deep-three-level-nesting",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { and: [{ or: [{ city: { eq: \"London\" } }, { city: { eq: \"Paris\" } }] }, { not: { active: { eq: false } } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-nested-xor-in-and",
+      "feature": "BooleanFilters",
+      "query": "query { Person(where: { and: [{ xor: [{ active: { eq: true } }, { city: { eq: \"Paris\" } }] }, { name: { notContains: \"z\" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "boolean-empty-and-array",
+      "feature": "ErrorHandling",
+      "query": "query { Person(where: { and: [] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "require at least one object"
+      }
+    },
+    {
+      "id": "boolean-empty-or-array",
+      "feature": "ErrorHandling",
+      "query": "query { Person(where: { or: [] }) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "require at least one object"
       }
     }
   ]
