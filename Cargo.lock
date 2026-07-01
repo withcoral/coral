@@ -1239,6 +1239,7 @@ dependencies = [
  "prost",
  "regex",
  "reqwest 0.13.4",
+ "ring",
  "sea-query",
  "sea-query-sqlx",
  "serde",

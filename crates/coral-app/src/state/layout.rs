@@ -93,6 +93,10 @@ impl AppStateLayout {
         self.feedback_dir(workspace_name).join("reports.jsonl")
     }
 
+    pub(crate) fn credential_encryption_key_file(&self) -> PathBuf {
+        self.config_dir.join("credentials").join("encryption.key")
+    }
+
     /// Per-workspace episode log (JSONL) for experimental trajectory memory. The
     /// episode store appends `OpenEpisode` records here; indexing and retrieval
     /// land in a later PR.
