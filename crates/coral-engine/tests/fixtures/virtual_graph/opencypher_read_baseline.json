@@ -2,7 +2,7 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 20,
+    "Aggregation": 26,
     "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 13,
@@ -1792,6 +1792,125 @@
             "people": 0,
             "ages": 0,
             "names": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-empty-input-null-numeric-defaults",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) WHERE false RETURN count(*) AS rows, avg(p.age) AS average_age, min(p.age) AS youngest, max(p.age) AS oldest, collect(p.name) AS names",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 0,
+            "names": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-null-injected-expression-targets",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN count(CASE WHEN p.active THEN p.age END) AS active_ages, sum(CASE WHEN p.active THEN p.age END) AS active_age_sum, avg(CASE WHEN p.active THEN p.age END) AS active_average_age, count(CASE WHEN p.name = 'Nobody' THEN p.age END) AS absent_ages, collect(CASE WHEN p.name = 'Nobody' THEN p.name END) AS absent_names",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "active_ages": 2,
+            "active_age_sum": 75,
+            "active_average_age": 37.5,
+            "absent_ages": 0,
+            "absent_names": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-optional-count-null-expression",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN count(*) AS optional_rows, count(friend) AS matched_friends, count(friend.name) AS friend_names, count(friend.name IS NULL) AS null_checks",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "optional_rows": 4,
+            "matched_friends": 3,
+            "friend_names": 3,
+            "null_checks": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-null-group-key",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.active AS friend_active, count(*) AS optional_rows, count(friend) AS matched_friends",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "optional_rows": 1,
+            "matched_friends": 0
+          },
+          {
+            "friend_active": false,
+            "optional_rows": 1,
+            "matched_friends": 1
+          },
+          {
+            "friend_active": true,
+            "optional_rows": 2,
+            "matched_friends": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-optional-numeric-defaults-by-group",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[r:KNOWS]->(:Person) RETURN p.name AS person, count(r) AS relationships, avg(r.strength) AS average_strength, min(r.since) AS first_since, max(r.since) AS last_since ORDER BY person",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "relationships": 2,
+            "average_strength": 0.6,
+            "first_since": 2020,
+            "last_since": 2022
+          },
+          {
+            "person": "Bob",
+            "relationships": 1,
+            "average_strength": 0.7,
+            "first_since": 2021,
+            "last_since": 2021
+          },
+          {
+            "person": "Carol",
+            "relationships": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-distinct-duplicate-target-values",
+      "feature": "Aggregation",
+      "query": "MATCH (:Person)-[:KNOWS]->(friend:Person) RETURN count(friend.city) AS city_mentions, count(DISTINCT friend.city) AS unique_cities",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city_mentions": 3,
+            "unique_cities": 2
           }
         ]
       }
