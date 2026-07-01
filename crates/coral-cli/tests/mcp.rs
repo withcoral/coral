@@ -21,7 +21,8 @@ use coral_api::v1::{
 };
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
-use harness::{MockServer, MockServerConfig};
+use harness::{MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name};
+use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
@@ -104,14 +105,6 @@ fn query_history_trace_record(
         "end_time_unix_nanos": end_time_unix_nanos,
         "attributes_json": attributes.to_string(),
     })
-}
-
-fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
-    assert_eq!(
-        workspace.map(|workspace| workspace.name.as_str()),
-        Some(expected),
-        "expected workspace {expected:?}, got {workspace:?}"
-    );
 }
 
 fn source_fixture(workspace_name: &str, source_name: &str) -> Source {
@@ -716,8 +709,8 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns"
         ]
@@ -733,14 +726,14 @@ async fn mcp_stdio_lists_tools_and_resources() -> Result<(), Box<dyn std::error:
         tools[1]
             .description
             .as_deref()
-            .expect("list_catalog description")
-            .contains("3 table(s) and 0 table function(s) are currently visible")
+            .expect("search description")
+            .contains("Returns typed results plus provider statuses")
     );
     assert!(
         tools[2]
             .description
             .as_deref()
-            .expect("search_catalog description")
+            .expect("list_catalog description")
             .contains("3 table(s) and 0 table function(s) are currently visible")
     );
     let catalog_requests = server.list_catalog_requests();
@@ -799,8 +792,8 @@ async fn mcp_stdio_enable_feedback_flag_lists_feedback_tool()
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns",
             "feedback"
@@ -826,8 +819,8 @@ async fn mcp_stdio_enable_episodes_flag_lists_open_episode_tool()
             .collect::<Vec<_>>(),
         vec![
             "sql",
+            "search",
             "list_catalog",
-            "search_catalog",
             "describe_table",
             "list_columns",
             "open_episode"
@@ -1112,7 +1105,11 @@ async fn mcp_stdio_sql_and_catalog_tools_return_structured_content()
     let client = start_mcp_client(&server).await?;
 
     assert_list_catalog_tool(&client, &server).await?;
-    assert_search_catalog_tool(&client, &server).await?;
+    client
+        .call_tool(CallToolRequestParams::new("search_catalog"))
+        .await
+        .expect_err("removed search_catalog tool should not be callable");
+    assert_search_tool(&client, &server).await?;
     assert_describe_table_tool(&client, &server).await?;
     assert_list_columns_tool(&client).await?;
     assert_sql_tool(&client).await?;
@@ -1192,62 +1189,35 @@ async fn assert_list_catalog_tool(
     Ok(())
 }
 
-async fn assert_search_catalog_tool(
+async fn assert_search_tool(
     client: &RunningService<RoleClient, ()>,
     server: &MockServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let search = structured_tool_content(
         client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "fixture.*messages",
-            "schema": "local_messages",
-            "kind": "table",
-            "ignore_case": true
+        CallToolRequestParams::new("search").with_arguments(json_object(&json!({
+            "query": "messages",
+            "limit": 5
         }))),
     )
     .await?;
-    assert_eq!(search["total"], 1);
-    assert_eq!(search["items"][0]["name"], "local_messages.messages");
+    assert_eq!(search["results"][0]["kind"], "catalog_metadata");
     assert_eq!(
-        search["items"][0]["sql_reference"],
+        search["results"][0]["catalog_metadata"]["item"]["sql_reference"],
         "local_messages.messages"
     );
-    assert!(
-        search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "description")
+    assert_eq!(
+        search["provider_statuses"][0]["provider"],
+        "catalog_metadata"
     );
-    let search_requests = server.search_catalog_requests();
-    let search_request = search_requests.last().expect("search catalog request");
-    assert_eq!(search_request.pattern, "fixture.*messages");
-    assert_eq!(search_request.schema_name, "local_messages");
-    assert_eq!(search_request.kind, 1);
-    let search_pagination = search_request
-        .pagination
-        .as_ref()
-        .expect("search pagination");
-    assert_eq!(search_pagination.limit, 20);
-    assert_eq!(search_pagination.offset, 0);
-    assert!(search_request.ignore_case);
+    assert_eq!(search["provider_statuses"][0]["state"], "results_found");
+    assert!(search["provider_statuses"][1]["coverage"].is_null());
 
-    let guide_search = structured_tool_content(
-        client,
-        CallToolRequestParams::new("search_catalog").with_arguments(json_object(&json!({
-            "pattern": "Query fixture messages",
-            "schema": "local_messages"
-        }))),
-    )
-    .await?;
-    assert_eq!(guide_search["total"], 1);
-    assert!(
-        guide_search["items"][0]["matched_fields"]
-            .as_array()
-            .expect("matched fields")
-            .iter()
-            .any(|field| field == "guide")
-    );
+    let search_requests = server.search_requests();
+    let request = search_requests.last().expect("search request");
+    assert_eq!(request.query, "messages");
+    assert_eq!(request.limit, 5);
+    assert_default_workspace(request.workspace.as_ref());
     Ok(())
 }
 

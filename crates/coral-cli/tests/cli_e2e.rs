@@ -23,7 +23,10 @@ use coral_api::v1::{
 use tempfile::tempdir;
 use tonic::Code;
 
-use harness::{MockServer, MockServerConfig, encode_arrow_ipc_stream};
+use harness::{
+    MockServer, MockServerConfig, assert_default_workspace, assert_workspace_name,
+    encode_arrow_ipc_stream,
+};
 
 #[cfg(feature = "embedded-ui")]
 #[test]
@@ -55,18 +58,6 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect()
-}
-
-fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
-    assert_workspace_name(workspace, "default");
-}
-
-fn assert_workspace_name(workspace: Option<&coral_api::v1::Workspace>, expected: &str) {
-    assert_eq!(
-        workspace.map(|w| w.name.as_str()),
-        Some(expected),
-        "expected workspace {expected:?}, got {workspace:?}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -786,6 +777,97 @@ async fn sql_json_output_renders_multiple_rows() {
     let requests = server.execute_sql_requests();
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select id, name from users");
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_command_renders_text_output_and_provider_statuses() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "messages", "text"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("Results"),
+        "expected results section: {stdout}"
+    );
+    assert!(
+        stdout.contains("[catalog_metadata] table local_messages.messages"),
+        "expected catalog table result: {stdout}"
+    );
+    assert!(
+        stdout.contains("SQL: local_messages.messages"),
+        "expected SQL reference: {stdout}"
+    );
+    assert!(
+        stdout.contains("Provider statuses"),
+        "expected provider statuses section: {stdout}"
+    );
+    assert!(
+        stdout.contains("- observed_values: not_enabled"),
+        "disabled provider should remain visible: {stdout}"
+    );
+    assert!(
+        stdout.contains("- native_fanout: skipped"),
+        "skipped provider should remain visible: {stdout}"
+    );
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "messages text");
+    assert_eq!(requests[0].limit, 10);
+    assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_json_output_preserves_typed_payloads_and_statuses() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["search", "--json", "--limit", "5", "messages"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let response: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("search --json should emit JSON");
+
+    assert_eq!(response["results"][0]["provider"], "catalog_metadata");
+    assert_eq!(response["results"][0]["kind"], "catalog_metadata");
+    assert_eq!(
+        response["results"][0]["catalog_metadata"]["item"]["sql_reference"],
+        "local_messages.messages"
+    );
+    assert_eq!(
+        response["results"][1]["column_hint"]["field_role"],
+        "table_column"
+    );
+    assert_eq!(
+        response["provider_statuses"][0]["coverage"]["searched_units"],
+        3
+    );
+    assert_eq!(
+        response["provider_statuses"][1]["provider"],
+        "observed_values"
+    );
+    assert!(response["provider_statuses"][1]["coverage"].is_null());
+    assert_eq!(response["provider_statuses"][2]["state"], "skipped");
+    assert!(response["provider_statuses"][2]["coverage"].is_null());
+    assert_eq!(response["truncation"]["returned_count"], 2);
+
+    let requests = server.search_requests();
+    assert_eq!(requests.len(), 1, "expected one search call");
+    assert_eq!(requests[0].query, "messages");
+    assert_eq!(requests[0].limit, 5);
     assert_default_workspace(requests[0].workspace.as_ref());
 
     server.shutdown().await;

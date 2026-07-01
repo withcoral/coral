@@ -1324,6 +1324,8 @@ dependencies = [
  "http-body 1.0.1",
  "opentelemetry",
  "opentelemetry_sdk",
+ "schemars",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

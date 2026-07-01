@@ -29,13 +29,14 @@ use clap::{
 use clap_complete::{Shell, generate};
 use coral_api::v1::{
     CreateWorkspaceRequest, DeleteWorkspaceRequest, ExecuteSqlRequest, ListWorkspacesRequest,
-    Workspace,
+    SearchRequest, Workspace,
 };
 #[cfg(feature = "embedded-ui")]
 use coral_app::StaticAssetsProvider;
 use coral_client::{
     AppClient, DEFAULT_WORKSPACE_ID, decode_execute_sql_response, format_batches_json,
-    format_batches_table, manifest_input_from_proto, workspace as workspace_resource,
+    format_batches_table, format_search_response_json, format_search_response_text,
+    manifest_input_from_proto, workspace as workspace_resource,
 };
 use dialoguer::console::measure_text_width;
 use tonic::Request;
@@ -48,6 +49,11 @@ use tempfile as _;
 #[cfg(feature = "embedded-ui")]
 const DEFAULT_SERVER_PORT: u16 = 1457;
 const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
+const DEFAULT_SEARCH_LIMIT: u32 = 10;
+const MIN_SEARCH_LIMIT: u32 = 1;
+const MAX_SEARCH_LIMIT: u32 = 50;
+const MIN_SEARCH_LIMIT_RANGE: i64 = MIN_SEARCH_LIMIT as i64;
+const MAX_SEARCH_LIMIT_RANGE: i64 = MAX_SEARCH_LIMIT as i64;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -69,6 +75,8 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
+    /// Search Coral metadata and routing hints
+    Search(SearchArgs),
     /// Manage data sources
     Source(SourceArgs),
     /// Manage workspaces
@@ -120,6 +128,24 @@ struct SqlArgs {
     format: OutputFormat,
     /// SQL query to execute
     sql: String,
+}
+
+#[derive(Debug, Args)]
+/// Search Coral metadata and routing hints
+struct SearchArgs {
+    /// Render the shared machine-readable JSON response
+    #[arg(long)]
+    json: bool,
+    /// Maximum search results to return, from 1 to 50. Defaults to 10.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_SEARCH_LIMIT,
+        value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT_RANGE..=MAX_SEARCH_LIMIT_RANGE)
+    )]
+    limit: u32,
+    /// Search clue to route to likely Coral surfaces
+    #[arg(value_name = "QUERY", num_args = 1.., required = true)]
+    query: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -397,6 +423,7 @@ impl Command {
     fn required_runtime(&self) -> RequiredRuntime {
         match self {
             Command::Sql(_)
+            | Command::Search(_)
             | Command::Source(_)
             | Command::Workspace(_)
             | Command::Onboard
@@ -414,7 +441,11 @@ impl Command {
     fn uses_selected_workspace(&self) -> bool {
         matches!(
             self,
-            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_)
+            Command::Sql(_)
+                | Command::Search(_)
+                | Command::Source(_)
+                | Command::Onboard
+                | Command::McpStdio(_)
         )
     }
 }
@@ -591,6 +622,7 @@ async fn run_no_runtime_command(
         #[cfg(feature = "embedded-ui")]
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_)
+        | Command::Search(_)
         | Command::Source(_)
         | Command::Workspace(_)
         | Command::Onboard
@@ -629,6 +661,7 @@ async fn run_app_command(
             let result = decode_execute_sql_response(&response).map_err(anyhow::Error::from)?;
             print_batches(result.batches(), args.format)?;
         }
+        Command::Search(args) => run_search(&app, workspace, args).await?,
         Command::Source(args) => run_source(&app, workspace, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
         Command::Onboard => {
@@ -846,6 +879,32 @@ async fn run_source(
         SourceCommand::Remove { name } => {
             source_ops::remove_and_print(app, workspace, &name).await?;
         }
+    }
+    Ok(())
+}
+
+async fn run_search(
+    app: &AppClient,
+    workspace: &Workspace,
+    args: SearchArgs,
+) -> Result<(), CliError> {
+    let response = app
+        .search_client()
+        .search(Request::new(SearchRequest {
+            workspace: Some(workspace.clone()),
+            query: args.query.join(" "),
+            limit: args.limit,
+        }))
+        .await
+        .map_err(anyhow::Error::from)?
+        .into_inner();
+    if args.json {
+        println!(
+            "{}",
+            format_search_response_json(&response).map_err(anyhow::Error::from)?
+        );
+    } else {
+        print!("{}", format_search_response_text(&response));
     }
     Ok(())
 }
@@ -1073,6 +1132,24 @@ mod tests {
     }
 
     #[test]
+    fn search_command_uses_app_runtime() {
+        let cli =
+            Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn search_limit_rejects_values_outside_server_contract() {
+        Cli::try_parse_from(["coral", "search", "--limit", "0", "github"])
+            .expect_err("zero limit should fail before contacting the server");
+        Cli::try_parse_from(["coral", "search", "--limit", "51", "github"])
+            .expect_err("limit above the server cap should fail before contacting the server");
+        Cli::try_parse_from(["coral", "search", "--limit", "50", "github"])
+            .expect("server maximum should parse");
+    }
+
+    #[test]
     fn selected_workspace_preserves_raw_name_for_app_validation() {
         let workspace = super::selected_workspace(Some(" ../bad ".to_string()));
 
@@ -1096,6 +1173,8 @@ mod tests {
     #[test]
     fn only_workspace_scoped_commands_use_selected_workspace() {
         let sql = Cli::try_parse_from(["coral", "sql", "SELECT 1"]).expect("sql parses");
+        let search =
+            Cli::try_parse_from(["coral", "search", "github", "issues"]).expect("search parses");
         let source = Cli::try_parse_from(["coral", "source", "list"]).expect("source parses");
         let onboard = Cli::try_parse_from(["coral", "onboard"]).expect("onboard parses");
         let workspace =
@@ -1103,6 +1182,7 @@ mod tests {
         let mcp = Cli::try_parse_from(["coral", "mcp-stdio"]).expect("mcp parses");
 
         assert!(sql.command.uses_selected_workspace());
+        assert!(search.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
         assert!(mcp.command.uses_selected_workspace());

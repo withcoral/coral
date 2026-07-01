@@ -3,13 +3,13 @@
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchCatalogRequest, Source,
+    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchRequest, Source,
     SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
 };
 use coral_client::{
-    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SourceClient,
-    batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
-    with_episode_metadata,
+    AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SearchClient,
+    SourceClient, batches_to_json_rows_json_safe_numbers, decode_execute_sql_response,
+    default_workspace, search_response_json_value, with_episode_metadata,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -35,9 +35,9 @@ use crate::{
         describe_table_arguments, describe_table_value, feedback_arguments, guide_resource,
         guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
         list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
-        open_episode_arguments, optional_episode_id_argument, search_catalog_arguments,
-        search_catalog_value, sql_arguments, status_to_error_data, tables_resource,
-        tables_resource_content, tool_error_from_status, tool_error_result,
+        open_episode_arguments, optional_episode_id_argument, search_arguments, sql_arguments,
+        status_to_error_data, tables_resource, tables_resource_content, tool_error_from_status,
+        tool_error_result,
     },
     telemetry,
 };
@@ -124,6 +124,7 @@ pub(crate) struct CoralMcpServer {
     source: SourceClient,
     catalog: CatalogClient,
     query: QueryClient,
+    search: SearchClient,
     feedback: FeedbackClient,
     episode: EpisodeClient,
     startup_context: McpStartupContext,
@@ -183,6 +184,7 @@ impl CoralMcpServer {
             source: app.source_client(),
             catalog: app.catalog_client(),
             query: app.query_client(),
+            search: app.search_client(),
             feedback: app.feedback_client(),
             episode: app.episode_client(),
             startup_context,
@@ -419,33 +421,27 @@ impl CoralMcpServer {
         })
     }
 
-    async fn search_catalog_tool_result(
+    async fn search_tool_result(
         &self,
         request_arguments: Option<&Map<String, Value>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
-        let arguments = search_catalog_arguments(request_arguments)?;
-        let mut catalog_client = self.catalog.clone();
-        match catalog_client
-            .search_catalog(Request::new(SearchCatalogRequest {
+        let arguments = search_arguments(request_arguments)?;
+        let mut search_client = self.search.clone();
+        match search_client
+            .search(Request::new(SearchRequest {
                 workspace: Some(self.workspace()),
-                pattern: arguments.pattern,
-                ignore_case: arguments.ignore_case,
-                schema_name: arguments.schema.unwrap_or_default(),
-                kind: catalog_item_kind_from_tool(arguments.kind) as i32,
-                pagination: Some(PaginationRequest {
-                    limit: arguments.pagination.limit,
-                    offset: arguments.pagination.offset,
-                }),
+                query: arguments.query,
+                limit: arguments.limit,
             }))
             .await
-            .map(|response| search_catalog_value(&response.into_inner()))
+            .map(|response| search_response_json_value(&response.into_inner()))
         {
             Ok(value) => Ok(ToolCallOutcome::success(value)),
             Err(status) if status.code() == tonic::Code::InvalidArgument => {
                 Err(status_to_error_data(&status))
             }
             Err(status) => Ok(ToolCallOutcome::ToolError {
-                operation: "Catalog search",
+                operation: "Search",
                 status,
             }),
         }
@@ -520,10 +516,7 @@ impl CoralMcpServer {
                 self.list_catalog_tool_result(request.arguments.as_ref())
                     .await
             }
-            Some(ToolName::SearchCatalog) => {
-                self.search_catalog_tool_result(request.arguments.as_ref())
-                    .await
-            }
+            Some(ToolName::Search) => self.search_tool_result(request.arguments.as_ref()).await,
             Some(ToolName::DescribeTable) => {
                 self.describe_table_tool_result(request.arguments.as_ref())
                     .await

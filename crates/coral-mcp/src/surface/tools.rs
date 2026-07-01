@@ -1,12 +1,11 @@
 use rmcp::model::{CallToolResult, Tool};
 use serde_json::Value;
 
-use super::catalog::{
-    describe_table_tool, list_catalog_tool, list_columns_tool, search_catalog_tool,
-};
+use super::catalog::{describe_table_tool, list_catalog_tool, list_columns_tool};
 use super::context::ToolDescriptionContext;
 use super::episode::{open_episode_tool, with_episode_id_argument};
 use super::feedback::feedback_tool;
+use super::search::search_tool;
 use super::sql::sql_tool;
 
 pub(crate) fn available_tools(
@@ -16,8 +15,8 @@ pub(crate) fn available_tools(
 ) -> Vec<Tool> {
     let mut tools = vec![
         sql_tool(context),
+        search_tool(context),
         list_catalog_tool(context),
-        search_catalog_tool(context),
         describe_table_tool(),
         list_columns_tool(),
     ];
@@ -104,7 +103,7 @@ mod tests {
         assert!(sql_input_description.contains("independent"));
         assert!(sql_tool.output_schema.is_some());
 
-        let search_description = tool_by_name(&tools, "search_catalog")
+        let search_description = tool_by_name(&tools, "search")
             .description
             .as_deref()
             .expect("search description");
@@ -172,8 +171,8 @@ mod tests {
             names,
             vec![
                 "sql",
+                "search",
                 "list_catalog",
-                "search_catalog",
                 "describe_table",
                 "list_columns"
             ]

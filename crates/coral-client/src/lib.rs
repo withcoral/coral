@@ -20,6 +20,7 @@ mod error;
 mod grpc;
 pub mod local;
 mod propagation;
+mod search;
 mod sources;
 mod status_error;
 
@@ -45,6 +46,11 @@ pub use client::{
 };
 pub use error::{ClientError, QueryResultError};
 pub use propagation::with_episode_metadata;
+pub use search::{
+    SearchResponseValue, format_schema_table_equivalent, format_search_response_json,
+    format_search_response_text, format_sql_identifier, minimal_table_function_call_example,
+    search_response_json_value,
+};
 pub use sources::{SourceInputDecodeError, manifest_input_from_proto};
 pub use status_error::{
     CORAL_ERROR_DOMAIN, CoralQueryError, DecodedStatusError, decode_status_error,
