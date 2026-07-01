@@ -11,9 +11,12 @@
 //! - SHA-256 (Secure Hash Algorithm, 256-bit) derives non-secret KEK identifiers;
 //!   it does not encrypt data.
 
-#![expect(
-    dead_code,
-    reason = "Credential DB runtime wiring lands in a later stack branch; this branch isolates cryptographic primitives for review."
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Credential DB runtime wiring lands in a later stack branch; this branch isolates cryptographic primitives for review."
+    )
 )]
 
 use std::collections::BTreeMap;
