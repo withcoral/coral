@@ -81,7 +81,9 @@ where
             .order_by(Sources::Name, Order::Asc)
             .to_owned();
         let rows: Vec<SourceNameRow> = self.session.fetch_all(statement).await?;
-        Ok(rows.into_iter().map(|row| row.name).collect())
+        rows.into_iter()
+            .map(|row| parse_source_name(&row.name).map(|name| name.as_str().to_string()))
+            .collect()
     }
 
     pub(crate) async fn get_source(
@@ -448,21 +450,17 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
-        let workspace = unique_workspace();
-        let source = source("orphan", None, [], [], None, SourceOrigin::Bundled);
-        let mut tx = db.begin().await.expect("begin tx");
 
-        let error = tx
-            .sources()
-            .upsert_source(&workspace, &source, 10)
-            .await
-            .expect_err("source rows must require an existing workspace");
+        assert_source_repository_rejects_source_without_workspace(&db).await;
+    }
 
-        assert!(
-            error.to_string().to_lowercase().contains("foreign key"),
-            "unexpected error: {error}"
-        );
-        tx.rollback().await.expect("rollback failed tx");
+    #[tokio::test]
+    async fn source_repository_rejects_invalid_persisted_source_name_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+
+        assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
     }
 
     #[tokio::test]
@@ -477,6 +475,34 @@ mod tests {
         db.migrate().await.expect("migrate postgres");
 
         assert_source_repository_round_trip(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run source repository invariant coverage against Postgres"]
+    async fn source_repository_rejects_source_without_workspace_against_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_source_repository_rejects_source_without_workspace(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run source-name validation coverage against Postgres"]
+    async fn source_repository_rejects_invalid_persisted_source_name_against_postgres() {
+        let Some(url) = postgres_test_url() else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -565,6 +591,75 @@ mod tests {
         let zeta_name = zeta.name.clone();
         assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
+    }
+
+    async fn assert_source_repository_rejects_source_without_workspace(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let source = source("orphan", None, [], [], None, SourceOrigin::Bundled);
+        let mut tx = db.begin().await.expect("begin tx");
+
+        let error = tx
+            .sources()
+            .upsert_source(&workspace, &source, 10)
+            .await
+            .expect_err("source rows must require an existing workspace");
+
+        assert!(
+            error.to_string().to_lowercase().contains("foreign key"),
+            "unexpected error: {error}"
+        );
+        tx.rollback().await.expect("rollback failed tx");
+    }
+
+    async fn assert_source_repository_rejects_invalid_persisted_source_name(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let invalid_source_name = "bad/name";
+        let mut tx = db.begin().await.expect("begin invalid source-name tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.execute(
+            Query::insert()
+                .into_table(Sources::Table)
+                .columns([
+                    Sources::WorkspaceId,
+                    Sources::Name,
+                    Sources::Version,
+                    Sources::OriginKind,
+                    Sources::CredentialStorage,
+                    Sources::CreatedAtUnixNanos,
+                    Sources::UpdatedAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(workspace.as_str().to_string()),
+                    Expr::val(invalid_source_name),
+                    Expr::val(Option::<String>::None),
+                    Expr::val(SourceOrigin::Bundled.as_config_value()),
+                    Expr::val(Option::<String>::None),
+                    Expr::val(10),
+                    Expr::val(10),
+                ])
+                .to_owned(),
+        )
+        .await
+        .expect("insert invalid source-name row");
+
+        let error = tx
+            .sources()
+            .list_workspace_source_names(&workspace)
+            .await
+            .expect_err("invalid persisted source name should fail");
+        let DbError::CorruptData(message) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert!(
+            message.contains("invalid source name 'bad/name'"),
+            "unexpected error: {message}"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback invalid source-name tx");
     }
 
     async fn source_names(db: &CoralDb, workspace: &WorkspaceName) -> Vec<String> {
