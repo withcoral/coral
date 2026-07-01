@@ -202,6 +202,9 @@ jobs:
             state::db::repositories::workspaces::tests::workspace_repository_round_trips_against_postgres \
             -- --ignored
           cargo test --locked -p coral-app \
+            state::db::migrations::tests::source_catalog_migration_contract_against_postgres \
+            -- --ignored
+          cargo test --locked -p coral-app \
             --test grpc server_lifecycle_can_start_with_postgres_database_config \
             -- --ignored
 
