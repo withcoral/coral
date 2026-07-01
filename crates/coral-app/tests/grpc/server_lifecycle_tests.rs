@@ -53,10 +53,17 @@ async fn server_lifecycle_can_repeat_within_process() {
 async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
+    let missing_url_env = format!(
+        "CORAL_TEST_POSTGRES_URL_MISSING_FOR_SERVER_START_{}",
+        uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .to_ascii_uppercase()
+    );
     fs::create_dir_all(&config_dir).expect("create config dir");
     fs::write(
         config_dir.join("config.toml"),
-        "[database]\nbackend = \"postgres\"\nurl_env = \"CORAL_TEST_POSTGRES_URL_MISSING_FOR_SERVER_START\"\n",
+        format!("[database]\nbackend = \"postgres\"\nurl_env = \"{missing_url_env}\"\n"),
     )
     .expect("write config");
 
@@ -74,7 +81,7 @@ async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
 
     match error {
         LocalServerError::FailedPrecondition(detail) => assert!(
-            detail.contains("CORAL_TEST_POSTGRES_URL_MISSING_FOR_SERVER_START"),
+            detail.contains(&missing_url_env),
             "unexpected detail: {detail}"
         ),
         other => panic!("unexpected error: {other}"),
