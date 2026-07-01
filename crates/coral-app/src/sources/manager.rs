@@ -2031,7 +2031,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(config_store.clone(), credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
 
         let workspace_name = default_workspace();
         manager
