@@ -354,6 +354,48 @@ fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {
             page_step: 1,
             ..PaginationSpec::default()
         }
+    } else if let Some(offset_input) = inputs
+        .iter()
+        .find(|input| OFFSET_PARAM_NAMES.contains(&input.name.as_str()))
+        && let Some(page_size_input) = inputs
+            .iter()
+            .find(|input| LIMIT_PARAM_NAMES.contains(&input.name.as_str()))
+    {
+        let default_page_size: usize = std::cmp::max(
+            page_size_input
+                .default_value
+                .as_deref()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0),
+            DEFAULT_PAGE_SIZE,
+        );
+        let offset_step = i64::try_from(default_page_size).unwrap_or(1);
+        PaginationSpec {
+            mode: PaginationMode::Offset,
+            page_size: Some(PageSizeSpec {
+                default: default_page_size,
+                max: std::cmp::max(default_page_size, DEFAULT_MAX_PAGE_SIZE),
+                query_param: if page_size_input.location == IrInputLocation::Query {
+                    Some(page_size_input.name.clone())
+                } else {
+                    // TODO: log diagnostics
+                    None
+                },
+                // TODO: if input's location is IrInputLocation::Body then set the body path here.
+                body_path: Vec::new(),
+            }),
+
+            offset_param: if offset_input.location == IrInputLocation::Query {
+                Some(offset_input.name.clone())
+            } else {
+                // TODO: log diagnostics
+                None
+            },
+            offset_start: 0,
+            offset_step: Some(offset_step),
+            ..PaginationSpec::default()
+        }
     } else {
         PaginationSpec::default()
     }
