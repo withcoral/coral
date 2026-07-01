@@ -288,13 +288,14 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 113 representative read-only scenarios:
+The GraphQL baseline currently contains 139 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
-- `ScalarFilters`: 17 scenarios for scalar operator objects, shorthand equality,
+- `ScalarFilters`: 18 scenarios for scalar operator objects, shorthand equality,
   list membership, int/float coercion boundary filtering, null checks,
-  empty-result filters, negated string predicates, and regex `matches`.
+  empty-result filters, negated string predicates including `notMatches`, and
+  regex `matches`.
 - `BooleanFilters`: 8 scenarios for `and`/`or` arrays, nested and/or, deep
   three-level boolean composition, nested `xor` inside `and`, `not`
   composition, `xor`, and uppercase operator aliases.
@@ -304,13 +305,14 @@ The GraphQL baseline currently contains 113 representative read-only scenarios:
   last-window overshoot, `ASCENDING`/`DESCENDING` and shorthand `orderBy`
   directions, distinct projection, and distinct projection combined with
   ordering.
-- `Aggregation`: 13 scenarios for grouped `_count`, numeric property
+- `Aggregation`: 14 scenarios for grouped `_count`, numeric property
   aggregates including `_median`, distinct counts, and exact
-  `_percentileCont(field:, percentile:)`.
-- `IdentityFields`: 9 scenarios for `_id` / `_elementId` selection, `_id`
-  equality/range/list filters, `_id` list filtering combined with identity
-  ordering, `_id` ordering, and `_elementId` equality/list filters and
-  ordering.
+  `_percentileCont(field:, percentile:)`, plus single-row `_collect`.
+- `IdentityFields`: 32 scenarios for `_id` / `_elementId` selection, `_id`
+  equality, range, inequality, list, negated-list, and null filters, `_id` list
+  filtering combined with identity ordering, `_id` ordering, and `_elementId`
+  equality, range, inequality, string, negated-string, list, negated-list, null
+  filters, and ordering.
 - `NestedRelationships`: 15 scenarios for out/in/any relationship traversal with
   endpoint predicates, endpoint and `_edge` projections, in/any strength
   relationship-property filters, combined float relationship-property
@@ -323,8 +325,9 @@ The GraphQL baseline currently contains 113 representative read-only scenarios:
 - `GeneratedClientShape`: 9 scenarios for single, chained, and inline
   fragments, root and traversal `__typename` metadata including `_edge`
   relationship types, and `@skip`/`@include` directives.
-- `ErrorHandling`: 15 expected rejections for unknown graph-declared properties,
-  `_id` string predicates, and aggregate argument misuse.
+- `ErrorHandling`: 16 expected rejections for unknown graph-declared properties,
+  `_id` string predicates, aggregate argument misuse, and multiple included
+  root node fields.
 
 The same fixture-level contract applies: ids must be unique, every feature
 bucket must be declared, and each bucket must stay at or above its floor.

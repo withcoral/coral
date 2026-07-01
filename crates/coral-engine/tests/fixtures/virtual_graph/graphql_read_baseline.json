@@ -2,16 +2,16 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 13,
+    "Aggregation": 14,
     "BooleanFilters": 8,
-    "ErrorHandling": 15,
+    "ErrorHandling": 16,
     "GeneratedClientShape": 9,
-    "IdentityFields": 9,
+    "IdentityFields": 32,
     "NestedRelationships": 15,
     "RelationshipExistence": 8,
     "RootSelection": 4,
     "RowModifiers": 15,
-    "ScalarFilters": 17
+    "ScalarFilters": 18
   },
   "scenarios": [
     {
@@ -1748,6 +1748,407 @@
             "name": "Alice"
           }
         ]
+      }
+    },
+    {
+      "id": "identity-id-gt",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { gt: 2 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-lt",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { lt: 2 } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-lte",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { lte: 2 } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-ne",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { ne: 2 } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-not-in",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { notIn: [2] } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-is-null",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { isNull: true } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "identity-id-is-not-null",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { isNotNull: true } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-gt",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { gt: \"2\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-gte",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { gte: \"2\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-lt",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { lt: \"2\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-lte",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { lte: \"2\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-ne",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { ne: \"2\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-starts-with",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { startsWith: \"1\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-ends-with",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { endsWith: \"3\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-contains",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { contains: \"2\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-not-contains",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { notContains: \"2\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-not-starts",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { notStartsWith: \"1\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-not-ends",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { notEndsWith: \"3\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-matches",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { matches: \"^2$\" } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-not-matches",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { notMatches: \"^2$\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-not-in",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { notIn: [\"2\"] } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "elementid-is-null",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { isNull: true } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "elementid-is-not-null",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { isNotNull: true } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "scalar-not-matches-filter",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { name: { notMatches: \"^A\" } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-collect-single",
+      "feature": "Aggregation",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { names: _collect(field: name) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "names": [
+              "Alice"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "root-multiple-fields-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { name } person { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "GraphQL virtual graph queries must select exactly one included root node field"
       }
     }
   ]
