@@ -6,7 +6,7 @@
     "BooleanFilters": 8,
     "ErrorHandling": 15,
     "GeneratedClientShape": 9,
-    "IdentityFields": 6,
+    "IdentityFields": 9,
     "NestedRelationships": 15,
     "RelationshipExistence": 8,
     "RootSelection": 4,
@@ -1623,6 +1623,64 @@
           },
           {
             "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-order-by-elementid-desc",
+      "feature": "IdentityFields",
+      "query": "query { Person(orderBy: [{ field: _elementId, direction: DESC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-elementid-list-filter",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _elementId: { in: [\"1\", \"3\"] } }, orderBy: [{ field: name, direction: ASC }]) { id: _id element: _elementId name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "id": 1,
+            "element": "1",
+            "name": "Alice"
+          },
+          {
+            "id": 3,
+            "element": "3",
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "identity-id-list-ordered-by-id-desc",
+      "feature": "IdentityFields",
+      "query": "query { Person(where: { _id: { in: [1, 3] } }, orderBy: [{ field: _id, direction: DESC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Alice"
           }
         ]
       }

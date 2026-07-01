@@ -277,7 +277,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 106 representative read-only scenarios:
+The GraphQL baseline currently contains 109 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
@@ -292,13 +292,12 @@ The GraphQL baseline currently contains 106 representative read-only scenarios:
   last-window overshoot, `ASCENDING`/`DESCENDING` and shorthand `orderBy`
   directions, and distinct projection.
 - `Aggregation`: 13 scenarios for grouped `_count`, numeric property
-  aggregates including `_median`, distinct counts, exact
-  `_percentileCont(field:, percentile:)`, and empty-set behavior where global
-  `_count` returns one zero row, global null-valued numeric aggregates preserve
-  one row with the null field omitted, and grouped aggregates return no rows.
-- `IdentityFields`: 6 scenarios for `_id` / `_elementId` selection, `_id`
-  equality/range/list filters, `_id` ordering, and `_elementId` equality
-  filters.
+  aggregates including `_median`, distinct counts, and exact
+  `_percentileCont(field:, percentile:)`.
+- `IdentityFields`: 9 scenarios for `_id` / `_elementId` selection, `_id`
+  equality/range/list filters, `_id` list filtering combined with identity
+  ordering, `_id` ordering, and `_elementId` equality/list filters and
+  ordering.
 - `NestedRelationships`: 15 scenarios for out/in/any relationship traversal with
   endpoint predicates, endpoint and `_edge` projections, in/any strength
   relationship-property filters, combined float relationship-property
