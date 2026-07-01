@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 13,
     "BooleanFilters": 8,
-    "ErrorHandling": 10,
+    "ErrorHandling": 15,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
     "NestedRelationships": 15,
@@ -1472,6 +1472,51 @@
       "expected": {
         "kind": "error",
         "contains": "require at least one object"
+      }
+    },
+    {
+      "id": "aggregate-percentile-out-of-range-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { p: _percentileCont(field: age, percentile: 1.5) } }",
+      "expected": {
+        "kind": "error",
+        "contains": "percentile aggregate argument must be between 0.0 and 1.0 inclusive"
+      }
+    },
+    {
+      "id": "aggregate-percentile-missing-arg-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { p: _percentileCont(field: age) } }",
+      "expected": {
+        "kind": "error",
+        "contains": "requires exactly 'field' and 'percentile' arguments"
+      }
+    },
+    {
+      "id": "orderby-invalid-nulls-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC, nulls: SIDEWAYS }]) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "orderBy nulls must be"
+      }
+    },
+    {
+      "id": "directive-repeated-rejection",
+      "feature": "ErrorHandling",
+      "query": "query { Person { name @skip(if: true) @skip(if: false) } }",
+      "expected": {
+        "kind": "error",
+        "contains": "directive '@skip' is repeated"
+      }
+    },
+    {
+      "id": "mutation-unsupported-rejection",
+      "feature": "ErrorHandling",
+      "query": "mutation { Person { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "mutations and subscriptions are not supported"
       }
     }
   ]
