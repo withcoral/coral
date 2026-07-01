@@ -55,7 +55,6 @@ pub(crate) struct ListCatalogArguments {
 pub(crate) struct SearchCatalogArguments {
     #[schemars(
         length(min = 1),
-        pattern(r"\S"),
         description = "Rust regex pattern to match database catalog metadata."
     )]
     pub(crate) pattern: String,
@@ -74,15 +73,10 @@ pub(crate) struct SearchCatalogArguments {
 
 #[derive(JsonSchema)]
 pub(crate) struct DescribeTableArguments {
-    #[schemars(
-        length(min = 1),
-        pattern(r"\S"),
-        description = "Exact SQL schema name."
-    )]
+    #[schemars(length(min = 1), description = "Exact SQL schema name.")]
     pub(crate) schema: String,
     #[schemars(
         length(min = 1),
-        pattern(r"\S"),
         description = "Exact table name within the SQL schema."
     )]
     pub(crate) table: String,
@@ -90,21 +84,15 @@ pub(crate) struct DescribeTableArguments {
 
 #[derive(JsonSchema)]
 pub(crate) struct ListColumnsArguments {
-    #[schemars(
-        length(min = 1),
-        pattern(r"\S"),
-        description = "Exact SQL schema name."
-    )]
+    #[schemars(length(min = 1), description = "Exact SQL schema name.")]
     pub(crate) schema: String,
     #[schemars(
         length(min = 1),
-        pattern(r"\S"),
         description = "Exact table name within the SQL schema."
     )]
     pub(crate) table: String,
     #[schemars(
         length(min = 1),
-        pattern(r"\S"),
         description = "Optional Rust regex matched against column names, descriptions, and data types."
     )]
     pub(crate) pattern: Option<String>,

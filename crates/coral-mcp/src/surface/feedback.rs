@@ -11,23 +11,11 @@ use super::{
 
 #[derive(JsonSchema)]
 pub(crate) struct FeedbackArguments {
-    #[schemars(
-        length(min = 1),
-        pattern(r"\S"),
-        description = "What you were trying to do."
-    )]
+    #[schemars(length(min = 1), description = "What you were trying to do.")]
     pub(crate) trying_to_do: String,
-    #[schemars(
-        length(min = 1),
-        pattern(r"\S"),
-        description = "What you already tried."
-    )]
+    #[schemars(length(min = 1), description = "What you already tried.")]
     pub(crate) tried: String,
-    #[schemars(
-        length(min = 1),
-        pattern(r"\S"),
-        description = "Where you got blocked."
-    )]
+    #[schemars(length(min = 1), description = "Where you got blocked.")]
     pub(crate) stuck: String,
 }
 

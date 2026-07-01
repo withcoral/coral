@@ -72,7 +72,6 @@ impl EpisodeId {
 pub(crate) struct OpenEpisodeArguments {
     #[schemars(
         length(min = 1, max = CORAL_EPISODE_INTENT_MAX_CHARS),
-        pattern(r"\S"),
         description = "Natural-language description of the task this episode should group."
     )]
     pub(crate) intent: String,

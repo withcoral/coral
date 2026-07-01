@@ -18,7 +18,7 @@ const MAX_SQL_BATCH_RESULT_INDEX: usize = MAX_SQL_BATCH_QUERIES - 1;
 pub(crate) struct SqlArguments {
     #[schemars(
         length(min = 1, max = MAX_SQL_BATCH_QUERIES),
-        inner(length(min = 1), pattern(r"\S")),
+        inner(length(min = 1)),
         description = "One to ten independent read-only SQL statements to execute against Coral. Entries must not depend on one another's rows, errors, or side effects."
     )]
     pub(crate) queries: Vec<String>,

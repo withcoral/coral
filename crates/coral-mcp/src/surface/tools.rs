@@ -253,6 +253,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn advertised_input_schemas_do_not_use_generic_nonblank_pattern() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+
+        for tool in available_tools(&context, true, true) {
+            assert!(
+                !contains_pattern(&Value::Object(tool.input_schema.as_ref().clone()), r"\S"),
+                "tool '{}' should not advertise generic non-blank string patterns",
+                tool.name
+            );
+        }
+    }
+
+    fn contains_pattern(value: &Value, pattern: &str) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.get("pattern").and_then(Value::as_str) == Some(pattern)
+                    || object
+                        .values()
+                        .any(|value| contains_pattern(value, pattern))
+            }
+            Value::Array(values) => values.iter().any(|value| contains_pattern(value, pattern)),
+            _ => false,
+        }
+    }
+
     fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
         tools
             .iter()
