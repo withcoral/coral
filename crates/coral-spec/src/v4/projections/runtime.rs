@@ -5,14 +5,21 @@ use serde_json::Value;
 use crate::v4::ir::{IrExecutionAttachment, IrInputLocation, IrOperation};
 use crate::{
     ColumnSpec, ExprSpec, FilterMode, FilterSpec, FunctionArgBinding, ManifestDataType,
-    ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
+    PaginationSpec, ParsedTemplate, RequestSpec, Result, TableFunctionArgSpec,
 };
 
 use super::model::{Projection, SqlInputExposure};
 use super::pagination::{pagination_owns_input, pagination_query_param_names};
 
 pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
+    projection_filter_specs_with_pagination(projection, None)
+}
+
+pub fn projection_filter_specs_with_pagination(
+    projection: &Projection,
+    pagination: Option<&PaginationSpec>,
+) -> Vec<FilterSpec> {
+    let pagination_query_params = pagination_query_params(pagination);
     projection
         .inputs
         .iter()
@@ -30,7 +37,14 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
 }
 
 pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
+    projection_arg_specs_with_pagination(projection, None)
+}
+
+pub fn projection_arg_specs_with_pagination(
+    projection: &Projection,
+    pagination: Option<&PaginationSpec>,
+) -> Vec<TableFunctionArgSpec> {
+    let pagination_query_params = pagination_query_params(pagination);
     projection
         .inputs
         .iter()
@@ -64,7 +78,14 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
 }
 
 pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
+    projection_column_specs_with_pagination(projection, None)
+}
+
+pub fn projection_column_specs_with_pagination(
+    projection: &Projection,
+    pagination: Option<&PaginationSpec>,
+) -> Vec<ColumnSpec> {
+    let pagination_query_params = pagination_query_params(pagination);
     let mut columns = projection
         .columns
         .iter()
@@ -119,13 +140,21 @@ pub fn request_spec_for_projection(
     projection: &Projection,
     operation: &IrOperation,
 ) -> Result<RequestSpec> {
+    request_spec_for_projection_with_pagination(projection, operation, None)
+}
+
+pub fn request_spec_for_projection_with_pagination(
+    projection: &Projection,
+    operation: &IrOperation,
+    pagination: Option<&PaginationSpec>,
+) -> Result<RequestSpec> {
     let IrExecutionAttachment::Rest(rest) = &operation.execution else {
         return Err(crate::ManifestError::validation(format!(
             "projection '{}' is not backed by a REST operation",
             projection.name
         )));
     };
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
+    let pagination_query_params = pagination_query_params(pagination);
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {
         if input.source_location == IrInputLocation::Path {
@@ -177,6 +206,10 @@ pub fn request_spec_for_projection(
         body: crate::BodySpec::default(),
         headers: Vec::new(),
     })
+}
+
+fn pagination_query_params(pagination: Option<&PaginationSpec>) -> HashSet<&str> {
+    pagination.map_or_else(HashSet::new, pagination_query_param_names)
 }
 
 fn path_template_token(namespace: &str, key: &str, default: Option<&str>) -> String {

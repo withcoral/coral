@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{
-    DetailHintSpec, ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind,
-};
+use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
@@ -28,7 +26,6 @@ pub struct Projection {
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
     pub columns: Vec<ProjectionColumn>,
-    pub pagination: PaginationSpec,
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
@@ -85,7 +82,7 @@ mod tests {
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind};
+    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {
@@ -106,7 +103,6 @@ mod tests {
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
                 columns: Vec::new(),
-                pagination: PaginationSpec::default(),
                 search_limits: Some(SearchLimitsSpec {
                     default_top_k: 30,
                     max_top_k: 100,
@@ -131,13 +127,17 @@ mod tests {
             yaml.contains("function_kind: search"),
             "missing function kind: {yaml}"
         );
+        assert!(
+            !yaml.contains("pagination:"),
+            "projection catalog should not serialize projection pagination: {yaml}"
+        );
 
         serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
     }
 
     #[test]
-    fn projection_deserializes_legacy_catalogs_without_namespace() {
+    fn projection_deserializes_legacy_catalogs_without_namespace_and_with_pagination() {
         let raw = format!(
             r"
 artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}

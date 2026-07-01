@@ -20,7 +20,7 @@ impl OpenApiImporter<'_> {
         RestResponseAttachment,
         Option<IrEntityCandidate>,
     ) {
-        let Some((status_code, media_type, schema)) = self.select_json_response(
+        let Some((status_code, media_type, schema, headers)) = self.select_json_response(
             operation.get("responses").and_then(Value::as_object),
             operation_id,
             diagnostics,
@@ -36,6 +36,7 @@ impl OpenApiImporter<'_> {
                     status_code: 204,
                     media_type: "application/json".to_string(),
                     response,
+                    headers: Vec::new(),
                 },
                 None,
             );
@@ -58,6 +59,7 @@ impl OpenApiImporter<'_> {
                     status_code,
                     media_type,
                     response: ResponseSpec::default(),
+                    headers,
                 },
                 None,
             );
@@ -93,6 +95,7 @@ impl OpenApiImporter<'_> {
                 status_code,
                 media_type,
                 response,
+                headers,
             },
             entity,
         )
@@ -102,7 +105,7 @@ impl OpenApiImporter<'_> {
         responses: Option<&Map<String, Value>>,
         operation_id: &str,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<(u16, String, Value)> {
+    ) -> Option<(u16, String, Value, Vec<String>)> {
         let responses = responses?;
         let mut numeric_candidates = Vec::new();
         let mut range_candidates = Vec::new();
@@ -113,6 +116,7 @@ impl OpenApiImporter<'_> {
             let Some(response) = self.resolve_ref(response, operation_id, diagnostics) else {
                 continue;
             };
+            let headers = response_header_names(&response);
             let Some(content) = response.get("content").and_then(Value::as_object) else {
                 continue;
             };
@@ -124,6 +128,7 @@ impl OpenApiImporter<'_> {
                 status.representative_status_code(),
                 "application/json".to_string(),
                 schema,
+                headers,
             );
             if status.is_range() {
                 range_candidates.push(candidate);
@@ -134,6 +139,16 @@ impl OpenApiImporter<'_> {
         preferred_numeric_response(numeric_candidates)
             .or_else(|| range_candidates.into_iter().next())
     }
+}
+
+fn response_header_names(response: &Value) -> Vec<String> {
+    let mut names = response
+        .get("headers")
+        .and_then(Value::as_object)
+        .map(|headers| headers.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -167,13 +182,17 @@ fn success_response_status(status: &str) -> Option<SuccessResponseStatus> {
 }
 
 fn preferred_numeric_response(
-    candidates: Vec<(u16, String, Value)>,
-) -> Option<(u16, String, Value)> {
+    candidates: Vec<(u16, String, Value, Vec<String>)>,
+) -> Option<(u16, String, Value, Vec<String>)> {
     candidates
         .iter()
-        .position(|(status, _, _)| *status == 200)
+        .position(|(status, _, _, _)| *status == 200)
         .and_then(|index| candidates.get(index).cloned())
-        .or_else(|| candidates.into_iter().min_by_key(|(status, _, _)| *status))
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .min_by_key(|(status, _, _, _)| *status)
+        })
 }
 
 fn classify_response_schema(

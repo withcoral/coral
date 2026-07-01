@@ -7,7 +7,7 @@ use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strateg
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PROJECTIONS_FILENAME,
+    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_FILENAME, PROJECTIONS_FILENAME,
 };
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
@@ -207,6 +207,15 @@ impl AppStateLayout {
             .join(DIAGNOSTICS_FILENAME)
     }
 
+    pub(crate) fn v4_parameter_metadata_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_override_dir(workspace_name, source_name)
+            .join(PARAMETER_METADATA_FILENAME)
+    }
+
     pub(crate) fn v4_surface_dir(
         &self,
         workspace_name: &WorkspaceName,
@@ -231,7 +240,7 @@ mod tests {
 
     use super::AppStateLayout;
     use crate::sources::SourceName;
-    use crate::sources::materialization::PROJECTIONS_FILENAME;
+    use crate::sources::materialization::{PARAMETER_METADATA_FILENAME, PROJECTIONS_FILENAME};
     use crate::workspaces::WorkspaceName;
     use tempfile::tempdir;
 
@@ -305,6 +314,22 @@ mod tests {
         assert_eq!(
             layout.v4_projections_file(&workspace_name, &source_name),
             override_file
+        );
+    }
+
+    #[test]
+    fn v4_parameter_metadata_file_lives_under_override_dir() {
+        let temp = tempdir().expect("tempdir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+
+        assert_eq!(
+            layout.v4_parameter_metadata_file(&workspace_name, &source_name),
+            config_dir
+                .join("workspaces/default/sources/github/overrides")
+                .join(PARAMETER_METADATA_FILENAME)
         );
     }
 }

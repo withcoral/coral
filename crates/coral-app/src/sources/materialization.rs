@@ -8,7 +8,7 @@ use std::time::Duration;
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
+    ParameterMetadata, ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
     V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
     generate_projection_catalog, import_mcp_surface, import_openapi_surface,
     normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
@@ -35,6 +35,7 @@ const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
+pub(crate) const PARAMETER_METADATA_FILENAME: &str = "parameter_metadata.yaml";
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -156,6 +157,7 @@ pub(crate) fn load_v4_materialization(
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
     let projections_path = layout.v4_projections_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
+    let parameter_metadata_path = layout.v4_parameter_metadata_file(workspace_name, source_name);
     if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
         return Err(incompatible_materialization_error(
             source_name,
@@ -177,6 +179,7 @@ pub(crate) fn load_v4_materialization(
     validate_projection_catalog_header(source_name, manifest, &projections)?;
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
+    let parameter_metadata = read_parameter_metadata(source_name, &parameter_metadata_path)?;
     let mut surfaces = Vec::new();
     for fingerprint_surface in &fingerprint.surfaces {
         let surface = manifest
@@ -211,10 +214,21 @@ pub(crate) fn load_v4_materialization(
         fingerprint,
         surfaces,
         projections,
+        parameter_metadata,
         diagnostics,
     };
     validate_loaded_materialization(source_name, manifest, &materialized, &fingerprint_surfaces)?;
     Ok(materialized)
+}
+
+fn read_parameter_metadata(
+    source_name: &SourceName,
+    path: &Path,
+) -> Result<ParameterMetadata, AppError> {
+    if !path.exists() {
+        return Ok(ParameterMetadata::default());
+    }
+    read_artifact_yaml(source_name, "parameter metadata override", path)
 }
 
 fn validate_fingerprint_header(
@@ -438,6 +452,20 @@ fn validate_loaded_materialization(
                 .collect(),
         );
     }
+    materialized
+        .parameter_metadata
+        .validate_for_surfaces(
+            materialized
+                .surfaces
+                .iter()
+                .map(|surface| &surface.semantic_ir),
+        )
+        .map_err(|error| {
+            incompatible_materialization_error(
+                source_name,
+                format!("parameter metadata validation failed: {error}"),
+            )
+        })?;
     validate_projection_references(source_name, manifest, materialized, &operations_by_surface)
 }
 
@@ -645,18 +673,33 @@ fn write_materialization(
         importer_version: SURFACE_IMPORTER_VERSION.to_string(),
         projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
     };
-    let materialized = V4MaterializedSource {
-        fingerprint: fingerprint.clone(),
-        surfaces: materialized_surfaces,
-        projections: projections.clone(),
-        diagnostics: diagnostics.clone(),
-    };
+    let materialized = materialized_source(
+        fingerprint.clone(),
+        materialized_surfaces,
+        projections.clone(),
+        diagnostics.clone(),
+    );
     validate_materialized_source(manifest, &materialized)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     write_yaml(&temp_dir.join(FINGERPRINT_FILENAME), &fingerprint)?;
     write_yaml(&temp_dir.join(PROJECTIONS_FILENAME), &projections)?;
     write_yaml(&temp_dir.join(DIAGNOSTICS_FILENAME), &diagnostics)?;
     Ok(())
+}
+
+fn materialized_source(
+    fingerprint: Fingerprint,
+    surfaces: Vec<MaterializedSurface>,
+    projections: ProjectionCatalog,
+    diagnostics: Vec<Diagnostic>,
+) -> V4MaterializedSource {
+    V4MaterializedSource {
+        fingerprint,
+        surfaces,
+        projections,
+        parameter_metadata: ParameterMetadata::default(),
+        diagnostics,
+    }
 }
 
 struct MaterializedSurfaceBuild {
@@ -1279,6 +1322,41 @@ surfaces:
         replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
             .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+    }
+
+    #[test]
+    fn load_v4_materialization_reads_parameter_metadata_override() {
+        let (_state_temp, _descriptor_temp, layout, manifest_yaml, manifest) =
+            setup_materialization();
+        let metadata_path = layout.v4_parameter_metadata_file(&workspace_name(), &source_name());
+        std::fs::create_dir_all(metadata_path.parent().expect("metadata parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &metadata_path,
+            r"
+operation_overrides:
+  issues_list:
+    pagination:
+      mode: none
+",
+        )
+        .expect("write metadata");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("load materialization");
+
+        assert!(
+            materialized
+                .parameter_metadata
+                .operation_overrides
+                .contains_key("issues_list")
+        );
     }
 
     #[tokio::test]

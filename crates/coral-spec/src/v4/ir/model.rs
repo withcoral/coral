@@ -179,6 +179,7 @@ mod tests {
                         status_code: 200,
                         media_type: "application/json".to_string(),
                         response: crate::ResponseSpec::default(),
+                        headers: Vec::new(),
                     },
                     pagination: PaginationSpec::default(),
                 })),

@@ -34,4 +34,6 @@ pub struct RestResponseAttachment {
     pub status_code: u16,
     pub media_type: String,
     pub response: ResponseSpec,
+    #[serde(default)]
+    pub headers: Vec<String>,
 }

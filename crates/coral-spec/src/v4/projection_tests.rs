@@ -6,8 +6,16 @@ use super::naming::{pluralize, singularize};
 use super::test_support::github_openapi;
 use super::*;
 use crate::{
-    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+    ManifestDataType, PaginationMode, PaginationSpec, SourceTableFunctionKind,
+    parse_source_manifest_yaml,
 };
+
+fn rest_pagination(operation: &IrOperation) -> &PaginationSpec {
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST operation");
+    };
+    &rest.pagination
+}
 
 #[test]
 fn imports_and_generates_github_issue_slice() {
@@ -43,7 +51,11 @@ surfaces:
 }
 
 #[test]
-fn projection_generation_keeps_pagination_inputs_internal() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "The fixture keeps projection and runtime pagination assertions together."
+)]
+fn runtime_spec_generation_keeps_pagination_inputs_out_of_sql_surface() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -71,11 +83,11 @@ surfaces:
         .find(|operation| operation.id == projection.operation_id)
         .expect("repo issues operation");
 
-    assert_eq!(projection.pagination.mode, PaginationMode::Page);
-    assert_eq!(projection.pagination.page_param.as_deref(), Some("page"));
+    let pagination = rest_pagination(operation);
+    assert_eq!(pagination.mode, PaginationMode::Page);
+    assert_eq!(pagination.page_param.as_deref(), Some("page"));
     assert_eq!(
-        projection
-            .pagination
+        pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -90,10 +102,10 @@ surfaces:
     assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::Filter));
     assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::Filter));
     assert_eq!(exposures.get("state"), Some(&SqlInputExposure::Filter));
-    assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
-    assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
+    assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Filter));
+    assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Filter));
 
-    let filter_names = projection_filter_specs(projection)
+    let filter_names = projection_filter_specs_with_pagination(projection, Some(pagination))
         .into_iter()
         .map(|filter| filter.name)
         .collect::<BTreeSet<_>>();
@@ -102,7 +114,7 @@ surfaces:
         BTreeSet::from(["owner".to_string(), "repo".to_string(), "state".to_string()])
     );
 
-    let column_names = projection_column_specs(projection)
+    let column_names = projection_column_specs_with_pagination(projection, Some(pagination))
         .into_iter()
         .map(|column| column.name)
         .collect::<BTreeSet<_>>();
@@ -112,7 +124,9 @@ surfaces:
     assert!(!column_names.contains("page"));
     assert!(!column_names.contains("per_page"));
 
-    let request = request_spec_for_projection(projection, operation).expect("request");
+    let request =
+        request_spec_for_projection_with_pagination(projection, operation, Some(pagination))
+            .expect("request");
     let query_names = request
         .query
         .iter()
@@ -126,14 +140,16 @@ surfaces:
             input.sql_exposure = SqlInputExposure::Filter;
         }
     }
-    let stale_filter_names = projection_filter_specs(&stale_projection)
-        .into_iter()
-        .map(|filter| filter.name)
-        .collect::<BTreeSet<_>>();
+    let stale_filter_names =
+        projection_filter_specs_with_pagination(&stale_projection, Some(pagination))
+            .into_iter()
+            .map(|filter| filter.name)
+            .collect::<BTreeSet<_>>();
     assert_eq!(stale_filter_names, filter_names);
 
     let stale_request =
-        request_spec_for_projection(&stale_projection, operation).expect("stale request");
+        request_spec_for_projection_with_pagination(&stale_projection, operation, Some(pagination))
+            .expect("stale request");
     let stale_query_names = stale_request
         .query
         .iter()
@@ -146,7 +162,7 @@ surfaces:
             input.sql_exposure = SqlInputExposure::FunctionArg;
         }
     }
-    let stale_arg_names = projection_arg_specs(&stale_projection)
+    let stale_arg_names = projection_arg_specs_with_pagination(&stale_projection, Some(pagination))
         .into_iter()
         .map(|arg| arg.name)
         .collect::<BTreeSet<_>>();

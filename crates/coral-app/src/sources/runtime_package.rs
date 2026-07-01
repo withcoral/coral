@@ -8,10 +8,12 @@ use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
 };
 use coral_spec::v4::{
-    IrExecutionAttachment, Projection, ProjectionKind, ProjectionVisibility, SqlInputExposure,
-    SurfaceType, V4MaterializedSource, V4SourceManifest, mcp_projection_arg_specs,
-    openapi_document_metadata, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection, validate_openapi_base_url_template,
+    IrExecutionAttachment, ParameterMetadata, Projection, ProjectionKind, ProjectionVisibility,
+    SqlInputExposure, SurfaceType, V4MaterializedSource, V4SourceManifest,
+    mcp_projection_arg_specs, openapi_document_metadata, projection_arg_specs_with_pagination,
+    projection_column_specs, projection_column_specs_with_pagination, projection_filter_specs,
+    projection_filter_specs_with_pagination, request_spec_for_projection_with_pagination,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     PaginationSpec, ParsedTemplate, RequestSpec, ResponseSpec, SourceManifestCommon,
@@ -107,44 +109,13 @@ fn http_manifest_for_surface(
                     projection.name, projection.operation_id
                 ))
             })?;
-        let request = request_spec_for_projection(projection, operation)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        let columns = projection_column_specs(projection);
-        match &projection.kind {
-            ProjectionKind::Table => {
-                tables.push(HttpTableSpec {
-                    common: TableCommon {
-                        name: projection.name.clone(),
-                        description: projection.description.clone(),
-                        guide: projection.guide.clone(),
-                        filters: projection_filter_specs(projection),
-                        fetch_limit_default: None,
-                        search_limits: projection.search_limits.clone(),
-                        detail_hints: projection.detail_hints.clone(),
-                        columns,
-                    },
-                    request,
-                    requests: Vec::new(),
-                    response: rest_response_for_operation(operation)?,
-                    pagination: projection.pagination.clone(),
-                });
-            }
-            ProjectionKind::TableFunction { function_kind } => {
-                functions.push(SourceTableFunctionSpec {
-                    name: projection.name.clone(),
-                    kind: *function_kind,
-                    description: projection.description.clone(),
-                    fetch_limit_default: None,
-                    search_limits: projection.search_limits.clone(),
-                    detail_hints: projection.detail_hints.clone(),
-                    args: projection_arg_specs(projection),
-                    request,
-                    response: rest_response_for_operation(operation)?,
-                    pagination: projection.pagination.clone(),
-                    columns,
-                });
-            }
-        }
+        push_http_projection(
+            &mut tables,
+            &mut functions,
+            projection,
+            operation,
+            &materialized.parameter_metadata,
+        )?;
     }
     Ok(HttpSourceManifest {
         common: SourceManifestCommon {
@@ -162,6 +133,56 @@ fn http_manifest_for_surface(
         functions,
         declared_inputs: manifest.declared_inputs.clone(),
     })
+}
+
+fn push_http_projection(
+    tables: &mut Vec<HttpTableSpec>,
+    functions: &mut Vec<SourceTableFunctionSpec>,
+    projection: &Projection,
+    operation: &coral_spec::v4::IrOperation,
+    parameter_metadata: &ParameterMetadata,
+) -> Result<(), AppError> {
+    let pagination = parameter_metadata.effective_pagination_for_operation(operation);
+    let request =
+        request_spec_for_projection_with_pagination(projection, operation, Some(&pagination))
+            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+    let columns = projection_column_specs_with_pagination(projection, Some(&pagination));
+    match &projection.kind {
+        ProjectionKind::Table => {
+            tables.push(HttpTableSpec {
+                common: TableCommon {
+                    name: projection.name.clone(),
+                    description: projection.description.clone(),
+                    guide: projection.guide.clone(),
+                    filters: projection_filter_specs_with_pagination(projection, Some(&pagination)),
+                    fetch_limit_default: None,
+                    search_limits: projection.search_limits.clone(),
+                    detail_hints: projection.detail_hints.clone(),
+                    columns,
+                },
+                request,
+                requests: Vec::new(),
+                response: rest_response_for_operation(operation)?,
+                pagination,
+            });
+        }
+        ProjectionKind::TableFunction { function_kind } => {
+            functions.push(SourceTableFunctionSpec {
+                name: projection.name.clone(),
+                kind: *function_kind,
+                description: projection.description.clone(),
+                fetch_limit_default: None,
+                search_limits: projection.search_limits.clone(),
+                detail_hints: projection.detail_hints.clone(),
+                args: projection_arg_specs_with_pagination(projection, Some(&pagination)),
+                request,
+                response: rest_response_for_operation(operation)?,
+                pagination,
+                columns,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn rest_response_for_operation(
@@ -401,11 +422,13 @@ mod tests {
     use coral_spec::v4::{
         Fingerprint, IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
         MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
-        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog,
-        ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION, SemanticIr,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface,
+        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, ParameterMetadata, Projection,
+        ProjectionCatalog, ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION,
+        SemanticIr, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface, generate_projection_catalog, import_openapi_surface,
     };
+    use coral_spec::{PaginationMode, parse_source_manifest_yaml};
 
     use super::{runtime_components_for_v4_source, surface_base_url};
 
@@ -550,7 +573,6 @@ mod tests {
             visibility: ProjectionVisibility::Published,
             inputs: Vec::new(),
             columns: Vec::new(),
-            pagination: coral_spec::PaginationSpec::default(),
             search_limits: None,
             detail_hints: Vec::new(),
             diagnostics: Vec::new(),
@@ -595,6 +617,7 @@ mod tests {
                 ],
                 diagnostics: Vec::new(),
             },
+            parameter_metadata: ParameterMetadata::default(),
             diagnostics: Vec::new(),
         };
 
@@ -651,6 +674,7 @@ mod tests {
                 )],
                 diagnostics: Vec::new(),
             },
+            parameter_metadata: ParameterMetadata::default(),
             diagnostics: Vec::new(),
         };
 
@@ -715,6 +739,7 @@ mod tests {
                 )],
                 diagnostics: Vec::new(),
             },
+            parameter_metadata: ParameterMetadata::default(),
             diagnostics: Vec::new(),
         };
 
@@ -733,6 +758,128 @@ mod tests {
                 .offset_pagination
                 .as_ref(),
             Some(&offset_pagination)
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The fixture keeps OpenAPI import and runtime override assertions together."
+    )]
+    fn http_runtime_component_applies_parameter_metadata_pagination() {
+        let manifest = parse_source_manifest_yaml(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+        )
+        .expect("manifest");
+        let v4 = manifest.as_v4().expect("v4");
+        let surface = v4.surfaces.first().expect("surface");
+        let ir = import_openapi_surface(
+            v4,
+            surface,
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: list-items
+      parameters:
+        - {name: category, in: query, schema: {type: string}}
+        - {name: page_number, in: query, schema: {type: integer}}
+        - {name: per_page, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+"
+            .as_bytes(),
+        )
+        .expect("import");
+        let projections =
+            generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("projections");
+        let parameter_metadata: ParameterMetadata = serde_yaml::from_str(
+            r"
+pagination:
+  - name: custom_page
+    mode: page
+    page_param: page_number
+    page_size:
+      default: 50
+      max: 100
+      query_param: per_page
+",
+        )
+        .expect("metadata");
+        let materialized = V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![MaterializedSurface {
+                surface_id: "rest".to_string(),
+                semantic_ir: ir,
+                source_document_sha256: String::new(),
+                normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
+                raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
+            }],
+            projections,
+            parameter_metadata,
+            diagnostics: Vec::new(),
+        };
+
+        let components =
+            runtime_components_for_v4_source(v4, &materialized).expect("runtime components");
+        let coral_engine::RuntimeSourceComponent::Http(http) =
+            components.first().expect("http component")
+        else {
+            panic!("expected HTTP component");
+        };
+        let table = http.tables.first().expect("table");
+
+        assert_eq!(table.pagination.mode, PaginationMode::Page);
+        assert_eq!(table.pagination.page_param.as_deref(), Some("page_number"));
+        assert_eq!(
+            table
+                .pagination
+                .page_size
+                .as_ref()
+                .map(|page_size| page_size.default),
+            Some(50)
+        );
+        assert_eq!(
+            table
+                .common
+                .filters
+                .iter()
+                .map(|filter| filter.name.as_str())
+                .collect::<Vec<_>>(),
+            ["category"]
+        );
+        assert_eq!(
+            table
+                .request
+                .query
+                .iter()
+                .map(|query| query.name.as_str())
+                .collect::<Vec<_>>(),
+            ["category"]
         );
     }
 

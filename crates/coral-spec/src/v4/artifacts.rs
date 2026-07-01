@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::SemanticIr;
 use crate::v4::manifest::{SurfaceType, V4SourceManifest};
+use crate::v4::parameter_metadata::ParameterMetadata;
 use crate::v4::projections::ProjectionCatalog;
 use crate::v4::{
     PROJECTION_GENERATOR_VERSION, SURFACE_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION,
@@ -17,6 +18,8 @@ pub struct V4MaterializedSource {
     pub fingerprint: Fingerprint,
     pub surfaces: Vec<MaterializedSurface>,
     pub projections: ProjectionCatalog,
+    #[serde(default)]
+    pub parameter_metadata: ParameterMetadata,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -134,7 +137,8 @@ mod tests {
     use crate::v4::projections::ProjectionCatalog;
     use crate::v4::{
         MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-        SURFACE_IMPORTER_VERSION, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4SourceManifest,
+        ParameterMetadata, SURFACE_IMPORTER_VERSION, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
+        V4SourceManifest,
     };
 
     use super::{
@@ -189,6 +193,7 @@ surfaces:
                 projections: Vec::new(),
                 diagnostics: Vec::new(),
             },
+            parameter_metadata: ParameterMetadata::default(),
             diagnostics: Vec::new(),
         }
     }

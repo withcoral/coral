@@ -20,7 +20,6 @@ use super::model::{
 use super::names::{
     is_search_operation, projection_guide, projection_name, resolve_projection_name_collisions,
 };
-use super::pagination::pagination_query_param_names;
 
 pub fn generate_projection_catalog(
     manifest: &V4SourceManifest,
@@ -75,7 +74,6 @@ fn generate_projection(
         SqlInputExposure::FunctionArg
     };
     let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
-    let pagination_query_params = pagination_query_param_names(&pagination);
     let mut used_input_names = HashSet::new();
     let use_sql_input_normalization = matches!(operation.execution, IrExecutionAttachment::Mcp(_));
     let inputs = operation
@@ -84,7 +82,7 @@ fn generate_projection(
         .map(|input| {
             let (exposure, pagination_owned_input) = match &operation.execution {
                 IrExecutionAttachment::Rest(_) => {
-                    projection_input_sql_exposure(input, sql_exposure, &pagination_query_params)
+                    (projection_input_sql_exposure(input, sql_exposure), false)
                 }
                 IrExecutionAttachment::Mcp(mcp) if mcp_pagination_owns_input(mcp, input) => {
                     (SqlInputExposure::Internal, true)
@@ -133,7 +131,6 @@ fn generate_projection(
         visibility,
         inputs,
         columns,
-        pagination,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
@@ -221,20 +218,15 @@ fn projection_input_required(input: &IrOperationInput) -> bool {
 fn projection_input_sql_exposure(
     input: &IrOperationInput,
     default_exposure: SqlInputExposure,
-    pagination_query_params: &HashSet<&str>,
-) -> (SqlInputExposure, bool) {
-    let pagination_owned_query_input = input.location == IrInputLocation::Query
-        && pagination_query_params.contains(input.name.as_str());
-    let exposure = match input.location {
-        IrInputLocation::Query if pagination_owned_query_input => SqlInputExposure::Internal,
+) -> SqlInputExposure {
+    match input.location {
         IrInputLocation::Path | IrInputLocation::Query | IrInputLocation::ToolArg => {
             default_exposure
         }
         IrInputLocation::Header | IrInputLocation::Cookie | IrInputLocation::Body => {
             SqlInputExposure::Internal
         }
-    };
-    (exposure, pagination_owned_query_input)
+    }
 }
 
 fn mcp_pagination_owns_input(

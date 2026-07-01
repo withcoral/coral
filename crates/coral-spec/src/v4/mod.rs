@@ -5,15 +5,16 @@
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v1";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v3";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v4";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v1";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v6";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v7";
 
 mod artifacts;
 mod diagnostics;
 mod ir;
 mod manifest;
 mod naming;
+mod parameter_metadata;
 mod projections;
 mod schema;
 mod surfaces;
@@ -43,11 +44,16 @@ pub use manifest::{
     V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
+pub use parameter_metadata::{
+    NamedPaginationSpec, OperationParameterMetadata, PaginationMatch, ParameterMetadata,
+};
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
     ProjectionVisibility, SqlInputExposure, generate_projection_catalog, manifest_data_type_name,
-    mcp_projection_arg_specs, projection_arg_specs, projection_column_specs,
-    projection_filter_specs, request_spec_for_projection,
+    mcp_projection_arg_specs, projection_arg_specs, projection_arg_specs_with_pagination,
+    projection_column_specs, projection_column_specs_with_pagination, projection_filter_specs,
+    projection_filter_specs_with_pagination, request_spec_for_projection,
+    request_spec_for_projection_with_pagination,
 };
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{
