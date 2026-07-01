@@ -232,6 +232,7 @@ impl SourceManager {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -561,10 +562,6 @@ impl SourceManager {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Delete keeps filesystem, credential, config, and DB rollback ordering together."
-    )]
     pub(crate) fn delete_source(
         &self,
         workspace_name: &WorkspaceName,
@@ -1017,6 +1014,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
         if let Some(db) = self.catalog_db.clone() {
+            self.require_workspace_with_state_lock_held(workspace_name)?;
             let workspace_name = workspace_name.clone();
             return run_db_catalog_operation(async move {
                 let mut session = db.as_ref();
@@ -1048,6 +1046,7 @@ impl SourceManager {
         source_name: &SourceName,
     ) -> Result<Option<InstalledSource>, AppError> {
         if let Some(db) = self.catalog_db.clone() {
+            self.require_workspace_with_state_lock_held(workspace_name)?;
             let workspace_name = workspace_name.clone();
             let source_name = source_name.clone();
             return run_db_catalog_operation(async move {
@@ -1063,6 +1062,15 @@ impl SourceManager {
             .config_store
             .load_catalog_unlocked()?
             .get_source(workspace_name, source_name))
+    }
+
+    fn require_workspace_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(), AppError> {
+        self.config_store
+            .load_config_unlocked()?
+            .require_workspace(workspace_name)
     }
 
     fn upsert_source_with_state_lock_held(

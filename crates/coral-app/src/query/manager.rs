@@ -320,6 +320,7 @@ impl QueryManager {
     ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
+        config.require_workspace(workspace_name)?;
         let installed_sources = self.installed_sources(workspace_name, &config).await?;
         let sources = self.load_query_sources_from_installed(workspace_name, installed_sources)?;
         Ok((sources, config))
@@ -370,7 +371,6 @@ impl QueryManager {
         );
         span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
         let _guard = span.enter();
-        config.require_workspace(workspace_name)?;
         let mut loaded_sources = Vec::new();
         for source in installed_sources {
             match self.load_query_source(workspace_name, &source) {
@@ -846,19 +846,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_missing_workspace() {
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_missing_workspace() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
-        let config = fixture
-            .manager
-            .config_store
-            .load_config()
-            .expect("load config");
 
         let error = fixture
             .manager
-            .load_query_sources_from_config(&missing_workspace, &config)
+            .load_query_sources(&missing_workspace)
+            .await
             .expect_err("missing workspace should fail closed");
 
         assert_workspace_not_found(error, &missing_workspace);

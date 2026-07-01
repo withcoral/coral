@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
-use tracing::{info_span, warn};
+use tracing::warn;
 
 use crate::bootstrap::AppError;
 use crate::credentials::CredentialStorageKind;
@@ -489,13 +489,6 @@ impl ConfigStore {
         self.load_config_unlocked().map(|config| config.catalog)
     }
 
-    pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
-        let span = info_span!("coral.app.config.load_catalog");
-        let _guard = span.enter();
-        let _lock = self.state_lock_shared()?;
-        self.load_catalog_unlocked()
-    }
-
     fn update_config_unlocked<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -569,6 +562,7 @@ impl ConfigStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
@@ -589,20 +583,6 @@ impl ConfigStore {
             .into_iter()
             .map(|source| source.name.as_str().to_string())
             .collect())
-    }
-
-    /// Loads one installed source without taking the app state lock.
-    ///
-    /// Callers must already hold the state lock while using source artifacts
-    /// associated with the returned config entry.
-    pub(crate) fn get_source_unlocked(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<InstalledSource, AppError> {
-        self.load_catalog_unlocked()?
-            .get_source(workspace_name, source_name)
-            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
     pub(crate) fn get_source(

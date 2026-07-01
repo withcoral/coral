@@ -232,6 +232,9 @@ mod tests {
         let db_source = source("github", None, [], [], None, SourceOrigin::Bundled);
         let config_source = source("slack", None, [], [], None, SourceOrigin::Bundled);
         config_store
+            .create_workspace(&config_workspace)
+            .expect("create config workspace");
+        config_store
             .upsert_source(&config_workspace, config_source.clone())
             .expect("write config source");
         let db = open_sqlite(&layout).await;
