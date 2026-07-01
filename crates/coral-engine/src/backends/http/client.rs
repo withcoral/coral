@@ -99,6 +99,7 @@ pub(super) fn default_http_client(
         .default_http_client(|| {
             reqwest::Client::builder()
                 .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
+                .redirect(source_redirect_policy())
                 .user_agent(DEFAULT_HTTP_USER_AGENT)
                 .build()
                 .map_err(|error| error.to_string())
@@ -108,6 +109,30 @@ pub(super) fn default_http_client(
                 "failed to build HTTP client for source '{source_name}': {error}"
             ))
         })
+}
+
+fn source_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error(std::io::Error::other("too many redirects"));
+        }
+        let Some(previous) = attempt.previous().last() else {
+            return attempt.follow();
+        };
+        if same_origin(previous, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.error(std::io::Error::other(
+                "cross-origin redirects are disabled for source HTTP requests",
+            ))
+        }
+    })
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 impl HttpSourceClient {

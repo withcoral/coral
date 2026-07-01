@@ -44,6 +44,7 @@
 /// Bootstrap entrypoints and local server assembly.
 pub mod bootstrap;
 mod catalog;
+mod credential_transport;
 mod credentials;
 mod episode;
 pub mod features;
