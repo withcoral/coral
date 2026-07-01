@@ -257,6 +257,9 @@ postgres-tests: $(POSTGRES_TESTS_PREREQS)
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
 	  contract_on_postgres \
 	  -- --ignored; \
+	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app --lib \
+	  state::db::migrations::tests::source_catalog_migration_contract_against_postgres \
+	  -- --ignored; \
 	CORAL_TEST_POSTGRES_URL="$$url" cargo test --locked -p coral-app \
 	  --test postgres_database_tests \
 	  -- --ignored; \
