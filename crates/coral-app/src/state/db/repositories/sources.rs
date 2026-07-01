@@ -6,7 +6,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::{CoralTx, DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -93,39 +93,6 @@ where
             .map(Some)
     }
 
-    pub(crate) async fn upsert_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source: &InstalledSource,
-        now_unix_nanos: i64,
-    ) -> Result<(), DbError> {
-        let created_at_unix_nanos = self
-            .source_created_at(workspace_name, &source.name)
-            .await?
-            .unwrap_or(now_unix_nanos);
-        self.delete_source_rows(workspace_name, &source.name)
-            .await?;
-        self.insert_source(
-            workspace_name,
-            source,
-            created_at_unix_nanos,
-            now_unix_nanos,
-        )
-        .await?;
-        self.insert_source_variables(workspace_name, source).await?;
-        self.insert_source_secret_keys(workspace_name, source).await
-    }
-
-    pub(crate) async fn remove_source(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<InstalledSource>, DbError> {
-        let removed = self.get_source(workspace_name, source_name).await?;
-        self.delete_source_rows(workspace_name, source_name).await?;
-        Ok(removed)
-    }
-
     async fn source_row(
         &mut self,
         workspace_name: &WorkspaceName,
@@ -143,21 +110,6 @@ where
             .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
             .to_owned();
         self.session.fetch_optional(statement).await
-    }
-
-    async fn source_created_at(
-        &mut self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Result<Option<i64>, DbError> {
-        let statement = Query::select()
-            .column(Sources::CreatedAtUnixNanos)
-            .from(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        let row: Option<SourceCreatedAtRow> = self.session.fetch_optional(statement).await?;
-        Ok(row.map(|row| row.created_at_unix_nanos))
     }
 
     async fn installed_source_from_row(
@@ -220,6 +172,56 @@ where
             .order_by(SourceSecretKeys::Position, Order::Asc)
             .to_owned();
         self.session.fetch_all(statement).await
+    }
+}
+
+impl<'a> SourcesRepo<'a, CoralTx<'_>> {
+    pub(crate) async fn upsert_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        now_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        let created_at_unix_nanos = self
+            .source_created_at(workspace_name, &source.name)
+            .await?
+            .unwrap_or(now_unix_nanos);
+        self.delete_source_rows(workspace_name, &source.name)
+            .await?;
+        self.insert_source(
+            workspace_name,
+            source,
+            created_at_unix_nanos,
+            now_unix_nanos,
+        )
+        .await?;
+        self.insert_source_variables(workspace_name, source).await?;
+        self.insert_source_secret_keys(workspace_name, source).await
+    }
+
+    pub(crate) async fn remove_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, DbError> {
+        let removed = self.get_source(workspace_name, source_name).await?;
+        self.delete_source_rows(workspace_name, source_name).await?;
+        Ok(removed)
+    }
+
+    async fn source_created_at(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<i64>, DbError> {
+        let statement = Query::select()
+            .column(Sources::CreatedAtUnixNanos)
+            .from(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
+            .to_owned();
+        let row: Option<SourceCreatedAtRow> = self.session.fetch_optional(statement).await?;
+        Ok(row.map(|row| row.created_at_unix_nanos))
     }
 
     async fn insert_source(
@@ -491,7 +493,15 @@ mod tests {
         assert_eq!(get_source(db, &workspace, &rolled_back.name).await, None);
 
         let zeta_name = zeta.name.clone();
-        assert_eq!(remove_source(db, &workspace, &zeta_name).await, Some(zeta));
+        let mut tx = db.begin().await.expect("begin remove tx");
+        assert_eq!(
+            tx.sources()
+                .remove_source(&workspace, &zeta_name)
+                .await
+                .expect("remove source"),
+            Some(zeta)
+        );
+        tx.commit().await.expect("commit remove");
         assert_eq!(get_source(db, &workspace, &zeta_name).await, None);
     }
 
@@ -524,19 +534,6 @@ mod tests {
             .get_source(workspace, source_name)
             .await
             .expect("get source")
-    }
-
-    async fn remove_source(
-        db: &CoralDb,
-        workspace: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> Option<InstalledSource> {
-        let mut session = db;
-        session
-            .sources()
-            .remove_source(workspace, source_name)
-            .await
-            .expect("remove source")
     }
 
     fn source<const VARIABLES: usize, const SECRETS: usize>(
