@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
@@ -54,11 +55,25 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
-use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
+use crate::state::db::{
+    CoralDb, DatabaseConfig, ResolvedDatabaseConfig, import_config_source_catalog,
+};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
+
+fn now_unix_nanos_i64() -> Result<i64, AppError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "system clock timestamp exceeds i64 nanoseconds: {error}"
+        ))
+    })
+}
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -267,6 +282,8 @@ impl ServerBuilder {
         };
         let coral_db = CoralDb::open(database_config).await?;
         coral_db.migrate().await?;
+        let config_store = ConfigStore::new(layout.clone());
+        import_config_source_catalog(&coral_db, &config_store, now_unix_nanos_i64()?).await?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -283,7 +300,6 @@ impl ServerBuilder {
             .then_some(installed_trace_store)
             .flatten();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        let config_store = ConfigStore::new(layout.clone());
         let credential_config = CredentialStorageConfig::load(&layout)?;
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
@@ -690,6 +706,7 @@ mod tests {
     )]
 
     use std::borrow::Cow;
+    use std::collections::BTreeMap;
     use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
     use std::sync::Arc;
@@ -717,7 +734,10 @@ mod tests {
     use crate::episode::store::EpisodeStore;
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
+    use crate::sources::SourceName;
     use crate::sources::manager::SourceManager;
+    use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
@@ -815,6 +835,56 @@ enabled = false
             "intent should be persisted"
         );
         server.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn startup_imports_legacy_config_source_catalog_into_database() {
+        let temp = TempDir::new().expect("temp dir");
+        let config_dir = temp.path().join("coral-config");
+        let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
+        layout.ensure().expect("layout dirs");
+        disable_internal_tracing(&config_dir);
+
+        let workspace = WorkspaceName::default();
+        let source = InstalledSource {
+            name: SourceName::parse("github").expect("source name"),
+            version: Some("1.2.3".to_string()),
+            variables: BTreeMap::from([(
+                "GITHUB_API_BASE".to_string(),
+                "https://api.github.com".to_string(),
+            )]),
+            secrets: vec!["GITHUB_TOKEN".to_string()],
+            credential_storage: None,
+            origin: SourceOrigin::Bundled,
+        };
+        ConfigStore::new(layout.clone())
+            .upsert_source(&workspace, source.clone())
+            .expect("seed legacy config source");
+
+        let server = ServerBuilder::new()
+            .with_config_dir(config_dir)
+            .start()
+            .await
+            .expect("start server");
+        server.shutdown().await.expect("shutdown");
+
+        let DatabaseConfig::Sqlite { path } =
+            DatabaseConfig::load(&layout).expect("load database config")
+        else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get imported source"),
+            Some(source)
+        );
     }
 
     #[tokio::test]
