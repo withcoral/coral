@@ -7,7 +7,7 @@
     "CountSubquery": 10,
     "ExistsSubquery": 13,
     "GraphMetadata": 19,
-    "ListExpressions": 36,
+    "ListExpressions": 40,
     "LiteralExpressions": 15,
     "MapExpressions": 19,
     "Match": 27,
@@ -9341,6 +9341,67 @@
           {
             "different_after_null": false,
             "not_different_after_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "reduce-null-propagation",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name, reduce(total = 0, x IN [1, null, 3] | total + x) AS null_element_total, reduce(total = null, x IN [1, 2] | total + x) AS null_seed_total",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "reduce-empty-source-keeps-seed",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN reduce(total = 10, x IN range(1, 0) | total + x) AS empty_total, reduce(seen = false, x IN range(1, 0) | true) AS empty_seen",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "empty_total": 10,
+            "empty_seen": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-source-list-comprehension",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN [x IN range(1, 0) | x + 1] AS shifted_empty, [city IN split('', ',') WHERE city = 'London' | city] AS no_matching_city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "shifted_empty": [],
+            "no_matching_city": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-and-reversed-slice-reducers",
+      "feature": "ListExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN size([1, 2, 3][2..2]) AS zero_width_size, isEmpty([1, 2, 3][2..2]) AS zero_width_empty, size([1, 2, 3][2..1]) AS reversed_size, coalesce(head([1, 2, 3][2..1]), -1) AS reversed_head_or_missing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "zero_width_size": 0,
+            "zero_width_empty": true,
+            "reversed_size": 0,
+            "reversed_head_or_missing": -1
           }
         ]
       }

@@ -149,7 +149,7 @@ Live-source tests are intentionally excluded from product validation.
 The `Virtual Graph Core` workflow currently enforces two executable
 compatibility baseline gates:
 
-- `coral-opencypher-read-baseline`: 537 openCypher-style read scenarios with
+- `coral-opencypher-read-baseline`: 541 openCypher-style read scenarios with
   declared feature floors.
 - `coral-graphql-read-baseline`: 86 GraphQL read-adapter scenarios with declared
   feature floors.
@@ -163,5 +163,5 @@ the pinned upstream openCypher `2024.3` TCK feature tree and classifies scenario
 definitions into Coral's read-only product scope. That inventory is a backlog
 and credibility gate, not an execution claim: it currently reports 1,615
 upstream scenario definitions, 1,294 read-candidate scenario definitions after
-excluding mutations and procedure calls, and a 537-scenario Coral curated
+excluding mutations and procedure calls, and a 541-scenario Coral curated
 baseline.
