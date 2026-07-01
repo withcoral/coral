@@ -2,7 +2,7 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 9,
+    "Aggregation": 13,
     "BooleanFilters": 6,
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
@@ -684,6 +684,54 @@
             "oldest": 41
           }
         ]
+      }
+    },
+    {
+      "id": "aggregate-count-empty-set",
+      "feature": "Aggregation",
+      "query": "query { Person(where: { age: { gt: 100 } }) { total: _count } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "total": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-sum-empty-set",
+      "feature": "Aggregation",
+      "query": "query { Person(where: { age: { gt: 100 } }) { sum: _sum(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {}
+        ]
+      }
+    },
+    {
+      "id": "aggregate-min-empty-set",
+      "feature": "Aggregation",
+      "query": "query { Person(where: { age: { gt: 100 } }) { m: _min(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {}
+        ]
+      }
+    },
+    {
+      "id": "aggregate-grouped-empty-set",
+      "feature": "Aggregation",
+      "query": "query { Person(where: { age: { gt: 100 } }, orderBy: [{ field: city, direction: ASC }]) { city people: _count } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
       }
     },
     {
