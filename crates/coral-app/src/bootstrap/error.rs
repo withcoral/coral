@@ -10,6 +10,7 @@ use tonic::{Code, Status};
 use tonic_types::{ErrorDetail, StatusExt as _};
 
 use crate::credentials::CredentialsError;
+use crate::state::db::DbError;
 
 /// Errors surfaced by the local application layer.
 #[derive(Debug, thiserror::Error)]
@@ -72,9 +73,30 @@ pub enum AppError {
     /// Credential material access failed.
     #[error(transparent)]
     Credentials(#[from] CredentialsError),
+    /// Durable app-state database access failed.
+    #[error("database error: {0}")]
+    Database(String),
     /// The Coral config directory could not be discovered from defaults.
     #[error("failed to determine Coral config directory")]
     MissingConfigDir,
+}
+
+impl From<DbError> for AppError {
+    fn from(error: DbError) -> Self {
+        match error {
+            DbError::Config(detail) => {
+                Self::FailedPrecondition(format!("database configuration is invalid: {detail}"))
+            }
+            DbError::MissingDatabaseParent(path) => Self::FailedPrecondition(format!(
+                "database file parent directory is missing for {}",
+                path.display()
+            )),
+            DbError::Io(error) => Self::Io(error),
+            DbError::TomlDecode(error) => Self::TomlDecode(error),
+            DbError::Sqlx(error) => Self::Database(error.to_string()),
+            DbError::Migration(error) => Self::Database(error.to_string()),
+        }
+    }
 }
 
 /// Upper bound on the byte length of a `tonic::Status` message (detail).
@@ -221,7 +243,8 @@ fn app_code(error: &AppError) -> Code {
         | AppError::Json(_)
         | AppError::Transport(_)
         | AppError::TaskJoin(_)
-        | AppError::Credentials(_) => Code::Internal,
+        | AppError::Credentials(_)
+        | AppError::Database(_) => Code::Internal,
     }
 }
 

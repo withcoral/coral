@@ -678,6 +678,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::Transport(_) => "TRANSPORT",
         AppError::TaskJoin(_) => "TASK_JOIN",
         AppError::Credentials(_) => "CREDENTIALS",
+        AppError::Database(_) => "DATABASE",
         AppError::MissingConfigDir => "MISSING_CONFIG_DIR",
     }
 }
