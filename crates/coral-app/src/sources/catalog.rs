@@ -4,12 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use coral_spec::backends::file::{FileObjectStoreSpec, S3AuthSpec};
 use coral_spec::{
-    AuthSpec, BodySpec, HeaderSpec, ManifestInputKind, McpServerSpec, ParsedTemplate,
-    TemplateNamespace, ValidatedSourceManifest, ValueSourceSpec, parse_source_manifest_yaml,
+    AuthSpec, BodySpec, HeaderSpec, ManifestCredentialMethodKind, ManifestInputKind,
+    ManifestInputSpec, McpServerSpec, ParsedTemplate, TemplateNamespace, TemplatePart,
+    ValidatedSourceManifest, ValueSourceSpec, parse_source_manifest_yaml,
 };
 use serde_json::Value as JsonValue;
 
 use crate::bootstrap::AppError;
+use crate::credential_transport::validate_credential_endpoint_transport;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
@@ -136,6 +138,20 @@ pub(crate) fn describe_manifest(
 
 pub(crate) fn validate_imported_manifest_database_persistence(
     manifest_yaml: &str,
+    source_variables: &BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    validate_imported_manifest_database_persistence_inner(manifest_yaml, Some(source_variables))
+}
+
+pub(crate) fn validate_imported_manifest_database_persistence_shape(
+    manifest_yaml: &str,
+) -> Result<(), AppError> {
+    validate_imported_manifest_database_persistence_inner(manifest_yaml, None)
+}
+
+fn validate_imported_manifest_database_persistence_inner(
+    manifest_yaml: &str,
+    source_variables: Option<&BTreeMap<String, String>>,
 ) -> Result<(), AppError> {
     let manifest = parse_source_manifest_yaml(manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;
@@ -146,33 +162,11 @@ pub(crate) fn validate_imported_manifest_database_persistence(
         .collect::<BTreeMap<_, _>>();
 
     if let Some(http) = manifest.as_http() {
-        validate_http_auth_spec_for_database_persistence(&input_kinds, "auth", &http.auth)?;
-        validate_headers_for_database_persistence(
-            &input_kinds,
-            "request_headers",
-            &http.request_headers,
-        )?;
-        for table in &http.tables {
-            validate_request_headers_for_database_persistence(
-                &input_kinds,
-                &format!("table '{}'", table.name()),
-                &table.request,
-            )?;
-            for route in &table.requests {
-                validate_request_headers_for_database_persistence(
-                    &input_kinds,
-                    &format!("table '{}' request route", table.name()),
-                    &route.request,
-                )?;
-            }
-        }
-        for function in &http.functions {
-            validate_request_headers_for_database_persistence(
-                &input_kinds,
-                &format!("function '{}'", function.name),
-                &function.request,
-            )?;
-        }
+        validate_http_source_for_database_persistence(&input_kinds, source_variables, http)?;
+    }
+
+    if let Some(source_variables) = source_variables {
+        validate_oauth_endpoint_transports(manifest.declared_inputs(), source_variables)?;
     }
 
     if let Some(file) = manifest.as_file() {
@@ -190,35 +184,104 @@ pub(crate) fn validate_imported_manifest_database_persistence(
     }
 
     if let Some(v4) = manifest.as_v4() {
-        match &v4.surface.runtime {
-            coral_spec::v4::SurfaceRuntimeConfig::OpenApi(runtime) => {
-                validate_http_auth_spec_for_database_persistence(
-                    &input_kinds,
-                    "surface auth",
-                    &runtime.auth,
-                )?;
-                validate_headers_for_database_persistence(
-                    &input_kinds,
-                    "surface request_headers",
-                    &runtime.request_headers,
-                )?;
-            }
-            coral_spec::v4::SurfaceRuntimeConfig::Mcp(runtime) => {
-                validate_mcp_server_for_database_persistence(
-                    &input_kinds,
-                    "surface server",
-                    &runtime.server,
-                )?;
-            }
-            coral_spec::v4::SurfaceRuntimeConfig::Database(_) => {
-                // Database surfaces carry their credentials in the connection
-                // spec, which the database connection layer validates on its
-                // own. There is no surface auth/header/base_url transport to
-                // guard for imported-manifest persistence here.
-            }
-        }
+        validate_v4_source_for_database_persistence(&input_kinds, source_variables, v4)?;
     }
 
+    Ok(())
+}
+
+fn validate_http_source_for_database_persistence(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    source_variables: Option<&BTreeMap<String, String>>,
+    http: &coral_spec::backends::http::HttpSourceManifest,
+) -> Result<(), AppError> {
+    let mut needs_transport_guard =
+        validate_http_auth_spec_for_database_persistence(input_kinds, "auth", &http.auth)?;
+    needs_transport_guard |= validate_headers_for_database_persistence(
+        input_kinds,
+        "request_headers",
+        &http.request_headers,
+    )?;
+    for table in &http.tables {
+        needs_transport_guard |= validate_request_headers_for_database_persistence(
+            input_kinds,
+            &format!("table '{}'", table.name()),
+            &table.request,
+        )?;
+        for route in &table.requests {
+            needs_transport_guard |= validate_request_headers_for_database_persistence(
+                input_kinds,
+                &format!("table '{}' request route", table.name()),
+                &route.request,
+            )?;
+        }
+    }
+    for function in &http.functions {
+        needs_transport_guard |= validate_request_headers_for_database_persistence(
+            input_kinds,
+            &format!("function '{}'", function.name),
+            &function.request,
+        )?;
+    }
+    needs_transport_guard |= template_references_secret_input(input_kinds, &http.base_url);
+    if let Some(source_variables) = source_variables
+        && needs_transport_guard
+    {
+        validate_endpoint_template_transport(
+            input_kinds,
+            source_variables,
+            "base_url",
+            &http.base_url,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_v4_source_for_database_persistence(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    source_variables: Option<&BTreeMap<String, String>>,
+    v4: &coral_spec::v4::V4SourceManifest,
+) -> Result<(), AppError> {
+    match &v4.surface.runtime {
+        coral_spec::v4::SurfaceRuntimeConfig::OpenApi(runtime) => {
+            let mut needs_transport_guard = validate_http_auth_spec_for_database_persistence(
+                input_kinds,
+                "surface auth",
+                &runtime.auth,
+            )?;
+            needs_transport_guard |= validate_headers_for_database_persistence(
+                input_kinds,
+                "surface request_headers",
+                &runtime.request_headers,
+            )?;
+            needs_transport_guard |=
+                template_references_secret_input(input_kinds, &runtime.base_url);
+            if let Some(source_variables) = source_variables
+                && needs_transport_guard
+                && !runtime.base_url.is_empty()
+            {
+                validate_endpoint_template_transport(
+                    input_kinds,
+                    source_variables,
+                    "surface base_url",
+                    &runtime.base_url,
+                )?;
+            }
+        }
+        coral_spec::v4::SurfaceRuntimeConfig::Database(_) => {
+            // Database surfaces carry their credentials in the connection
+            // spec, which the database connection layer validates on its
+            // own. There is no surface auth/header/base_url transport to
+            // guard for imported-manifest persistence here.
+        }
+        coral_spec::v4::SurfaceRuntimeConfig::Mcp(runtime) => {
+            validate_mcp_server_for_database_persistence(
+                input_kinds,
+                "surface server",
+                &runtime.server,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -242,8 +305,8 @@ fn validate_http_auth_spec_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     auth: &AuthSpec,
-) -> Result<(), AppError> {
-    match auth {
+) -> Result<bool, AppError> {
+    let needs_transport_guard = match auth {
         AuthSpec::BasicAuth(basic) => {
             if basic_auth_username_needs_secret(&basic.username) {
                 validate_secret_template_for_database_persistence(
@@ -257,22 +320,31 @@ fn validate_http_auth_spec_for_database_persistence(
                 &format!("{context}.password"),
                 &basic.password,
             )?;
+            true
         }
         AuthSpec::HeaderAuth(header_auth) => {
-            validate_headers_for_database_persistence(input_kinds, context, &header_auth.headers)?;
+            validate_headers_for_database_persistence(input_kinds, context, &header_auth.headers)?
         }
         AuthSpec::CustomAuth(custom) => {
+            let mut found = false;
             for (key, value) in &custom.config {
-                validate_custom_auth_value_for_database_persistence(
+                found |= validate_custom_auth_value_for_database_persistence(
                     input_kinds,
                     &format!("{context}.{key}"),
                     sensitive_key_name(key),
                     value,
                 )?;
             }
+            found || declares_secret_input(input_kinds)
         }
-    }
-    Ok(())
+    };
+    Ok(needs_transport_guard)
+}
+
+fn declares_secret_input(input_kinds: &BTreeMap<String, ManifestInputKind>) -> bool {
+    input_kinds
+        .values()
+        .any(|kind| *kind == ManifestInputKind::Secret)
 }
 
 fn validate_file_source_for_database_persistence(
@@ -337,59 +409,68 @@ fn validate_request_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     request: &coral_spec::RequestSpec,
-) -> Result<(), AppError> {
-    validate_headers_for_database_persistence(
+) -> Result<bool, AppError> {
+    let mut needs_transport_guard = template_references_secret_input(input_kinds, &request.path);
+    needs_transport_guard |= validate_headers_for_database_persistence(
         input_kinds,
         &format!("{context} request headers"),
         &request.headers,
     )?;
     for param in &request.query {
+        needs_transport_guard |= value_source_references_secret_input(input_kinds, &param.value);
         if sensitive_query_param_name(&param.name) {
             validate_sensitive_value_source_for_database_persistence(
                 input_kinds,
                 &format!("{context} query param '{}'", param.name),
                 &param.value,
             )?;
+            needs_transport_guard = true;
         }
     }
     match &request.body {
         BodySpec::Json { fields } => {
             for field in fields {
+                needs_transport_guard |=
+                    value_source_references_secret_input(input_kinds, &field.value);
                 if field.path.iter().any(|segment| sensitive_key_name(segment)) {
                     validate_sensitive_value_source_for_database_persistence(
                         input_kinds,
                         &format!("{context} body field '{}'", field.path.join(".")),
                         &field.value,
                     )?;
+                    needs_transport_guard = true;
                 }
             }
         }
         BodySpec::Text { content } => {
-            validate_text_body_for_database_persistence(
+            needs_transport_guard |= validate_text_body_for_database_persistence(
                 input_kinds,
                 &format!("{context} request body text"),
                 content,
             )?;
         }
     }
-    Ok(())
+    Ok(needs_transport_guard)
 }
 
 fn validate_headers_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     headers: &[HeaderSpec],
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
+    let mut needs_transport_guard = false;
     for header in headers {
+        needs_transport_guard |= value_source_references_secret_input(input_kinds, &header.value);
         if sensitive_http_header_name(&header.name) {
             validate_sensitive_value_source_for_database_persistence(
                 input_kinds,
                 &format!("{context} header '{}'", header.name),
                 &header.value,
             )?;
+            needs_transport_guard = true;
         }
     }
-    Ok(())
+    Ok(needs_transport_guard)
 }
 
 fn basic_auth_username_needs_secret(template: &ParsedTemplate) -> bool {
@@ -449,11 +530,40 @@ fn validate_text_body_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     value: &ValueSourceSpec,
-) -> Result<(), AppError> {
-    if text_body_value_source_needs_secret(value) {
+) -> Result<bool, AppError> {
+    let sensitive_value = text_body_value_source_needs_secret(value);
+    if sensitive_value {
         validate_sensitive_value_source_for_database_persistence(input_kinds, context, value)?;
     }
-    Ok(())
+    Ok(sensitive_value || value_source_references_secret_input(input_kinds, value))
+}
+
+fn value_source_references_secret_input(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    value: &ValueSourceSpec,
+) -> bool {
+    match value {
+        ValueSourceSpec::Template { template } => {
+            template_references_secret_input(input_kinds, template)
+        }
+        ValueSourceSpec::OneOf { values } => values
+            .iter()
+            .any(|value| value_source_references_secret_input(input_kinds, value)),
+        ValueSourceSpec::Input { key } | ValueSourceSpec::Bearer { key } => {
+            input_kinds.get(key) == Some(&ManifestInputKind::Secret)
+        }
+        _ => false,
+    }
+}
+
+fn template_references_secret_input(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    template: &ParsedTemplate,
+) -> bool {
+    template.tokens().any(|token| {
+        token.namespace() == &TemplateNamespace::Input
+            && input_kinds.get(token.key()) == Some(&ManifestInputKind::Secret)
+    })
 }
 
 fn text_body_value_source_needs_secret(value: &ValueSourceSpec) -> bool {
@@ -512,43 +622,124 @@ fn text_body_contains_sensitive_marker(raw: &str) -> bool {
     })
 }
 
+fn validate_oauth_endpoint_transports(
+    inputs: &[ManifestInputSpec],
+    source_variables: &BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    for input in inputs {
+        let Some(credential) = input.credential.as_ref() else {
+            continue;
+        };
+        for method in &credential.methods {
+            if method.kind != ManifestCredentialMethodKind::OAuth {
+                continue;
+            }
+            let Some(oauth) = method.oauth.as_ref() else {
+                continue;
+            };
+            let endpoints = oauth
+                .endpoint_urls(source_variables)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+            if let Some(url) = endpoints.authorization_url.as_deref() {
+                validate_credential_endpoint_transport("oauth authorization_url", url)?;
+            }
+            if let Some(url) = endpoints.device_authorization_url.as_deref() {
+                validate_credential_endpoint_transport("oauth device_authorization_url", url)?;
+            }
+            validate_credential_endpoint_transport("oauth token_url", &endpoints.token_url)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_endpoint_template_transport(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    source_variables: &BTreeMap<String, String>,
+    context: &str,
+    template: &ParsedTemplate,
+) -> Result<(), AppError> {
+    let rendered =
+        render_source_variable_template(input_kinds, source_variables, context, template)?;
+    validate_credential_endpoint_transport(context, &rendered)
+}
+
+fn render_source_variable_template(
+    input_kinds: &BTreeMap<String, ManifestInputKind>,
+    source_variables: &BTreeMap<String, String>,
+    context: &str,
+    template: &ParsedTemplate,
+) -> Result<String, AppError> {
+    let mut rendered = String::with_capacity(template.raw().len());
+    for part in template.parts() {
+        match part {
+            TemplatePart::Literal(literal) => rendered.push_str(literal),
+            TemplatePart::Token(token) if token.namespace() == &TemplateNamespace::Input => {
+                if input_kinds.get(token.key()) != Some(&ManifestInputKind::Variable) {
+                    return Err(AppError::InvalidInput(format!(
+                        "{context} input '{}' must be a variable to validate imported credential transport",
+                        token.key()
+                    )));
+                }
+                let value = source_variables.get(token.key()).ok_or_else(|| {
+                    AppError::InvalidInput(format!(
+                        "{context} references unresolved source variable '{}'",
+                        token.key()
+                    ))
+                })?;
+                rendered.push_str(value);
+            }
+            TemplatePart::Token(token) => {
+                return Err(AppError::InvalidInput(format!(
+                    "{context} uses unsupported transport template token '{}'",
+                    token.raw()
+                )));
+            }
+        }
+    }
+    Ok(rendered)
+}
+
 fn validate_custom_auth_value_for_database_persistence(
     input_kinds: &BTreeMap<String, ManifestInputKind>,
     context: &str,
     sensitive_context: bool,
     value: &JsonValue,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     match value {
         JsonValue::Object(map) => {
+            let mut found = false;
             for (key, value) in map {
-                validate_custom_auth_value_for_database_persistence(
+                found |= validate_custom_auth_value_for_database_persistence(
                     input_kinds,
                     &format!("{context}.{key}"),
                     sensitive_context || sensitive_key_name(key),
                     value,
                 )?;
             }
-            Ok(())
+            Ok(found)
         }
         JsonValue::Array(values) => {
+            let mut found = false;
             for (index, value) in values.iter().enumerate() {
-                validate_custom_auth_value_for_database_persistence(
+                found |= validate_custom_auth_value_for_database_persistence(
                     input_kinds,
                     &format!("{context}[{index}]"),
                     sensitive_context,
                     value,
                 )?;
             }
-            Ok(())
+            Ok(found)
         }
         JsonValue::String(raw) if sensitive_context => {
             let template = ParsedTemplate::parse(raw)
                 .map_err(|error| AppError::InvalidInput(error.to_string()))?;
-            validate_secret_template_for_database_persistence(input_kinds, context, &template)
+            validate_secret_template_for_database_persistence(input_kinds, context, &template)?;
+            Ok(true)
         }
-        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
-            Ok(())
-        }
+        JsonValue::String(raw) => Ok(ParsedTemplate::parse(raw)
+            .ok()
+            .is_some_and(|template| template_references_secret_input(input_kinds, &template))),
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => Ok(false),
     }
 }
 
@@ -653,7 +844,7 @@ mod tests {
         reason = "manifest input order assertions intentionally fail loudly in tests"
     )]
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use coral_spec::ManifestInputKind;
 
@@ -666,8 +857,12 @@ mod tests {
     use crate::sources::model::SourceOrigin;
 
     fn minimal_http_manifest(extra_top_level: &str) -> String {
+        minimal_http_manifest_at("https://example.com", extra_top_level)
+    }
+
+    fn minimal_http_manifest_at(base_url: &str, extra_top_level: &str) -> String {
         format!(
-            "name: demo\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: https://example.com\n{extra_top_level}tables:\n  - name: messages\n    description: Demo messages\n    request:\n      method: GET\n      path: /messages\n    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
+            "name: demo\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: {base_url}\n{extra_top_level}tables:\n  - name: messages\n    description: Demo messages\n    request:\n      method: GET\n      path: /messages\n    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
         )
     }
 
@@ -888,6 +1083,21 @@ tables:
                 "table 'messages' request body text must reference a secret input",
             ),
             (
+                minimal_http_manifest_at(
+                    "\"http://api.example.com/{{input.API_TOKEN}}\"",
+                    "inputs:\n  API_TOKEN:\n    kind: secret\n",
+                ),
+                "base_url input 'API_TOKEN' must be a variable",
+            ),
+            (
+                minimal_http_manifest_at(
+                    "http://api.example.com",
+                    "inputs:\n  API_TOKEN:\n    kind: secret\n",
+                )
+                .replace("path: /messages", "path: /{{input.API_TOKEN}}"),
+                "base_url must use https or loopback http",
+            ),
+            (
                 minimal_v4_openapi_manifest(
                     "  auth:\n    type: HeaderAuth\n    headers:\n      - name: Authorization\n        from: literal\n        value: Bearer hardcoded-token\n",
                 ),
@@ -920,8 +1130,9 @@ tables:
         ];
 
         for (manifest, expected) in cases {
-            let error = validate_imported_manifest_database_persistence(&manifest)
-                .expect_err("literal sensitive value should be rejected");
+            let error =
+                validate_imported_manifest_database_persistence(&manifest, &BTreeMap::new())
+                    .expect_err("literal sensitive value should be rejected");
             assert!(
                 error.to_string().contains(expected),
                 "expected {expected:?}, got {error}"
@@ -931,9 +1142,12 @@ tables:
 
     #[test]
     fn database_persistence_rejects_basic_auth_username_when_it_is_credential_marked() {
-        let error = validate_imported_manifest_database_persistence(&minimal_http_manifest(
-            "inputs:\n  WOOCOMMERCE_CONSUMER_KEY:\n    kind: variable\n  API_PASSWORD:\n    kind: secret\nauth:\n  type: BasicAuth\n  username: \"{{input.WOOCOMMERCE_CONSUMER_KEY}}\"\n  password: \"{{input.API_PASSWORD}}\"\n",
-        ))
+        let error = validate_imported_manifest_database_persistence(
+            &minimal_http_manifest(
+                "inputs:\n  WOOCOMMERCE_CONSUMER_KEY:\n    kind: variable\n  API_PASSWORD:\n    kind: secret\nauth:\n  type: BasicAuth\n  username: \"{{input.WOOCOMMERCE_CONSUMER_KEY}}\"\n  password: \"{{input.API_PASSWORD}}\"\n",
+            ),
+            &BTreeMap::new(),
+        )
         .expect_err("credential-marked BasicAuth username should be rejected");
 
         assert!(
@@ -946,9 +1160,12 @@ tables:
 
     #[test]
     fn database_persistence_rejects_one_of_sensitive_fallbacks() {
-        let error = validate_imported_manifest_database_persistence(&minimal_http_manifest(
-            "inputs:\n  API_TOKEN:\n    kind: secret\nauth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: one_of\n      values:\n        - from: input\n          key: API_TOKEN\n        - from: literal\n          value: Bearer fallback-token\n",
-        ))
+        let error = validate_imported_manifest_database_persistence(
+            &minimal_http_manifest(
+                "inputs:\n  API_TOKEN:\n    kind: secret\nauth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: one_of\n      values:\n        - from: input\n          key: API_TOKEN\n        - from: literal\n          value: Bearer fallback-token\n",
+            ),
+            &BTreeMap::new(),
+        )
         .expect_err("literal one_of fallback should be rejected");
 
         assert!(
@@ -986,8 +1203,9 @@ tables:
         ];
 
         for (manifest, expected) in cases {
-            let error = validate_imported_manifest_database_persistence(&manifest)
-                .expect_err("S3 credential should be rejected");
+            let error =
+                validate_imported_manifest_database_persistence(&manifest, &BTreeMap::new())
+                    .expect_err("S3 credential should be rejected");
             assert!(
                 error.to_string().contains(expected),
                 "expected {expected:?}, got {error}"
@@ -1013,8 +1231,9 @@ tables:
         ];
 
         for (manifest, expected) in cases {
-            let error = validate_imported_manifest_database_persistence(&manifest)
-                .expect_err("sensitive MCP env value should be rejected");
+            let error =
+                validate_imported_manifest_database_persistence(&manifest, &BTreeMap::new())
+                    .expect_err("sensitive MCP env value should be rejected");
             assert!(
                 error.to_string().contains(expected),
                 "expected {expected:?}, got {error}"
@@ -1023,23 +1242,61 @@ tables:
     }
 
     #[test]
+    fn database_persistence_rejects_untrusted_variable_endpoints_for_secrets() {
+        let variables =
+            BTreeMap::from([("API_BASE".to_string(), "http://api.example.com".to_string())]);
+        let manifest = minimal_http_manifest_at(
+            "\"{{input.API_BASE}}\"",
+            "inputs:\n  API_BASE:\n    kind: variable\n  API_TOKEN:\n    kind: secret\nauth:\n  type: HeaderAuth\n  headers:\n    - name: X-Session\n      from: template\n      template: \"{{input.API_TOKEN}}\"\n",
+        );
+        let error = validate_imported_manifest_database_persistence(&manifest, &variables)
+            .expect_err("cleartext rendered base_url should be rejected");
+        assert!(error.to_string().contains("base_url must use https"));
+    }
+
+    #[test]
+    fn database_persistence_rejects_custom_auth_cleartext_endpoint_when_secrets_exist() {
+        let variables =
+            BTreeMap::from([("API_BASE".to_string(), "http://api.example.com".to_string())]);
+        let manifest = minimal_http_manifest_at(
+            "\"{{input.API_BASE}}\"",
+            "inputs:\n  API_BASE:\n    kind: variable\n  API_TOKEN:\n    kind: secret\nauth:\n  type: CustomAuth\n  authenticator: demo_auth\n  prefix: Bearer\n",
+        );
+
+        let error = validate_imported_manifest_database_persistence(&manifest, &variables)
+            .expect_err("custom auth can read declared secret inputs");
+
+        assert!(error.to_string().contains("base_url must use https"));
+    }
+
+    #[test]
+    fn database_persistence_rejects_untrusted_oauth_endpoints() {
+        let manifest = minimal_http_manifest(
+            "inputs:\n  API_TOKEN:\n    kind: secret\n    credential:\n      methods:\n        - type: oauth\n          oauth:\n            flow:\n              type: device_code\n            endpoints:\n              device_authorization_url: http://api.example.com/device\n              token_url: https://api.example.com/token\n            client:\n              id:\n                default: demo\n",
+        );
+        let error = validate_imported_manifest_database_persistence(&manifest, &BTreeMap::new())
+            .expect_err("cleartext OAuth endpoint should be rejected");
+        assert!(format!("{error}").contains("device_authorization_url must use https"));
+    }
+
+    #[test]
     fn database_persistence_allows_literal_non_secret_headers() {
-        validate_imported_manifest_database_persistence(&minimal_http_manifest("auth:\n  type: HeaderAuth\n  headers:\n    - name: Travis-API-Version\n      from: literal\n      value: \"3\"\nrequest_headers:\n  - name: Accept\n    from: literal\n    value: application/json\n"))
+        validate_imported_manifest_database_persistence(&minimal_http_manifest("auth:\n  type: HeaderAuth\n  headers:\n    - name: Travis-API-Version\n      from: literal\n      value: \"3\"\nrequest_headers:\n  - name: Accept\n    from: literal\n    value: application/json\n"), &BTreeMap::new())
         .expect("non-secret literal headers should be allowed");
 
-        validate_imported_manifest_database_persistence(&minimal_http_manifest_with_request("      body:\n        format: text\n        content:\n          from: literal\n          value: \"SELECT id, name FROM users FORMAT JSONEachRow\"\n"))
+        validate_imported_manifest_database_persistence(&minimal_http_manifest_with_request("      body:\n        format: text\n        content:\n          from: literal\n          value: \"SELECT id, name FROM users FORMAT JSONEachRow\"\n"), &BTreeMap::new())
         .expect("non-secret literal text bodies should be allowed");
 
-        validate_imported_manifest_database_persistence(&minimal_http_manifest_with_request("      query:\n        - name: page_token\n          from: filter\n          key: page_token\n"))
+        validate_imported_manifest_database_persistence(&minimal_http_manifest_with_request("      query:\n        - name: page_token\n          from: filter\n          key: page_token\n"), &BTreeMap::new())
         .expect("pagination token filters should not be treated as credentials");
     }
 
     #[test]
     fn database_persistence_allows_sensitive_header_from_secret_input() {
-        validate_imported_manifest_database_persistence(&minimal_http_manifest("inputs:\n  API_TOKEN:\n    kind: secret\nauth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n"))
+        validate_imported_manifest_database_persistence(&minimal_http_manifest("inputs:\n  API_TOKEN:\n    kind: secret\nauth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n"), &BTreeMap::new())
         .expect("secret-backed auth header should be allowed");
 
-        validate_imported_manifest_database_persistence(&minimal_http_manifest("inputs:\n  API_PASSWORD:\n    kind: secret\nauth:\n  type: BasicAuth\n  username: public-user\n  password: \"{{input.API_PASSWORD}}\"\n"))
+        validate_imported_manifest_database_persistence(&minimal_http_manifest("inputs:\n  API_PASSWORD:\n    kind: secret\nauth:\n  type: BasicAuth\n  username: public-user\n  password: \"{{input.API_PASSWORD}}\"\n"), &BTreeMap::new())
         .expect("public BasicAuth username should be allowed with a secret-backed password");
     }
 }

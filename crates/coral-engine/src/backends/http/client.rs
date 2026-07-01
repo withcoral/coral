@@ -104,13 +104,17 @@ pub(super) fn default_http_client(
 ) -> Result<reqwest::Client> {
     registration
         .default_http_client(credential_safe, || {
-            let mut builder = reqwest::Client::builder()
+            let redirect_policy = if credential_safe {
+                credential_safe_redirect_policy()
+            } else {
+                source_redirect_policy()
+            };
+            reqwest::Client::builder()
                 .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
-                .user_agent(DEFAULT_HTTP_USER_AGENT);
-            if credential_safe {
-                builder = builder.redirect(credential_safe_redirect_policy());
-            }
-            builder.build().map_err(|error| error.to_string())
+                .redirect(redirect_policy)
+                .user_agent(DEFAULT_HTTP_USER_AGENT)
+                .build()
+                .map_err(|error| error.to_string())
         })
         .map_err(|error| {
             DataFusionError::Execution(format!(
@@ -135,6 +139,30 @@ fn credential_safe_redirect_policy() -> reqwest::redirect::Policy {
 
 fn credential_safe_redirect_target(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
     previous.origin() == next.origin() && is_credential_safe_auth_transport(next)
+}
+
+fn source_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > 10 {
+            return attempt.error(std::io::Error::other("too many redirects"));
+        }
+        let Some(previous) = attempt.previous().last() else {
+            return attempt.follow();
+        };
+        if same_origin(previous, attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.error(std::io::Error::other(
+                "cross-origin redirects are disabled for source HTTP requests",
+            ))
+        }
+    })
+}
+
+fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 impl HttpSourceClient {

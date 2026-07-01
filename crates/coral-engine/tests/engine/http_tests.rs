@@ -2538,6 +2538,82 @@ async fn auth_headers_sent_correctly() {
 }
 
 #[tokio::test]
+async fn source_http_client_follows_same_origin_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer secret-token"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .append_header("Location", format!("{}/api/redirected-users", server.uri())),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/redirected-users"))
+        .and(header("authorization", "Bearer secret-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut manifest = base_http_manifest("http_same_origin_redirect", &server.uri());
+    manifest["inputs"] = json!({"API_TOKEN": { "kind": "secret" }});
+    manifest["auth"] = json!({"type": "HeaderAuth", "headers": [{
+        "name": "Authorization", "from": "bearer", "key": "API_TOKEN"
+    }]});
+    let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
+
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT COUNT(*) AS n FROM http_same_origin_redirect.users",
+        )
+        .await
+        .expect("same-origin redirect should succeed"),
+    );
+
+    assert_eq!(rows, vec![json!({"n": 3})]);
+}
+
+#[tokio::test]
+async fn source_http_client_rejects_cross_origin_redirects() {
+    let server = MockServer::start().await;
+    let recorder = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/users"))
+        .and(header("authorization", "Bearer secret-token"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .append_header("Location", format!("{}/capture", recorder.uri())),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(path("/capture"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": users_rows() })))
+        .expect(0)
+        .mount(&recorder)
+        .await;
+
+    let mut manifest = base_http_manifest("http_redirect", &server.uri());
+    manifest["inputs"] = json!({"API_TOKEN": { "kind": "secret" }});
+    manifest["auth"] = json!({"type": "HeaderAuth", "headers": [{
+        "name": "Authorization", "from": "bearer", "key": "API_TOKEN"
+    }]});
+    let source = build_source_with_secrets(manifest, [("API_TOKEN", "secret-token")]);
+
+    CoralQuery::execute_sql(
+        &[source],
+        test_runtime(),
+        "SELECT COUNT(*) AS n FROM http_redirect.users",
+    )
+    .await
+    .expect_err("cross-origin redirect should fail");
+}
+
+#[tokio::test]
 async fn auth_header_one_of_uses_bearer_fallback() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

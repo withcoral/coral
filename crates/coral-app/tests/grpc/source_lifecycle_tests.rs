@@ -27,8 +27,12 @@ use crate::harness::{
 };
 
 fn auth_manifest_yaml(inputs: &str, auth: &str) -> String {
+    auth_manifest_yaml_at("https://example.com", inputs, auth)
+}
+
+fn auth_manifest_yaml_at(base_url: &str, inputs: &str, auth: &str) -> String {
     format!(
-        "name: hardcoded_auth\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: https://example.com\n{inputs}{auth}tables:\n  - name: messages\n    description: Demo messages\n    request:\n      method: GET\n      path: /messages\n    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
+        "name: hardcoded_auth\nversion: 1.0.0\ndsl_version: 3\nbackend: http\nbase_url: {base_url}\n{inputs}{auth}tables:\n  - name: messages\n    description: Demo messages\n    request:\n      method: GET\n      path: /messages\n    response: {{}}\n    columns:\n      - name: id\n        type: Utf8\n"
     )
 }
 
@@ -43,6 +47,14 @@ fn variable_backed_sensitive_auth_manifest_yaml() -> String {
     auth_manifest_yaml(
         "inputs:\n  HEADER_VALUE:\n    kind: variable\n",
         "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.HEADER_VALUE}}\n",
+    )
+}
+
+fn secret_auth_manifest_yaml_at(base_url: &str) -> String {
+    auth_manifest_yaml_at(
+        base_url,
+        "inputs:\n  API_TOKEN:\n    kind: secret\n",
+        "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n",
     )
 }
 
@@ -317,14 +329,90 @@ async fn import_rejects_sensitive_auth_template_backed_by_variable() {
 }
 
 #[tokio::test]
-async fn import_with_oauth_rejects_literal_sensitive_auth_header_before_authorization() {
+async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
+    let harness = GrpcHarness::new().await;
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: secret_auth_manifest_yaml_at("http://api.example.com"),
+            variables: Vec::new(),
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("cleartext credential endpoint should fail");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(error.message().contains("base_url"));
+    assert!(harness.list_sources().await.is_empty());
+}
+
+#[tokio::test]
+async fn import_rejects_variable_rendered_cleartext_secret_endpoint() {
+    let harness = GrpcHarness::new().await;
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: auth_manifest_yaml_at(
+                "\"{{input.API_BASE}}\"",
+                "inputs:\n  API_BASE:\n    kind: variable\n  API_TOKEN:\n    kind: secret\n",
+                "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n",
+            ),
+            variables: vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "http://api.example.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("rendered cleartext credential endpoint should fail");
+
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error.message().contains("base_url"),
+        "message: {}",
+        error.message()
+    );
+    assert!(harness.list_sources().await.is_empty());
+}
+
+#[tokio::test]
+async fn import_allows_loopback_secret_endpoint() {
+    let harness = GrpcHarness::new().await;
+    harness
+        .import_source(
+            secret_auth_manifest_yaml_at("http://127.0.0.1:9"),
+            Vec::new(),
+            vec![SourceSecret {
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
+            }],
+        )
+        .await;
+
+    assert_eq!(harness.list_sources().await.len(), 1);
+}
+
+#[tokio::test]
+async fn import_with_oauth_rejects_cleartext_endpoint_before_authorization() {
     let harness = GrpcHarness::new().await;
 
     let mut stream = harness
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
             workspace: Some(default_workspace()),
-            manifest_yaml: literal_sensitive_auth_manifest_yaml(),
+            manifest_yaml: auth_manifest_yaml(
+                "inputs:\n  API_TOKEN:\n    kind: secret\n    credential:\n      methods:\n        - type: oauth\n          oauth:\n            flow:\n              type: device_code\n            endpoints:\n              device_authorization_url: http://api.example.com/device\n              token_url: https://api.example.com/token\n            client:\n              id:\n                default: demo\n",
+                "",
+            ),
             variables: Vec::new(),
             secrets: Vec::new(),
             oauth_credential_retrievals: vec![OAuthCredentialRetrieval {
@@ -337,12 +425,10 @@ async fn import_with_oauth_rejects_literal_sensitive_auth_header_before_authoriz
         .expect("OAuth import request should create a response stream")
         .into_inner();
 
-    let error = stream
-        .message()
-        .await
-        .expect_err("literal sensitive auth should fail before OAuth authorization");
+    let error = stream.message().await.expect_err("cleartext endpoint");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
-    assert!(error.message().contains("Authorization"));
+    assert!(error.message().contains("device_authorization_url"));
+    assert!(harness.list_sources().await.is_empty());
 }
 
 #[tokio::test]
