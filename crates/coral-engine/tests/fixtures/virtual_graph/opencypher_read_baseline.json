@@ -23,7 +23,7 @@
     "ReturnDistinct": 3,
     "ReturnProjection": 12,
     "RowModifiers": 24,
-    "ScalarExpressions": 82,
+    "ScalarExpressions": 86,
     "Temporal": 8,
     "TypeConversion": 16,
     "Union": 17,
@@ -10284,6 +10284,72 @@
           {
             "doubled": "bb",
             "leading_only": "ba"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unicode-string-case-literal-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toUpper('\u00c5lice') AS upper_name, toLower('\u00c9CHO') AS lower_name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "upper_name": "\u00c5LICE",
+            "lower_name": "\u00e9cho"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unicode-substring-left-right-literal-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN substring('\u00c5lice', 0, 2) AS first_two, substring('\u00c5lice', 1, 3) AS middle_three, left('\u00c5lice', 1) AS first_char, right('\u00c5lice', 4) AS last_four",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "first_two": "\u00c5l",
+            "middle_three": "lic",
+            "first_char": "\u00c5",
+            "last_four": "lice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "empty-string-scalar-functions-projection",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toUpper('') AS upper_empty, toLower('') AS lower_empty, trim('') AS trimmed_empty, replace('', 'x', 'y') AS replaced_empty, substring('', 0, 1) AS substring_empty, left('', 1) AS left_empty, right('', 1) AS right_empty",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "upper_empty": "",
+            "lower_empty": "",
+            "trimmed_empty": "",
+            "replaced_empty": "",
+            "substring_empty": "",
+            "left_empty": "",
+            "right_empty": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "string-function-null-propagation",
+      "feature": "ScalarExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name, toUpper(null) AS upper_null, toLower(null) AS lower_null, substring(null, 0, 1) AS substring_null, replace(null, 'x', 'y') AS replace_null, reverse(null) AS reverse_null, size(null) AS size_null",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
           }
         ]
       }
