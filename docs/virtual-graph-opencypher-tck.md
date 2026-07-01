@@ -277,7 +277,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 109 representative read-only scenarios:
+The GraphQL baseline currently contains 113 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
@@ -287,10 +287,12 @@ The GraphQL baseline currently contains 109 representative read-only scenarios:
 - `BooleanFilters`: 8 scenarios for `and`/`or` arrays, nested and/or, deep
   three-level boolean composition, nested `xor` inside `and`, `not`
   composition, `xor`, and uppercase operator aliases.
-- `RowModifiers`: 11 scenarios for root ordering, multi-key ordering, offset,
-  limit, pagination edge windows including offset-beyond-count, limit `0`, and
+- `RowModifiers`: 15 scenarios for root ordering, multi-key ordering, offset,
+  limit, `first`/`skip` row-modifier aliases, combined skip/first windows,
+  pagination edge windows including offset-beyond-count, limit `0`, and
   last-window overshoot, `ASCENDING`/`DESCENDING` and shorthand `orderBy`
-  directions, and distinct projection.
+  directions, distinct projection, and distinct projection combined with
+  ordering.
 - `Aggregation`: 13 scenarios for grouped `_count`, numeric property
   aggregates including `_median`, distinct counts, and exact
   `_percentileCont(field:, percentile:)`.

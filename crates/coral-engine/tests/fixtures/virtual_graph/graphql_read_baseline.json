@@ -10,7 +10,7 @@
     "NestedRelationships": 15,
     "RelationshipExistence": 8,
     "RootSelection": 4,
-    "RowModifiers": 11,
+    "RowModifiers": 15,
     "ScalarFilters": 17
   },
   "scenarios": [
@@ -381,6 +381,54 @@
       }
     },
     {
+      "id": "rowmodifier-first-alias",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], first: 2) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rowmodifier-skip-alias",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], skip: 1) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rowmodifier-skip-first-combined",
+      "feature": "RowModifiers",
+      "query": "query { Person(orderBy: [{ field: name, direction: ASC }], skip: 1, first: 1) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
       "id": "orderby-descending-alias",
       "feature": "RowModifiers",
       "query": "query { Person(orderBy: [{ field: age, direction: DESCENDING }]) { name age } }",
@@ -456,6 +504,23 @@
           },
           {
             "city": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rowmodifier-distinct-orderby-desc",
+      "feature": "RowModifiers",
+      "query": "query { Person(distinct: true, orderBy: [{ field: city, direction: DESC }]) { city } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": "Paris"
+          },
+          {
+            "city": "London"
           }
         ]
       }
