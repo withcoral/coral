@@ -171,80 +171,48 @@ async fn restart_preserves_database_source_after_config_source_section_is_remove
 }
 
 #[tokio::test]
-async fn startup_import_preserves_non_default_workspace_sources() {
+async fn startup_import_lists_non_default_legacy_config_source() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).expect("create config dir");
     fs::write(
         config_dir.join("config.toml"),
-        r#"version = 1
-
-[workspaces.default.sources.default_messages]
-version = "0.1.0"
-variables = {}
-secrets = []
-origin = "imported"
-
-[workspaces.analytics.sources.analytics_messages]
-version = "0.1.0"
-variables = {}
-secrets = []
-origin = "imported"
-"#,
+        "[workspaces.analytics.sources.analytics_messages]\norigin = \"imported\"\n",
     )
     .expect("write config");
-
-    let default_manifest =
-        fixture_manifest_yaml(temp.path()).replace("local_messages", "default_messages");
-    let default_manifest_path = source_dir(&config_dir, "default_messages").join("manifest.yaml");
-    fs::create_dir_all(
-        default_manifest_path
-            .parent()
-            .expect("default manifest parent"),
+    let source_dir = config_dir.join("workspaces/analytics/sources/analytics_messages");
+    fs::create_dir_all(&source_dir).expect("create source dir");
+    fs::write(
+        source_dir.join("manifest.yaml"),
+        fixture_manifest_yaml(temp.path()).replace("local_messages", "analytics_messages"),
     )
-    .expect("create default source dir");
-    fs::write(default_manifest_path, default_manifest).expect("write default manifest");
-
-    let analytics_manifest =
-        fixture_manifest_yaml(temp.path()).replace("local_messages", "analytics_messages");
-    let analytics_manifest_path = config_dir
-        .join("workspaces")
-        .join("analytics")
-        .join("sources")
-        .join("analytics_messages")
-        .join("manifest.yaml");
-    fs::create_dir_all(
-        analytics_manifest_path
-            .parent()
-            .expect("analytics manifest parent"),
-    )
-    .expect("create analytics source dir");
-    fs::write(analytics_manifest_path, analytics_manifest).expect("write analytics manifest");
-
+    .expect("write analytics manifest");
     let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
-
-    let default_sources = harness.list_sources().await;
-    assert_eq!(default_sources.len(), 1);
-    assert_eq!(default_sources[0].name, "default_messages");
-
-    let analytics_sources = harness
+    let sources = harness
         .source_client()
         .list_sources(Request::new(coral_api::v1::ListSourcesRequest {
             workspace: Some(Workspace {
-                name: "analytics".to_string(),
+                name: "analytics".into(),
             }),
         }))
         .await
         .expect("list analytics sources")
         .into_inner()
         .sources;
-    assert_eq!(analytics_sources.len(), 1);
-    assert_eq!(analytics_sources[0].name, "analytics_messages");
-
-    let config_raw =
-        fs::read_to_string(config_dir.join("config.toml")).expect("read cleaned config");
-    assert!(!config_raw.contains("[workspaces.default.sources.default_messages]"));
-    assert!(!config_raw.contains("[workspaces.analytics.sources.analytics_messages]"));
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].name, "analytics_messages");
+    let validated = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(Workspace {
+                name: "analytics".into(),
+            }),
+            name: "analytics_messages".into(),
+        }))
+        .await
+        .expect("validate analytics source")
+        .into_inner();
+    assert_eq!(validated.tables[0].schema_name, "analytics_messages");
 }
 
 #[tokio::test]

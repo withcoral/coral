@@ -1,7 +1,7 @@
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 
 use crate::state::db::schema::Workspaces;
-use crate::state::db::{DbError, DbSession};
+use crate::state::db::{DbError, DbSession, DbWriteSession};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceRecord {
@@ -68,6 +68,19 @@ where
             .to_owned();
         let rows: Vec<WorkspaceRow> = self.session.fetch_all(statement).await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+}
+
+impl<S> WorkspacesRepo<'_, S>
+where
+    S: DbWriteSession,
+{
+    pub(crate) async fn remove(&mut self, id: &str) -> Result<(), DbError> {
+        let statement = Query::delete()
+            .from_table(Workspaces::Table)
+            .and_where(Expr::col(Workspaces::Id).eq(id))
+            .to_owned();
+        self.session.execute_delete(statement).await
     }
 }
 

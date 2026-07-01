@@ -156,32 +156,52 @@ mod tests {
                 .expect("get source"),
             Some(source)
         );
-        assert!(
-            config_store
-                .load_config_unlocked()
-                .expect("load cleaned config")
-                .source_catalog_entries()
-                .is_empty()
-        );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn legacy_source_catalog_import_is_not_reapplied_after_marker() {
+    async fn failed_legacy_config_cleanup_does_not_reimport_stale_sources() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         layout.ensure().expect("ensure layout");
+        let db_path = temp.path().join("db").join("coral.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        fs::write(
+            layout.config_file(),
+            format!(
+                "[database]\nbackend = \"sqlite\"\npath = \"{}\"\n",
+                db_path.display()
+            ),
+        )
+        .expect("write database config");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("default").expect("workspace");
         let source = source("github", None, [], [], None, SourceOrigin::Bundled);
         config_store
             .upsert_source(&workspace, source.clone())
             .expect("write config source");
+        drop(
+            config_store
+                .state_lock_exclusive()
+                .expect("create state lock before read-only config dir"),
+        );
         let db = open_sqlite(&layout).await;
-        import_config_source_catalog(&db, &config_store, 11)
-            .await
-            .expect("initial import");
+        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
+            .expect("make config dir read-only");
+        let report = import_config_source_catalog(&db, &config_store, 11).await;
+        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o700))
+            .expect("restore config dir permissions");
+        assert_eq!(
+            report.expect("cleanup failure should not fail committed import"),
+            SourceCatalogImportReport {
+                workspace_count: 1,
+                source_count: 1,
+            }
+        );
 
-        let original_source = source.clone();
         let mut stale_config_source = source.clone();
         stale_config_source
             .variables
@@ -189,10 +209,18 @@ mod tests {
         config_store
             .upsert_source(&workspace, stale_config_source)
             .expect("update config source");
+        {
+            let mut tx = db.begin().await.expect("begin delete tx");
+            tx.sources()
+                .remove_source(&workspace, &source.name)
+                .await
+                .expect("delete db source");
+            tx.commit().await.expect("commit delete tx");
+        }
 
         let report = import_config_source_catalog(&db, &config_store, 99)
             .await
-            .expect("reimport source catalog");
+            .expect("stale config should not reimport after marker");
 
         assert_eq!(
             report,
@@ -202,20 +230,20 @@ mod tests {
             }
         );
         let mut session = &db;
-        let workspace_record = session
-            .workspaces()
-            .get(workspace.as_str())
-            .await
-            .expect("get workspace")
-            .expect("workspace row");
-        assert_eq!(workspace_record.created_at_unix_nanos, 11);
         assert_eq!(
             session
                 .sources()
                 .get_source(&workspace, &source.name)
                 .await
-                .expect("get source"),
-            Some(original_source)
+                .expect("source should remain deleted"),
+            None
+        );
+        assert!(
+            config_store
+                .load_config_unlocked()
+                .expect("load cleaned stale config")
+                .source_catalog_entries()
+                .is_empty()
         );
     }
 
@@ -272,7 +300,16 @@ mod tests {
         let workspace = WorkspaceName::parse("default").expect("workspace");
         let config_workspace = WorkspaceName::parse("other").expect("workspace");
         let db_source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        let mut stale_config_source = db_source.clone();
+        stale_config_source.version = Some("9.9.9".to_string());
+        stale_config_source
+            .variables
+            .insert("OWNER".to_string(), "stale".to_string());
+        stale_config_source.origin = SourceOrigin::Imported;
         let config_source = source("slack", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .upsert_source(&workspace, stale_config_source)
+            .expect("write stale config source");
         config_store
             .create_workspace(&config_workspace)
             .expect("create config workspace");
@@ -321,6 +358,13 @@ mod tests {
                 .expect("get imported config source"),
             Some(config_source)
         );
+        assert!(
+            config_store
+                .load_config_unlocked()
+                .expect("load cleaned config")
+                .source_catalog_entries()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -349,155 +393,6 @@ mod tests {
                 .list()
                 .await
                 .expect("list workspaces")
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn empty_config_catalog_does_not_complete_legacy_import() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
-        let db = open_sqlite(&layout).await;
-
-        let empty_report = import_config_source_catalog(&db, &config_store, 11)
-            .await
-            .expect("import empty catalog");
-        config_store
-            .upsert_source(&workspace, source.clone())
-            .expect("write config source after empty import");
-        let source_report = import_config_source_catalog(&db, &config_store, 99)
-            .await
-            .expect("import source catalog after empty import");
-
-        assert_eq!(
-            empty_report,
-            SourceCatalogImportReport {
-                workspace_count: 0,
-                source_count: 0,
-            }
-        );
-        assert_eq!(
-            source_report,
-            SourceCatalogImportReport {
-                workspace_count: 1,
-                source_count: 1,
-            }
-        );
-        let mut session = &db;
-        assert_eq!(
-            session
-                .sources()
-                .get_source(&workspace, &source.name)
-                .await
-                .expect("get source"),
-            Some(source)
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn import_succeeds_when_post_commit_config_cleanup_fails() {
-        use std::fs;
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
-        config_store
-            .upsert_source(&workspace, source.clone())
-            .expect("write config source");
-        drop(
-            config_store
-                .state_lock_exclusive()
-                .expect("create state lock before making config dir read-only"),
-        );
-
-        let db_path = temp.path().join("db").join("coral.db");
-        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
-        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path: db_path })
-            .await
-            .expect("open sqlite");
-        db.migrate().await.expect("migrate sqlite");
-
-        let original_mode = fs::metadata(layout.config_dir())
-            .expect("config dir metadata")
-            .permissions()
-            .mode();
-        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
-            .expect("make config dir read-only");
-
-        let result = import_config_source_catalog(&db, &config_store, 11).await;
-
-        fs::set_permissions(
-            layout.config_dir(),
-            fs::Permissions::from_mode(original_mode),
-        )
-        .expect("restore config dir permissions");
-
-        assert_eq!(
-            result.expect("cleanup failure should not fail committed import"),
-            SourceCatalogImportReport {
-                workspace_count: 1,
-                source_count: 1,
-            }
-        );
-        let mut session = &db;
-        assert_eq!(
-            session
-                .sources()
-                .get_source(&workspace, &source.name)
-                .await
-                .expect("get imported source"),
-            Some(source.clone())
-        );
-        assert_eq!(
-            config_store
-                .load_config_unlocked()
-                .expect("legacy config should still load after failed cleanup")
-                .source_catalog_entries()
-                .len(),
-            1
-        );
-
-        let mut tx = db.begin().await.expect("begin delete tx");
-        tx.sources()
-            .remove_source(&workspace, &source.name)
-            .await
-            .expect("delete db source");
-        tx.commit().await.expect("commit delete tx");
-
-        let report = import_config_source_catalog(&db, &config_store, 99)
-            .await
-            .expect("stale config should not reimport after marker");
-
-        assert_eq!(
-            report,
-            SourceCatalogImportReport {
-                workspace_count: 0,
-                source_count: 0,
-            }
-        );
-        let mut session = &db;
-        assert_eq!(
-            session
-                .sources()
-                .get_source(&workspace, &source.name)
-                .await
-                .expect("source should remain deleted"),
-            None
-        );
-        assert!(
-            config_store
-                .load_config_unlocked()
-                .expect("load cleaned stale config")
-                .source_catalog_entries()
                 .is_empty()
         );
     }

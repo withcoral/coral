@@ -543,7 +543,15 @@ impl ConfigStore {
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Option<DeletedWorkspace>, AppError> {
-        self.update_config(|config| {
+        let _lock = self.state_lock_exclusive()?;
+        self.delete_workspace_unlocked(workspace_name)
+    }
+
+    pub(crate) fn delete_workspace_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
+        self.update_config_unlocked(|config| {
             if workspace_name.is_default() {
                 return Err(AppError::FailedPrecondition(
                     "default workspace cannot be removed".to_string(),

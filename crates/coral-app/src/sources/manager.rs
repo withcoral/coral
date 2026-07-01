@@ -31,7 +31,9 @@ use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
+use crate::workspaces::{
+    DeletedWorkspace, WorkspaceLifecycleLock, WorkspaceName, WorkspaceRecord, WorkspaceStore,
+};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
@@ -1130,6 +1132,23 @@ impl SourceManager {
         Ok(())
     }
 
+    fn delete_db_workspace_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        let Some(db) = self.catalog_db.clone() else {
+            return Ok(Vec::new());
+        };
+        let workspace_name = workspace_name.clone();
+        run_db_catalog_operation(async move {
+            let mut tx = db.begin().await?;
+            let sources = tx.sources().list_workspace_sources(&workspace_name).await?;
+            tx.workspaces().remove(workspace_name.as_str()).await?;
+            tx.commit().await?;
+            Ok(sources)
+        })
+    }
+
     fn validate_oauth_import_preflight(
         candidate: &CandidateSource,
         bindings: &SourceBindings,
@@ -1393,6 +1412,58 @@ impl SourceManager {
     ) -> InstalledSource {
         self.populate_source_version(workspace_name, source.clone())
             .unwrap_or(source)
+    }
+}
+
+impl WorkspaceStore for SourceManager {
+    fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        self.config_store.list_workspaces()
+    }
+
+    fn create_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        self.config_store.create_workspace(workspace_name)
+    }
+
+    fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
+        if workspace_name.is_default() {
+            return Err(AppError::FailedPrecondition(
+                "default workspace cannot be removed".to_string(),
+            ));
+        }
+        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let mut db_sources = self.delete_db_workspace_sources(workspace_name)?;
+        let config_deleted = match self.config_store.delete_workspace_unlocked(workspace_name) {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                for source in db_sources.iter().cloned() {
+                    if let Err(restore_error) =
+                        self.upsert_db_source_with_state_lock_held(workspace_name, source)
+                    {
+                        return Err(AppError::FailedPrecondition(format!(
+                            "failed to delete workspace '{workspace_name}': {error}; failed to restore workspace source database rows: {restore_error}"
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if db_sources.is_empty() {
+            return Ok(config_deleted);
+        }
+        let mut deleted = config_deleted.unwrap_or_else(|| DeletedWorkspace {
+            workspace: WorkspaceRecord {
+                name: workspace_name.clone(),
+            },
+            sources: Vec::new(),
+        });
+        deleted.sources.append(&mut db_sources);
+        Ok(Some(deleted))
     }
 }
 

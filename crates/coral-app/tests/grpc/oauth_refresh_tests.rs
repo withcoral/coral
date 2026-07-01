@@ -670,10 +670,9 @@ fn remove_config_source_section(config_dir: &Path, source_name: &str) {
     let config_path = config_dir.join("config.toml");
     let raw = fs::read_to_string(&config_path).expect("read config");
     let mut doc = raw.parse::<DocumentMut>().expect("parse config");
-    doc["workspaces"]["default"]["sources"]
-        .as_table_mut()
-        .expect("sources table")
-        .remove(source_name);
+    if let Some(sources) = doc["workspaces"]["default"]["sources"].as_table_mut() {
+        sources.remove(source_name);
+    }
     fs::write(&config_path, doc.to_string()).expect("write config without source section");
 }
 

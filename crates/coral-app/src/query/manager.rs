@@ -797,6 +797,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use coral_engine::{
         EngineExtensions, QueryExecution, QueryExecutionProvenance, QueryTableFunctionUsage,
@@ -858,6 +859,43 @@ mod tests {
             .expect_err("missing workspace should fail closed");
 
         assert_workspace_not_found(error, &missing_workspace);
+    }
+
+    #[test]
+    fn load_query_sources_waits_for_state_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let guard = config_store
+            .state_lock_exclusive()
+            .expect("hold exclusive state lock");
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(CredentialStore::new(layout.clone())),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(manager.load_query_sources(&WorkspaceName::default()))
+                .expect("load query sources");
+            done_tx.send(()).expect("send query load result");
+        });
+
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(300)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("query load should finish after releasing state lock");
     }
 
     #[tokio::test]

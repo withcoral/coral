@@ -446,13 +446,6 @@ mod tests {
                 query_history: Vec::new(),
             }
         );
-        assert!(
-            config_store
-                .load_config_unlocked()
-                .expect("load cleaned config")
-                .source_catalog_entries()
-                .is_empty()
-        );
     }
 
     #[test]

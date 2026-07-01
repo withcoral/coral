@@ -7,14 +7,12 @@ Coral stores local configuration in `config.toml` inside its platform-specific [
 
 ## Managed state
 
-Coral stores source installation state in its local database when you run commands such as `coral source add` and `coral source remove`.
+Coral writes source installation state to `config.toml` when you run commands such as `coral source add` and `coral source remove`.
 
 This state includes installed-source metadata and non-secret source variables. Source secrets are stored separately within the same local trust boundary.
 
 <Note>
-  Prefer the `coral source` commands for source state instead of editing
-  workspace entries manually. Current Coral releases no longer use
-  `[workspaces.*.sources.*]` entries in `config.toml` as the source catalog.
+  Prefer the `coral source` commands for source state instead of editing workspace entries manually.
 </Note>
 
 ## Workspaces
@@ -27,26 +25,23 @@ exists automatically, and additional workspaces can be managed with
 [workspaces.default]
 
 [workspaces.work]
+
+[workspaces.work.sources.github]
+version = "1.0.0"
+variables = {}
+secrets = ["GITHUB_TOKEN"]
+origin = "bundled"
 ```
 
 An empty workspace is represented by an explicit `[workspaces.<name>]` table.
+Installed sources for that workspace live under
+`[workspaces.<name>.sources.<source>]`.
 
 There is no separate active-workspace key in `config.toml`; use
 `CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
 Source specs imported from files and source credential material remain scoped
 to the source installation in a workspace. Reusable global source specs and
 reusable credential references are not config objects today.
-
-Older `config.toml` source entries are imported into the database on startup and
-removed from `config.toml` after the import is validated. This source-catalog
-migration is one-way for current releases: downgrading to an older
-config-backed Coral build does not automatically restore those config entries.
-
-If you need to run an older build after this migration, re-add bundled sources
-with `coral source add <NAME>`. Re-add imported sources with
-`coral source add --file <PATH>`, using the existing manifest under the local
-state directory, such as
-`workspaces/<workspace>/sources/<source>/manifest.yaml`.
 
 ## Runtime features
 

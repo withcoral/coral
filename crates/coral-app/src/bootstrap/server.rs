@@ -284,7 +284,7 @@ impl ServerBuilder {
             Arc::clone(&coral_db),
         );
         let workspace_manager = WorkspaceManager::new(
-            config_store.clone(),
+            source_manager.clone(),
             credential_manager.clone(),
             layout.clone(),
             active_trace_store_dir.clone(),
