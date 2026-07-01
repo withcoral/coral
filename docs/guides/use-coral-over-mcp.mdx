@@ -180,114 +180,56 @@ Coral uses stdio transport. If a client supports a command-based install flow, p
 
 ### Verify the connection
 
-Once your client is connected, ask the agent to list available tables or run a simple database query. Examples:
+Once your client is connected, ask the agent to list available Coral tables or run a small query.
 
-> "List the tables available in Coral."
+> "Use Coral to show what sources and tables you can query."
 
 > "Run a small Coral query against `coral.tables`."
 
-The agent should call `list_catalog`, `search_catalog`, or query `coral.tables` and `coral.table_functions` to return SQL schemas and catalog items, and use `describe_table` or `list_columns` for table-specific metadata. Large catalogs should be paged with `limit` and `offset`.
+If it works, the agent should return installed schemas and tables. You do not need to know the MCP tool names; the agent gets discovery helpers and a read-only SQL interface to the same sources you use from `coral sql`.
 
-## Available tools and resources
+## What your agent can do
 
-| Type     | Name             | Description                                             |
-| -------- | ---------------- | ------------------------------------------------------- |
-| Tool     | `sql`            | Execute 1 to 10 independent read-only SQL queries against the Coral database |
-| Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
-| Tool     | `describe_table` | Show compact metadata for one database table            |
-| Tool     | `list_columns`   | List columns for one database table with pagination     |
-| Resource | `coral://guide`  | Database workflow guide for agents                     |
-| Resource | `coral://tables` | JSON summaries of query-visible database tables, including Coral catalog tables and required filters |
+Coral gives your agent a read-only SQL view over the sources you have installed locally. That means your agent can:
 
-Clients see the same database catalog and query results as `coral sql`. You set up sources with the CLI, then agents query Coral over MCP as SQL schemas and tables.
+- inspect the available sources, tables, columns, filters, and table functions
+- query connected sources without configuring a separate MCP server for each provider
+- join and aggregate across sources when the question needs more than one API call
+- use the same local credentials and workspace state as the Coral CLI
 
-The `coral` system schema is part of that catalog. No-schema `list_catalog` and `coral://tables` include both configured source tables and Coral catalog tables: `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs`. Agents can also call `describe_table` and `list_columns` on those system tables.
+Set up and update sources with the CLI. The MCP server is the agent-facing query surface, not a source installer.
 
-Agents should treat the discovery tools as catalog helpers, not as replacement provider APIs. Tool descriptions include connected source/schema names, such as `github` or `slack`, to help clients route provider-specific prompts to Coral. For dependent data questions, prefer one SQL statement using `JOIN`, `CROSS JOIN`, CTEs, subqueries, aggregates, or window functions. For several independent questions, use one `sql` tool call with multiple `queries[]` entries.
+Only connect Coral to agents you trust. A connected agent can query any source installed in that Coral workspace. See [Security](/project/security) for more detail.
 
-### Discovery tools
+## How to ask for Coral
 
-**`list_catalog`**: paginated list of database tables and parameterized table functions.
+When your agent has many tools available, name Coral explicitly:
 
-- Arguments: optional `schema`, `kind`, `limit`, `offset`. Omit `kind` (or pass `null`) to include both `"table"` and `"table_function"` items.
-- For tables, use `sql_reference` in `FROM` and `JOIN` clauses.
-- For table functions, use `sql_call_example` and fill in the required arguments.
-- Do not quote the whole `schema.item` string: write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+> "Use Coral to find the latest open GitHub issues assigned to me."
 
-**`search_catalog`**: deterministic regex matching over database catalog metadata.
+> "Use Coral to compare recent deploy errors in Datadog with related Slack messages."
 
-- Arguments: required `pattern` plus optional `schema`, `kind`, `ignore_case`, `limit`, `offset`.
+> "Use Coral. First inspect the catalog, then query the right tables."
 
-**`describe_table`**: compact metadata for one table.
+Good agents will inspect Coral's catalog before writing SQL, then answer from query results. If an answer needs data from multiple connected sources, ask the agent to combine the data in Coral when possible.
 
-- Arguments: exact `schema` and `table`.
-- Returns guide text, required filters, and a column count without dumping full columns.
+## Workspaces
 
-**`list_columns`**: paginated columns for one table.
-
-- Arguments: exact `schema` and `table`, plus optional `pattern`, `ignore_case`, `required_only`, `limit`, `offset`.
-- For existing tables, returns a `columns` page with `total`, `has_more`, and optional `next_offset`. When `pattern` is set, matching rows include `matched_fields` so clients can explain why a column matched.
-- When the requested table does not exist, returns `found: false` with recovery hints instead of an empty page. Clients should branch to `search_catalog` or `list_catalog` rather than pretending the table has zero columns.
-
-### Richer metadata when using SQL tool
-
-When the agent needs metadata it can filter, join, sort, or aggregate before writing the final SQL, query `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` through the `sql` tool instead of relying only on `list_catalog` or `coral://tables`. Use `coral.filters` as the normalized filter surface, with `coral.columns.filter_mode` available when inspecting filter-only virtual columns.
-
-### SQL tool input
-
-The `sql` tool accepts a required `queries` array, not a top-level `sql` string:
+By default, `coral mcp-stdio` uses your default Coral workspace. If you use a named workspace, add `--workspace <name>` to the server args in your MCP config. For JSON-style clients, that looks like:
 
 ```json
 {
-  "queries": [
-    "SELECT table_name FROM coral.tables WHERE schema_name = 'github' ORDER BY table_name",
-    "SELECT column_name, data_type FROM coral.columns WHERE schema_name = 'github' AND table_name = 'pulls' ORDER BY ordinal_position"
-  ]
-}
-```
-
-Each entry must be one independent read-only SQL statement. Coral starts entries concurrently, so a later entry must not depend on rows, errors, or side effects from an earlier entry. If the work is dependent, combine it into one SQL statement or make separate tool calls after inspecting each result.
-
-`queries` must contain 1 to 10 non-blank strings. Missing `queries`, an empty array, more than 10 entries, non-string entries, and blank strings are MCP argument errors and do not dispatch any SQL.
-
-### Searching a provider's data
-
-Some sources expose native search endpoints (for example, GitHub issue search) as table functions with `kind = 'search'`. Prefer these over scanning a regular table when the agent needs ranked, query-driven results. They return provider-ranked candidates, so agents should preserve any returned rank columns and use the returned ids plus catalog-described tables to fetch full detail rows when the search result itself is incomplete.
-
-## Query result format
-
-MCP tool results use `structuredContent` for rows and errors. The `content` array is empty for successful tool results and structured tool errors, so clients should not parse text content.
-
-When every query succeeds, the `sql` tool returns one ordered batch:
-
-```json
-{
-  "total_count": 2,
-  "success_count": 2,
-  "error_count": 0,
-  "results": [
-    {
-      "index": 0,
-      "status": "success",
-      "rows": [{ "table_name": "pulls" }]
-    },
-    {
-      "index": 1,
-      "status": "success",
-      "rows": [{ "column_name": "title", "data_type": "Utf8" }]
+  "mcpServers": {
+    "coral": {
+      "command": "coral",
+      "args": ["mcp-stdio", "--workspace", "work"]
     }
-  ]
+  }
 }
 ```
-
-`results` is ordered to match `queries`, and each item includes its zero-based `index`.
-
-If any query fails, the MCP tool result is marked as an error. The top-level `error` describes the batch failure, and `data` contains the same ordered batch with successful items and per-query error items.
-
-Successful SQL rows are JSON objects. In MCP results, precision-sensitive numeric values such as `Int64`, `UInt64`, and decimals are encoded as JSON strings to avoid precision loss in JSON clients. The CLI is unaffected: `coral sql --format json` keeps emitting these types as JSON numbers.
 
 ## Troubleshooting
 
 - **`coral` not found:** Make sure `coral` is on your `PATH`, or use the full path from `which coral` on macOS or Linux or `(Get-Command coral).Source` in PowerShell.
 - **No tables visible:** Run `coral source list` in your terminal to confirm you have sources installed. If empty, add one with `coral source add`. See the [CLI reference](/reference/cli-reference#coral-source).
+- **The agent ignores Coral:** Ask it to use Coral by name. For stronger routing, install the Coral agent skills from [Installation](/getting-started/installation#skills).
