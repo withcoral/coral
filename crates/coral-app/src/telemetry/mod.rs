@@ -34,6 +34,9 @@ pub(crate) mod service;
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+pub(crate) use local_store::{
+    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+};
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -311,6 +314,13 @@ fn add_local_trace_exporter(
     let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
         .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
     Ok(builder.with_span_processor(BatchSpanProcessor::builder(exporter).build()))
+}
+
+pub(crate) fn list_local_query_history(
+    dir: PathBuf,
+    retention: Duration,
+) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+    local_store::TraceStore::with_retention(dir, retention).list_query_history_sync()
 }
 
 fn build_otlp_logger_provider(

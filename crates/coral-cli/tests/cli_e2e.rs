@@ -17,9 +17,9 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "embedded-ui")]
 use assert_cmd::Command;
 use coral_api::v1::{
-    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse,
+    DiscoverSourcesResponse, ExecuteSqlResponse, ListSourcesResponse, ListWorkspacesResponse,
     ResolveBundledSourceHostsResponse, Source, SourceCredentialStorage, SourceInfo,
-    SourceInputSpec, SourceOrigin, SourceVariable, SourceVariableInput,
+    SourceInputSpec, SourceOrigin, SourceVariable, SourceVariableInput, Workspace,
     source_input_spec::Input as ProtoSourceInput,
 };
 use tempfile::tempdir;
@@ -60,10 +60,14 @@ fn nonempty_lines(output: &str) -> Vec<&str> {
 }
 
 fn assert_default_workspace(workspace: Option<&coral_api::v1::Workspace>) {
+    assert_workspace_name(workspace, "default");
+}
+
+fn assert_workspace_name(workspace: Option<&coral_api::v1::Workspace>, expected: &str) {
     assert_eq!(
         workspace.map(|w| w.name.as_str()),
-        Some("default"),
-        "expected default workspace, got {workspace:?}"
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
     );
 }
 
@@ -122,6 +126,164 @@ async fn sql_command_renders_table_output() {
     assert_eq!(requests.len(), 1, "expected one execute_sql call");
     assert_eq!(requests[0].sql, "select 1 as value");
     assert_default_workspace(requests[0].workspace.as_ref());
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_command_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["--workspace", "work", "sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_command_uses_workspace_env() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "work")
+        .args(["sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_flag_overrides_workspace_env() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .env("CORAL_WORKSPACE", "env-work")
+        .args(["--workspace", "flag-work", "sql", "select 1 as value"])
+        .assert()
+        .success();
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 1, "expected one execute_sql call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "flag-work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_uses_workspace_flag() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["--workspace", "work", "source", "list"])
+        .assert()
+        .success();
+
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_list_accepts_workspace_flag_after_subcommand() {
+    let server = MockServer::start().await;
+
+    server
+        .cmd()
+        .args(["source", "list", "--workspace", "work"])
+        .assert()
+        .success();
+
+    let requests = server.list_sources_requests();
+    assert_eq!(requests.len(), 1, "expected one list_sources call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_list_renders_configured_workspaces() {
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_workspaces(
+        ListWorkspacesResponse {
+            workspaces: vec![
+                Workspace {
+                    name: "default".to_string(),
+                },
+                Workspace {
+                    name: "work".to_string(),
+                },
+            ],
+        },
+    ))
+    .await;
+
+    let assert = server.cmd().args(["workspace", "list"]).assert().success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(
+        nonempty_lines(&stdout),
+        vec!["Workspace", "---------", "default", "work"],
+        "expected workspace list"
+    );
+    assert_eq!(
+        server.list_workspaces_requests().len(),
+        1,
+        "expected one list_workspaces call"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_create_sends_request() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["workspace", "create", "work"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Created workspace work");
+    let requests = server.create_workspace_requests();
+    assert_eq!(requests.len(), 1, "expected one create_workspace call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_remove_sends_request() {
+    let server = MockServer::start().await;
+
+    let assert = server
+        .cmd()
+        .args(["workspace", "remove", "work"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert_eq!(stdout.trim(), "Removed workspace work");
+    let requests = server.delete_workspace_requests();
+    assert_eq!(requests.len(), 1, "expected one delete_workspace call");
+    assert_workspace_name(requests[0].workspace.as_ref(), "work");
 
     server.shutdown().await;
 }

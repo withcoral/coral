@@ -98,6 +98,9 @@ pub(crate) fn resolve_value_source(
         ValueSourceSpec::FilterBool { key, default } => {
             parse_bool_value(context, RuntimeValueNamespace::Filter, key, *default)
         }
+        ValueSourceSpec::FilterStringArray { key, default } => {
+            parse_filter_strings(context, key, default.as_deref())
+        }
         ValueSourceSpec::FilterSplit {
             key,
             separator,
@@ -239,6 +242,32 @@ fn parse_bool_value(
         ))
     })?;
     Ok(Some(json!(parsed)))
+}
+
+fn parse_string_array_value(
+    context: &RenderContext<'_>,
+    namespace: RuntimeValueNamespace,
+    key: &str,
+    default: Option<&[String]>,
+) -> Result<Option<Value>> {
+    let Some(raw) = namespace.values(context).get(key) else {
+        return Ok(default.map(|values| json!(values)));
+    };
+    let parsed = serde_json::from_str::<Vec<String>>(raw).map_err(|error| {
+        let label = namespace.label();
+        DataFusionError::Execution(format!(
+            "{label} '{key}' value '{raw}' is not a valid JSON array of strings: {error}"
+        ))
+    })?;
+    Ok(Some(json!(parsed)))
+}
+
+fn parse_filter_strings(
+    context: &RenderContext<'_>,
+    key: &str,
+    default: Option<&[String]>,
+) -> Result<Option<Value>> {
+    parse_string_array_value(context, RuntimeValueNamespace::Filter, key, default)
 }
 
 fn parse_split_i64_value(
@@ -428,6 +457,7 @@ pub(crate) fn validate_value_source_inputs(
         | ValueSourceSpec::Filter { .. }
         | ValueSourceSpec::FilterInt { .. }
         | ValueSourceSpec::FilterBool { .. }
+        | ValueSourceSpec::FilterStringArray { .. }
         | ValueSourceSpec::FilterSplit { .. }
         | ValueSourceSpec::FilterSplitInt { .. }
         | ValueSourceSpec::Arg { .. }
@@ -682,6 +712,62 @@ mod tests {
         .expect("bool filter should resolve");
 
         assert_eq!(value, Some(json!(false)));
+    }
+
+    #[test]
+    fn resolve_value_source_parses_filter_string_arrays_as_json_arrays() {
+        let filters = HashMap::from([(
+            "log_stream_names".to_string(),
+            r#"["stream-a","stream-b"]"#.to_string(),
+        )]);
+
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "log_stream_names".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array filter should resolve");
+
+        assert_eq!(value, Some(json!(["stream-a", "stream-b"])));
+    }
+
+    #[test]
+    fn resolve_value_source_uses_filter_string_array_default() {
+        let value = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "log_stream_names".to_string(),
+                default: Some(vec!["stream-a".to_string()]),
+            },
+            &test_render_context(&HashMap::new(), &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect("string array filter default should resolve");
+
+        assert_eq!(value, Some(json!(["stream-a"])));
+    }
+
+    #[test]
+    fn resolve_value_source_rejects_invalid_filter_string_arrays() {
+        let filters = HashMap::from([(
+            "log_stream_names".to_string(),
+            r#"["stream-a",42]"#.to_string(),
+        )]);
+
+        let error = resolve_value_source(
+            &ValueSourceSpec::FilterStringArray {
+                key: "log_stream_names".to_string(),
+                default: None,
+            },
+            &test_render_context(&filters, &HashMap::new(), &BTreeMap::new()),
+        )
+        .expect_err("non-string array entries should fail");
+
+        assert!(
+            error.to_string().contains(
+                "filter 'log_stream_names' value '[\"stream-a\",42]' is not a valid JSON array of strings"
+            )
+        );
     }
 
     #[test]

@@ -4,7 +4,9 @@ mod catalog;
 mod discovery;
 mod errors;
 mod resources;
+mod schema;
 mod source_names;
+mod sql;
 mod tools;
 mod values;
 
@@ -12,12 +14,18 @@ pub(crate) use catalog::{
     describe_table_value, list_catalog_value, list_columns_value, search_catalog_value,
 };
 pub(crate) use discovery::{Pagination, parse_pagination, parse_pagination_with_limits};
-pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
+pub(crate) use errors::{
+    ToolError, status_to_error_data, tool_error_from_status, tool_error_output_schema,
+    tool_error_result,
+};
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,
 };
 pub(crate) use source_names::connected_source_names_text;
+pub(crate) use sql::{
+    SqlBatchValue, SqlQueryResultValue, sql_arguments, sql_input_schema, sql_output_schema,
+};
 pub(crate) use tools::{
     CatalogToolKind, ToolDescriptionContext, build_tool_result, describe_table_arguments,
     describe_table_tool, feedback_tool, list_catalog_arguments, list_catalog_tool,

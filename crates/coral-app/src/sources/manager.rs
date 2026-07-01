@@ -34,7 +34,6 @@ use coral_spec::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -148,7 +147,6 @@ struct PersistSourceRequest<'a> {
     manifest_yaml: Option<&'a str>,
     bindings: ValidatedBindings,
     origin: SourceOrigin,
-    credential_storage: Option<CredentialStorageKind>,
     materialization_tmp: Option<PathBuf>,
 }
 
@@ -389,12 +387,6 @@ impl SourceManager {
         let bindings = validate_bindings(candidate, bindings, &stored_material)?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material);
-        let credential_storage = self.source_persist_storage(
-            workspace_name,
-            &candidate.name,
-            &bindings,
-            !stored_material.is_empty(),
-        )?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -402,7 +394,6 @@ impl SourceManager {
                 manifest_yaml,
                 bindings,
                 origin,
-                credential_storage,
                 materialization_tmp: self
                     .prepare_v4_materialization(
                         workspace_name,
@@ -451,7 +442,6 @@ impl SourceManager {
             bindings,
             &oauth_input_keys,
         )?;
-        let has_stored_material = !stored_material.is_empty();
         let stored_material_for_materialization = stored_material.clone();
         let bindings = self
             .bindings_with_oauth_material(
@@ -464,12 +454,6 @@ impl SourceManager {
             .await?;
         let materialization_inputs =
             materialization_inputs_from_bindings(&bindings, &stored_material_for_materialization);
-        let credential_storage = self.source_persist_storage(
-            workspace_name,
-            &candidate.name,
-            &bindings,
-            has_stored_material,
-        )?;
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -477,7 +461,6 @@ impl SourceManager {
                 manifest_yaml,
                 bindings,
                 origin,
-                credential_storage,
                 materialization_tmp: self
                     .prepare_v4_materialization(
                         workspace_name,
@@ -497,16 +480,19 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        let stored = self.config_store.get_source(workspace_name, source_name)?;
-        let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
+        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let stored = self
+            .config_store
+            .get_source_unlocked(workspace_name, source_name)?;
+        let removed = self.populate_source_version_or_keep(workspace_name, stored.clone());
         let credential_storage = stored.credential_storage_for_material();
         let credential_material = credential_storage
-            .map(|storage| credential_guard.snapshot_material(storage))
+            .map(|storage| credential_guard.snapshot_material_with_state_lock_held(storage))
             .transpose()?;
         let previous = SourceRollbackState {
             source: stored,
@@ -518,58 +504,48 @@ impl SourceManager {
             },
             credential_material,
         };
+        let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
         if let Some(credential_storage) = credential_storage
-            && let Err(error) = credential_guard.remove_material(credential_storage)
+            && let Err(error) =
+                credential_guard.remove_material_with_state_lock_held(credential_storage)
         {
-            self.restore_source_rollback_state(
+            let restore_dir_result = source_dir_backup.restore();
+            self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 source_name,
                 Some(previous),
                 None,
                 &credential_guard,
             );
-            return Err(error);
-        }
-        let source_dir_backup =
-            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_source_dir = source_dir.exists();
-        if had_source_dir {
-            if source_dir_backup.exists() {
-                std::fs::remove_dir_all(&source_dir_backup)?;
-            }
-            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
-                self.restore_source_rollback_state(
-                    workspace_name,
-                    source_name,
-                    Some(previous),
-                    None,
-                    &credential_guard,
-                );
-                return Err(error.into());
-            }
-        }
-        if let Err(error) = self.config_store.remove_source(workspace_name, source_name) {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
+            if let Err(restore_error) = restore_dir_result {
                 return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
+                    "failed to remove source credentials for '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
                 )));
             }
-            self.restore_source_rollback_state(
+            return Err(error);
+        }
+        if let Err(error) = self
+            .config_store
+            .remove_source_unlocked(workspace_name, source_name)
+        {
+            let restore_dir_result = source_dir_backup.restore();
+            self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 source_name,
                 Some(previous),
                 None,
                 &credential_guard,
             );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
+            }
             return Err(error);
         }
-        if source_dir_backup.exists() {
-            std::fs::remove_dir_all(&source_dir_backup)?;
-        }
+        source_dir_backup.commit()?;
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
             &self.layout.workspaces_root(),
@@ -602,13 +578,25 @@ impl SourceManager {
         let credential_guard = self
             .credential_manager
             .material_guard(workspace_name, &credential_set_id)?;
+        let _state_lock = self.config_store.state_lock_exclusive()?;
+        let credential_storage = match self.source_persist_storage_with_state_lock_held(
+            workspace_name,
+            request.candidate,
+            &request.bindings,
+        ) {
+            Ok(storage) => storage,
+            Err(error) => {
+                cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                return Err(error);
+            }
+        };
         let previous =
             self.load_source_rollback_state(workspace_name, &source_name, &credential_guard)?;
         if let Err(error) =
             self.persist_manifest_artifact(workspace_name, &source_name, request.manifest_yaml)
         {
             cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-            self.restore_source_rollback_state(
+            self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 &source_name,
                 previous,
@@ -624,7 +612,7 @@ impl SourceManager {
             replaced_oauth_inputs,
         } = request.bindings;
         let (visible_secret_keys, credential_storage) =
-            if let Some(requested_storage) = request.credential_storage {
+            if let Some(requested_storage) = credential_storage {
                 let expected_secret_keys = request
                     .candidate
                     .inputs
@@ -632,7 +620,7 @@ impl SourceManager {
                     .filter(|input| input.kind == ManifestInputKind::Secret)
                     .map(|input| input.key.clone())
                     .collect::<BTreeSet<_>>();
-                let credential_write = match credential_guard.update_material_or_empty_on_parse(
+                let credential_write = match credential_guard.update_material_with_state_lock(
                     requested_storage,
                     |mut credential_material| {
                         credential_material.retain(|key, _| {
@@ -649,7 +637,7 @@ impl SourceManager {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state(
+                        self.restore_source_rollback_state_with_state_lock_held(
                             workspace_name,
                             &source_name,
                             previous,
@@ -680,7 +668,7 @@ impl SourceManager {
                     Ok(backup) => backup,
                     Err(error) => {
                         cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state(
+                        self.restore_source_rollback_state_with_state_lock_held(
                             workspace_name,
                             &source_name,
                             previous,
@@ -708,7 +696,7 @@ impl SourceManager {
         };
         if let Err(error) = self
             .config_store
-            .upsert_source(workspace_name, stored.clone())
+            .upsert_source_unlocked(workspace_name, stored.clone())
         {
             let restore_result = restore_materialization_backup(
                 &self.layout,
@@ -716,7 +704,7 @@ impl SourceManager {
                 &source_name,
                 materialization_backup,
             );
-            self.restore_source_rollback_state(
+            self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 &source_name,
                 previous,
@@ -881,26 +869,46 @@ impl SourceManager {
         }
     }
 
-    fn source_persist_storage(
+    fn source_persist_storage_with_state_lock_held(
         &self,
         workspace_name: &WorkspaceName,
-        source_name: &SourceName,
+        candidate: &CandidateSource,
         bindings: &ValidatedBindings,
-        has_stored_material: bool,
     ) -> Result<Option<CredentialStorageKind>, AppError> {
-        match self.config_store.get_source(workspace_name, source_name) {
-            Ok(source) if !source.secrets.is_empty() => {
-                Ok(Some(source.effective_credential_storage()))
+        let needs_stored_material = candidate.inputs.iter().any(|input| {
+            input.kind == ManifestInputKind::Secret
+                && input.required
+                && !bindings.secrets.contains_key(&input.key)
+        });
+        let existing_storage = match self
+            .config_store
+            .get_source_unlocked(workspace_name, &candidate.name)
+        {
+            Ok(source) => source.credential_storage_for_material(),
+            Err(AppError::SourceNotFound(_)) if needs_stored_material => {
+                let legacy_secret_file = self.layout.secret_file(workspace_name, &candidate.name);
+                if legacy_secret_file.is_file() {
+                    Some(CredentialStorageKind::File)
+                } else {
+                    None
+                }
             }
-            Ok(_) | Err(AppError::SourceNotFound(_))
-                if bindings.secrets.is_empty() && !has_stored_material =>
-            {
-                Ok(None)
-            }
-            Ok(_) | Err(AppError::SourceNotFound(_)) => {
-                self.credential_manager.default_write_storage().map(Some)
-            }
-            Err(error) => Err(error),
+            Err(AppError::SourceNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let stored_material = match existing_storage {
+            Some(storage) => self.read_source_material(workspace_name, &candidate.name, storage)?,
+            None => BTreeMap::new(),
+        };
+        validate_required_secret_material(candidate, bindings, &stored_material)?;
+
+        if existing_storage.is_some() {
+            return Ok(existing_storage);
+        }
+        if bindings.secrets.is_empty() && stored_material.is_empty() {
+            Ok(None)
+        } else {
+            self.credential_manager.default_write_storage().map(Some)
         }
     }
 
@@ -1050,14 +1058,19 @@ impl SourceManager {
         source_name: &SourceName,
         credential_material: &CredentialMaterialGuard<'_>,
     ) -> Result<Option<SourceRollbackState>, AppError> {
-        let source = match self.config_store.get_source(workspace_name, source_name) {
+        let source = match self
+            .config_store
+            .get_source_unlocked(workspace_name, source_name)
+        {
             Ok(source) => source,
             Err(AppError::SourceNotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
         let credential_material = source
             .credential_storage_for_material()
-            .map(|credential_storage| credential_material.snapshot_material(credential_storage))
+            .map(|credential_storage| {
+                credential_material.snapshot_material_with_state_lock_held(credential_storage)
+            })
             .transpose()?;
         Ok(Some(SourceRollbackState {
             manifest_yaml: match source.origin {
@@ -1071,7 +1084,7 @@ impl SourceManager {
         }))
     }
 
-    fn restore_source_rollback_state(
+    fn restore_source_rollback_state_with_state_lock_held(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
@@ -1101,13 +1114,16 @@ impl SourceManager {
             }
             match previous.credential_material {
                 Some(snapshot) => {
-                    if let Err(e) = credential_material.restore_material(&snapshot) {
+                    if let Err(e) =
+                        credential_material.restore_material_with_state_lock_held(&snapshot)
+                    {
                         warn!("rollback: failed to restore source credential material: {e}");
                     }
                 }
                 None => {
                     if let Some(storage) = new_material_storage
-                        && let Err(e) = credential_material.remove_material(storage)
+                        && let Err(e) =
+                            credential_material.remove_material_with_state_lock_held(storage)
                     {
                         warn!("rollback: failed to remove new source credential material: {e}");
                     }
@@ -1115,7 +1131,7 @@ impl SourceManager {
             }
             if let Err(e) = self
                 .config_store
-                .upsert_source(workspace_name, previous.source)
+                .upsert_source_unlocked(workspace_name, previous.source)
             {
                 warn!("rollback: failed to restore source config: {e}");
             }
@@ -1127,7 +1143,7 @@ impl SourceManager {
                 warn!("rollback: failed to remove source directory: {e}");
             }
             if let Some(storage) = new_material_storage
-                && let Err(e) = credential_material.remove_material(storage)
+                && let Err(e) = credential_material.remove_material_with_state_lock_held(storage)
             {
                 warn!("rollback: failed to remove source credential material: {e}");
             }
@@ -1266,6 +1282,26 @@ fn source_needs_stored_material_for_validation(
             && !filled_secret_keys.contains(&input.key)
             && persisted_secret_keys.is_none_or(|keys| keys.contains(&input.key))
     }))
+}
+
+fn validate_required_secret_material(
+    candidate: &CandidateSource,
+    bindings: &ValidatedBindings,
+    stored_material: &BTreeMap<String, String>,
+) -> Result<(), AppError> {
+    for input in &candidate.inputs {
+        if input.kind == ManifestInputKind::Secret
+            && input.required
+            && !bindings.secrets.contains_key(&input.key)
+            && !stored_material.contains_key(&input.key)
+        {
+            return Err(AppError::InvalidInput(format!(
+                "missing required source secret '{}'",
+                input.key
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn material_key_belongs_to_source_secret(
@@ -1509,16 +1545,17 @@ mod tests {
 
     use super::{
         ImportSourceCommand, ImportSourceEventSender, ImportSourceWithCredentialsCommand,
-        ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent, SourceBinding,
-        SourceBindings, SourceManager, SourceOAuthCredentialRetrieval, ValidatedBindings,
-        materialization_inputs_from_bindings, normalize_binding_key,
-        source_needs_stored_material_for_validation,
+        ImportSourceWithCredentialsEvent, PendingImportSourceWithCredentialsEvent,
+        PersistSourceRequest, SourceBinding, SourceBindings, SourceManager,
+        SourceOAuthCredentialRetrieval, ValidatedBindings, materialization_inputs_from_bindings,
+        normalize_binding_key, source_needs_stored_material_for_validation,
     };
     use crate::credentials::{
         CredentialManager, CredentialSetId, CredentialStorageKind, CredentialStoragePreference,
         CredentialStore,
     };
     use crate::sources::SourceName;
+    use crate::sources::catalog::describe_manifest;
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -1766,6 +1803,315 @@ tables:
         type: Utf8
 "#
         .to_string()
+    }
+
+    #[test]
+    fn readd_source_waits_for_state_lock_before_replacing_manifest() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(config_store.clone(), credential_manager, layout.clone());
+
+        let workspace_name = default_workspace();
+        let original_manifest = manifest_without_secrets();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: original_manifest.clone(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("public_messages").expect("source");
+        let manifest_path = layout.manifest_file(&workspace_name, &source_name);
+        let stored_before = std::fs::read_to_string(&manifest_path).expect("stored manifest");
+        let state_lock = config_store.state_lock_shared().expect("shared state lock");
+
+        let updated_manifest =
+            original_manifest.replace("https://example.com", "https://replacement.example.com");
+        let persist_manager = manager.clone();
+        let persist_workspace_name = workspace_name.clone();
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let (done_tx, done_rx) = std_mpsc::channel();
+        let handle = thread::spawn(move || {
+            let candidate = describe_manifest(&updated_manifest, SourceOrigin::Imported, false)
+                .expect("describe manifest");
+            let bindings = ValidatedBindings {
+                variables: BTreeMap::new(),
+                secrets: BTreeMap::new(),
+                replaced_oauth_inputs: BTreeSet::new(),
+            };
+            started_tx.send(()).expect("send started");
+            let result = persist_manager
+                .persist_source(
+                    &persist_workspace_name,
+                    PersistSourceRequest {
+                        candidate: &candidate,
+                        manifest_yaml: Some(&updated_manifest),
+                        bindings,
+                        origin: SourceOrigin::Imported,
+                        materialization_tmp: None,
+                    },
+                )
+                .map(|source| source.name.as_str().to_string())
+                .map_err(|error| error.to_string());
+            done_tx.send(result).expect("send import result");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("import thread should start");
+        match done_rx.recv_timeout(Duration::from_millis(300)) {
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("source re-add thread exited before sending a result")
+            }
+            Ok(result) => {
+                panic!("source re-add completed while shared state lock was held: {result:?}")
+            }
+        }
+        let stored_during_lock = std::fs::read_to_string(&manifest_path).expect("stored manifest");
+        assert_eq!(stored_during_lock, stored_before);
+
+        drop(state_lock);
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("source re-add should finish after releasing the state lock")
+            .expect("source re-add should succeed");
+        assert_eq!(result, "public_messages");
+        handle.join().expect("join source re-add thread");
+
+        let stored_after = std::fs::read_to_string(&manifest_path).expect("stored manifest");
+        assert!(stored_after.contains("https://replacement.example.com"));
+    }
+
+    #[test]
+    fn readd_source_revalidates_required_secret_material_under_state_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+
+        let workspace_name = default_workspace();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        credential_manager
+            .material_guard(&workspace_name, &credential_set_id)
+            .expect("credential guard")
+            .remove_material(CredentialStorageKind::File)
+            .expect("remove stored material");
+        let manifest = manifest_with_secret();
+        let candidate =
+            describe_manifest(&manifest, SourceOrigin::Imported, false).expect("describe manifest");
+        let bindings = ValidatedBindings {
+            variables: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            replaced_oauth_inputs: BTreeSet::new(),
+        };
+
+        let error = manager
+            .persist_source(
+                &workspace_name,
+                PersistSourceRequest {
+                    candidate: &candidate,
+                    manifest_yaml: Some(&manifest),
+                    bindings,
+                    origin: SourceOrigin::Imported,
+                    materialization_tmp: None,
+                },
+            )
+            .expect_err("re-add without current required material should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing required source secret 'API_TOKEN'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn delete_source_waits_for_state_lock_before_removing_credentials() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(config_store.clone(), credential_manager.clone(), layout);
+
+        let workspace_name = default_workspace();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let state_lock = config_store.state_lock_shared().expect("shared state lock");
+        let delete_manager = manager.clone();
+        let delete_workspace_name = workspace_name.clone();
+        let delete_source_name = source_name.clone();
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let (done_tx, done_rx) = std_mpsc::channel();
+        let handle = thread::spawn(move || {
+            started_tx.send(()).expect("send started");
+            let result = delete_manager
+                .delete_source(&delete_workspace_name, &delete_source_name)
+                .map(|source| source.name.as_str().to_string())
+                .map_err(|error| error.to_string());
+            done_tx.send(result).expect("send delete result");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("delete thread should start");
+        match done_rx.recv_timeout(Duration::from_millis(300)) {
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("source delete thread exited before sending a result")
+            }
+            Ok(result) => {
+                panic!("source delete completed while shared state lock was held: {result:?}")
+            }
+        }
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material during shared lock");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("secret-token")
+        );
+
+        drop(state_lock);
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("source delete should finish after releasing the state lock")
+            .expect("source delete should succeed");
+        assert_eq!(result, "secured_messages");
+        handle.join().expect("join source delete thread");
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read material after delete");
+        assert!(material.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_source_preserves_credentials_when_directory_staging_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(config_store.clone(), credential_manager.clone(), layout);
+
+        let workspace_name = default_workspace();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let source_dir = manager.layout.source_dir(&workspace_name, &source_name);
+        let source_parent = source_dir.parent().expect("source parent");
+        let original_permissions = std::fs::metadata(source_parent)
+            .expect("source parent metadata")
+            .permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_mode(0o500);
+        std::fs::set_permissions(source_parent, readonly_permissions)
+            .expect("make source parent unwritable");
+
+        let delete_result = manager.delete_source(&workspace_name, &source_name);
+
+        std::fs::set_permissions(source_parent, original_permissions)
+            .expect("restore source parent permissions");
+        let error = delete_result.expect_err("directory staging should fail");
+        assert!(
+            matches!(error, crate::bootstrap::AppError::Io(_)),
+            "unexpected delete error: {error}"
+        );
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read credential material after staging failure");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("secret-token"),
+            "credential material should be preserved when directory staging fails"
+        );
+        assert!(
+            config_store
+                .get_source(&workspace_name, &source_name)
+                .is_ok(),
+            "source config should be preserved when directory staging fails"
+        );
+        assert!(
+            source_dir.exists(),
+            "source directory should remain when staging fails"
+        );
     }
 
     fn manifest_with_oauth_secret(token_url: &str, redirect_port: u16) -> String {

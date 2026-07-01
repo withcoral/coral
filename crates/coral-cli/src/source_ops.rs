@@ -17,11 +17,11 @@ use coral_api::v1::{
     GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess,
     ResolveBundledSourceHostsRequest, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse, Workspace,
     create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
-use coral_client::{AppClient, DecodedStatusError, decode_status_error, default_workspace};
+use coral_client::{AppClient, DecodedStatusError, decode_status_error};
 use coral_spec::v4::SurfaceDescriptor;
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
@@ -72,11 +72,14 @@ impl TableDisplayLimit {
     pub(crate) const DEFAULT: Self = Self::Max(MAX_TABLES_PER_SCHEMA);
 }
 
-pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
+pub(crate) async fn discover_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<SourceInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .discover_sources(Request::new(DiscoverSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
@@ -85,6 +88,7 @@ pub(crate) async fn discover_sources(app: &AppClient) -> Result<Vec<SourceInfo>,
 
 pub(crate) async fn resolve_bundled_source_hosts(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     variables: Vec<SourceVariable>,
 ) -> Result<OutboundHostReview, anyhow::Error> {
@@ -94,7 +98,7 @@ pub(crate) async fn resolve_bundled_source_hosts(
     let response = app
         .source_client()
         .resolve_bundled_source_hosts(Request::new(ResolveBundledSourceHostsRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables,
         }))
@@ -113,11 +117,14 @@ pub(crate) fn resolve_manifest_source_hosts(
     manifest.outbound_host_review_with_input_values(&source_variables_map(variables))
 }
 
-pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow::Error> {
+pub(crate) async fn list_sources(
+    app: &AppClient,
+    workspace: &Workspace,
+) -> Result<Vec<Source>, anyhow::Error> {
     Ok(app
         .source_client()
         .list_sources(Request::new(ListSourcesRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
         }))
         .await?
         .into_inner()
@@ -126,6 +133,7 @@ pub(crate) async fn list_sources(app: &AppClient) -> Result<Vec<Source>, anyhow:
 
 pub(crate) async fn add_bundled_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -133,7 +141,7 @@ pub(crate) async fn add_bundled_source(
     let response = app
         .source_client()
         .create_bundled_source(Request::new(CreateBundledSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables,
             secrets,
@@ -147,6 +155,7 @@ pub(crate) async fn add_bundled_source(
 
 pub(crate) async fn import_source(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     variables: Vec<SourceVariable>,
     secrets: Vec<SourceSecret>,
@@ -154,7 +163,7 @@ pub(crate) async fn import_source(
     let mut responses = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables,
             secrets,
@@ -207,16 +216,17 @@ impl CredentialPromptMode {
 
 pub(crate) async fn add_bundled_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return add_bundled_source(app, name, inputs.variables, inputs.secrets).await;
+        return add_bundled_source(app, workspace, name, inputs.variables, inputs.secrets).await;
     }
     let response = app
         .source_client()
         .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -228,16 +238,24 @@ pub(crate) async fn add_bundled_source_with_credentials(
 
 pub(crate) async fn import_source_with_credentials(
     app: &AppClient,
+    workspace: &Workspace,
     manifest_yaml: String,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return import_source(app, manifest_yaml, inputs.variables, inputs.secrets).await;
+        return import_source(
+            app,
+            workspace,
+            manifest_yaml,
+            inputs.variables,
+            inputs.secrets,
+        )
+        .await;
     }
     let response = app
         .source_client()
         .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             manifest_yaml,
             variables: inputs.variables,
             secrets: inputs.secrets,
@@ -393,19 +411,21 @@ fn handle_credential_stream_event(
 
 pub(crate) async fn validate_source(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
 ) -> Result<ValidateSourceResponse, anyhow::Error> {
-    Ok(validate_source_request(app, source_name_arg(Some(name))?).await?)
+    Ok(validate_source_request(app, workspace, source_name_arg(Some(name))?).await?)
 }
 
 async fn validate_source_request(
     app: &AppClient,
+    workspace: &Workspace,
     name: String,
 ) -> Result<ValidateSourceResponse, tonic::Status> {
     Ok(app
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name,
         }))
         .await?
@@ -535,13 +555,14 @@ fn canonicalize_manifest_descriptor(
 
 pub(crate) async fn print_source_info(
     app: &AppClient,
+    workspace: &Workspace,
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
     let response = app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?
@@ -617,10 +638,14 @@ pub(crate) fn display_version(version: &str) -> String {
     }
 }
 
-pub(crate) async fn delete_source(app: &AppClient, name: &str) -> Result<(), anyhow::Error> {
+pub(crate) async fn delete_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<(), anyhow::Error> {
     app.source_client()
         .delete_source(Request::new(DeleteSourceRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             name: source_name_arg(Some(name))?,
         }))
         .await?;
@@ -926,10 +951,11 @@ pub(crate) fn source_credential_storage_label(storage: i32) -> &'static str {
 
 pub(crate) async fn validate_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    let response = validate_source(app, source_name).await?;
+    let response = validate_source(app, workspace, source_name).await?;
     print_validation_pretty(&response, limit)?;
     match validation_follow_up(&response, ValidationSeverityMode::WarnOnly) {
         ValidationFollowUp::None => Ok(()),
@@ -943,10 +969,11 @@ pub(crate) async fn validate_and_print(
 
 pub(crate) async fn validate_and_warn(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
 ) -> Result<(), anyhow::Error> {
-    if let Err(err) = validate_and_print(app, source_name, limit).await {
+    if let Err(err) = validate_and_print(app, workspace, source_name, limit).await {
         eprintln!("Warning: validation failed: {err}");
     }
     Ok(())
@@ -954,15 +981,16 @@ pub(crate) async fn validate_and_warn(
 
 pub(crate) async fn test_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     limit: TableDisplayLimit,
     severity_mode: ValidationSeverityMode,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    let response = match validate_source_request(app, normalized.clone()).await {
+    let response = match validate_source_request(app, workspace, normalized.clone()).await {
         Ok(response) => response,
         Err(status) if is_source_missing_status(&status) => {
-            return source_test_not_found_error(app, &normalized, status).await;
+            return source_test_not_found_error(app, workspace, &normalized, status).await;
         }
         Err(status) => return Err(anyhow::Error::from(status).into()),
     };
@@ -980,11 +1008,12 @@ pub(crate) async fn test_and_print(
 
 async fn source_test_not_found_error(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
     original_status: tonic::Status,
 ) -> Result<(), crate::CliError> {
     // Discovery failure must not mask the original validation error.
-    let Ok(available) = discover_sources(app).await else {
+    let Ok(available) = discover_sources(app, workspace).await else {
         return Err(anyhow::Error::from(original_status).into());
     };
     if available
@@ -1003,10 +1032,11 @@ async fn source_test_not_found_error(
 
 pub(crate) async fn remove_and_print(
     app: &AppClient,
+    workspace: &Workspace,
     source_name: &str,
 ) -> Result<(), crate::CliError> {
     let normalized = source_name_arg(Some(source_name))?;
-    match delete_source(app, &normalized).await {
+    match delete_source(app, workspace, &normalized).await {
         Ok(()) => {
             println!("Removed source {normalized}");
             Ok(())

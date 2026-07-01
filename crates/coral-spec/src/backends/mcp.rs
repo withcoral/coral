@@ -775,6 +775,7 @@ fn validate_table_tool_arg_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} references filter '{key}'; bind filters through filters[].tool_arg instead",
@@ -841,6 +842,7 @@ fn validate_source_scoped_value_source(source: &ValueSourceSpec, context: &str) 
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => Err(ManifestError::validation(format!(
             "{context} uses table filter '{key}' but the value is source-scoped",

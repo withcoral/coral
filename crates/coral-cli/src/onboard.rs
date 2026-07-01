@@ -1,7 +1,6 @@
-use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo};
+use coral_api::v1::{ExecuteSqlRequest, Source, SourceInfo, Workspace};
 use coral_client::{
-    AppClient, decode_execute_sql_response, default_workspace, format_batches_table,
-    manifest_input_from_proto,
+    AppClient, decode_execute_sql_response, format_batches_table, manifest_input_from_proto,
 };
 use dialoguer::console::{measure_text_width, style};
 use dialoguer::{Select, theme::ColorfulTheme};
@@ -37,14 +36,14 @@ enum InstalledSourceAction {
     Back,
 }
 
-pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
+pub(crate) async fn run(app: &AppClient, workspace: &Workspace) -> Result<(), anyhow::Error> {
     source_ops::require_interactive()?;
     let theme = ColorfulTheme::default();
 
     crate::branding::print_welcome_header();
 
     loop {
-        let bundled_sources = source_ops::discover_sources(app).await?;
+        let bundled_sources = source_ops::discover_sources(app, workspace).await?;
 
         if bundled_sources.is_empty() {
             println!();
@@ -65,16 +64,16 @@ pub(crate) async fn run(app: &AppClient) -> Result<(), anyhow::Error> {
                     .get(idx)
                     .expect("selected source index comes from menu items");
                 if source.installed {
-                    run_installed_source_menu(app, &theme, source).await?;
+                    run_installed_source_menu(app, workspace, &theme, source).await?;
                 } else {
-                    run_add_bundled_source(app, source).await?;
-                    match run_next_steps(app, &theme).await? {
+                    run_add_bundled_source(app, workspace, source).await?;
+                    match run_next_steps(app, workspace, &theme).await? {
                         NextStepChoice::AddMoreSources => {}
                         NextStepChoice::Exit => return Ok(()),
                     }
                 }
             }
-            TopLevelChoice::Finish => match run_next_steps(app, &theme).await? {
+            TopLevelChoice::Finish => match run_next_steps(app, workspace, &theme).await? {
                 NextStepChoice::AddMoreSources => {}
                 NextStepChoice::Exit => return Ok(()),
             },
@@ -139,6 +138,7 @@ fn format_source_list_item(source: &SourceInfo, name_width: usize) -> String {
 
 async fn run_installed_source_menu(
     app: &AppClient,
+    workspace: &Workspace,
     theme: &ColorfulTheme,
     source: &SourceInfo,
 ) -> Result<(), anyhow::Error> {
@@ -163,6 +163,7 @@ async fn run_installed_source_menu(
         Some(InstalledSourceAction::Validate) => {
             source_ops::validate_and_warn(
                 app,
+                workspace,
                 &source.name,
                 source_ops::TableDisplayLimit::DEFAULT,
             )
@@ -170,16 +171,23 @@ async fn run_installed_source_menu(
         }
         Some(InstalledSourceAction::Reconfigure) => {
             let Some(inputs) =
-                prompt_bundled_source_inputs_after_host_confirmation(app, source).await?
+                prompt_bundled_source_inputs_after_host_confirmation(app, workspace, source)
+                    .await?
             else {
                 println!("Cancelled. Source '{}' was not reconfigured.", source.name);
                 return Ok(());
             };
-            let result =
-                source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
+            let result = source_ops::add_bundled_source_with_credentials(
+                app,
+                workspace,
+                &source.name,
+                inputs,
+            )
+            .await?;
             println!("Reconfigured source {}", result.name);
             source_ops::validate_and_warn(
                 app,
+                workspace,
                 &result.name,
                 source_ops::TableDisplayLimit::DEFAULT,
             )
@@ -191,19 +199,33 @@ async fn run_installed_source_menu(
     Ok(())
 }
 
-async fn run_add_bundled_source(app: &AppClient, source: &SourceInfo) -> Result<(), anyhow::Error> {
-    let Some(inputs) = prompt_bundled_source_inputs_after_host_confirmation(app, source).await?
+async fn run_add_bundled_source(
+    app: &AppClient,
+    workspace: &Workspace,
+    source: &SourceInfo,
+) -> Result<(), anyhow::Error> {
+    let Some(inputs) =
+        prompt_bundled_source_inputs_after_host_confirmation(app, workspace, source).await?
     else {
         println!("Cancelled. Source '{}' was not connected.", source.name);
         return Ok(());
     };
-    let result = source_ops::add_bundled_source_with_credentials(app, &source.name, inputs).await?;
+    let result =
+        source_ops::add_bundled_source_with_credentials(app, workspace, &source.name, inputs)
+            .await?;
     println!("Added source {}", result.name);
-    source_ops::validate_and_warn(app, &result.name, source_ops::TableDisplayLimit::DEFAULT).await
+    source_ops::validate_and_warn(
+        app,
+        workspace,
+        &result.name,
+        source_ops::TableDisplayLimit::DEFAULT,
+    )
+    .await
 }
 
 async fn prompt_bundled_source_inputs_after_host_confirmation(
     app: &AppClient,
+    workspace: &Workspace,
     source: &SourceInfo,
 ) -> Result<Option<source_ops::CollectedSourceInputs>, anyhow::Error> {
     let inputs = source
@@ -214,21 +236,25 @@ async fn prompt_bundled_source_inputs_after_host_confirmation(
     source_ops::collect_inputs_confirming_hosts(
         &inputs,
         source_ops::CredentialPromptMode::CredentialMethodFirst,
-        |variables| source_ops::resolve_bundled_source_hosts(app, &source.name, variables),
+        |variables| {
+            source_ops::resolve_bundled_source_hosts(app, workspace, &source.name, variables)
+        },
     )
     .await
 }
 
 async fn run_next_steps(
     app: &AppClient,
+    workspace: &Workspace,
     theme: &ColorfulTheme,
 ) -> Result<NextStepChoice, anyhow::Error> {
-    let installed_sources = source_ops::list_sources(app).await?;
-    show_next_steps_screen(app, theme, &installed_sources).await
+    let installed_sources = source_ops::list_sources(app, workspace).await?;
+    show_next_steps_screen(app, workspace, theme, &installed_sources).await
 }
 
 async fn show_next_steps_screen(
     app: &AppClient,
+    workspace: &Workspace,
     theme: &ColorfulTheme,
     installed_sources: &[Source],
 ) -> Result<NextStepChoice, anyhow::Error> {
@@ -311,7 +337,7 @@ async fn show_next_steps_screen(
         match action {
             Some(NextStepAction::RunExampleQuery) => {
                 let sql = "SELECT schema_name, COUNT(*) AS table_count FROM coral.tables GROUP BY schema_name ORDER BY 1";
-                match run_first_query(app, sql).await {
+                match run_first_query(app, workspace, sql).await {
                     Ok(output) => {
                         println!();
                         println!("{}", style(sql).dim());
@@ -337,11 +363,15 @@ async fn show_next_steps_screen(
     }
 }
 
-async fn run_first_query(app: &AppClient, sql: &str) -> Result<String, anyhow::Error> {
+async fn run_first_query(
+    app: &AppClient,
+    workspace: &Workspace,
+    sql: &str,
+) -> Result<String, anyhow::Error> {
     let response = app
         .query_client()
         .execute_sql(Request::new(ExecuteSqlRequest {
-            workspace: Some(default_workspace()),
+            workspace: Some(workspace.clone()),
             sql: sql.to_string(),
         }))
         .await?
