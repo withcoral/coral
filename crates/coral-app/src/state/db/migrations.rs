@@ -75,7 +75,9 @@ mod tests {
     use super::{MIGRATOR, rows_match_current_migrations};
     use crate::bootstrap;
     use crate::state::AppStateLayout;
-    use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
+    use crate::state::db::schema::{
+        SourceManifests, SourceSecretKeys, SourceVariables, Sources, Workspaces,
+    };
     use crate::state::db::{
         CoralDb, DatabaseConfig, DbError, DbSession, DbWriteSession, ResolvedDatabaseConfig,
     };
@@ -149,6 +151,10 @@ mod tests {
         assert_source_catalog_migration_contract(&db).await;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The migration contract keeps seed, uniqueness, source cascade, and workspace cascade checks together so schema regressions are visible in one fixture."
+    )]
     async fn assert_source_catalog_migration_contract(db: &CoralDb) {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let workspace_id = format!("workspace_{suffix}");
@@ -168,6 +174,12 @@ mod tests {
             source_secret_key_count(&mut session, &workspace_id, &source_name)
                 .await
                 .expect("count secret keys"),
+            1
+        );
+        assert_eq!(
+            source_manifest_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count manifests"),
             1
         );
         session
@@ -211,6 +223,12 @@ mod tests {
                 .expect("count secret keys after source delete"),
             0
         );
+        assert_eq!(
+            source_manifest_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count manifests after source delete"),
+            0
+        );
 
         insert_source_catalog_rows(&mut session, &workspace_id, &source_name)
             .await
@@ -236,6 +254,12 @@ mod tests {
                 .expect("count secret keys after workspace delete"),
             0
         );
+        assert_eq!(
+            source_manifest_count(&mut session, &workspace_id, &source_name)
+                .await
+                .expect("count manifests after workspace delete"),
+            0
+        );
         session
             .commit()
             .await
@@ -254,7 +278,8 @@ mod tests {
         insert_source_row(session, workspace_id, source_name).await?;
         insert_source_variable_row(session, workspace_id, source_name, "REGION", "us-east-1")
             .await?;
-        insert_source_secret_key_row(session, workspace_id, source_name, 0, "API_TOKEN").await
+        insert_source_secret_key_row(session, workspace_id, source_name, 0, "API_TOKEN").await?;
+        insert_source_manifest_row(session, workspace_id, source_name).await
     }
 
     async fn assert_source_catalog_uniqueness_contract(
@@ -405,6 +430,37 @@ mod tests {
             .await
     }
 
+    async fn insert_source_manifest_row<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(SourceManifests::Table)
+                    .columns([
+                        SourceManifests::WorkspaceId,
+                        SourceManifests::SourceName,
+                        SourceManifests::ManifestYaml,
+                        SourceManifests::ManifestHash,
+                        SourceManifests::CreatedAtUnixNanos,
+                    ])
+                    .values_panic([
+                        Expr::val(workspace_id),
+                        Expr::val(source_name),
+                        Expr::val("name: migration_contract\n"),
+                        Expr::val("manifest-hash"),
+                        Expr::val(4),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
     async fn delete_source<S>(
         session: &mut S,
         workspace_id: &str,
@@ -492,6 +548,28 @@ mod tests {
                     .from(SourceSecretKeys::Table)
                     .and_where(Expr::col(SourceSecretKeys::WorkspaceId).eq(workspace_id))
                     .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name))
+                    .to_owned(),
+            )
+            .await?
+            .expect("count row");
+        Ok(row.count)
+    }
+
+    async fn source_manifest_count<S>(
+        session: &mut S,
+        workspace_id: &str,
+        source_name: &str,
+    ) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        let row: CountRow = session
+            .fetch_optional(
+                Query::select()
+                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
+                    .from(SourceManifests::Table)
+                    .and_where(Expr::col(SourceManifests::WorkspaceId).eq(workspace_id))
+                    .and_where(Expr::col(SourceManifests::SourceName).eq(source_name))
                     .to_owned(),
             )
             .await?

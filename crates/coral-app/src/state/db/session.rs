@@ -1,4 +1,4 @@
-use sea_query::{DeleteStatement, InsertStatement, SelectStatement};
+use sea_query::{DeleteStatement, InsertStatement, SelectStatement, UpdateStatement};
 use sea_query_sqlx::SqlxBinder;
 use sqlx::postgres::PgRow;
 use sqlx::sqlite::SqliteRow;
@@ -29,6 +29,8 @@ pub(crate) trait DbSession {
 
 pub(crate) trait DbWriteSession: DbSession {
     async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError>;
+
+    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<(), DbError>;
 }
 
 pub(crate) trait DbRepos: DbSession + Sized {
@@ -78,6 +80,10 @@ impl DbSession for &CoralDb {
 impl DbWriteSession for CoralTx<'_> {
     async fn execute_delete(&mut self, statement: DeleteStatement) -> Result<(), DbError> {
         self.execute_delete(statement).await
+    }
+
+    async fn execute_update(&mut self, statement: UpdateStatement) -> Result<(), DbError> {
+        self.execute_update(statement).await
     }
 }
 
