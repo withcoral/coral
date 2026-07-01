@@ -29,7 +29,7 @@
     "Union": 17,
     "Unwind": 13,
     "VariableLengthPaths": 16,
-    "Where": 24,
+    "Where": 30,
     "With": 24
   },
   "scenarios": [
@@ -473,6 +473,99 @@
           {
             "name": "Bob",
             "city": ""
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-null-producing-predicate-drops-rows",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE nullIf(p.city, p.city) = 'London' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": []
+      }
+    },
+    {
+      "id": "where-in-list-containing-null",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.city IN [null, '', 'Paris'] RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-or-with-null-producing-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.city = '' OR nullIf(p.city, p.city) = 'London' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-empty-string-string-predicate",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.name STARTS WITH '' AND p.city ENDS WITH '' AND p.city CONTAINS '' RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-int-float-equality",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE p.age = 34.0 RETURN p.name AS name, p.age AS age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "where-mixed-not-and-or-precedence",
+      "feature": "Where",
+      "query": "MATCH (p:Person) WHERE NOT p.active OR p.city = 'London' AND p.age > 30 RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
           }
         ]
       }
