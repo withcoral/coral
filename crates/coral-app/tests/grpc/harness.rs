@@ -72,6 +72,13 @@ impl GrpcHarness {
         self.local_trace_store_dir.as_deref()
     }
 
+    pub(crate) async fn shutdown(self) {
+        let Self {
+            _server: server, ..
+        } = self;
+        server.shutdown().await.expect("shutdown server");
+    }
+
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
     }

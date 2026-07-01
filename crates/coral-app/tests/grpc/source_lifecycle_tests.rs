@@ -80,18 +80,95 @@ async fn list_sources_reads_database_after_config_source_section_is_removed() {
         .import_source(manifest_yaml, Vec::new(), Vec::new())
         .await;
 
-    let config_path = harness.config_dir().join("config.toml");
-    let raw = fs::read_to_string(&config_path).expect("read config");
-    let mut doc = raw.parse::<DocumentMut>().expect("parse config");
-    doc["workspaces"]["default"]["sources"]
-        .as_table_mut()
-        .expect("sources table")
-        .remove("local_messages");
-    fs::write(&config_path, doc.to_string()).expect("write config without source section");
+    remove_config_source_section(harness.config_dir(), "local_messages");
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "local_messages");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect("get source")
+        .into_inner()
+        .source
+        .expect("source response");
+    assert_eq!(fetched.name, "local_messages");
+    assert_eq!(fetched.version, "0.1.0");
+    assert_eq!(fetched.origin, SourceOrigin::Imported as i32);
+}
+
+#[tokio::test]
+async fn list_catalog_reads_database_after_config_source_section_is_removed() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    remove_config_source_section(harness.config_dir(), "local_messages");
+
+    let tables = harness.list_tables().await;
+    assert!(
+        tables
+            .iter()
+            .any(|table| table.schema_name == "local_messages" && table.name == "messages"),
+        "catalog should still load imported source from DB"
+    );
+}
+
+#[tokio::test]
+async fn validate_source_reads_database_after_config_source_section_is_removed() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+    harness
+        .import_source(manifest_yaml, Vec::new(), Vec::new())
+        .await;
+
+    remove_config_source_section(harness.config_dir(), "local_messages");
+
+    let validated = harness.validate_source("local_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.tables[0].schema_name, "local_messages");
+    assert_eq!(validated.tables[0].name, "messages");
+}
+
+#[tokio::test]
+async fn restart_preserves_database_source_after_config_source_section_is_removed() {
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    let manifest_yaml = fixture_manifest_yaml(temp.path());
+
+    {
+        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
+        harness
+            .import_source(manifest_yaml, Vec::new(), Vec::new())
+            .await;
+        harness.shutdown().await;
+    }
+    remove_config_source_section(&config_dir, "local_messages");
+
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "local_messages");
+
+    let validated = harness.validate_source("local_messages").await;
+    assert_eq!(validated.tables.len(), 1);
+    assert_eq!(validated.tables[0].schema_name, "local_messages");
+    assert_eq!(validated.tables[0].name, "messages");
+    assert!(
+        harness
+            .list_tables()
+            .await
+            .iter()
+            .any(|table| table.schema_name == "local_messages" && table.name == "messages"),
+        "catalog should agree with source list after restart reconciliation"
+    );
 }
 
 #[tokio::test]
@@ -622,6 +699,17 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
             .message()
             .contains("missing required source secret 'API_TOKEN'")
     );
+}
+
+fn remove_config_source_section(config_dir: &std::path::Path, source_name: &str) {
+    let config_path = config_dir.join("config.toml");
+    let raw = fs::read_to_string(&config_path).expect("read config");
+    let mut doc = raw.parse::<DocumentMut>().expect("parse config");
+    doc["workspaces"]["default"]["sources"]
+        .as_table_mut()
+        .expect("sources table")
+        .remove(source_name);
+    fs::write(&config_path, doc.to_string()).expect("write config without source section");
 }
 
 #[tokio::test]
@@ -1414,6 +1502,94 @@ async fn import_rolls_back_on_config_write_failure() {
     assert_eq!(error.code(), tonic::Code::Internal);
     assert!(!source_dir(harness.config_dir(), "secured_messages").exists());
     assert!(harness.list_sources().await.is_empty());
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(!config_raw.contains("[workspaces.default.sources.secured_messages]"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn overwrite_restores_previous_source_on_config_write_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
+    let original_manifest = fixture_manifest_with_inputs_yaml();
+    harness
+        .import_source(
+            original_manifest.clone(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "old-token".to_string(),
+            }],
+        )
+        .await;
+    let updated_manifest = original_manifest.replace("0.1.0", "0.2.0");
+
+    fs::set_permissions(harness.config_dir(), fs::Permissions::from_mode(0o500))
+        .expect("make config dir read-only");
+    let error = harness
+        .source_client()
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml: updated_manifest,
+            variables: vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
+            secrets: vec![SourceSecret {
+                key: "API_TOKEN".to_string(),
+                value: "new-token".to_string(),
+            }],
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await
+        .expect_err("config write should fail");
+
+    fs::set_permissions(harness.config_dir(), fs::Permissions::from_mode(0o700))
+        .expect("restore config dir permissions");
+
+    assert_eq!(error.code(), tonic::Code::Internal);
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "secured_messages");
+    assert_eq!(listed[0].version, "0.1.0");
+
+    let fetched = harness
+        .source_client()
+        .get_source(Request::new(GetSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "secured_messages".to_string(),
+        }))
+        .await
+        .expect("get source after rollback")
+        .into_inner()
+        .source
+        .expect("source after rollback");
+    assert_eq!(fetched.version, "0.1.0");
+
+    let installed_manifest =
+        source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
+    assert_eq!(
+        fs::read_to_string(&installed_manifest).expect("read restored manifest"),
+        original_manifest
+    );
+    let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
+    let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
+    assert!(
+        secret_material.contains("API_TOKEN=old-token"),
+        "{secret_material}"
+    );
+    assert!(
+        !secret_material.contains("API_TOKEN=new-token"),
+        "{secret_material}"
+    );
 }
 
 #[cfg(unix)]

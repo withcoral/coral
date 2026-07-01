@@ -330,12 +330,13 @@ impl ServerBuilder {
             .query_runtime_context()
             .with_body_capture_max_bytes(body_capture_max_bytes);
 
-        let query_manager = QueryManager::new(
+        let query_manager = QueryManager::with_db(
             config_store,
             credential_manager,
             query_runtime_context,
             layout,
             self.config.engine_extensions_providers,
+            Arc::clone(&coral_db),
         );
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {

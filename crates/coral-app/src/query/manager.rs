@@ -31,6 +31,7 @@ use crate::sources::materialization::{
 };
 use crate::sources::model::InstalledSource;
 use crate::sources::runtime_package::runtime_components_for_v4_source;
+use crate::state::db::{CoralDb, DbRepos};
 use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
@@ -56,6 +57,7 @@ struct LoadedQuerySource {
 #[derive(Clone)]
 pub(crate) struct QueryManager {
     config_store: ConfigStore,
+    catalog_db: Option<Arc<CoralDb>>,
     credential_manager: CredentialManager,
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
@@ -63,6 +65,7 @@ pub(crate) struct QueryManager {
 }
 
 impl QueryManager {
+    #[cfg(test)]
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
@@ -72,6 +75,25 @@ impl QueryManager {
     ) -> Self {
         Self {
             config_store,
+            catalog_db: None,
+            credential_manager,
+            runtime_context,
+            layout,
+            engine_extensions_providers,
+        }
+    }
+
+    pub(crate) fn with_db(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        runtime_context: QueryRuntimeContext,
+        layout: AppStateLayout,
+        engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+        catalog_db: Arc<CoralDb>,
+    ) -> Self {
+        Self {
+            config_store,
+            catalog_db: Some(catalog_db),
             credential_manager,
             runtime_context,
             layout,
@@ -95,6 +117,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -125,6 +148,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -166,6 +190,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -195,6 +220,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -224,6 +250,7 @@ impl QueryManager {
             async {
                 let (loaded_sources, config) = self
                     .load_query_sources(workspace_name)
+                    .await
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -256,8 +283,10 @@ impl QueryManager {
             config
                 .require_workspace(workspace_name)
                 .map_err(QueryManagerError::App)?;
-            let source = config
-                .get_source(workspace_name, source_name)
+            let source = self
+                .get_installed_source(workspace_name, source_name, &config)
+                .await
+                .map_err(QueryManagerError::App)?
                 .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
                 .map_err(QueryManagerError::App)?;
             let (loaded_source, version) = self
@@ -285,20 +314,54 @@ impl QueryManager {
         Ok(ValidatedSource { source, report })
     }
 
-    fn load_query_sources(
+    async fn load_query_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
         let _state_lock = self.config_store.state_lock_shared()?;
         let config = self.config_store.load_config_unlocked()?;
-        let sources = self.load_query_sources_from_config(workspace_name, &config)?;
+        let installed_sources = self.installed_sources(workspace_name, &config).await?;
+        let sources = self.load_query_sources_from_installed(workspace_name, installed_sources)?;
         Ok((sources, config))
     }
 
-    fn load_query_sources_from_config(
+    async fn installed_sources(
         &self,
         workspace_name: &WorkspaceName,
         config: &AppConfig,
+    ) -> Result<Vec<InstalledSource>, AppError> {
+        if let Some(db) = self.catalog_db.as_ref() {
+            let mut session = db.as_ref();
+            return session
+                .sources()
+                .list_workspace_sources(workspace_name)
+                .await
+                .map_err(AppError::from);
+        }
+        Ok(config.workspace_sources(workspace_name))
+    }
+
+    async fn get_installed_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        config: &AppConfig,
+    ) -> Result<Option<InstalledSource>, AppError> {
+        if let Some(db) = self.catalog_db.as_ref() {
+            let mut session = db.as_ref();
+            return session
+                .sources()
+                .get_source(workspace_name, source_name)
+                .await
+                .map_err(AppError::from);
+        }
+        Ok(config.get_source(workspace_name, source_name))
+    }
+
+    fn load_query_sources_from_installed(
+        &self,
+        workspace_name: &WorkspaceName,
+        installed_sources: Vec<InstalledSource>,
     ) -> Result<Vec<LoadedQuerySource>, AppError> {
         let span = tracing::info_span!(
             "coral.app.query_sources.load",
@@ -309,7 +372,7 @@ impl QueryManager {
         let _guard = span.enter();
         config.require_workspace(workspace_name)?;
         let mut loaded_sources = Vec::new();
-        for source in config.workspace_sources(workspace_name) {
+        for source in installed_sources {
             match self.load_query_source(workspace_name, &source) {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
@@ -431,6 +494,7 @@ impl QueryManager {
         extensions.source_input_resolver = Some(Arc::new(CredentialRefreshingInputResolver::new(
             workspace_name.clone(),
             self.config_store.clone(),
+            self.catalog_db.clone(),
             self.credential_manager.clone(),
             selected_sources
                 .iter()
@@ -1285,8 +1349,8 @@ surfaces:
         );
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_missing_v4_materialization() {
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_missing_v4_materialization() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
         fixture.manager.layout.ensure().expect("ensure layout");
         let workspace_name = WorkspaceName::default();
@@ -1328,6 +1392,7 @@ surfaces:
         let error = fixture
             .manager
             .load_query_sources(&workspace_name)
+            .await
             .expect_err("missing materialization should fail closed");
 
         assert!(
@@ -1339,8 +1404,8 @@ surfaces:
         );
     }
 
-    #[test]
-    fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
+    #[tokio::test]
+    async fn load_query_sources_fails_closed_for_unavailable_keychain_source() {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
@@ -1374,6 +1439,7 @@ surfaces:
         );
         let error = manager
             .load_query_sources(&workspace_name)
+            .await
             .expect_err("unavailable keychain should fail closed");
 
         assert!(

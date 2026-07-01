@@ -16,6 +16,7 @@ use crate::bootstrap::AppError;
 use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
 use crate::sources::model::InstalledSource;
 use crate::state::ConfigStore;
+use crate::state::db::{CoralDb, DbRepos};
 use crate::workspaces::WorkspaceName;
 
 /// App-layer provider that selects engine extensions for one runtime build.
@@ -73,6 +74,7 @@ struct SharedSourceCredentialSnapshot {
 pub(crate) struct CredentialRefreshingInputResolver {
     workspace_name: WorkspaceName,
     config_store: ConfigStore,
+    catalog_db: Option<Arc<CoralDb>>,
     credential_manager: CredentialManager,
     source_credentials: Arc<SourceCredentialSnapshotByName>,
     delegate: Option<Arc<dyn SourceInputResolver>>,
@@ -82,6 +84,7 @@ impl CredentialRefreshingInputResolver {
     pub(crate) fn new(
         workspace_name: WorkspaceName,
         config_store: ConfigStore,
+        catalog_db: Option<Arc<CoralDb>>,
         credential_manager: CredentialManager,
         source_credentials: BTreeMap<String, SourceCredentialSnapshot>,
         delegate: Option<Arc<dyn SourceInputResolver>>,
@@ -101,6 +104,7 @@ impl CredentialRefreshingInputResolver {
         Self {
             workspace_name,
             config_store,
+            catalog_db,
             credential_manager,
             source_credentials: Arc::new(source_credentials),
             delegate,
@@ -183,7 +187,10 @@ impl CredentialRefreshingInputResolver {
             .credential_refresh_lock(&self.workspace_name, &credential_set_id)
             .await
             .map_err(source_input_error)?;
-        if !self.source_config_still_matches_snapshot(&snapshot.source)? {
+        if !self
+            .source_catalog_still_matches_snapshot(&snapshot.source)
+            .await?
+        {
             return self
                 .credential_manager
                 .refresh_material_for_inputs(source.declared_inputs(), material)
@@ -209,10 +216,21 @@ impl CredentialRefreshingInputResolver {
         Ok(())
     }
 
-    fn source_config_still_matches_snapshot(
+    async fn source_catalog_still_matches_snapshot(
         &self,
         snapshot: &InstalledSource,
     ) -> Result<bool, SourceInputResolverError> {
+        if let Some(db) = self.catalog_db.as_ref() {
+            let mut session = db.as_ref();
+            let current = session
+                .sources()
+                .get_source(&self.workspace_name, &snapshot.name)
+                .await
+                .map_err(AppError::from)
+                .map_err(source_input_error)?;
+            return Ok(current.as_ref() == Some(snapshot));
+        }
+
         match self
             .config_store
             .get_source(&self.workspace_name, &snapshot.name)

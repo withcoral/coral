@@ -1070,8 +1070,16 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
+        self.upsert_db_source_with_state_lock_held(workspace_name, source.clone())?;
         self.config_store
-            .upsert_source_unlocked(workspace_name, source.clone())?;
+            .upsert_source_unlocked(workspace_name, source)
+    }
+
+    fn upsert_db_source_with_state_lock_held(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
         if let Some(db) = self.catalog_db.clone() {
             let workspace_name = workspace_name.clone();
             return run_db_catalog_operation(async move {
@@ -1292,9 +1300,15 @@ impl SourceManager {
                     }
                 }
             }
+            let previous_source = previous.source;
+            if let Err(e) =
+                self.upsert_db_source_with_state_lock_held(workspace_name, previous_source.clone())
+            {
+                warn!("rollback: failed to restore source database row: {e}");
+            }
             if let Err(e) = self
                 .config_store
-                .upsert_source_unlocked(workspace_name, previous.source)
+                .upsert_source_unlocked(workspace_name, previous_source)
             {
                 warn!("rollback: failed to restore source config: {e}");
             }
@@ -1304,6 +1318,16 @@ impl SourceManager {
                 && let Err(e) = std::fs::remove_dir_all(&source_dir)
             {
                 warn!("rollback: failed to remove source directory: {e}");
+            }
+            if let Err(e) = self.remove_db_source_with_state_lock_held(workspace_name, source_name)
+            {
+                warn!("rollback: failed to remove source database row: {e}");
+            }
+            if let Err(e) = self
+                .config_store
+                .remove_source_unlocked(workspace_name, source_name)
+            {
+                warn!("rollback: failed to remove source config: {e}");
             }
             if let Some(storage) = new_material_storage
                 && let Err(e) = credential_material.remove_material_with_state_lock_held(storage)
