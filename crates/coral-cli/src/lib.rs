@@ -414,7 +414,7 @@ impl Command {
     fn uses_selected_workspace(&self) -> bool {
         matches!(
             self,
-            Command::Sql(_) | Command::Source(_) | Command::Onboard
+            Command::Sql(_) | Command::Source(_) | Command::Onboard | Command::McpStdio(_)
         )
     }
 }
@@ -1103,8 +1103,8 @@ mod tests {
         assert!(sql.command.uses_selected_workspace());
         assert!(source.command.uses_selected_workspace());
         assert!(onboard.command.uses_selected_workspace());
+        assert!(mcp.command.uses_selected_workspace());
         assert!(!workspace.command.uses_selected_workspace());
-        assert!(!mcp.command.uses_selected_workspace());
     }
 
     #[test]
