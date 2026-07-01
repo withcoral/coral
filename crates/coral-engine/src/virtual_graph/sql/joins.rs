@@ -238,4 +238,820 @@ impl<'a> Lowerer<'a> {
             _ => Ok(format!("({})", conditions.join(" OR "))),
         }
     }
+    pub(super) fn build_from_clause(&mut self) -> Result<(), CoreError> {
+        let plan = self.validated.plan();
+        let first_node = plan
+            .nodes
+            .first()
+            .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
+        self.start_from_node(first_node.variable.as_str())?;
+
+        self.join_mandatory_relationships()?;
+        self.cross_join_isolated_nodes()?;
+        self.ensure_optional_relationships_joined()?;
+
+        Ok(())
+    }
+
+    fn start_from_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
+            return Err(CoreError::internal("graph component root was not a node"));
+        };
+        self.from_clause = format!(
+            "FROM {} AS {}",
+            render_table_ref(&node_mapping.table),
+            quote_ident(binding.alias())
+        );
+        self.joined_nodes.insert(variable);
+        Ok(())
+    }
+
+    fn cross_join_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
+        if self.joined_nodes.contains(variable) {
+            return Ok(());
+        }
+        let binding = self.validated.binding(variable)?;
+        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
+            return Err(CoreError::internal("graph component root was not a node"));
+        };
+        write!(
+            self.from_clause,
+            " CROSS JOIN {} AS {}",
+            render_table_ref(&node_mapping.table),
+            quote_ident(binding.alias())
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        self.joined_nodes.insert(variable);
+        Ok(())
+    }
+
+    fn cross_join_isolated_nodes(&mut self) -> Result<(), CoreError> {
+        let scoped_relationships = self.optional_match_scope_relationships();
+        let optional_match_nodes =
+            self.validated
+                .plan()
+                .optional_matches
+                .iter()
+                .flat_map(|optional_match| {
+                    optional_match
+                        .node_indices
+                        .iter()
+                        .copied()
+                        .filter_map(|index| self.validated.plan().nodes.get(index))
+                        .map(|node| node.variable.as_str())
+                });
+        let unscoped_optional_relationship_nodes = self
+            .validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .filter(|index| !scoped_relationships.contains(index))
+            .filter_map(|index| self.validated.plan().relationships.get(*index))
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()]);
+        let optional_nodes = optional_match_nodes
+            .chain(unscoped_optional_relationship_nodes)
+            .collect::<BTreeSet<_>>();
+        for node in &self.validated.plan().nodes {
+            if !self.joined_nodes.contains(node.variable.as_str())
+                && !optional_nodes.contains(node.variable.as_str())
+            {
+                self.cross_join_node(node.variable.as_str())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn join_mandatory_relationships(&mut self) -> Result<(), CoreError> {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let optional_nodes = self.optional_relationship_node_variables();
+        let mut remaining_relationships = (0..plan.relationships.len())
+            .filter(|index| !validated.relationship_is_optional(*index))
+            .collect::<BTreeSet<_>>();
+        while !remaining_relationships.is_empty() {
+            let progressed =
+                self.join_available_relationships(&mut remaining_relationships, false)?;
+            if progressed {
+                continue;
+            }
+            let index = *remaining_relationships
+                .first()
+                .ok_or_else(|| CoreError::internal("remaining relationship set was empty"))?;
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal("validated relationship index was out of bounds")
+            })?;
+            if !self.optional_relationships_joined
+                && [pattern.left.as_str(), pattern.right.as_str()]
+                    .iter()
+                    .any(|variable| optional_nodes.contains(*variable))
+            {
+                self.ensure_optional_relationships_joined()?;
+                continue;
+            }
+            self.cross_join_node(pattern.left.as_str())?;
+        }
+        Ok(())
+    }
+
+    fn optional_relationship_node_variables(&self) -> BTreeSet<&'a str> {
+        self.validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .filter_map(|index| self.validated.plan().relationships.get(*index))
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+            .collect()
+    }
+
+    fn join_relationship_index_set(
+        &mut self,
+        remaining_relationships: &mut BTreeSet<usize>,
+        optional: bool,
+    ) -> Result<(), CoreError> {
+        while !remaining_relationships.is_empty() {
+            let progressed =
+                self.join_available_relationships(&mut *remaining_relationships, optional)?;
+            if !progressed {
+                if optional {
+                    let index = *remaining_relationships.first().ok_or_else(|| {
+                        CoreError::internal("remaining optional relationship set was empty")
+                    })?;
+                    let anchor = self.optional_relationship_component_anchor(index)?;
+                    self.cross_join_node(anchor)?;
+                    continue;
+                }
+                return Err(CoreError::internal(
+                    "validated graph plan contained an unjoinable relationship",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn join_optional_relationships(&mut self) -> Result<(), CoreError> {
+        let scoped_relationships = self.optional_match_scope_relationships();
+        self.join_optional_match_scopes()?;
+
+        let mut remaining_relationships = self
+            .validated
+            .plan()
+            .optional_relationships
+            .iter()
+            .copied()
+            .filter(|index| !scoped_relationships.contains(index))
+            .collect::<BTreeSet<_>>();
+        self.join_relationship_index_set(&mut remaining_relationships, true)
+    }
+
+    fn ensure_optional_relationships_joined(&mut self) -> Result<(), CoreError> {
+        if self.optional_relationships_joined {
+            return Ok(());
+        }
+        self.join_optional_relationships()?;
+        self.optional_relationships_joined = true;
+        Ok(())
+    }
+
+    fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
+        self.validated
+            .plan()
+            .optional_matches
+            .iter()
+            .flat_map(|optional_match| optional_match.relationship_indices.iter().copied())
+            .collect()
+    }
+
+    fn join_optional_match_scopes(&mut self) -> Result<(), CoreError> {
+        let mut remaining_scopes =
+            (0..self.validated.plan().optional_matches.len()).collect::<BTreeSet<_>>();
+        while !remaining_scopes.is_empty() {
+            let mut progressed = false;
+            for index in remaining_scopes.iter().copied().collect::<Vec<_>>() {
+                let optional_match = self
+                    .validated
+                    .plan()
+                    .optional_matches
+                    .get(index)
+                    .ok_or_else(|| CoreError::internal("optional match scope index missing"))?
+                    .clone();
+                if self.try_join_optional_match_scope(&optional_match)? {
+                    remaining_scopes.remove(&index);
+                    progressed = true;
+                }
+            }
+            if progressed {
+                continue;
+            }
+
+            let index = *remaining_scopes
+                .first()
+                .ok_or_else(|| CoreError::internal("remaining optional scope set was empty"))?;
+            let optional_match = self
+                .validated
+                .plan()
+                .optional_matches
+                .get(index)
+                .ok_or_else(|| CoreError::internal("optional match scope index missing"))?;
+            let anchor = self.optional_match_scope_component_anchor(optional_match)?;
+            self.cross_join_node(anchor)?;
+        }
+        Ok(())
+    }
+
+    fn try_join_optional_match_scope(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<bool, CoreError> {
+        let relationship_indices = optional_match.relationship_indices.as_slice();
+        let [relationship_index] = relationship_indices else {
+            let Some(anchor) = self.optional_match_scope_join_anchor(optional_match)? else {
+                return Ok(false);
+            };
+            self.join_optional_match_group(optional_match, anchor)?;
+            return Ok(true);
+        };
+
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(*relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+        let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+        if !left_joined && !right_joined {
+            return Ok(false);
+        }
+
+        let relationship = self.validated.relationship_mapping(*relationship_index)?;
+        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        Self::join_relationship(
+            &self.validated,
+            &mut self.joined_nodes,
+            &mut self.from_clause,
+            *relationship_index,
+            pattern,
+            relationship,
+            JoinRelationshipOptions {
+                optional: true,
+                optional_predicate: optional_predicate.as_deref(),
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn optional_relationship_component_anchor(
+        &self,
+        relationship_index: usize,
+    ) -> Result<&'a str, CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_position = self.node_position(pattern.left.as_str())?;
+        let right_position = self.node_position(pattern.right.as_str())?;
+        if left_position <= right_position {
+            Ok(pattern.left.as_str())
+        } else {
+            Ok(pattern.right.as_str())
+        }
+    }
+
+    fn optional_match_scope_component_anchor(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<&'a str, CoreError> {
+        optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .flat_map(|relationship_index| {
+                self.validated
+                    .plan()
+                    .relationships
+                    .get(relationship_index)
+                    .into_iter()
+                    .flat_map(|relationship| {
+                        [relationship.left.as_str(), relationship.right.as_str()]
+                    })
+            })
+            .min_by_key(|variable| self.node_position(variable).unwrap_or(usize::MAX))
+            .ok_or_else(|| CoreError::internal("optional match scope had no anchor candidates"))
+    }
+
+    fn optional_match_scope_join_anchor(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<Option<OptionalScopeAnchor<'a>>, CoreError> {
+        let mut anchor = None;
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let pattern = self
+                .validated
+                .plan()
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+            let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+            let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+            if left_joined ^ right_joined {
+                anchor.get_or_insert(OptionalScopeAnchor {
+                    relationship_index,
+                    anchor_variable: if left_joined {
+                        pattern.left.as_str()
+                    } else {
+                        pattern.right.as_str()
+                    },
+                    anchor_is_left: left_joined,
+                });
+            }
+        }
+        Ok(anchor)
+    }
+
+    fn join_optional_match_group(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+        anchor: OptionalScopeAnchor<'a>,
+    ) -> Result<(), CoreError> {
+        let mut remaining_relationships = optional_match
+            .relationship_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut inner_joined_nodes = BTreeSet::new();
+        let (mut join_group, outer_condition) =
+            self.render_optional_match_group_anchor(anchor, &mut inner_joined_nodes)?;
+        let mut outer_conditions = vec![outer_condition];
+        remaining_relationships.remove(&anchor.relationship_index);
+
+        while !remaining_relationships.is_empty() {
+            let mut progressed = false;
+            for relationship_index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+                let pattern = self
+                    .validated
+                    .plan()
+                    .relationships
+                    .get(relationship_index)
+                    .ok_or_else(|| {
+                        CoreError::internal("validated relationship index was out of bounds")
+                    })?;
+                let left_joined = inner_joined_nodes.contains(pattern.left.as_str());
+                let right_joined = inner_joined_nodes.contains(pattern.right.as_str());
+                if !left_joined && !right_joined {
+                    continue;
+                }
+
+                if let Some(outer_condition) = self.render_optional_match_group_relationship(
+                    &mut join_group,
+                    &mut inner_joined_nodes,
+                    relationship_index,
+                    left_joined,
+                    right_joined,
+                )? {
+                    outer_conditions.push(outer_condition);
+                }
+                remaining_relationships.remove(&relationship_index);
+                progressed = true;
+            }
+            if !progressed {
+                return Err(CoreError::internal(
+                    "validated optional match scope was not joinable",
+                ));
+            }
+        }
+
+        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        let outer_condition = match outer_conditions.as_slice() {
+            [] => {
+                return Err(CoreError::internal(
+                    "optional match scope had no outer condition",
+                ));
+            }
+            [condition] => condition.clone(),
+            _ => outer_conditions
+                .into_iter()
+                .map(|condition| format!("({condition})"))
+                .collect::<Vec<_>>()
+                .join(" AND "),
+        };
+        let outer_condition =
+            Self::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
+        write!(
+            self.from_clause,
+            " LEFT JOIN ({join_group}) ON {outer_condition}"
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+
+        for relationship_index in optional_match.relationship_indices.iter().copied() {
+            let pattern = self
+                .validated
+                .plan()
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| {
+                    CoreError::internal("validated relationship index was out of bounds")
+                })?;
+            self.joined_nodes.insert(pattern.left.as_str());
+            self.joined_nodes.insert(pattern.right.as_str());
+        }
+        Ok(())
+    }
+
+    fn render_optional_match_group_anchor(
+        &self,
+        anchor: OptionalScopeAnchor<'a>,
+        inner_joined_nodes: &mut BTreeSet<&'a str>,
+    ) -> Result<(String, String), CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(anchor.relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let relationship = self
+            .validated
+            .relationship_mapping(anchor.relationship_index)?;
+        let relationship_alias = self
+            .validated
+            .relationship_alias(anchor.relationship_index, pattern);
+        let relationship_join = Self::relationship_known_node_condition(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            anchor.anchor_variable,
+            anchor.anchor_is_left,
+        )?;
+        let outer_condition = Self::relationship_outer_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            relationship_join,
+        )?;
+        let unknown_variable = if anchor.anchor_is_left {
+            pattern.right.as_str()
+        } else {
+            pattern.left.as_str()
+        };
+        let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            unknown_variable,
+            !anchor.anchor_is_left,
+        )?;
+        let unknown_node = self.validated.node_binding(unknown_variable)?;
+        let unknown_alias = self.validated.binding(unknown_variable)?.alias();
+        inner_joined_nodes.insert(unknown_variable);
+        Ok((
+            format!(
+                "{} AS {} JOIN {} AS {} ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(&relationship_alias),
+                render_table_ref(&unknown_node.table),
+                quote_ident(unknown_alias),
+                unknown_join
+            ),
+            outer_condition,
+        ))
+    }
+
+    fn render_optional_match_group_relationship(
+        &self,
+        join_group: &mut String,
+        inner_joined_nodes: &mut BTreeSet<&'a str>,
+        relationship_index: usize,
+        left_joined: bool,
+        right_joined: bool,
+    ) -> Result<Option<String>, CoreError> {
+        let pattern = self
+            .validated
+            .plan()
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let relationship = self.validated.relationship_mapping(relationship_index)?;
+        let relationship_alias = self
+            .validated
+            .relationship_alias(relationship_index, pattern);
+        if left_joined && right_joined {
+            let condition = Self::relationship_pair_condition(
+                &self.validated,
+                relationship,
+                &relationship_alias,
+                pattern,
+            )?;
+            write!(
+                join_group,
+                " JOIN {} AS {} ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(&relationship_alias),
+                condition
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            return Ok(None);
+        }
+
+        let (known_variable, unknown_variable, known_is_left) = if left_joined {
+            (pattern.left.as_str(), pattern.right.as_str(), true)
+        } else {
+            (pattern.right.as_str(), pattern.left.as_str(), false)
+        };
+        let relationship_join = Self::relationship_known_node_condition(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            known_variable,
+            known_is_left,
+        )?;
+        write!(
+            join_group,
+            " JOIN {} AS {} ON {}",
+            render_table_ref(&relationship.table),
+            quote_ident(&relationship_alias),
+            relationship_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+
+        if self.joined_nodes.contains(unknown_variable) {
+            let outer_join = Self::relationship_known_node_condition(
+                &self.validated,
+                relationship,
+                pattern,
+                &relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?;
+            return Self::relationship_outer_condition_for_known_node(
+                &self.validated,
+                relationship,
+                pattern,
+                &relationship_alias,
+                outer_join,
+            )
+            .map(Some);
+        }
+
+        let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
+            &self.validated,
+            relationship,
+            pattern,
+            &relationship_alias,
+            unknown_variable,
+            !known_is_left,
+        )?;
+        let unknown_node = self.validated.node_binding(unknown_variable)?;
+        let unknown_alias = self.validated.binding(unknown_variable)?.alias();
+        write!(
+            join_group,
+            " JOIN {} AS {} ON {}",
+            render_table_ref(&unknown_node.table),
+            quote_ident(unknown_alias),
+            unknown_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        inner_joined_nodes.insert(unknown_variable);
+        Ok(None)
+    }
+
+    fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
+        self.validated
+            .plan()
+            .nodes
+            .iter()
+            .position(|node| node.variable == variable)
+            .ok_or_else(|| CoreError::internal("validated node variable was missing"))
+    }
+
+    fn join_available_relationships(
+        &mut self,
+        remaining_relationships: &mut BTreeSet<usize>,
+        optional: bool,
+    ) -> Result<bool, CoreError> {
+        let plan = self.validated.plan();
+        let validated = &self.validated;
+        let mut progressed = false;
+        for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
+            let pattern = plan.relationships.get(index).ok_or_else(|| {
+                CoreError::internal("validated relationship index was out of bounds")
+            })?;
+            let left_joined = self.joined_nodes.contains(pattern.left.as_str());
+            let right_joined = self.joined_nodes.contains(pattern.right.as_str());
+            if left_joined || right_joined {
+                let relationship = validated.relationship_mapping(index)?;
+                let optional_predicate = if optional {
+                    self.render_optional_join_predicate(index)?
+                } else {
+                    None
+                };
+                Self::join_relationship(
+                    validated,
+                    &mut self.joined_nodes,
+                    &mut self.from_clause,
+                    index,
+                    pattern,
+                    relationship,
+                    JoinRelationshipOptions {
+                        optional,
+                        optional_predicate: optional_predicate.as_deref(),
+                    },
+                )?;
+                remaining_relationships.remove(&index);
+                progressed = true;
+            }
+        }
+        Ok(progressed)
+    }
+
+    fn join_relationship(
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
+        index: usize,
+        pattern: &'a RelationshipPattern,
+        relationship: &Relationship,
+        options: JoinRelationshipOptions<'_>,
+    ) -> Result<(), CoreError> {
+        let left_joined = joined_nodes.contains(pattern.left.as_str());
+        let right_joined = joined_nodes.contains(pattern.right.as_str());
+        if !left_joined && !right_joined {
+            return Err(CoreError::internal(
+                "validated graph relationship was not joinable",
+            ));
+        }
+
+        let relationship_alias = validated.relationship_alias(index, pattern);
+        let quoted_relationship_alias = quote_ident(&relationship_alias);
+        let join_operator = if options.optional {
+            " LEFT JOIN "
+        } else {
+            " JOIN "
+        };
+
+        if left_joined && right_joined {
+            let condition = Self::relationship_pair_condition(
+                validated,
+                relationship,
+                &relationship_alias,
+                pattern,
+            )?;
+            let condition =
+                Self::join_condition_with_predicate(condition, options.optional_predicate);
+            write!(
+                from_clause,
+                "{}{} AS {} ON {}",
+                join_operator,
+                render_table_ref(&relationship.table),
+                quoted_relationship_alias,
+                condition
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        } else if left_joined {
+            Self::join_from_known_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                relationship,
+                pattern,
+                &relationship_alias,
+                JoinFromKnownNodeOptions {
+                    left_is_known: true,
+                    optional: options.optional,
+                    optional_predicate: options.optional_predicate,
+                },
+            )?;
+        } else {
+            Self::join_from_known_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                relationship,
+                pattern,
+                &relationship_alias,
+                JoinFromKnownNodeOptions {
+                    left_is_known: false,
+                    optional: options.optional,
+                    optional_predicate: options.optional_predicate,
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn join_from_known_node(
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
+        relationship: &Relationship,
+        pattern: &'a RelationshipPattern,
+        relationship_alias: &str,
+        options: JoinFromKnownNodeOptions<'_>,
+    ) -> Result<(), CoreError> {
+        let (known_variable, unknown_variable, known_is_left) = if options.left_is_known {
+            (pattern.left.as_str(), pattern.right.as_str(), true)
+        } else {
+            (pattern.right.as_str(), pattern.left.as_str(), false)
+        };
+        let unknown_node = validated.node_binding(unknown_variable)?;
+        let relationship_join = Self::relationship_known_node_condition(
+            validated,
+            relationship,
+            pattern,
+            relationship_alias,
+            known_variable,
+            known_is_left,
+        )?;
+        let unknown_table_ref = render_table_ref(&unknown_node.table);
+        let unknown_alias = validated.binding(unknown_variable)?.alias().to_string();
+        let join_operator = if options.optional {
+            " LEFT JOIN "
+        } else {
+            " JOIN "
+        };
+        if options.optional
+            && let Some(optional_predicate) = options.optional_predicate
+        {
+            let unknown_join = Self::relationship_known_node_condition(
+                validated,
+                relationship,
+                pattern,
+                relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?;
+            let relationship_condition = if pattern.direction == Direction::Undirected
+                && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+            {
+                Self::relationship_pair_condition(
+                    validated,
+                    relationship,
+                    relationship_alias,
+                    pattern,
+                )?
+            } else {
+                relationship_join
+            };
+            let outer_condition = Self::join_condition_with_predicate(
+                relationship_condition,
+                Some(optional_predicate),
+            );
+            write!(
+                from_clause,
+                " LEFT JOIN ({} AS {} JOIN {} AS {} ON {}) ON {}",
+                render_table_ref(&relationship.table),
+                quote_ident(relationship_alias),
+                unknown_table_ref,
+                quote_ident(&unknown_alias),
+                unknown_join,
+                outer_condition
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            joined_nodes.insert(unknown_variable);
+            return Ok(());
+        }
+
+        write!(
+            from_clause,
+            "{}{} AS {} ON {}",
+            join_operator,
+            render_table_ref(&relationship.table),
+            quote_ident(relationship_alias),
+            relationship_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        let unknown_join = if pattern.direction == Direction::Undirected
+            && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
+        {
+            Self::relationship_pair_condition(validated, relationship, relationship_alias, pattern)?
+        } else {
+            Self::relationship_known_node_condition(
+                validated,
+                relationship,
+                pattern,
+                relationship_alias,
+                unknown_variable,
+                !known_is_left,
+            )?
+        };
+        write!(
+            from_clause,
+            "{}{} AS {} ON {}",
+            join_operator,
+            unknown_table_ref,
+            quote_ident(&unknown_alias),
+            unknown_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        joined_nodes.insert(unknown_variable);
+        Ok(())
+    }
 }
