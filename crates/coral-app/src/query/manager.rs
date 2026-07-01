@@ -1501,6 +1501,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use coral_engine::{
         EngineExtensions, QueryExecutionProvenance, QueryTableFunctionUsage, QueryTableUsage,
@@ -1769,6 +1770,55 @@ mod tests {
         };
 
         assert_workspace_not_found(error, &missing_workspace);
+    }
+
+    #[tokio::test]
+    async fn load_query_sources_waits_for_state_lock() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let db = test_db(&layout, &config_store).await;
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let workspace_manager = WorkspaceManager::new_for_tests(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout.clone(),
+            None,
+            Arc::clone(&db),
+        );
+        let guard = config_store
+            .state_lock_exclusive()
+            .expect("hold exclusive state lock");
+        let manager = QueryManager::new(
+            config_store,
+            workspace_manager,
+            credential_manager,
+            QueryRuntimeContext::default(),
+            layout,
+            WorkspaceLifecycleLock::default(),
+            Vec::new(),
+            db,
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tokio::runtime::Runtime::new()
+                .expect("runtime")
+                .block_on(manager.load_query_sources(&WorkspaceName::default()))
+                .expect("load query sources");
+            done_tx.send(()).expect("send query load result");
+        });
+
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(300)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("query load should finish after releasing state lock");
     }
 
     #[tokio::test]

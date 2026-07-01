@@ -580,6 +580,78 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_failure_does_not_fail_committed_source_import() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let db_path = temp.path().join("db").join("coral.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+        fs::write(
+            layout.config_file(),
+            format!(
+                "[database]\nbackend = \"sqlite\"\npath = \"{}\"\n",
+                db_path.display()
+            ),
+        )
+        .expect("write database config");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = source("github", None, [], [], None, SourceOrigin::Bundled);
+        config_store
+            .upsert_source(&workspace, source.clone())
+            .expect("write config source");
+        drop(
+            config_store
+                .state_lock_exclusive()
+                .expect("create state lock before read-only config dir"),
+        );
+        let db = open_sqlite(&layout).await;
+        cutover_legacy_workspace_catalog_at(&db, &config_store, &layout, 10)
+            .await
+            .expect("cut over legacy workspace catalog");
+
+        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o500))
+            .expect("make config dir read-only");
+        let report = import_config_source_catalog(&db, &config_store, 11).await;
+        fs::set_permissions(layout.config_dir(), fs::Permissions::from_mode(0o700))
+            .expect("restore config dir permissions");
+
+        assert_eq!(
+            report.expect("cleanup failure should not fail committed source import"),
+            SourceCatalogImportReport {
+                source_count: 1,
+                import_performed: true,
+            }
+        );
+        let mut session = &db;
+        assert_eq!(
+            session
+                .sources()
+                .get_source(&workspace, &source.name)
+                .await
+                .expect("get imported source"),
+            Some(source.clone())
+        );
+        assert!(
+            session
+                .state_migrations()
+                .has_completed(SOURCE_CATALOG_IMPORT_ID)
+                .await
+                .expect("read source import marker")
+        );
+        assert_eq!(
+            config_store
+                .get_source(&workspace, &source.name)
+                .expect("legacy config source should remain after cleanup failure"),
+            source
+        );
+    }
+
     #[tokio::test]
     async fn shared_database_imports_each_local_source_catalog_once() {
         let temp = tempdir().expect("temp dir");

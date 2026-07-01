@@ -3899,13 +3899,15 @@ surface:
                 },
             )
             .expect("install source");
+        let db = rusqlite::Connection::open(layout.database_file()).expect("open db");
+        db.execute_batch(
+            "CREATE TRIGGER fail_upsert BEFORE INSERT ON source_variables
+                 BEGIN SELECT RAISE(FAIL, 'injected failure'); END;",
+        )
+        .expect("install failure trigger");
         let refresh_lock = credential_store
             .credential_refresh_lock(&workspace_name, &credential_set_id)
             .expect("hold refresh lock");
-        let config_temp_path = layout
-            .config_file()
-            .with_file_name(format!("config.toml.tmp.{}", std::process::id()));
-        std::fs::create_dir_all(&config_temp_path).expect("block config save temp path");
         let (started_tx, started_rx) = std_mpsc::channel();
         let import_manager = manager.clone();
         let import_workspace = workspace_name.clone();
@@ -3945,8 +3947,8 @@ surface:
         import_handle
             .join()
             .expect("import thread")
-            .expect_err("blocked config save should fail import");
-        drop(std::fs::remove_dir_all(&config_temp_path));
+            .expect_err("blocked database write should fail import");
+        drop(db);
 
         let material = credential_manager
             .read_material(
