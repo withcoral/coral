@@ -25,7 +25,7 @@ use harness::{MockServer, MockServerConfig};
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
     service::RunningService,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
@@ -212,6 +212,15 @@ async fn structured_tool_content(
         "tool results should not duplicate structured payloads as text content"
     );
     Ok(result.structured_content.expect("structured content"))
+}
+
+fn tool_error_text(result: &CallToolResult) -> &str {
+    result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.as_str())
+        .expect("tool error text content")
 }
 
 async fn write_jsonrpc_message(
@@ -1249,10 +1258,18 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         )
         .await?;
     assert_eq!(mixed_sql.is_error, Some(true));
-    assert!(
-        mixed_sql.content.is_empty(),
-        "tool errors should not include text fallback content"
-    );
+    let mixed_sql_detail = mixed_sql
+        .structured_content
+        .as_ref()
+        .expect("structured content")["data"]["results"][1]["error"]["detail"]
+        .as_str()
+        .expect("structured query error detail")
+        .to_string();
+    {
+        let mixed_sql_text = tool_error_text(&mixed_sql);
+        assert!(mixed_sql_text.contains("Query [1]: Query request is invalid"));
+        assert!(mixed_sql_text.contains(&mixed_sql_detail));
+    }
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
     assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
     let mixed_sql_batch = &mixed_sql["data"];

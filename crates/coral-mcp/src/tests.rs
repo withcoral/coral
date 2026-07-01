@@ -381,6 +381,19 @@ fn assert_structured_content_only(result: &CallToolResult) {
     );
 }
 
+fn assert_tool_error_text_contains(result: &CallToolResult, expected: &str) {
+    let text = result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.as_str())
+        .expect("tool error text content");
+    assert!(
+        text.contains(expected),
+        "tool error text should contain {expected:?}, got {text:?}"
+    );
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1600,7 +1613,15 @@ async fn mcp_tool_error_does_not_end_session() {
         .await
         .expect("mixed sql still returns tool result");
     assert_eq!(mixed_sql.is_error, Some(true));
-    assert_structured_content_only(&mixed_sql);
+    let mixed_sql_detail = mixed_sql
+        .structured_content
+        .as_ref()
+        .expect("structured content")["data"]["results"][1]["error"]["detail"]
+        .as_str()
+        .expect("structured query error detail")
+        .to_string();
+    assert_tool_error_text_contains(&mixed_sql, "Query [1]: Query request is invalid");
+    assert_tool_error_text_contains(&mixed_sql, &mixed_sql_detail);
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
     assert_matches_output_schema(sql_tool, &mixed_sql);
     assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
