@@ -35,6 +35,19 @@ pub(crate) fn create_new_file_private(path: &Path) -> io::Result<File> {
     open_create_new_file_private(path)
 }
 
+pub(crate) fn ensure_file_private(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+    match open_create_new_file_private(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            set_file_permissions_private(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Write to a temp file then rename to avoid partial writes on crash.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temp_path = temp_path_for(path);
