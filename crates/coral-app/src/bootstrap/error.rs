@@ -3,6 +3,7 @@
 use coral_api::{
     CORAL_ERROR_DOMAIN, CORAL_ERROR_METADATA_DETAIL, CORAL_ERROR_METADATA_HINT,
     CORAL_ERROR_METADATA_SUMMARY, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+    CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND,
 };
 use coral_engine::{CoreError, StatusCode};
 use tonic::{Code, Status};
@@ -16,6 +17,12 @@ pub enum AppError {
     /// A requested source was not found in config.
     #[error("source '{0}' not found")]
     SourceNotFound(String),
+    /// A requested workspace was not found in config.
+    #[error("workspace '{0}' not found")]
+    WorkspaceNotFound(String),
+    /// A requested workspace already exists in config.
+    #[error("workspace '{0}' already exists")]
+    WorkspaceAlreadyExists(String),
     /// Caller-supplied input was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
@@ -107,16 +114,16 @@ fn truncate_status_detail(detail: String) -> String {
     reason = "used directly as a map_err adapter across tonic service handlers"
 )]
 pub(crate) fn app_status(error: AppError) -> Status {
-    if matches!(error, AppError::SourceNotFound(_)) {
-        // The `reason` alone discriminates `SOURCE_NOT_FOUND` from other
-        // `Code::NotFound` causes (e.g. `io::ErrorKind::NotFound` raised
-        // when a manifest file is missing). The qualified name already
-        // appears in the truncated status message; we deliberately do
-        // not duplicate it into structured metadata so unbounded
-        // identifiers cannot push the `grpc-status-details-bin` trailer
-        // past the h2 `MAX_HEADER_LIST_SIZE` budget.
+    let not_found_reason = match &error {
+        AppError::SourceNotFound(_) => Some(CORAL_ERROR_REASON_SOURCE_NOT_FOUND),
+        AppError::WorkspaceNotFound(_) => Some(CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND),
+        _ => None,
+    };
+    if let Some(reason) = not_found_reason {
+        // The `reason` alone discriminates typed Coral misses from other
+        // `Code::NotFound` causes without echoing unbounded identifiers.
         let details = vec![ErrorDetail::ErrorInfo(tonic_types::ErrorInfo::new(
-            CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
+            reason,
             CORAL_ERROR_DOMAIN,
             std::collections::HashMap::new(),
         ))];
@@ -194,7 +201,8 @@ fn grpc_code(status: StatusCode) -> Code {
 
 fn app_code(error: &AppError) -> Code {
     match error {
-        AppError::SourceNotFound(_) => Code::NotFound,
+        AppError::SourceNotFound(_) | AppError::WorkspaceNotFound(_) => Code::NotFound,
+        AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingOrIncompatibleV4Materialization { .. }

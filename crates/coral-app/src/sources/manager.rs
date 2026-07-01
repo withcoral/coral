@@ -32,7 +32,6 @@ use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthC
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -481,14 +480,23 @@ impl SourceManager {
             },
             credential_material,
         };
-        let source_dir_backup =
-            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_source_dir = source_dir.exists();
-        if had_source_dir {
-            if source_dir_backup.exists() {
-                std::fs::remove_dir_all(&source_dir_backup)?;
-            }
-            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
+        if let Some(credential_storage) = credential_storage
+            && let Err(error) =
+                credential_guard.remove_material_with_state_lock_held(credential_storage)
+        {
+            self.restore_source_rollback_state_with_state_lock_held(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
+            return Err(error);
+        }
+        let source_dir_backup = match fs::DirectoryBackup::move_for_delete(&source_dir, source_name)
+        {
+            Ok(backup) => backup,
+            Err(error) => {
                 self.restore_source_rollback_state_with_state_lock_held(
                     workspace_name,
                     source_name,
@@ -498,20 +506,12 @@ impl SourceManager {
                 );
                 return Err(error.into());
             }
-        }
+        };
         if let Err(error) = self
             .config_store
             .remove_source_unlocked(workspace_name, source_name)
         {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
-                )));
-            }
+            let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 source_name,
@@ -519,33 +519,15 @@ impl SourceManager {
                 None,
                 &credential_guard,
             );
-            return Err(error);
-        }
-        if let Some(credential_storage) = credential_storage
-            && let Err(error) =
-                credential_guard.remove_material_with_state_lock_held(credential_storage)
-        {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
+            if let Err(restore_error) = restore_dir_result {
                 return Err(AppError::FailedPrecondition(format!(
                     "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
+                    source_dir_backup.backup_path().display()
                 )));
             }
-            self.restore_source_rollback_state_with_state_lock_held(
-                workspace_name,
-                source_name,
-                Some(previous),
-                None,
-                &credential_guard,
-            );
             return Err(error);
         }
-        if source_dir_backup.exists() {
-            std::fs::remove_dir_all(&source_dir_backup)?;
-        }
+        source_dir_backup.commit()?;
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
             &self.layout.workspaces_root(),

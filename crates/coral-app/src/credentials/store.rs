@@ -424,7 +424,6 @@ impl CredentialStore {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn remove_material(
         &self,
         workspace_name: &WorkspaceName,
