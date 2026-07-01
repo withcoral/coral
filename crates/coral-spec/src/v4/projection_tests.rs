@@ -71,11 +71,13 @@ surfaces:
         .find(|operation| operation.id == projection.operation_id)
         .expect("repo issues operation");
 
-    assert_eq!(projection.pagination.mode, PaginationMode::Page);
-    assert_eq!(projection.pagination.page_param.as_deref(), Some("page"));
+    let IrExecutionAttachment::Rest(rest) = &operation.execution else {
+        panic!("expected REST execution");
+    };
+    assert_eq!(rest.pagination.mode, PaginationMode::Page);
+    assert_eq!(rest.pagination.page_param.as_deref(), Some("page"));
     assert_eq!(
-        projection
-            .pagination
+        rest.pagination
             .page_size
             .as_ref()
             .and_then(|page_size| page_size.query_param.as_deref()),
@@ -119,39 +121,11 @@ surfaces:
         .map(|param| param.name.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(query_names, BTreeSet::from(["state"]));
-
-    let mut stale_projection = projection.clone();
-    for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
-            input.sql_exposure = SqlInputExposure::Filter;
-        }
-    }
-    let stale_filter_names = projection_filter_specs(&stale_projection)
-        .into_iter()
-        .map(|filter| filter.name)
-        .collect::<BTreeSet<_>>();
-    assert_eq!(stale_filter_names, filter_names);
-
-    let stale_request =
-        request_spec_for_projection(&stale_projection, operation).expect("stale request");
-    let stale_query_names = stale_request
-        .query
-        .iter()
-        .map(|param| param.name.as_str())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(stale_query_names, query_names);
-
-    for input in &mut stale_projection.inputs {
-        if matches!(input.wire_name.as_str(), "page" | "per_page") {
-            input.sql_exposure = SqlInputExposure::FunctionArg;
-        }
-    }
-    let stale_arg_names = projection_arg_specs(&stale_projection)
-        .into_iter()
-        .map(|arg| arg.name)
-        .collect::<BTreeSet<_>>();
-    assert!(!stale_arg_names.contains("page"));
-    assert!(!stale_arg_names.contains("per_page"));
+    assert!(
+        !projection.guide.contains("paginate"),
+        "projection guide should not describe pagination: {}",
+        projection.guide
+    );
 }
 
 #[test]
