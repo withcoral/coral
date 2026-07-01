@@ -97,6 +97,56 @@ where
             .fetch_all(source_aggregate_statement(workspace_name, source_name))
             .await
     }
+}
+
+impl SourcesRepo<'_, CoralTx<'_>> {
+    pub(crate) async fn upsert_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        now_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        let created_at_unix_nanos = self
+            .source_created_at(workspace_name, &source.name)
+            .await?
+            .unwrap_or(now_unix_nanos);
+        self.delete_source_rows(workspace_name, &source.name)
+            .await?;
+        self.insert_source(
+            workspace_name,
+            source,
+            created_at_unix_nanos,
+            now_unix_nanos,
+        )
+        .await?;
+        self.insert_source_variables(workspace_name, source).await?;
+        self.insert_source_secret_keys(workspace_name, source).await
+    }
+
+    pub(crate) async fn remove_source(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<InstalledSource>, DbError> {
+        let removed = self.get_source(workspace_name, source_name).await?;
+        self.delete_source_rows(workspace_name, source_name).await?;
+        Ok(removed)
+    }
+
+    async fn source_created_at(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<Option<i64>, DbError> {
+        let statement = Query::select()
+            .column(Sources::CreatedAtUnixNanos)
+            .from(Sources::Table)
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
+            .to_owned();
+        let row: Option<SourceCreatedAtRow> = self.session.fetch_optional(statement).await?;
+        Ok(row.map(|row| row.created_at_unix_nanos))
+    }
 
     async fn source_created_at(
         &mut self,
