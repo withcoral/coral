@@ -59,9 +59,7 @@ fn default_workspace_source_names_for_layout(
 ) -> Result<Vec<String>, AppError> {
     let config_store = ConfigStore::new(layout.clone());
     run_db_bootstrap_operation(async move {
-        let db = open_bootstrap_db(&layout).await?;
-        db.migrate().await?;
-        import_config_source_catalog(&db, &config_store, now_unix_nanos_i64()?).await?;
+        let db = open_initialized_database(&layout, &config_store).await?;
         let mut session = &db;
         session
             .sources()
@@ -69,6 +67,16 @@ fn default_workspace_source_names_for_layout(
             .await
             .map_err(AppError::from)
     })
+}
+
+async fn open_initialized_database(
+    layout: &AppStateLayout,
+    config_store: &ConfigStore,
+) -> Result<CoralDb, AppError> {
+    let db = open_bootstrap_db(layout).await?;
+    db.migrate().await?;
+    import_config_source_catalog(&db, config_store, now_unix_nanos_i64()?).await?;
+    Ok(db)
 }
 
 async fn open_bootstrap_db(layout: &AppStateLayout) -> Result<CoralDb, AppError> {

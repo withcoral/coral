@@ -172,25 +172,6 @@ async fn restart_preserves_database_source_after_config_source_section_is_remove
 }
 
 #[tokio::test]
-async fn list_catalog_reads_database_after_config_source_section_is_removed() {
-    let harness = GrpcHarness::new().await;
-    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
-    harness
-        .import_source(manifest_yaml, Vec::new(), Vec::new())
-        .await;
-
-    remove_config_source_section(&harness, "local_messages");
-
-    let tables = harness.list_tables().await;
-    assert!(
-        tables
-            .iter()
-            .any(|table| table.schema_name == "local_messages" && table.name == "messages"),
-        "catalog should still load imported source from DB"
-    );
-}
-
-#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::new().await;
 

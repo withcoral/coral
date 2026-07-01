@@ -10,7 +10,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body as AxumBody;
 use axum::extract::Request as AxumRequest;
@@ -55,25 +54,10 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
-use crate::state::db::{
-    CoralDb, DatabaseConfig, ResolvedDatabaseConfig, import_config_source_catalog,
-};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceManager, WorkspaceService};
-
-fn now_unix_nanos_i64() -> Result<i64, AppError> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| AppError::FailedPrecondition(format!("system clock error: {error}")))?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "system clock timestamp exceeds i64 nanoseconds: {error}"
-        ))
-    })
-}
 
 /// A static asset (e.g., a built SPA file) served on the same port as
 /// gRPC-Web.
@@ -268,22 +252,8 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
-        let database_config = DatabaseConfig::load(&layout)?;
-        let database_config = match database_config {
-            DatabaseConfig::Sqlite { path } => ResolvedDatabaseConfig::Sqlite { path },
-            DatabaseConfig::Postgres { url_env } => {
-                let url = AppEnvironment::env_var(&url_env).ok_or_else(|| {
-                    AppError::FailedPrecondition(format!(
-                        "database backend 'postgres' requires environment variable `{url_env}`"
-                    ))
-                })?;
-                ResolvedDatabaseConfig::Postgres { url }
-            }
-        };
-        let coral_db = CoralDb::open(database_config).await?;
-        coral_db.migrate().await?;
         let config_store = ConfigStore::new(layout.clone());
-        import_config_source_catalog(&coral_db, &config_store, now_unix_nanos_i64()?).await?;
+        let coral_db = super::open_initialized_database(&layout, &config_store).await?;
         let coral_db = Arc::new(coral_db);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
