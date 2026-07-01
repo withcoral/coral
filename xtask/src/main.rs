@@ -15,6 +15,8 @@
 //!     TCK feature tree against Coral's read-only product scope.
 //!   - `virtual-graph-baseline-report` summarizes virtual graph compatibility
 //!     fixtures.
+//!   - `virtual-graph-graphql-schema-coverage` reports GraphQL schema-driven
+//!     read coverage against the engine capability surface.
 //!   - `release-macos-sign-notarize` signs and notarizes macOS release
 //!     artifacts.
 
@@ -68,6 +70,8 @@ enum Command {
     VirtualGraphUpstreamTckReport(tck::UpstreamArgs),
     /// Summarize a virtual graph compatibility baseline fixture.
     VirtualGraphBaselineReport(tck::Args),
+    /// Report GraphQL read coverage against the engine capability surface.
+    VirtualGraphGraphqlSchemaCoverage(tck::GraphqlSchemaCoverageArgs),
     /// Sign, package, and notarize one macOS release binary.
     ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
 }
@@ -122,6 +126,7 @@ fn run(command: &Command) -> Result<bool> {
             tck::run(args)
         }
         Command::VirtualGraphUpstreamTckReport(args) => tck::run_upstream(args),
+        Command::VirtualGraphGraphqlSchemaCoverage(args) => tck::run_graphql_schema_coverage(args),
         Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
     }
 }

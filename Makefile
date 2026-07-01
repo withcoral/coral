@@ -1,4 +1,4 @@
-.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report virtual-graph-upstream-tck-report virtual-graph-graphql virtual-graph-graphql-report perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
+.PHONY: install ui-build rust-checks virtual-graph-checks virtual-graph-tck virtual-graph-tck-report virtual-graph-upstream-tck-report virtual-graph-graphql virtual-graph-graphql-report virtual-graph-graphql-schema-coverage perf-check license-check lint-proto lint-sources fix-sources docs-generate docs-check schema-generate schema-check
 
 OPENCYPHER_TCK_TAG ?= 2024.3
 OPENCYPHER_TCK_REVISION ?= 677cbafabb8c3c5eed458fd3b1ec0daec8d67d23
@@ -45,6 +45,11 @@ virtual-graph-graphql:
 
 virtual-graph-graphql-report:
 	cargo run --locked -p xtask -- virtual-graph-baseline-report \
+	  --fixture crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json \
+	  --json
+
+virtual-graph-graphql-schema-coverage:
+	cargo run --locked -p xtask -- virtual-graph-graphql-schema-coverage \
 	  --fixture crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json \
 	  --json
 

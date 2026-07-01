@@ -36,6 +36,90 @@ fn predicate_expression_contains_not(expression: &PredicateExpression) -> bool {
 }
 
 #[test]
+fn graphql_capability_surface_derives_aliases_from_engine_classifiers() {
+    let surface = graphql_read_capability_surface();
+
+    for spelling in GRAPHQL_SCALAR_FILTER_OPERATOR_SPELLINGS {
+        assert!(
+            classify_graphql_where_operator(spelling).is_some(),
+            "scalar spelling should classify: {spelling}"
+        );
+    }
+    for spelling in GRAPHQL_IDENTITY_FILTER_OPERATOR_SPELLINGS {
+        assert!(
+            classify_graphql_where_operator(spelling).is_some(),
+            "identity spelling should classify: {spelling}"
+        );
+    }
+    for spelling in GRAPHQL_BOOLEAN_OPERATOR_SPELLINGS {
+        assert!(
+            graphql_boolean_operator(spelling).is_some(),
+            "boolean spelling should classify: {spelling}"
+        );
+    }
+
+    assert_eq!(surface.scalar_operators.len(), 18);
+    assert_eq!(surface.identity_operators.len(), 10);
+    assert_eq!(surface.element_id_operators.len(), 18);
+    assert_eq!(
+        surface.aggregates.len(),
+        GRAPHQL_PROPERTY_AGGREGATE_FIELDS.len() + 1
+    );
+    assert!(surface.aggregates.contains(&"_count"));
+    assert_eq!(surface.boolean_combinators.len(), 4);
+}
+
+#[test]
+fn graphql_capability_surface_lists_match_engine_behavior() {
+    let surface = graphql_read_capability_surface();
+
+    assert_eq!(
+        surface.order_direction_aliases.get("ASCENDING").copied(),
+        Some("ASC")
+    );
+    assert_eq!(
+        surface.order_direction_aliases.get("DESCENDING").copied(),
+        Some("DESC")
+    );
+    assert_eq!(
+        compile_order_direction_name("ASCENDING", "test").ok(),
+        Some(OrderDirection::Ascending)
+    );
+    assert_eq!(
+        compile_order_direction_name("DESCENDING", "test").ok(),
+        Some(OrderDirection::Descending)
+    );
+    assert_eq!(
+        surface.null_order_aliases.get("NULLS_FIRST").copied(),
+        Some("FIRST")
+    );
+    assert_eq!(
+        surface.null_order_aliases.get("NULLS_LAST").copied(),
+        Some("LAST")
+    );
+    assert_eq!(
+        compile_null_order_name("NULLS_FIRST", "test").ok(),
+        Some(NullOrder::First)
+    );
+    assert_eq!(
+        compile_null_order_name("NULLS_LAST", "test").ok(),
+        Some(NullOrder::Last)
+    );
+    assert_eq!(
+        graphql_root_argument_slot("first"),
+        Some(GraphqlRootArgumentSlot::Limit)
+    );
+    assert_eq!(
+        graphql_root_argument_slot("skip"),
+        Some(GraphqlRootArgumentSlot::Offset)
+    );
+    assert_eq!(surface.rejection_paths.len(), 15);
+    assert!(surface.rejection_paths.iter().all(|path| {
+        !path.id.is_empty() && !path.stable_substring.is_empty() && path.source_line > 0
+    }));
+}
+
+#[test]
 fn compiles_root_node_query() {
     let plan = compile_graphql(
         r#"

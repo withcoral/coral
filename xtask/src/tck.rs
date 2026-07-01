@@ -5,12 +5,72 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use coral_engine::virtual_graph::{
+    GraphqlCapability, GraphqlCapabilitySurface, graphql_read_capability_surface,
+};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_BASELINE_FIXTURE: &str =
     "crates/coral-engine/tests/fixtures/virtual_graph/opencypher_read_baseline.json";
+const DEFAULT_GRAPHQL_BASELINE_FIXTURE: &str =
+    "crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json";
 const DEFAULT_UPSTREAM_SCENARIO_FLOOR: usize = 1_615;
 const DEFAULT_UPSTREAM_READ_CANDIDATE_FLOOR: usize = 1_294;
+const GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS: usize = 6_727;
+const GRAPHQL_SCHEMA_COVERAGE_CATEGORY_FLOORS: &[(&str, usize)] = &[
+    ("Aggregates", 8),
+    ("BooleanCombinators", 4),
+    ("Directives", 2),
+    ("ElementIdOperators", 2),
+    ("IdentityFields", 6),
+    ("IdentityOperators", 3),
+    ("MetaFields", 2),
+    ("NullOrders", 0),
+    ("OrderDirections", 2),
+    ("RejectionPaths", 14),
+    ("RootFieldForms", 3),
+    ("RowModifiers", 5),
+    ("ScalarOperators", 17),
+    ("Traversal", 6),
+];
+const GRAPHQL_SCHEMA_COVERAGE_ACKNOWLEDGED_UNCOVERED: &[&str] = &[
+    "Aggregates:_avgDistinct",
+    "Aggregates:_collect",
+    "Aggregates:_collectDistinct",
+    "Aggregates:_maxDistinct",
+    "Aggregates:_medianDistinct",
+    "Aggregates:_minDistinct",
+    "Aggregates:_stDev",
+    "Aggregates:_stDevP",
+    "Aggregates:_sumDistinct",
+    "ElementIdOperators:contains",
+    "ElementIdOperators:endsWith",
+    "ElementIdOperators:gt",
+    "ElementIdOperators:gte",
+    "ElementIdOperators:isNotNull",
+    "ElementIdOperators:isNull",
+    "ElementIdOperators:lt",
+    "ElementIdOperators:lte",
+    "ElementIdOperators:matches",
+    "ElementIdOperators:ne",
+    "ElementIdOperators:notContains",
+    "ElementIdOperators:notEndsWith",
+    "ElementIdOperators:notIn",
+    "ElementIdOperators:notMatches",
+    "ElementIdOperators:notStartsWith",
+    "ElementIdOperators:startsWith",
+    "IdentityOperators:gt",
+    "IdentityOperators:isNotNull",
+    "IdentityOperators:isNull",
+    "IdentityOperators:lt",
+    "IdentityOperators:lte",
+    "IdentityOperators:ne",
+    "IdentityOperators:notIn",
+    "NullOrders:FIRST",
+    "NullOrders:LAST",
+    "RejectionPaths:multiple-root-fields",
+    "ScalarOperators:notMatches",
+];
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
@@ -46,6 +106,17 @@ pub(crate) struct UpstreamArgs {
     json: bool,
 }
 
+#[derive(Debug, clap::Args)]
+pub(crate) struct GraphqlSchemaCoverageArgs {
+    /// Path to Coral's curated GraphQL read compatibility baseline fixture.
+    #[arg(long, default_value = DEFAULT_GRAPHQL_BASELINE_FIXTURE)]
+    fixture: PathBuf,
+
+    /// Emit machine-readable JSON instead of a text summary.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct Suite {
     #[serde(rename = "suite")]
@@ -58,12 +129,15 @@ struct Suite {
 struct Scenario {
     id: String,
     feature: String,
+    query: String,
     expected: Expectation,
 }
 
 #[derive(Debug, Deserialize)]
 struct Expectation {
     kind: String,
+    #[serde(default)]
+    contains: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +196,54 @@ struct UpstreamFeatureGroup {
     scenarios: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct GraphqlSchemaCoverageReport {
+    suite: String,
+    scenario_count: usize,
+    accepted_scenario_count: usize,
+    error_scenario_count: usize,
+    overall: GraphqlCoverageSummary,
+    alias_spellings: GraphqlCoverageSummary,
+    categories: BTreeMap<String, GraphqlCategoryCoverage>,
+    uncovered: Vec<GraphqlUncoveredCapability>,
+    overall_floor_basis_points: usize,
+    category_covered_floors: BTreeMap<String, usize>,
+    acknowledged_uncovered: Vec<String>,
+    floor_violations: Vec<GraphqlCoverageFloorViolation>,
+    unacknowledged_uncovered: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphqlCoverageSummary {
+    covered: usize,
+    total: usize,
+    basis_points: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphqlCategoryCoverage {
+    covered: usize,
+    total: usize,
+    basis_points: usize,
+    uncovered: Vec<GraphqlUncoveredCapability>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GraphqlUncoveredCapability {
+    id: String,
+    category: String,
+    capability: String,
+    tag: String,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GraphqlCoverageFloorViolation {
+    metric: String,
+    minimum: usize,
+    actual: usize,
+}
+
 pub(crate) fn run(args: &Args) -> Result<bool> {
     let report = load_report(&args.fixture)?;
     if args.json {
@@ -147,14 +269,18 @@ pub(crate) fn run_upstream(args: &UpstreamArgs) -> Result<bool> {
     Ok(upstream_floors_satisfied(&report))
 }
 
+pub(crate) fn run_graphql_schema_coverage(args: &GraphqlSchemaCoverageArgs) -> Result<bool> {
+    let report = load_graphql_schema_coverage_report(&args.fixture)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_graphql_schema_coverage_text_report(&report);
+    }
+    Ok(graphql_schema_coverage_floors_satisfied(&report))
+}
+
 fn load_report(path: &Path) -> Result<Report> {
-    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let suite: Suite = serde_json::from_str(&raw).with_context(|| {
-        format!(
-            "parsing virtual graph compatibility baseline fixture {}",
-            path.display()
-        )
-    })?;
+    let suite = load_suite(path)?;
 
     let mut ids = BTreeSet::new();
     let mut feature_counts = BTreeMap::<String, usize>::new();
@@ -184,6 +310,16 @@ fn load_report(path: &Path) -> Result<Report> {
         minimum_feature_counts: suite.minimum_feature_counts,
         feature_floor_violations,
         undeclared_features,
+    })
+}
+
+fn load_suite(path: &Path) -> Result<Suite> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "parsing virtual graph compatibility baseline fixture {}",
+            path.display()
+        )
     })
 }
 
@@ -290,6 +426,615 @@ fn load_upstream_report(
     })
 }
 
+fn load_graphql_schema_coverage_report(path: &Path) -> Result<GraphqlSchemaCoverageReport> {
+    let suite = load_suite(path)?;
+    let surface = graphql_read_capability_surface();
+    let denominator = graphql_capability_denominator(&surface);
+    let alias_denominator = graphql_alias_denominator(&surface);
+    let mut covered = empty_category_sets(&denominator);
+    let mut covered_aliases = BTreeSet::<String>::new();
+    let mut ids = BTreeSet::new();
+    let mut accepted_scenario_count = 0;
+    let mut error_scenario_count = 0;
+
+    for scenario in &suite.scenarios {
+        if !ids.insert(scenario.id.as_str()) {
+            anyhow::bail!(
+                "duplicate virtual graph baseline scenario id: {}",
+                scenario.id
+            );
+        }
+
+        if scenario.expected.kind == "error" {
+            error_scenario_count += 1;
+            cover_graphql_rejection_path(&surface, scenario, &mut covered);
+        } else {
+            accepted_scenario_count += 1;
+            cover_graphql_query_capabilities(
+                &surface,
+                scenario,
+                &mut covered,
+                &mut covered_aliases,
+            );
+        }
+    }
+
+    let uncovered = graphql_uncovered_capabilities(&denominator, &covered);
+    let categories = graphql_category_reports(&denominator, &covered);
+    let total = denominator.values().map(BTreeSet::len).sum();
+    let covered_total = covered.values().map(BTreeSet::len).sum();
+    let alias_total = alias_denominator.len();
+    let alias_covered = covered_aliases.len();
+    let category_covered_floors = GRAPHQL_SCHEMA_COVERAGE_CATEGORY_FLOORS
+        .iter()
+        .map(|(category, floor)| ((*category).to_string(), *floor))
+        .collect::<BTreeMap<_, _>>();
+    let acknowledged_uncovered = GRAPHQL_SCHEMA_COVERAGE_ACKNOWLEDGED_UNCOVERED
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect::<Vec<_>>();
+    let unacknowledged_uncovered = graphql_unacknowledged_uncovered(&uncovered);
+    let floor_violations = graphql_schema_coverage_floor_violations(
+        covered_total,
+        &categories,
+        &category_covered_floors,
+    );
+
+    Ok(GraphqlSchemaCoverageReport {
+        suite: suite.name,
+        scenario_count: suite.scenarios.len(),
+        accepted_scenario_count,
+        error_scenario_count,
+        overall: GraphqlCoverageSummary {
+            covered: covered_total,
+            total,
+            basis_points: percentage_basis_points(covered_total, total),
+        },
+        alias_spellings: GraphqlCoverageSummary {
+            covered: alias_covered,
+            total: alias_total,
+            basis_points: percentage_basis_points(alias_covered, alias_total),
+        },
+        categories,
+        uncovered,
+        overall_floor_basis_points: GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS,
+        category_covered_floors,
+        acknowledged_uncovered,
+        floor_violations,
+        unacknowledged_uncovered,
+    })
+}
+
+fn graphql_capability_denominator(
+    surface: &GraphqlCapabilitySurface,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut denominator = BTreeMap::new();
+    insert_canonical_capabilities(
+        &mut denominator,
+        "ScalarOperators",
+        &surface.scalar_operators,
+    );
+    insert_canonical_capabilities(
+        &mut denominator,
+        "IdentityOperators",
+        &surface.identity_operators,
+    );
+    insert_canonical_capabilities(
+        &mut denominator,
+        "ElementIdOperators",
+        &surface.element_id_operators,
+    );
+    insert_named_capabilities(&mut denominator, "Aggregates", &surface.aggregates);
+    insert_canonical_capabilities(
+        &mut denominator,
+        "BooleanCombinators",
+        &surface.boolean_combinators,
+    );
+    insert_named_capabilities(&mut denominator, "Directives", &surface.directives);
+    insert_canonical_capabilities(
+        &mut denominator,
+        "OrderDirections",
+        &surface.order_directions,
+    );
+    insert_canonical_capabilities(&mut denominator, "NullOrders", &surface.null_orders);
+    insert_canonical_capabilities(&mut denominator, "RowModifiers", &surface.row_modifiers);
+    insert_named_capabilities(&mut denominator, "IdentityFields", &surface.identity_fields);
+    insert_named_capabilities(&mut denominator, "Traversal", &surface.traversal);
+    insert_named_capabilities(&mut denominator, "MetaFields", &surface.meta_fields);
+    insert_named_capabilities(
+        &mut denominator,
+        "RootFieldForms",
+        &surface.root_field_forms,
+    );
+    denominator.insert(
+        "RejectionPaths".to_string(),
+        surface
+            .rejection_paths
+            .iter()
+            .map(|path| path.id.to_string())
+            .collect(),
+    );
+    denominator
+}
+
+fn graphql_alias_denominator(surface: &GraphqlCapabilitySurface) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    insert_alias_capabilities(
+        &mut aliases,
+        "ScalarOperators",
+        &surface.scalar_operator_aliases,
+    );
+    insert_alias_capabilities(
+        &mut aliases,
+        "IdentityOperators",
+        &surface.identity_operator_aliases,
+    );
+    insert_alias_capabilities(
+        &mut aliases,
+        "ElementIdOperators",
+        &surface.element_id_operator_aliases,
+    );
+    insert_alias_capabilities(
+        &mut aliases,
+        "BooleanCombinators",
+        &surface.boolean_combinator_aliases,
+    );
+    insert_alias_capabilities(
+        &mut aliases,
+        "OrderDirections",
+        &surface.order_direction_aliases,
+    );
+    insert_alias_capabilities(&mut aliases, "NullOrders", &surface.null_order_aliases);
+    insert_alias_capabilities(&mut aliases, "RowModifiers", &surface.row_modifier_aliases);
+    aliases
+}
+
+fn insert_canonical_capabilities(
+    denominator: &mut BTreeMap<String, BTreeSet<String>>,
+    category: &str,
+    capabilities: &[GraphqlCapability],
+) {
+    denominator.insert(
+        category.to_string(),
+        capabilities
+            .iter()
+            .map(|capability| capability.canonical.to_string())
+            .collect(),
+    );
+}
+
+fn insert_named_capabilities(
+    denominator: &mut BTreeMap<String, BTreeSet<String>>,
+    category: &str,
+    capabilities: &[&str],
+) {
+    denominator.insert(
+        category.to_string(),
+        capabilities
+            .iter()
+            .map(|capability| (*capability).to_string())
+            .collect(),
+    );
+}
+
+fn insert_alias_capabilities(
+    aliases: &mut BTreeSet<String>,
+    category: &str,
+    alias_map: &BTreeMap<&'static str, &'static str>,
+) {
+    aliases.extend(
+        alias_map
+            .iter()
+            .map(|(alias, canonical)| format!("{category}:{alias}->{canonical}")),
+    );
+}
+
+fn empty_category_sets(
+    denominator: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    denominator
+        .keys()
+        .map(|category| (category.clone(), BTreeSet::new()))
+        .collect()
+}
+
+fn cover_graphql_query_capabilities(
+    surface: &GraphqlCapabilitySurface,
+    scenario: &Scenario,
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+    covered_aliases: &mut BTreeSet<String>,
+) {
+    let query = scenario.query.as_str();
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "ScalarOperators",
+        &surface.scalar_operators,
+        &surface.scalar_operator_aliases,
+        |alias| contains_graphql_name(query, alias),
+    );
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "IdentityOperators",
+        &surface.identity_operators,
+        &surface.identity_operator_aliases,
+        |alias| contains_field_operator(query, "_id", alias),
+    );
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "ElementIdOperators",
+        &surface.element_id_operators,
+        &surface.element_id_operator_aliases,
+        |alias| contains_field_operator(query, "_elementId", alias),
+    );
+    cover_named_when(covered, "Aggregates", &surface.aggregates, |name| {
+        contains_graphql_name(query, name)
+    });
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "BooleanCombinators",
+        &surface.boolean_combinators,
+        &surface.boolean_combinator_aliases,
+        |alias| contains_graphql_name(query, alias),
+    );
+    cover_named_when(covered, "Directives", &surface.directives, |name| {
+        query.contains(&format!("@{name}"))
+    });
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "OrderDirections",
+        &surface.order_directions,
+        &surface.order_direction_aliases,
+        |alias| contains_graphql_name(query, alias),
+    );
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "NullOrders",
+        &surface.null_orders,
+        &surface.null_order_aliases,
+        |alias| contains_graphql_name(query, alias),
+    );
+    cover_operator_capabilities(
+        covered,
+        covered_aliases,
+        "RowModifiers",
+        &surface.row_modifiers,
+        &surface.row_modifier_aliases,
+        |alias| contains_graphql_name(query, alias),
+    );
+    cover_identity_field_capabilities(query, covered);
+    cover_traversal_capabilities(scenario, covered);
+    cover_meta_field_capabilities(query, covered);
+    cover_root_field_form_capabilities(query, covered);
+}
+
+fn cover_graphql_rejection_path(
+    surface: &GraphqlCapabilitySurface,
+    scenario: &Scenario,
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let Some(expected) = scenario.expected.contains.as_deref() else {
+        return;
+    };
+    for path in &surface.rejection_paths {
+        if expected.contains(path.stable_substring) {
+            cover(covered, "RejectionPaths", path.id);
+        }
+    }
+}
+
+fn cover_operator_capabilities(
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+    covered_aliases: &mut BTreeSet<String>,
+    category: &str,
+    capabilities: &[GraphqlCapability],
+    aliases: &BTreeMap<&'static str, &'static str>,
+    contains_alias: impl Fn(&str) -> bool,
+) {
+    for capability in capabilities {
+        if capability.aliases.iter().any(|alias| contains_alias(alias)) {
+            cover(covered, category, capability.canonical);
+        }
+    }
+    covered_aliases.extend(
+        aliases
+            .iter()
+            .filter(|(alias, _)| contains_alias(alias))
+            .map(|(alias, canonical)| format!("{category}:{alias}->{canonical}")),
+    );
+}
+
+fn cover_named_when(
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+    category: &str,
+    capabilities: &[&str],
+    predicate: impl Fn(&str) -> bool,
+) {
+    for capability in capabilities {
+        if predicate(capability) {
+            cover(covered, category, capability);
+        }
+    }
+}
+
+fn cover_identity_field_capabilities(
+    query: &str,
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    if contains_graphql_name(query, "_id") {
+        cover(covered, "IdentityFields", "_id.select");
+    }
+    if contains_field_operator_any(query, "_id") {
+        cover(covered, "IdentityFields", "_id.filter");
+    }
+    if query.contains("field: _id") {
+        cover(covered, "IdentityFields", "_id.order");
+    }
+    if contains_graphql_name(query, "_elementId") {
+        cover(covered, "IdentityFields", "_elementId.select");
+    }
+    if contains_field_operator_any(query, "_elementId") {
+        cover(covered, "IdentityFields", "_elementId.filter");
+    }
+    if query.contains("field: _elementId") {
+        cover(covered, "IdentityFields", "_elementId.order");
+    }
+}
+
+fn cover_traversal_capabilities(
+    scenario: &Scenario,
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let query = scenario.query.as_str();
+    if query.contains("out_") {
+        cover(covered, "Traversal", "out");
+    }
+    if query.contains("in_") {
+        cover(covered, "Traversal", "in");
+    }
+    if query.contains("any_") {
+        cover(covered, "Traversal", "any");
+    }
+    if contains_graphql_name(query, "_edge") {
+        cover(covered, "Traversal", "_edge");
+    }
+    if contains_graphql_name(query, "relationshipWhere") {
+        cover(covered, "Traversal", "relationshipWhere");
+    }
+    if scenario.feature == "RelationshipExistence" {
+        cover(covered, "Traversal", "existence");
+    }
+}
+
+fn cover_meta_field_capabilities(query: &str, covered: &mut BTreeMap<String, BTreeSet<String>>) {
+    if contains_graphql_name(query, "__typename") && !query.contains("_edge { edgeType: __typename")
+    {
+        cover(covered, "MetaFields", "node.__typename");
+    }
+    if query.contains("_edge") && contains_graphql_name(query, "__typename") {
+        cover(covered, "MetaFields", "edge.__typename");
+    }
+}
+
+fn cover_root_field_form_capabilities(
+    query: &str,
+    covered: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    if contains_graphql_name(query, "Person") {
+        cover(covered, "RootFieldForms", "exact-label");
+    }
+    if query.contains("{ person(") || query.contains("{ person ") {
+        cover(covered, "RootFieldForms", "singular-alias");
+    }
+    if contains_graphql_name(query, "persons") || contains_graphql_name(query, "Persons") {
+        cover(covered, "RootFieldForms", "plural-alias");
+    }
+}
+
+fn cover(covered: &mut BTreeMap<String, BTreeSet<String>>, category: &str, capability: &str) {
+    covered
+        .entry(category.to_string())
+        .or_default()
+        .insert(capability.to_string());
+}
+
+fn contains_field_operator_any(query: &str, field: &str) -> bool {
+    query
+        .match_indices(field)
+        .filter(|(start, _)| graphql_name_boundary(query, *start, field.len()))
+        .any(|(start, _)| {
+            let Some(tail) = query.get(start + field.len()..) else {
+                return false;
+            };
+            let Some(tail) = tail.trim_start().strip_prefix(':') else {
+                return false;
+            };
+            tail.trim_start().starts_with('{')
+        })
+}
+
+fn contains_field_operator(query: &str, field: &str, operator: &str) -> bool {
+    query
+        .match_indices(field)
+        .filter(|(start, _)| graphql_name_boundary(query, *start, field.len()))
+        .any(|(start, _)| {
+            let Some(tail) = query.get(start + field.len()..) else {
+                return false;
+            };
+            let Some(tail) = tail.trim_start().strip_prefix(':') else {
+                return false;
+            };
+            let tail = tail.trim_start();
+            let Some(object) = tail.strip_prefix('{') else {
+                return false;
+            };
+            let end = object.find('}').unwrap_or(object.len());
+            object
+                .get(..end)
+                .is_some_and(|candidate| contains_graphql_name(candidate, operator))
+        })
+}
+
+fn contains_graphql_name(query: &str, name: &str) -> bool {
+    query
+        .match_indices(name)
+        .any(|(start, _)| graphql_name_boundary(query, start, name.len()))
+}
+
+fn graphql_name_boundary(query: &str, start: usize, len: usize) -> bool {
+    let bytes = query.as_bytes();
+    let before_is_name = start
+        .checked_sub(1)
+        .and_then(|index| bytes.get(index))
+        .is_some_and(|byte| is_graphql_name_byte(*byte));
+    let after_is_name = bytes
+        .get(start + len)
+        .is_some_and(|byte| is_graphql_name_byte(*byte));
+    !before_is_name && !after_is_name
+}
+
+fn is_graphql_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn graphql_uncovered_capabilities(
+    denominator: &BTreeMap<String, BTreeSet<String>>,
+    covered: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<GraphqlUncoveredCapability> {
+    let mut uncovered = Vec::new();
+    for (category, capabilities) in denominator {
+        let covered_category = covered.get(category);
+        for capability in capabilities {
+            if covered_category.is_some_and(|covered| covered.contains(capability)) {
+                continue;
+            }
+            let (tag, reason) = graphql_uncovered_tag(category, capability);
+            uncovered.push(GraphqlUncoveredCapability {
+                id: format!("{category}:{capability}"),
+                category: category.clone(),
+                capability: capability.clone(),
+                tag: tag.to_string(),
+                reason: reason.to_string(),
+            });
+        }
+    }
+    uncovered
+}
+
+fn graphql_category_reports(
+    denominator: &BTreeMap<String, BTreeSet<String>>,
+    covered: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeMap<String, GraphqlCategoryCoverage> {
+    denominator
+        .iter()
+        .map(|(category, capabilities)| {
+            let covered_count = covered.get(category).map_or(0, BTreeSet::len);
+            let uncovered = capabilities
+                .iter()
+                .filter(|capability| {
+                    !covered
+                        .get(category)
+                        .is_some_and(|covered| covered.contains(*capability))
+                })
+                .map(|capability| {
+                    let (tag, reason) = graphql_uncovered_tag(category, capability);
+                    GraphqlUncoveredCapability {
+                        id: format!("{category}:{capability}"),
+                        category: category.clone(),
+                        capability: capability.clone(),
+                        tag: tag.to_string(),
+                        reason: reason.to_string(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            (
+                category.clone(),
+                GraphqlCategoryCoverage {
+                    covered: covered_count,
+                    total: capabilities.len(),
+                    basis_points: percentage_basis_points(covered_count, capabilities.len()),
+                    uncovered,
+                },
+            )
+        })
+        .collect()
+}
+
+fn graphql_uncovered_tag(category: &str, capability: &str) -> (&'static str, &'static str) {
+    match (category, capability) {
+        (
+            "Aggregates",
+            "_collectDistinct" | "_sumDistinct" | "_avgDistinct" | "_medianDistinct"
+            | "_minDistinct" | "_maxDistinct",
+        ) => (
+            "needs fixture expansion",
+            "distinct aggregate coverage needs duplicate deterministic aggregate inputs",
+        ),
+        ("Aggregates", "_stDev" | "_stDevP") => (
+            "needs fixture expansion",
+            "standard deviation coverage needs a richer numeric distribution",
+        ),
+        ("NullOrders", _) => (
+            "needs fixture expansion",
+            "null ordering is only behaviorally visible with nullable fixture values",
+        ),
+        _ => (
+            "addable now",
+            "the current GraphQL baseline fixture can exercise this capability",
+        ),
+    }
+}
+
+fn graphql_unacknowledged_uncovered(uncovered: &[GraphqlUncoveredCapability]) -> Vec<String> {
+    let acknowledged = GRAPHQL_SCHEMA_COVERAGE_ACKNOWLEDGED_UNCOVERED
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    uncovered
+        .iter()
+        .filter(|capability| !acknowledged.contains(capability.id.as_str()))
+        .map(|capability| capability.id.clone())
+        .collect()
+}
+
+fn graphql_schema_coverage_floor_violations(
+    covered_total: usize,
+    categories: &BTreeMap<String, GraphqlCategoryCoverage>,
+    category_floors: &BTreeMap<String, usize>,
+) -> Vec<GraphqlCoverageFloorViolation> {
+    let mut violations = Vec::new();
+    let overall_basis_points = percentage_basis_points(
+        covered_total,
+        categories.values().map(|category| category.total).sum(),
+    );
+    if overall_basis_points < GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS {
+        violations.push(GraphqlCoverageFloorViolation {
+            metric: "overall".to_string(),
+            minimum: GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS,
+            actual: overall_basis_points,
+        });
+    }
+    for (category, floor) in category_floors {
+        let actual = categories
+            .get(category)
+            .map(|coverage| coverage.covered)
+            .unwrap_or_default();
+        if actual < *floor {
+            violations.push(GraphqlCoverageFloorViolation {
+                metric: category.clone(),
+                minimum: *floor,
+                actual,
+            });
+        }
+    }
+    violations
+}
+
 fn feature_floors_satisfied(report: &Report) -> bool {
     report.feature_floor_violations.is_empty() && report.undeclared_features.is_empty()
 }
@@ -298,6 +1043,10 @@ fn upstream_floors_satisfied(report: &UpstreamReport) -> bool {
     report.scenario_floor_violation.is_none()
         && report.read_candidate_floor_violation.is_none()
         && report.uncategorized_feature_groups.is_empty()
+}
+
+fn graphql_schema_coverage_floors_satisfied(report: &GraphqlSchemaCoverageReport) -> bool {
+    report.floor_violations.is_empty() && report.unacknowledged_uncovered.is_empty()
 }
 
 fn feature_floor_violations(
@@ -396,6 +1145,58 @@ fn print_upstream_text_report(report: &UpstreamReport) {
         println!("uncategorized feature groups:");
         for group in &report.uncategorized_feature_groups {
             println!("  {group}");
+        }
+    }
+}
+
+fn print_graphql_schema_coverage_text_report(report: &GraphqlSchemaCoverageReport) {
+    println!("suite: {}", report.suite);
+    println!("scenarios: {}", report.scenario_count);
+    println!("accepted scenarios: {}", report.accepted_scenario_count);
+    println!("error scenarios: {}", report.error_scenario_count);
+    println!(
+        "overall schema coverage: {}/{} ({}%)",
+        report.overall.covered,
+        report.overall.total,
+        format_basis_points(report.overall.basis_points)
+    );
+    println!(
+        "alias spelling coverage: {}/{} ({}%)",
+        report.alias_spellings.covered,
+        report.alias_spellings.total,
+        format_basis_points(report.alias_spellings.basis_points)
+    );
+    println!("categories:");
+    for (category, coverage) in &report.categories {
+        println!(
+            "  {category}: {}/{} ({}%)",
+            coverage.covered,
+            coverage.total,
+            format_basis_points(coverage.basis_points)
+        );
+    }
+    if !report.uncovered.is_empty() {
+        println!("uncovered:");
+        for capability in &report.uncovered {
+            println!(
+                "  [{}] {}:{} - {}",
+                capability.tag, capability.category, capability.capability, capability.reason
+            );
+        }
+    }
+    if !report.floor_violations.is_empty() {
+        println!("floor violations:");
+        for violation in &report.floor_violations {
+            println!(
+                "  {}: {} < {}",
+                violation.metric, violation.actual, violation.minimum
+            );
+        }
+    }
+    if !report.unacknowledged_uncovered.is_empty() {
+        println!("unacknowledged uncovered:");
+        for capability in &report.unacknowledged_uncovered {
+            println!("  {capability}");
         }
     }
 }
@@ -542,6 +1343,42 @@ mod tests {
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
+    }
+
+    #[test]
+    fn schema_coverage_graphql() {
+        let report =
+            load_graphql_schema_coverage_report(&workspace_root().join(
+                "crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json",
+            ))
+            .expect("GraphQL schema coverage report should build");
+
+        assert_eq!(report.suite, "coral-graphql-read-baseline");
+        assert_eq!(report.scenario_count, 113);
+        assert_eq!(report.accepted_scenario_count, 98);
+        assert_eq!(report.error_scenario_count, 15);
+        assert_eq!(report.overall.covered, 74);
+        assert_eq!(report.overall.total, 110);
+        assert_eq!(report.overall.basis_points, 6_727);
+        assert_eq!(report.alias_spellings.covered, 38);
+        assert_eq!(report.alias_spellings.total, 137);
+        assert_eq!(
+            report
+                .categories
+                .get("Aggregates")
+                .map(|coverage| (coverage.covered, coverage.total)),
+            Some((8, 17))
+        );
+        assert_eq!(
+            report
+                .categories
+                .get("RejectionPaths")
+                .map(|coverage| (coverage.covered, coverage.total)),
+            Some((14, 15))
+        );
+        assert!(report.floor_violations.is_empty());
+        assert!(report.unacknowledged_uncovered.is_empty());
+        assert!(graphql_schema_coverage_floors_satisfied(&report));
     }
 
     #[test]

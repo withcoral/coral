@@ -6781,6 +6781,7 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "coral-engine",
  "coral-spec",
  "insta",
  "pulldown-cmark",

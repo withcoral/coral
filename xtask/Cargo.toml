@@ -25,6 +25,7 @@ uuid.workspace = true
 walkdir.workspace = true
 
 coral-spec.workspace = true
+coral-engine.workspace = true
 
 [dev-dependencies]
 insta = "1"

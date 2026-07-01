@@ -127,6 +127,17 @@ Generate a machine-readable coverage summary with:
 make virtual-graph-graphql-report
 ```
 
+Generate the schema-driven capability coverage report with:
+
+```sh
+make virtual-graph-graphql-schema-coverage
+```
+
+This report uses the generated GraphQL schema surface plus the engine's own
+capability classifiers as the denominator. It reports headline canonical
+capability coverage, secondary alias-spelling coverage, per-category counts
+including `RejectionPaths`, and a tagged uncovered list.
+
 CI runs the GraphQL gate in the `Virtual Graph Core` workflow and writes the
 JSON report into the GitHub step summary next to the Cypher report.
 
