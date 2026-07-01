@@ -25,6 +25,7 @@ use crate::backends::http::provider::{HttpJsonExecRequest, http_json_exec};
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::filter_expr::literal_to_string;
+use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
 
 struct FunctionCallContext<'a> {
     source_schema: &'a str,
@@ -39,6 +40,7 @@ struct HttpSourceFunctionState {
     function_name: String,
     target: Arc<HttpFetchTarget>,
     schema: SchemaRef,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 /// Table-valued function that turns manifest-declared function args into an
@@ -62,6 +64,7 @@ impl HttpSourceTableFunction {
         backend: HttpSourceClient,
         source_schema: String,
         function: SourceTableFunctionSpec,
+        source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
     ) -> Result<Self> {
         let schema = schema_from_columns(&function.columns, &source_schema, &function.name)?;
         let target = HttpFetchTarget::from_function(&function);
@@ -74,6 +77,7 @@ impl HttpSourceTableFunction {
                 function_name,
                 target: Arc::new(target),
                 schema,
+                source_observation_publishers,
             }),
         })
     }
@@ -155,6 +159,8 @@ impl TableProvider for HttpSourceFunctionCallTableProvider {
             arg_values: self.arg_values.clone(),
             projection,
             limit,
+            surface_kind: SourceObservationSurfaceKind::Function,
+            source_observation_publishers: self.state.source_observation_publishers.clone(),
         })
     }
 }

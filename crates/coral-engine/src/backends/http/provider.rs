@@ -24,6 +24,7 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
+use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -33,6 +34,7 @@ pub(crate) struct HttpSourceTableProvider {
     table: Arc<HttpTableSpec>,
     target: HttpFetchTarget,
     schema: SchemaRef,
+    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 impl std::fmt::Debug for HttpSourceTableProvider {
@@ -55,6 +57,7 @@ impl HttpSourceTableProvider {
         backend: HttpSourceClient,
         source_schema: String,
         table: HttpTableSpec,
+        source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
@@ -64,6 +67,7 @@ impl HttpSourceTableProvider {
             table: Arc::new(table),
             target,
             schema,
+            source_observation_publishers,
         })
     }
 
@@ -102,6 +106,8 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) arg_values: HashMap<String, String>,
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
+    pub(crate) surface_kind: SourceObservationSurfaceKind,
+    pub(crate) source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
 }
 
 #[async_trait]
@@ -144,6 +150,8 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         arg_values,
         projection,
         limit,
+        surface_kind,
+        source_observation_publishers,
     } = request;
     let target = Arc::new(target);
     let mut conversion_filter_values = request_filter_values.clone();
@@ -211,7 +219,8 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         fetcher,
         converter,
         projection.cloned(),
-    )?;
+    )?
+    .with_source_observation(surface_kind, source_observation_publishers);
 
     Ok(Arc::new(exec))
 }
@@ -315,6 +324,8 @@ impl TableProvider for HttpSourceTableProvider {
             arg_values: HashMap::new(),
             projection,
             limit,
+            surface_kind: SourceObservationSurfaceKind::Table,
+            source_observation_publishers: self.source_observation_publishers.clone(),
         })
     }
 }
