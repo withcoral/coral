@@ -1663,6 +1663,22 @@ fn oauth_refresh_config(
     oauth: &ManifestOAuthCredentialSpec,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
+    oauth_refresh_config_at(
+        access_token_material_key,
+        metadata_prefix,
+        oauth,
+        material,
+        Utc::now(),
+    )
+}
+
+fn oauth_refresh_config_at(
+    access_token_material_key: &str,
+    metadata_prefix: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+    material: &BTreeMap<String, String>,
+    now: DateTime<Utc>,
+) -> Result<Option<OAuthRefreshConfig>, AppError> {
     if OAuthMetadataKey::Method.get(metadata_prefix, material) != Some(OAUTH_METADATA_METHOD_VALUE)
     {
         return Ok(None);
@@ -1678,7 +1694,6 @@ fn oauth_refresh_config(
             ))
         })?
         .with_timezone(&Utc);
-    let now = Utc::now();
     if expires_at > now + chrono::Duration::seconds(REFRESH_EXPIRY_SKEW_SECONDS) {
         return Ok(None);
     }
@@ -1872,8 +1887,8 @@ mod tests {
         StartOAuthCredentialRequest, basic_client_authorization,
         dynamic_client_registration_grant_types, join_dynamic_client_registration_scope_values,
         join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
-        parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
-        receive_callback, request_device_code,
+        oauth_refresh_config_at, parse_dynamic_client_registration_response, parse_token_response,
+        pkce_challenge, receive_callback, request_device_code,
     };
     use coral_spec::{
         ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
@@ -2351,8 +2366,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn near_expiry_oauth_material_without_refresh_token_remains_usable() {
+    #[test]
+    fn near_expiry_oauth_material_without_refresh_token_remains_usable() {
         let oauth = oauth_spec(
             "http://127.0.0.1:9/token",
             53682,
@@ -2367,25 +2382,20 @@ mod tests {
             },
         );
         let prefix = oauth_metadata_prefix("API_TOKEN");
-        let mut material = BTreeMap::from([
+        let now = chrono::Utc::now();
+        let material = BTreeMap::from([
             ("API_TOKEN".to_string(), "near-expiry-token".to_string()),
             (format!("{prefix}method"), "oauth".to_string()),
             (
                 format!("{prefix}access_token_expires_at"),
-                (chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339(),
+                (now + chrono::Duration::seconds(30)).to_rfc3339(),
             ),
         ]);
-        let service = OAuthCredentialService::new();
 
-        let refreshed = service
-            .refresh_if_needed(
-                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
-                &mut material,
-            )
-            .await
+        let refresh = oauth_refresh_config_at("API_TOKEN", &prefix, &oauth, &material, now)
             .expect("near-expiry token without refresh token should still be usable");
 
-        assert!(!refreshed);
+        assert!(refresh.is_none());
         assert_eq!(
             material.get("API_TOKEN").map(String::as_str),
             Some("near-expiry-token")
