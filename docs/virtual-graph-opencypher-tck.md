@@ -277,7 +277,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 103 representative read-only scenarios:
+The GraphQL baseline currently contains 106 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
@@ -304,9 +304,10 @@ The GraphQL baseline currently contains 103 representative read-only scenarios:
   relationship-property filters, combined float relationship-property
   predicates, 2-hop out/out and out/in traversals, and empty outgoing
   traversals that flatten to no rows.
-- `RelationshipExistence`: 5 scenarios for `EXISTS`-style out/in/any
+- `RelationshipExistence`: 8 scenarios for `EXISTS`-style out/in/any
   relationship filters, endpoint and relationship-property predicates, and
-  negated existence.
+  boolean-composed existence with scalar filters, including negated incoming
+  existence.
 - `GeneratedClientShape`: 9 scenarios for single, chained, and inline
   fragments, root and traversal `__typename` metadata including `_edge`
   relationship types, and `@skip`/`@include` directives.

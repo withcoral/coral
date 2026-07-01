@@ -8,7 +8,7 @@
     "GeneratedClientShape": 9,
     "IdentityFields": 6,
     "NestedRelationships": 15,
-    "RelationshipExistence": 5,
+    "RelationshipExistence": 8,
     "RootSelection": 4,
     "RowModifiers": 11,
     "ScalarFilters": 17
@@ -1578,6 +1578,51 @@
             "name": "Bob",
             "target": "Carol",
             "edgeType": "KNOWS"
+          }
+        ]
+      }
+    },
+    {
+      "id": "existence-and-scalar-combined",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { and: [{ out_KNOWS: { relationshipWhere: { since: { gte: 2020 } } } }, { active: { eq: true } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "existence-negated-incoming",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { not: { in_KNOWS: { relationshipWhere: { since: { gte: 2000 } } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "existence-or-scalar-combined",
+      "feature": "RelationshipExistence",
+      "query": "query { Person(where: { or: [{ out_KNOWS: { relationshipWhere: { strength: { gte: 0.8 } } } }, { city: { eq: \"Paris\" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
           }
         ]
       }
