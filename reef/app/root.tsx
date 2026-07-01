@@ -1,9 +1,12 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
 
 import type { Route } from './+types/root'
+import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
 import './styles/globals.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
+import { lightTheme } from './wax/theme/theme-light.css'
+import { THEME_STORAGE_KEY, useTheme } from './wax/theme/theme-provider'
 
 export const links = () => [
   {
@@ -34,13 +37,55 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body className={darkTheme}>
-        {children}
-        <ScrollRestoration />
-        <Scripts />
-      </body>
+      <ThemedBody>{children}</ThemedBody>
     </html>
   )
+}
+
+function ThemedBody({ children }: { children: React.ReactNode }) {
+  const { theme, themeClass } = useTheme()
+
+  return (
+    <body className={themeClass} style={{ colorScheme: theme }} suppressHydrationWarning>
+      <ThemeBootstrapScript />
+      {children}
+      <ScrollRestoration />
+      <Scripts />
+    </body>
+  )
+}
+
+function ThemeBootstrapScript() {
+  const source = `
+(function () {
+  var darkClass = ${JSON.stringify(darkTheme)};
+  var lightClass = ${JSON.stringify(lightTheme)};
+  var storageKey = ${JSON.stringify(THEME_STORAGE_KEY)};
+  function readPreference() {
+    try {
+      var stored = window.localStorage.getItem(storageKey);
+      var parsed = stored ? JSON.parse(stored) : 'system';
+      return parsed === 'dark' || parsed === 'light' || parsed === 'system' ? parsed : 'system';
+    } catch (_) {
+      return 'system';
+    }
+  }
+  var preference = readPreference();
+  var theme = preference === 'system'
+    ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+    : preference;
+  document.body.classList.remove(darkClass, lightClass);
+  document.body.classList.add(theme === 'light' ? lightClass : darkClass);
+  document.body.style.colorScheme = theme;
+})();
+`
+  return <script dangerouslySetInnerHTML={{ __html: source }} />
+}
+
+export async function loader({ request }: Route.LoaderArgs) {
+  return {
+    sidebarIsMinimized: readSidebarCollapsedCookie(request),
+  }
 }
 
 export default function App() {

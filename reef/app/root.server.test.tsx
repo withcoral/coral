@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { loader } from './app-shell'
+import { loader } from './root'
 
-describe('app shell loader', () => {
+describe('root loader', () => {
   it('returns sidebar state', async () => {
     await expect(runLoader('http://localhost:5173/')).resolves.toEqual({
       sidebarIsMinimized: false,

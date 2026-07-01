@@ -8,7 +8,13 @@ import { lightTheme } from '@/wax/theme/theme-light.css'
 type Theme = 'dark' | 'light'
 type ThemePreference = 'dark' | 'light' | 'system'
 
-export const themeAtom = atomWithStorage<ThemePreference>('coral:theme', 'system')
+export const THEME_STORAGE_KEY = 'coral:theme'
+// getOnInit reads the persisted preference on the first client render so the
+// hydrated <body> class matches the pre-hydration bootstrap script instead of
+// briefly reverting to the default while the atom catches up.
+export const themeAtom = atomWithStorage<ThemePreference>(THEME_STORAGE_KEY, 'system', undefined, {
+  getOnInit: true,
+})
 
 export function getThemeClass(theme: Theme) {
   return theme === 'light' ? lightTheme : darkTheme

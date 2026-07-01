@@ -334,11 +334,13 @@ describe('Architectural Tests', () => {
   })
 
   describe('2. Route Dependency Direction', () => {
-    it('app shell should wrap only the root index', () => {
+    it('app shell should wrap only top-level app routes', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
+      // Settings is registered only in the desktop build (gated on
+      // CORAL_DESKTOP_APP), so it appears as a conditional spread entry.
       expect(routeConfig).toMatch(
-        /layout\('routes\/app-shell\.tsx', \[index\('routes\/index\.tsx'\)\]\)/,
+        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
       )
     })
 

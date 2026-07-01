@@ -1,9 +1,13 @@
 import classNames from 'classnames'
+import { NavLink, useLocation } from 'react-router'
 
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
+import { SidebarButton } from '@/wax/components/sidebar-button/sidebar-button'
+import { Tooltip } from '@/wax/components/tooltip'
 import { Typography } from '@/wax/components/typography'
+import { coralDesktopApi } from '@/lib/coral-desktop'
 
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
@@ -13,7 +17,25 @@ interface SidebarProps {
 }
 
 export function Sidebar({ initialIsMinimized }: SidebarProps) {
+  const location = useLocation()
   const { isMinimized, toggleSidebar } = useSidebarState(initialIsMinimized)
+  const isSettingsActive =
+    location.pathname === '/settings' || location.pathname.startsWith('/settings/')
+  // Settings only works inside the Electron shell; hide it in the web build.
+  const isDesktopApp = coralDesktopApi() !== null
+
+  const settingsButton = (
+    <SidebarButton
+      aria-label="Settings"
+      as={NavLink}
+      icon="Settings"
+      isActive={isSettingsActive}
+      isMinimized={isMinimized}
+      to="/settings"
+    >
+      Settings
+    </SidebarButton>
+  )
 
   const handleToggleSidebar = (event: KeyboardEvent) => {
     event.preventDefault()
@@ -75,7 +97,17 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
 
       <div className={styles.nav} />
 
-      <div className={styles.footer} />
+      <div className={styles.footer}>
+        {isDesktopApp &&
+          // Collapsed sidebar hides the label, so surface it on hover instead.
+          (isMinimized ? (
+            <Tooltip content="Settings" side="right">
+              {settingsButton}
+            </Tooltip>
+          ) : (
+            settingsButton
+          ))}
+      </div>
     </nav>
   )
 }
