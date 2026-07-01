@@ -7,7 +7,7 @@
     "ErrorHandling": 8,
     "GeneratedClientShape": 5,
     "IdentityFields": 6,
-    "NestedRelationships": 12,
+    "NestedRelationships": 15,
     "RelationshipExistence": 5,
     "RootSelection": 4,
     "RowModifiers": 11,
@@ -797,6 +797,44 @@
             "target": "Carol",
             "since": 2022
           }
+        ]
+      }
+    },
+    {
+      "id": "traversal-two-hop-out-out",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name out_KNOWS(to: Person) { friend: name out_KNOWS(to: Person) { fof: name } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "friend": "Bob", "fof": "Carol" }
+        ]
+      }
+    },
+    {
+      "id": "traversal-two-hop-out-in",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name out_KNOWS(to: Person) { friend: name in_KNOWS(from: Person) { knowerOfFriend: name } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          { "name": "Alice", "friend": "Bob", "knowerOfFriend": "Alice" },
+          { "name": "Alice", "friend": "Carol", "knowerOfFriend": "Bob" },
+          { "name": "Alice", "friend": "Carol", "knowerOfFriend": "Alice" }
+        ]
+      }
+    },
+    {
+      "id": "traversal-two-hop-filtered-first-hop",
+      "feature": "NestedRelationships",
+      "query": "query { Person(where: { name: { eq: \"Alice\" } }) { name out_KNOWS(to: Person, relationshipWhere: { strength: { gte: 0.5 } }) { friend: name out_KNOWS(to: Person) { fof: name } } } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          { "name": "Alice", "friend": "Bob", "fof": "Carol" }
         ]
       }
     },
