@@ -9,7 +9,7 @@
     "GraphMetadata": 19,
     "ListExpressions": 40,
     "LiteralExpressions": 15,
-    "MapExpressions": 19,
+    "MapExpressions": 25,
     "Match": 27,
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
@@ -3447,6 +3447,40 @@
       }
     },
     {
+      "id": "parameterized-property-map-index-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p[$active_key] = true RETURN p[$name_key] AS name, properties(p)[$city_key] AS city ORDER BY properties(p)[$age_key] DESC",
+      "parameters": {
+        "active_key": "active",
+        "age_key": "age",
+        "city_key": "city",
+        "name_key": "name"
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "city": "Paris"
+          },
+          {
+            "name": "Alice",
+            "city": "London"
+          }
+        ]
+      }
+    },
+    {
+      "id": "non-string-property-map-index-rejected",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p[0] AS indexed",
+      "expected": {
+        "kind": "error",
+        "contains": "property index lookups require a string literal"
+      }
+    },
+    {
       "id": "literal-map-mixed-value-access",
       "feature": "MapExpressions",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({answer: 42, label: 'ready', flag: true}).answer AS answer, ({answer: 42, label: 'ready', flag: true}).label AS label, ({answer: 42, label: 'ready', flag: true}).flag AS flag",
@@ -3473,6 +3507,29 @@
           {
             "missing_value": "missing",
             "missing_is_null": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "static-map-missing-key-null-predicate",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE {known: p.name}.missing IS NULL RETURN p.name AS name, coalesce({known: p.name}.missing, 'fallback') AS fallback ORDER BY p.name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "fallback": "fallback"
+          },
+          {
+            "name": "Bob",
+            "fallback": "fallback"
+          },
+          {
+            "name": "Carol",
+            "fallback": "fallback"
           }
         ]
       }
@@ -3525,6 +3582,25 @@
               "k",
               "l"
             ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-map-key-list-ordering",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' AND keys({zeta: p.name, alpha: p.city, active: p.active}) = ['zeta', 'alpha', 'active'] RETURN keys({zeta: p.name, alpha: p.city, active: p.active}) AS map_keys, last(keys({zeta: p.name, alpha: p.city, active: p.active})) AS last_key ORDER BY keys({zeta: p.name, alpha: p.city, active: p.active})",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "map_keys": [
+              "zeta",
+              "alpha",
+              "active"
+            ],
+            "last_key": "active"
           }
         ]
       }
@@ -3634,6 +3710,32 @@
       }
     },
     {
+      "id": "parameterized-relationship-endpoint-map-index-lookup",
+      "feature": "MapExpressions",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE properties(r)[$since_key] >= 2021 RETURN properties(startNode(r))[$name_key] AS source, properties(endNode(r))[$name_key] AS target, r[$strength_key] AS strength ORDER BY properties(r)[$since_key]",
+      "parameters": {
+        "name_key": "name",
+        "since_key": "since",
+        "strength_key": "strength"
+      },
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Bob",
+            "target": "Carol",
+            "strength": 0.7
+          },
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "strength": 0.3
+          }
+        ]
+      }
+    },
+    {
       "id": "static-map-dotted-access-case-sensitive",
       "feature": "MapExpressions",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN ({name: 'Mats', Name: 'Pontus'}).name AS lower_name, ({name: 'Mats', Name: 'Pontus'}).Name AS upper_name, ({name: 'Mats', Name: 'Pontus'}).nAMe IS NULL AS mixed_missing",
@@ -3681,6 +3783,15 @@
       "expected": {
         "kind": "error",
         "contains": "scalar expressions must be variable.property expressions"
+      }
+    },
+    {
+      "id": "map-equality-rejected",
+      "feature": "MapExpressions",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN {name: p.name} = {name: 'Alice'} AS map_equal",
+      "expected": {
+        "kind": "error",
+        "contains": "only string, numeric, boolean, and null literals are supported"
       }
     },
     {
