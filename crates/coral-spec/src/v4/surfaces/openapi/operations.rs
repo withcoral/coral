@@ -300,22 +300,56 @@ fn parameter_is_required(parameter_obj: &Map<String, Value>, location: IrInputLo
 }
 
 fn detect_pagination(inputs: &[IrOperationInput]) -> PaginationSpec {
-    let has_page = inputs
+    const DEFAULT_PAGE_SIZE: usize = 10;
+    const DEFAULT_MAX_PAGE_SIZE: usize = 100;
+    const PAGE_PARAM_NAMES: [&str; 3] = ["page", "page_number", "pagenum"];
+    const PAGE_SIZE_PARAM_NAMES: [&str; 6] = [
+        "max_results",
+        "maxresults",
+        "page_size",
+        "pagesize",
+        "per_page",
+        "perpage",
+    ];
+    const OFFSET_PARAM_NAMES: [&str; 1] = ["offset"];
+    const LIMIT_PARAM_NAMES: [&str; 1] = ["limit"];
+
+    if let Some(page_input) = inputs
         .iter()
-        .any(|input| input.location == IrInputLocation::Query && input.name == "page");
-    let has_per_page = inputs
-        .iter()
-        .any(|input| input.location == IrInputLocation::Query && input.name == "per_page");
-    if has_page && has_per_page {
+        .find(|input| PAGE_PARAM_NAMES.contains(&input.name.as_str()))
+        && let Some(page_size_input) = inputs
+            .iter()
+            .find(|input| PAGE_SIZE_PARAM_NAMES.contains(&input.name.as_str()))
+    {
+        let default_page_size: usize = std::cmp::max(
+            page_size_input
+                .default_value
+                .as_deref()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0),
+            DEFAULT_PAGE_SIZE,
+        );
         PaginationSpec {
             mode: PaginationMode::Page,
             page_size: Some(PageSizeSpec {
-                default: 30,
-                max: 100,
-                query_param: Some("per_page".to_string()),
+                default: default_page_size,
+                max: std::cmp::max(default_page_size, DEFAULT_MAX_PAGE_SIZE),
+                query_param: if page_size_input.location == IrInputLocation::Query {
+                    Some(page_size_input.name.clone())
+                } else {
+                    // TODO: log diagnostics
+                    None
+                },
+                // TODO: if input's location is IrInputLocation::Body then set the body path here.
                 body_path: Vec::new(),
             }),
-            page_param: Some("page".to_string()),
+            page_param: if page_input.location == IrInputLocation::Query {
+                Some(page_input.name.clone())
+            } else {
+                // TODO: log diagnostics
+                None
+            },
             page_start: 1,
             page_step: 1,
             ..PaginationSpec::default()
