@@ -22,6 +22,15 @@ use super::ir::{
 };
 use crate::CoreError;
 
+mod response_signatures;
+
+#[allow(
+    clippy::allow_attributes,
+    clippy::wildcard_imports,
+    reason = "GraphQL response-signature helpers are split into a child module while preserving parent call sites."
+)]
+use self::response_signatures::*;
+
 /// Runtime value that can be bound to a GraphQL variable in the supported subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphqlVariableValue {
@@ -2173,81 +2182,6 @@ fn ensure_relationship_mapping(
             ),
         )),
     }
-}
-
-fn projection_alias(field: &Field<'_, String>, context: &NodeContext) -> String {
-    field.alias.clone().unwrap_or_else(|| {
-        if context.is_root {
-            field.name.clone()
-        } else {
-            format!("{}_{}", context.variable, field.name)
-        }
-    })
-}
-
-fn graphql_response_name(field: &Field<'_, String>) -> String {
-    field.alias.clone().unwrap_or_else(|| field.name.clone())
-}
-
-fn graphql_root_selection_signature(field: &Field<'_, String>) -> GraphqlRootSelectionSignature {
-    GraphqlRootSelectionSignature {
-        field_name: field.name.clone(),
-        arguments: graphql_field_argument_signature(field),
-    }
-}
-
-fn graphql_relationship_selection_signature(
-    field: &Field<'_, String>,
-) -> GraphqlRelationshipSelectionSignature {
-    GraphqlRelationshipSelectionSignature {
-        field_name: field.name.clone(),
-        arguments: graphql_field_argument_signature(field),
-    }
-}
-
-fn graphql_field_argument_signature(
-    field: &Field<'_, String>,
-) -> Vec<(String, GraphqlValueSignature)> {
-    let mut arguments = field
-        .arguments
-        .iter()
-        .map(|(name, value)| (name.clone(), graphql_value_signature(value)))
-        .collect::<Vec<_>>();
-    arguments.sort_by(|(left, _), (right, _)| left.cmp(right));
-    arguments
-}
-
-fn graphql_value_signature(value: &Value<'_, String>) -> GraphqlValueSignature {
-    match value {
-        Value::Variable(variable) => GraphqlValueSignature::Variable(variable.clone()),
-        Value::Int(number) => GraphqlValueSignature::Integer(
-            number.as_i64().expect("GraphQL parser stores Int as i64"),
-        ),
-        Value::Float(value) => GraphqlValueSignature::Float(OrderedFloat(*value)),
-        Value::String(value) => GraphqlValueSignature::String(value.clone()),
-        Value::Boolean(value) => GraphqlValueSignature::Boolean(*value),
-        Value::Null => GraphqlValueSignature::Null,
-        Value::Enum(value) => GraphqlValueSignature::Enum(value.clone()),
-        Value::List(values) => GraphqlValueSignature::List(
-            values
-                .iter()
-                .map(graphql_value_signature)
-                .collect::<Vec<_>>(),
-        ),
-        Value::Object(values) => GraphqlValueSignature::Object(
-            values
-                .iter()
-                .map(|(name, value)| (name.clone(), graphql_value_signature(value)))
-                .collect::<Vec<_>>(),
-        ),
-    }
-}
-
-fn edge_projection_alias(field: &Field<'_, String>, edge_variable: &str) -> String {
-    field
-        .alias
-        .clone()
-        .unwrap_or_else(|| format!("{edge_variable}_{}", field.name))
 }
 
 fn selection_is_included(
