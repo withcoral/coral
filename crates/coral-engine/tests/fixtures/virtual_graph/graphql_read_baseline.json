@@ -11,7 +11,7 @@
     "RelationshipExistence": 5,
     "RootSelection": 4,
     "RowModifiers": 11,
-    "ScalarFilters": 13
+    "ScalarFilters": 17
   },
   "scenarios": [
     {
@@ -22,8 +22,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "person": "Alice", "city": "London" },
-          { "person": "Carol", "city": "Paris" }
+          {
+            "person": "Alice",
+            "city": "London"
+          },
+          {
+            "person": "Carol",
+            "city": "Paris"
+          }
         ]
       }
     },
@@ -35,8 +41,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "person": "Alice", "active": true },
-          { "person": "Bob", "active": false }
+          {
+            "person": "Alice",
+            "active": true
+          },
+          {
+            "person": "Bob",
+            "active": false
+          }
         ]
       }
     },
@@ -48,7 +60,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -60,8 +74,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol", "age": 41 },
-          { "name": "Alice", "age": 34 }
+          {
+            "name": "Carol",
+            "age": 41
+          },
+          {
+            "name": "Alice",
+            "age": 34
+          }
         ]
       }
     },
@@ -73,8 +93,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Carol" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -86,9 +110,15 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -100,7 +130,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -112,8 +144,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "age": 34 },
-          { "name": "Bob", "age": 29 }
+          {
+            "name": "Alice",
+            "age": 34
+          },
+          {
+            "name": "Bob",
+            "age": 29
+          }
         ]
       }
     },
@@ -125,7 +163,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -137,8 +177,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -150,7 +194,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -172,7 +218,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -184,7 +232,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -196,8 +246,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -209,8 +263,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -222,7 +280,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -234,7 +294,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -246,8 +308,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -259,8 +325,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -272,7 +342,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -284,8 +356,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Carol" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -297,7 +373,10 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "age": 34 }
+          {
+            "name": "Alice",
+            "age": 34
+          }
         ]
       }
     },
@@ -309,9 +388,18 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol", "age": 41 },
-          { "name": "Alice", "age": 34 },
-          { "name": "Bob", "age": 29 }
+          {
+            "name": "Carol",
+            "age": 41
+          },
+          {
+            "name": "Alice",
+            "age": 34
+          },
+          {
+            "name": "Bob",
+            "age": 29
+          }
         ]
       }
     },
@@ -323,9 +411,15 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -337,9 +431,15 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" },
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -351,8 +451,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London" },
-          { "city": "Paris" }
+          {
+            "city": "London"
+          },
+          {
+            "city": "Paris"
+          }
         ]
       }
     },
@@ -364,9 +468,21 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "city": "London", "age": 34 },
-          { "name": "Bob", "city": "London", "age": 29 },
-          { "name": "Carol", "city": "Paris", "age": 41 }
+          {
+            "name": "Alice",
+            "city": "London",
+            "age": 34
+          },
+          {
+            "name": "Bob",
+            "city": "London",
+            "age": 29
+          },
+          {
+            "name": "Carol",
+            "city": "Paris",
+            "age": 41
+          }
         ]
       }
     },
@@ -378,9 +494,15 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Alice" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -392,9 +514,18 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "active": true },
-          { "name": "Carol", "active": true },
-          { "name": "Bob", "active": false }
+          {
+            "name": "Alice",
+            "active": true
+          },
+          {
+            "name": "Carol",
+            "active": true
+          },
+          {
+            "name": "Bob",
+            "active": false
+          }
         ]
       }
     },
@@ -406,8 +537,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "people": 2 },
-          { "city": "Paris", "people": 1 }
+          {
+            "city": "London",
+            "people": 2
+          },
+          {
+            "city": "Paris",
+            "people": 1
+          }
         ]
       }
     },
@@ -419,7 +556,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "p75Age": 37.5 }
+          {
+            "p75Age": 37.5
+          }
         ]
       }
     },
@@ -431,7 +570,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "totalAge": 104, "youngest": 29, "oldest": 41 }
+          {
+            "totalAge": 104,
+            "youngest": 29,
+            "oldest": 41
+          }
         ]
       }
     },
@@ -443,8 +586,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "avgAge": 31.5 },
-          { "city": "Paris", "avgAge": 41.0 }
+          {
+            "city": "London",
+            "avgAge": 31.5
+          },
+          {
+            "city": "Paris",
+            "avgAge": 41.0
+          }
         ]
       }
     },
@@ -456,7 +605,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "medianAge": 34.0 }
+          {
+            "medianAge": 34.0
+          }
         ]
       }
     },
@@ -468,8 +619,14 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "medianAge": 31.5 },
-          { "city": "Paris", "medianAge": 41.0 }
+          {
+            "city": "London",
+            "medianAge": 31.5
+          },
+          {
+            "city": "Paris",
+            "medianAge": 41.0
+          }
         ]
       }
     },
@@ -481,8 +638,16 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "medianAge": 31.5, "people": 2 },
-          { "city": "Paris", "medianAge": 41.0, "people": 1 }
+          {
+            "city": "London",
+            "medianAge": 31.5,
+            "people": 2
+          },
+          {
+            "city": "Paris",
+            "medianAge": 41.0,
+            "people": 1
+          }
         ]
       }
     },
@@ -494,7 +659,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "distinctCities": 2 }
+          {
+            "distinctCities": 2
+          }
         ]
       }
     },
@@ -506,8 +673,16 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "city": "London", "youngest": 29, "oldest": 34 },
-          { "city": "Paris", "youngest": 41, "oldest": 41 }
+          {
+            "city": "London",
+            "youngest": 29,
+            "oldest": 34
+          },
+          {
+            "city": "Paris",
+            "youngest": 41,
+            "oldest": 41
+          }
         ]
       }
     },
@@ -519,7 +694,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "id": 1, "element": "1", "name": "Alice" }
+          {
+            "id": 1,
+            "element": "1",
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -531,7 +710,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" }
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -543,8 +724,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -556,8 +741,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Carol" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -569,9 +758,15 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" },
-          { "name": "Bob" },
-          { "name": "Alice" }
+          {
+            "name": "Carol"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -583,7 +778,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" }
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -595,7 +792,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "source": "Alice", "target": "Carol", "since": 2022 }
+          {
+            "source": "Alice",
+            "target": "Carol",
+            "since": 2022
+          }
         ]
       }
     },
@@ -607,7 +808,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "target": "Bob", "strength": 0.9 }
+          {
+            "name": "Alice",
+            "target": "Bob",
+            "strength": 0.9
+          }
         ]
       }
     },
@@ -619,7 +824,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "target": "Carol", "strength": 0.3 }
+          {
+            "name": "Alice",
+            "target": "Carol",
+            "strength": 0.3
+          }
         ]
       }
     },
@@ -631,7 +840,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob", "target": "Carol", "strength": 0.7 }
+          {
+            "name": "Bob",
+            "target": "Carol",
+            "strength": 0.7
+          }
         ]
       }
     },
@@ -643,8 +856,16 @@
         "kind": "rows",
         "ordered": false,
         "rows": [
-          { "name": "Carol", "knower": "Bob", "since": 2021 },
-          { "name": "Carol", "knower": "Alice", "since": 2022 }
+          {
+            "name": "Carol",
+            "knower": "Bob",
+            "since": 2021
+          },
+          {
+            "name": "Carol",
+            "knower": "Alice",
+            "since": 2022
+          }
         ]
       }
     },
@@ -656,7 +877,10 @@
         "kind": "rows",
         "ordered": false,
         "rows": [
-          { "name": "Carol", "knower": "Alice" }
+          {
+            "name": "Carol",
+            "knower": "Alice"
+          }
         ]
       }
     },
@@ -668,7 +892,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol", "knower": "Bob", "strength": 0.7 }
+          {
+            "name": "Carol",
+            "knower": "Bob",
+            "strength": 0.7
+          }
         ]
       }
     },
@@ -680,7 +908,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol", "knower": "Alice", "strength": 0.3, "since": 2022 }
+          {
+            "name": "Carol",
+            "knower": "Alice",
+            "strength": 0.3,
+            "since": 2022
+          }
         ]
       }
     },
@@ -692,8 +925,14 @@
         "kind": "rows",
         "ordered": false,
         "rows": [
-          { "name": "Bob", "contact": "Alice" },
-          { "name": "Bob", "contact": "Carol" }
+          {
+            "name": "Bob",
+            "contact": "Alice"
+          },
+          {
+            "name": "Bob",
+            "contact": "Carol"
+          }
         ]
       }
     },
@@ -705,8 +944,16 @@
         "kind": "rows",
         "ordered": false,
         "rows": [
-          { "name": "Alice", "contact": "Bob", "strength": 0.9 },
-          { "name": "Alice", "contact": "Carol", "strength": 0.3 }
+          {
+            "name": "Alice",
+            "contact": "Bob",
+            "strength": 0.9
+          },
+          {
+            "name": "Alice",
+            "contact": "Carol",
+            "strength": 0.3
+          }
         ]
       }
     },
@@ -718,7 +965,11 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "contact": "Bob", "strength": 0.9 }
+          {
+            "name": "Alice",
+            "contact": "Bob",
+            "strength": 0.9
+          }
         ]
       }
     },
@@ -730,8 +981,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -743,7 +998,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -755,8 +1012,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -768,8 +1029,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" },
-          { "name": "Bob" }
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          }
         ]
       }
     },
@@ -781,8 +1046,12 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Bob" },
-          { "name": "Carol" }
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -794,7 +1063,10 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "__typename": "Person", "person": "Alice" }
+          {
+            "__typename": "Person",
+            "person": "Alice"
+          }
         ]
       }
     },
@@ -806,7 +1078,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -818,7 +1092,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -830,7 +1106,10 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice", "age": 34 }
+          {
+            "name": "Alice",
+            "age": 34
+          }
         ]
       }
     },
@@ -842,7 +1121,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Alice" }
+          {
+            "name": "Alice"
+          }
         ]
       }
     },
@@ -956,7 +1237,9 @@
         "kind": "rows",
         "ordered": true,
         "rows": [
-          { "name": "Carol" }
+          {
+            "name": "Carol"
+          }
         ]
       }
     },
@@ -968,6 +1251,72 @@
         "kind": "rows",
         "ordered": true,
         "rows": []
+      }
+    },
+    {
+      "id": "coercion-age-gte-noninteger-float",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { gte: 33.5 } }, orderBy: [{ field: name, direction: ASC }]) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "age": 34
+          },
+          {
+            "name": "Carol",
+            "age": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "coercion-age-lt-noninteger-float",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { lt: 29.5 } }) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob",
+            "age": 29
+          }
+        ]
+      }
+    },
+    {
+      "id": "coercion-age-gt-float-equal-int-boundary",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { gt: 34.0 } }) { name age } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Carol",
+            "age": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "coercion-age-in-float-list",
+      "feature": "ScalarFilters",
+      "query": "query { Person(where: { age: { in: [29.0, 41.0] } }, orderBy: [{ field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
       }
     }
   ]
