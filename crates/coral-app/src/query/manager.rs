@@ -248,6 +248,9 @@ impl QueryManager {
             .config_store
             .load_config()
             .map_err(QueryManagerError::App)?;
+        config
+            .require_workspace(workspace_name)
+            .map_err(QueryManagerError::App)?;
         let source = config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
@@ -279,6 +282,7 @@ impl QueryManager {
             source.count = tracing::field::Empty,
         );
         let _guard = span.enter();
+        config.require_workspace(workspace_name)?;
         let mut query_sources = Vec::new();
         for source in config.workspace_sources(workspace_name) {
             match self.load_query_source(workspace_name, &source) {
@@ -549,6 +553,8 @@ fn query_error_message(error: &QueryManagerError) -> String {
 fn app_error_type(error: &AppError) -> &'static str {
     match error {
         AppError::SourceNotFound(_) => "SOURCE_NOT_FOUND",
+        AppError::WorkspaceNotFound(_) => "WORKSPACE_NOT_FOUND",
+        AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
@@ -656,6 +662,55 @@ mod tests {
         QueryManagerFixture {
             _temp: temp,
             manager,
+        }
+    }
+
+    fn assert_workspace_not_found(error: AppError, workspace_name: &WorkspaceName) {
+        match error {
+            AppError::WorkspaceNotFound(actual) => assert_eq!(actual, workspace_name.as_str()),
+            error => panic!("expected WorkspaceNotFound for '{workspace_name}', got {error}"),
+        }
+    }
+
+    #[test]
+    fn load_query_sources_fails_closed_for_missing_workspace() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let config = fixture
+            .manager
+            .config_store
+            .load_config()
+            .expect("load config");
+
+        let error = fixture
+            .manager
+            .load_query_sources(&missing_workspace, &config)
+            .expect_err("missing workspace should fail closed");
+
+        assert_workspace_not_found(error, &missing_workspace);
+    }
+
+    #[tokio::test]
+    async fn validate_source_fails_with_workspace_not_found_for_missing_workspace() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+
+        let result = fixture
+            .manager
+            .validate_source(&missing_workspace, &source_name)
+            .await;
+        let Err(error) = result else {
+            panic!("missing workspace should fail before source lookup");
+        };
+
+        match error {
+            QueryManagerError::App(error) => {
+                assert_workspace_not_found(error, &missing_workspace);
+            }
+            QueryManagerError::Core(error) => {
+                panic!("expected app error for missing workspace, got {error}");
+            }
         }
     }
 

@@ -96,6 +96,9 @@ pub const CORAL_EPISODE_INTENT_MAX_CHARS: usize = 4096;
 /// Machine-readable reason for a configured source lookup miss.
 pub const CORAL_ERROR_REASON_SOURCE_NOT_FOUND: &str = "SOURCE_NOT_FOUND";
 
+/// Machine-readable reason for a configured workspace lookup miss.
+pub const CORAL_ERROR_REASON_WORKSPACE_NOT_FOUND: &str = "WORKSPACE_NOT_FOUND";
+
 /// Reserved `ErrorInfo.metadata` key for a one-line error summary.
 pub const CORAL_ERROR_METADATA_SUMMARY: &str = "summary";
 
