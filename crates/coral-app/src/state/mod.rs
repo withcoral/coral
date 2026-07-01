@@ -1,6 +1,7 @@
 //! App-home state layout and persisted config ownership.
 
 mod config;
+pub(crate) mod db;
 mod layout;
 
 pub(crate) use config::{AppConfig, ConfigStore};

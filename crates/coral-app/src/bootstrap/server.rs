@@ -54,6 +54,7 @@ use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
 use crate::state::ConfigStore;
+use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
 use crate::transport::GrpcMethodAnnotatedService;
@@ -252,6 +253,20 @@ impl ServerBuilder {
         let env = AppEnvironment::discover();
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
+        let database_config = DatabaseConfig::load(&layout)?;
+        let database_config = match database_config {
+            DatabaseConfig::Sqlite { path } => ResolvedDatabaseConfig::Sqlite { path },
+            DatabaseConfig::Postgres { url_env } => {
+                let url = AppEnvironment::env_var(&url_env).ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "database backend 'postgres' requires environment variable `{url_env}`"
+                    ))
+                })?;
+                ResolvedDatabaseConfig::Postgres { url }
+            }
+        };
+        let coral_db = CoralDb::open(database_config).await?;
+        coral_db.migrate().await?;
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
