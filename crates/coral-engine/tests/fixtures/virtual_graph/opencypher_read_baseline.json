@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 24
+    "With": 30
   },
   "scenarios": [
     {
@@ -10085,6 +10085,108 @@
       "expected": {
         "kind": "error",
         "contains": "RETURN function 'duration.between' is not supported yet"
+      }
+    },
+    {
+      "id": "with-distinct-collapses-duplicate-friend-cities",
+      "feature": "With",
+      "query": "MATCH (:Person)-[:KNOWS]->(friend:Person) WITH DISTINCT friend.city AS city RETURN city ORDER BY city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "city": ""
+          },
+          {
+            "city": "Paris"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-dropped-variable-only-where-rejected",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS name WHERE p.age > 30 RETURN name ORDER BY name",
+      "expected": {
+        "kind": "error",
+        "contains": "WITH WHERE comparisons must include at least one projected alias operand"
+      }
+    },
+    {
+      "id": "with-null-alias-projection",
+      "feature": "With",
+      "query": "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) WITH p.name AS person, friend.city AS friend_city, friend.city IS NULL AS missing_friend_city RETURN person, friend_city, missing_friend_city ORDER BY person, friend_city",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend_city": "",
+            "missing_friend_city": false
+          },
+          {
+            "person": "Alice",
+            "friend_city": "Paris",
+            "missing_friend_city": false
+          },
+          {
+            "person": "Bob",
+            "friend_city": "Paris",
+            "missing_friend_city": false
+          },
+          {
+            "person": "Carol",
+            "missing_friend_city": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-empty-input-aggregate-filter",
+      "feature": "With",
+      "query": "MATCH (p:Person) WHERE p.age > 100 WITH count(p) AS people WHERE people = 0 RETURN people",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "people": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-by-tie-breaker",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p.name AS name, p.active AS active ORDER BY active DESC, name ASC RETURN name, active",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "active": true
+          },
+          {
+            "name": "Carol",
+            "active": true
+          },
+          {
+            "name": "Bob",
+            "active": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-limit-zero-before-match-rejected",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 0 MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name AS friend",
+      "expected": {
+        "kind": "error",
+        "contains": "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
       }
     }
   ]
