@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
+    IrScalarType, IrType, IrTypeShape, OutputCardinality, RestExecutionAttachment, SemanticIr,
 };
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, normalize_sql_identifier, stable_suffix};
@@ -331,7 +331,7 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
     let IrTypeShape::Object { fields } = &row_type.shape else {
         return vec![ProjectionColumn {
             name: "value".to_string(),
-            data_type: ManifestDataType::Json,
+            data_type: projection_data_type(row_type),
             source_path: Vec::new(),
             nullable: true,
             description: row_type.description.clone(),
@@ -345,17 +345,9 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
             let suffix = stable_suffix(&field.name);
             name = format!("{name}__{suffix}");
         }
-        let data_type =
-            type_by_id
-                .get(field.type_ref.as_str())
-                .map_or(ManifestDataType::Json, |ty| match &ty.shape {
-                    IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
-                    IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
-                    IrTypeShape::Json
-                    | IrTypeShape::Object { .. }
-                    | IrTypeShape::List { .. }
-                    | IrTypeShape::Map { .. } => ManifestDataType::Json,
-                });
+        let data_type = type_by_id
+            .get(field.type_ref.as_str())
+            .map_or(ManifestDataType::Json, |ty| projection_data_type(ty));
         columns.push(ProjectionColumn {
             name,
             data_type,
@@ -366,6 +358,18 @@ fn projection_columns(ir: &SemanticIr, operation: &IrOperation) -> Vec<Projectio
     }
     columns
 }
+
+fn projection_data_type(ty: &IrType) -> ManifestDataType {
+    match &ty.shape {
+        IrTypeShape::Scalar(scalar) => manifest_type(*scalar),
+        IrTypeShape::Enum { .. } => ManifestDataType::Utf8,
+        IrTypeShape::Json
+        | IrTypeShape::Object { .. }
+        | IrTypeShape::List { .. }
+        | IrTypeShape::Map { .. } => ManifestDataType::Json,
+    }
+}
+
 fn manifest_type(scalar: IrScalarType) -> ManifestDataType {
     match scalar {
         IrScalarType::String | IrScalarType::Id => ManifestDataType::Utf8,

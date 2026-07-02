@@ -43,6 +43,82 @@ surfaces:
 }
 
 #[test]
+fn top_level_scalar_rows_use_scalar_projection_types() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: scalar_rows
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /strings:
+    get:
+      operationId: list_strings
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: string}}}}}}
+  /integers:
+    get:
+      operationId: list_integers
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: integer}}}}}}
+  /numbers:
+    get:
+      operationId: list_numbers
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: number}}}}}}
+  /booleans:
+    get:
+      operationId: list_booleans
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: boolean}}}}}}
+  /timestamps:
+    get:
+      operationId: list_timestamps
+      responses: {'200': {content: {application/json: {schema: {type: array, items: {type: string, format: date-time}}}}}}
+".as_bytes(),
+    )
+    .expect("import");
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let column_types = catalog
+        .projections
+        .iter()
+        .map(|projection| {
+            let [column] = projection.columns.as_slice() else {
+                panic!("expected one value column for {}", projection.operation_id);
+            };
+            assert_eq!(column.name, "value", "{}", projection.operation_id);
+            assert!(
+                column.source_path.is_empty(),
+                "{} should read the scalar row itself",
+                projection.operation_id
+            );
+            (projection.operation_id.as_str(), column.data_type)
+        })
+        .collect::<HashMap<_, _>>();
+
+    assert_eq!(
+        column_types,
+        HashMap::from([
+            ("list_booleans", ManifestDataType::Boolean),
+            ("list_integers", ManifestDataType::Int64),
+            ("list_numbers", ManifestDataType::Float64),
+            ("list_strings", ManifestDataType::Utf8),
+            ("list_timestamps", ManifestDataType::Timestamp),
+        ])
+    );
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "The OpenAPI fixture keeps issue regression cases together."
