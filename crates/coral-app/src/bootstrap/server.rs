@@ -53,6 +53,7 @@ use crate::identity::{SingleUserPrincipalProvider, UserPrincipalProvider};
 use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::search::manager::SearchManager;
+use crate::search::observed::SearchObservationHandle;
 use crate::search::service::SearchService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
@@ -333,6 +334,7 @@ impl ServerBuilder {
             workspace_lifecycle_lock,
             self.config.engine_extensions_providers,
         );
+        let search_observations = SearchObservationHandle::new(layout.clone());
         let search_manager = SearchManager::new(layout, &config_store, workspace_manager.clone());
         let trace_components =
             active_trace_store.map_or_else(TraceServerComponents::default, |store| {
@@ -347,6 +349,7 @@ impl ServerBuilder {
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
+                search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -474,6 +477,7 @@ struct ServerManagers {
     workspace: WorkspaceManager,
     query: QueryManager,
     search: SearchManager,
+    search_observations: SearchObservationHandle,
     feedback: FeedbackManager,
     task: TaskManager,
 }
@@ -493,10 +497,13 @@ async fn start_server(
         workspace,
         query,
         search,
+        search_observations,
         feedback,
         task,
     } = managers;
-    let source_service = SourceService::new(source, query.clone(), workspace.clone());
+    let query = query.with_search_observation_handle(search_observations.clone());
+    let source_service = SourceService::new(source, query.clone(), workspace.clone())
+        .with_search_observation_handle(search_observations);
     let workspace_service = WorkspaceService::new(workspace);
     let catalog_service = CatalogService::new(query.clone());
     let query_service = QueryService::new(query);
@@ -775,6 +782,7 @@ mod tests {
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::search::manager::SearchManager;
+    use crate::search::observed::SearchObservationHandle;
     use crate::sources::manager::SourceManager;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig, run_state_migrations};
     use crate::state::{AppStateLayout, ConfigStore};
@@ -986,6 +994,7 @@ backend = "unsupported"
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_observations = SearchObservationHandle::new(layout.clone());
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let trace_service =
@@ -996,6 +1005,7 @@ backend = "unsupported"
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
+                search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1428,6 +1438,7 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_observations = SearchObservationHandle::new(layout.clone());
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
@@ -1436,6 +1447,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
+                search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1545,6 +1557,7 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_observations = SearchObservationHandle::new(layout.clone());
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
@@ -1553,6 +1566,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
+                search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
             },
@@ -1662,6 +1676,7 @@ tables:
             layout.clone(),
             vec![Arc::new(NoopEngineExtensionsProvider)],
         );
+        let search_observations = SearchObservationHandle::new(layout.clone());
         let search_manager =
             SearchManager::new(layout.clone(), &config_store, workspace_manager.clone());
         let running = start_server(
@@ -1670,6 +1685,7 @@ tables:
                 workspace: workspace_manager,
                 query: query_manager,
                 search: search_manager,
+                search_observations,
                 feedback: feedback_manager,
                 task: task_manager,
             },

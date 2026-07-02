@@ -25,6 +25,7 @@ use crate::query::extensions::{EngineExtensionsProvider, engine_extensions_for_p
 use crate::query::input_resolver::{
     CredentialRefreshingInputResolver, SourceCredentialSnapshot, StoredCredentialInputResolver,
 };
+use crate::search::observed::SearchObservationHandle;
 use crate::sources::SourceName;
 use crate::sources::catalog::resolve_installed_manifest;
 use crate::sources::materialization::{
@@ -70,6 +71,7 @@ pub(crate) struct QueryManager {
     runtime_context: QueryRuntimeContext,
     layout: AppStateLayout,
     engine_extensions_providers: Vec<Arc<dyn EngineExtensionsProvider>>,
+    search_observations: Option<SearchObservationHandle>,
 }
 
 impl QueryManager {
@@ -131,7 +133,16 @@ impl QueryManager {
             runtime_context,
             layout,
             engine_extensions_providers,
+            search_observations: None,
         }
+    }
+
+    pub(crate) fn with_search_observation_handle(
+        mut self,
+        search_observations: SearchObservationHandle,
+    ) -> Self {
+        self.search_observations = Some(search_observations);
+        self
     }
 
     pub(crate) async fn list_tables(
@@ -525,6 +536,13 @@ impl QueryManager {
         let query_sources = query_sources_from_loaded(selected_sources);
         let mut extensions =
             engine_extensions_for_providers(&self.engine_extensions_providers, &query_sources);
+        if let Some(search_observations) = &self.search_observations {
+            let observed_extensions =
+                search_observations.extensions_for(workspace_name, &query_sources);
+            extensions
+                .source_observation_publishers
+                .extend(observed_extensions.source_observation_publishers);
+        }
         let provider_input_resolver = extensions.source_input_resolver.take();
         let source_credentials = selected_sources
             .iter()
