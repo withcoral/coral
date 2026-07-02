@@ -1,12 +1,12 @@
-import { globalStyle, keyframes, style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 
 import { breakpoints } from '@/styles/theme'
 import { utils } from '@/styles/utils'
+import { spinAnimation } from '@/wax/animations/spin.css'
 import { fontFamily } from '@/wax/theme/font.css'
 import { lightTheme } from '@/wax/theme/theme-light.css'
 import { theme } from '@/wax/theme/theme.css'
 
-const spin = keyframes({ to: { transform: 'rotate(360deg)' } })
 export const root = style({
   display: 'flex',
   flexDirection: 'column',
@@ -242,7 +242,7 @@ export const loadingState = style({
   gap: 8,
   justifyContent: 'center',
 })
-export const spinner = style({ animation: `${spin} 1s linear infinite` })
+export const spinner = spinAnimation
 
 export const detailRoot = style({
   display: 'flex',

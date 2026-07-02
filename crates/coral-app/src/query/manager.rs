@@ -17,7 +17,9 @@ use tracing::Instrument as _;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::bootstrap::AppError;
-use crate::credentials::{CredentialManager, CredentialSetId, CredentialsError};
+use crate::credentials::{
+    CredentialManager, CredentialSetId, CredentialStorageKind, CredentialsError,
+};
 use crate::episode::EpisodeId;
 use crate::query::QueryAttribution;
 use crate::query::extensions::{
@@ -35,6 +37,8 @@ use crate::state::{AppConfig, AppStateLayout, ConfigStore};
 use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 use crate::workspaces::WorkspaceName;
 
+const CATALOG_SECRET_PLACEHOLDER: &str = "__coral_catalog_secret_placeholder__";
+
 #[derive(Debug)]
 pub(crate) enum QueryManagerError {
     App(AppError),
@@ -50,7 +54,16 @@ pub(crate) struct ValidatedSource {
 struct LoadedQuerySource {
     source: InstalledSource,
     query_source: QuerySource,
-    credential_material: BTreeMap<String, String>,
+    credential_material: SourceCredentialMaterial,
+}
+
+type SourceCredentialMaterial = BTreeMap<String, String>;
+type SourceSecrets = BTreeMap<String, String>;
+
+#[derive(Debug)]
+struct SourceSecretResolution {
+    credential_material: SourceCredentialMaterial,
+    resolved_secrets: SourceSecrets,
 }
 
 #[derive(Clone)]
@@ -94,7 +107,7 @@ impl QueryManager {
             attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
-                    .load_query_sources(workspace_name)
+                    .load_catalog_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -124,7 +137,7 @@ impl QueryManager {
             attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
-                    .load_query_sources(workspace_name)
+                    .load_catalog_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -165,7 +178,7 @@ impl QueryManager {
             attribution.episode_id.as_ref(),
             async {
                 let (loaded_sources, config) = self
-                    .load_query_sources(workspace_name)
+                    .load_catalog_query_sources(workspace_name)
                     .map_err(QueryManagerError::App)?;
                 let runtime = self
                     .runtime_config(workspace_name, &loaded_sources, &config)
@@ -331,10 +344,68 @@ impl QueryManager {
         Ok(loaded_sources)
     }
 
+    fn load_catalog_query_sources(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<(Vec<LoadedQuerySource>, AppConfig), AppError> {
+        let _state_lock = self.config_store.state_lock_shared()?;
+        let config = self.config_store.load_config_unlocked()?;
+        let sources = self.load_catalog_query_sources_from_config(workspace_name, &config)?;
+        Ok((sources, config))
+    }
+
+    fn load_catalog_query_sources_from_config(
+        &self,
+        workspace_name: &WorkspaceName,
+        config: &AppConfig,
+    ) -> Result<Vec<LoadedQuerySource>, AppError> {
+        let span = tracing::info_span!(
+            "coral.app.catalog_sources.load",
+            workspace = tracing::field::Empty,
+            source.count = tracing::field::Empty,
+        );
+        span.record(WORKSPACE_SPAN_ATTRIBUTE, workspace_name.as_str());
+        let _guard = span.enter();
+        config.require_workspace(workspace_name)?;
+        let mut loaded_sources = Vec::new();
+        for source in config.workspace_sources(workspace_name) {
+            match self.load_query_source_with_credentials(
+                workspace_name,
+                &source,
+                SourceCredentialMode::CatalogMetadata,
+            ) {
+                Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
+                Err(error) => {
+                    tracing::error!(
+                        source = %source.name,
+                        detail = %error,
+                        "failed to load source during catalog-source load"
+                    );
+                    return Err(error);
+                }
+            }
+        }
+        span.record("source.count", loaded_sources.len());
+        Ok(loaded_sources)
+    }
+
     fn load_query_source(
         &self,
         workspace_name: &WorkspaceName,
         source: &InstalledSource,
+    ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
+        self.load_query_source_with_credentials(
+            workspace_name,
+            source,
+            SourceCredentialMode::Runtime,
+        )
+    }
+
+    fn load_query_source_with_credentials(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        credential_mode: SourceCredentialMode,
     ) -> Result<(LoadedQuerySource, Option<String>), AppError> {
         let installed = resolve_installed_manifest(workspace_name, source, &self.layout)?;
         let source_spec = installed.source_spec;
@@ -358,39 +429,10 @@ impl QueryManager {
             None
         };
         validate_required_variables(source, source_spec.declared_inputs())?;
-        let stored_secrets =
-            if let Some(credential_storage) = source.credential_storage_for_material() {
-                let credential_set_id = CredentialSetId::for_source(&source.name);
-                self.credential_manager.read_material(
-                    workspace_name,
-                    &credential_set_id,
-                    credential_storage,
-                )?
-            } else {
-                BTreeMap::new()
-            };
-        let mut resolved_secrets = BTreeMap::new();
-        let missing_secrets: Vec<String> = source_spec
-            .required_secret_names()
-            .into_iter()
-            .filter(|name| !stored_secrets.contains_key(name))
-            .collect();
-        if let Some((first, rest)) = missing_secrets.split_first() {
-            let detail = if rest.is_empty() {
-                format!("secret '{first}'")
-            } else {
-                format!("secret '{first}' and {} other(s)", rest.len())
-            };
-            return Err(AppError::FailedPrecondition(format!(
-                "source '{}' is missing {detail}",
-                source.name
-            )));
-        }
-        for secret_name in source_spec.declared_secret_names() {
-            if let Some(value) = stored_secrets.get(&secret_name) {
-                resolved_secrets.insert(secret_name, value.clone());
-            }
-        }
+        let SourceSecretResolution {
+            credential_material,
+            resolved_secrets,
+        } = self.resolve_source_secrets(workspace_name, source, &source_spec, credential_mode)?;
         let query_source = if let Some(components) = v4_runtime_components {
             QuerySource::from_runtime_components(
                 RuntimeSourcePackage {
@@ -412,10 +454,74 @@ impl QueryManager {
             LoadedQuerySource {
                 source: source.clone(),
                 query_source,
-                credential_material: stored_secrets,
+                credential_material,
             },
             installed.candidate.version,
         ))
+    }
+
+    fn resolve_source_secrets(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        source_spec: &coral_spec::ValidatedSourceManifest,
+        credential_mode: SourceCredentialMode,
+    ) -> Result<SourceSecretResolution, AppError> {
+        match credential_mode {
+            SourceCredentialMode::Runtime => {
+                let stored_secrets = self.read_source_secret_material(workspace_name, source)?;
+                let resolved_secrets =
+                    source_secrets_from_material(source, source_spec, &stored_secrets)?;
+                Ok(SourceSecretResolution {
+                    credential_material: stored_secrets,
+                    resolved_secrets,
+                })
+            }
+            SourceCredentialMode::CatalogMetadata => match source.credential_storage_for_material()
+            {
+                Some(CredentialStorageKind::File) => {
+                    let stored_secrets =
+                        self.read_source_secret_material(workspace_name, source)?;
+                    let resolved_secrets =
+                        source_secrets_from_material(source, source_spec, &stored_secrets)?;
+                    Ok(SourceSecretResolution {
+                        credential_material: stored_secrets,
+                        resolved_secrets,
+                    })
+                }
+                Some(CredentialStorageKind::Keychain) => {
+                    let placeholder_secrets = catalog_placeholder_secrets(
+                        source_spec,
+                        source.secrets.iter().map(String::as_str),
+                    );
+                    Ok(SourceSecretResolution {
+                        credential_material: placeholder_secrets.clone(),
+                        resolved_secrets: placeholder_secrets,
+                    })
+                }
+                None => Ok(SourceSecretResolution {
+                    credential_material: BTreeMap::new(),
+                    resolved_secrets: BTreeMap::new(),
+                }),
+            },
+        }
+    }
+
+    fn read_source_secret_material(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+    ) -> Result<SourceCredentialMaterial, AppError> {
+        if let Some(credential_storage) = source.credential_storage_for_material() {
+            let credential_set_id = CredentialSetId::for_source(&source.name);
+            self.credential_manager.read_material(
+                workspace_name,
+                &credential_set_id,
+                credential_storage,
+            )
+        } else {
+            Ok(BTreeMap::new())
+        }
     }
 
     fn runtime_config(
@@ -724,6 +830,61 @@ fn validate_required_variables(
         )));
     }
     Ok(())
+}
+
+fn source_secrets_from_material(
+    source: &InstalledSource,
+    source_spec: &coral_spec::ValidatedSourceManifest,
+    stored_secrets: &SourceCredentialMaterial,
+) -> Result<SourceSecrets, AppError> {
+    let missing_secrets: Vec<String> = source_spec
+        .required_secret_names()
+        .into_iter()
+        .filter(|name| !stored_secrets.contains_key(name))
+        .collect();
+    if let Some((first, rest)) = missing_secrets.split_first() {
+        let detail = if rest.is_empty() {
+            format!("secret '{first}'")
+        } else {
+            format!("secret '{first}' and {} other(s)", rest.len())
+        };
+        return Err(AppError::FailedPrecondition(format!(
+            "source '{}' is missing {detail}",
+            source.name
+        )));
+    }
+    Ok(declared_source_secrets(source_spec, stored_secrets))
+}
+
+fn declared_source_secrets(
+    source_spec: &coral_spec::ValidatedSourceManifest,
+    stored_secrets: &SourceCredentialMaterial,
+) -> SourceSecrets {
+    let mut resolved_secrets = BTreeMap::new();
+    for secret_name in source_spec.declared_secret_names() {
+        if let Some(value) = stored_secrets.get(&secret_name) {
+            resolved_secrets.insert(secret_name, value.clone());
+        }
+    }
+    resolved_secrets
+}
+
+fn catalog_placeholder_secrets<'a>(
+    source_spec: &coral_spec::ValidatedSourceManifest,
+    configured_secret_names: impl IntoIterator<Item = &'a str>,
+) -> SourceSecrets {
+    let declared_secret_names = source_spec.declared_secret_names();
+    configured_secret_names
+        .into_iter()
+        .filter(|name| declared_secret_names.contains(*name))
+        .map(|name| (name.to_string(), CATALOG_SECRET_PLACEHOLDER.to_string()))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum SourceCredentialMode {
+    CatalogMetadata,
+    Runtime,
 }
 
 #[cfg(test)]
@@ -1387,6 +1548,151 @@ surfaces:
                 .to_string()
                 .contains("configured for keychain storage"),
             "keychain-routed query failure should name the routed backend: {error}"
+        );
+    }
+
+    #[test]
+    fn load_catalog_query_sources_does_not_read_keychain_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("keychain_messages").expect("source name");
+        let manifest_path = layout.manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: keychain_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+base_url: https://api.example.com
+inputs:
+  API_TOKEN:
+    kind: secret
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: vec!["API_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Keychain),
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+        let credential_store = CredentialStore::with_unavailable_keychain_for_test(
+            layout.clone(),
+            CredentialStoragePreference::Keychain,
+        );
+        let manager = QueryManager::new(
+            config_store,
+            CredentialManager::new(credential_store),
+            QueryRuntimeContext::default(),
+            layout,
+            Vec::new(),
+        );
+
+        let (sources, _config) = manager
+            .load_catalog_query_sources(&workspace_name)
+            .expect("catalog load should not read keychain material");
+
+        assert_eq!(sources.len(), 1);
+        let source = sources.first().expect("catalog source should be present");
+        assert_eq!(
+            source.query_source.secrets(),
+            &BTreeMap::from([(
+                "API_TOKEN".to_string(),
+                CATALOG_SECRET_PLACEHOLDER.to_string()
+            )])
+        );
+    }
+
+    #[test]
+    fn load_catalog_query_sources_fails_closed_for_source_load_error() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("required_variable_messages").expect("source name");
+        let manifest_path = fixture
+            .manager
+            .layout
+            .manifest_file(&workspace_name, &source_name);
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("create source dir");
+        std::fs::write(
+            &manifest_path,
+            r"
+name: required_variable_messages
+version: 0.1.0
+dsl_version: 3
+backend: http
+inputs:
+  API_BASE:
+    kind: variable
+base_url: '{{input.API_BASE}}'
+tables:
+  - name: messages
+    description: Messages
+    request:
+      path: /messages
+    columns:
+      - name: id
+        type: Utf8
+",
+        )
+        .expect("write manifest");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name.clone(),
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::Imported,
+                },
+            )
+            .expect("persist source");
+
+        let error = fixture
+            .manager
+            .load_catalog_query_sources(&workspace_name)
+            .expect_err("catalog load should fail closed");
+
+        assert!(
+            matches!(error, AppError::FailedPrecondition(_)),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("missing variable 'API_BASE'"),
+            "catalog load should surface the source load error: {error}"
         );
     }
 

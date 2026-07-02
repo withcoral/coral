@@ -6,14 +6,16 @@
 
 use std::fs;
 
-use coral_api::v1::{ExecuteSqlRequest, SourceSecret, SourceVariable};
+use coral_api::v1::{
+    ExecuteSqlRequest, ListCatalogRequest, PaginationRequest, SourceSecret, SourceVariable,
+};
 use coral_client::{batches_to_json_rows, decode_execute_sql_response, default_workspace};
 use tonic::Request;
 
 use crate::harness::{GrpcHarness, fixture_manifest_with_inputs_yaml, fixture_manifest_yaml};
 
 #[tokio::test]
-async fn broken_source_does_not_block_healthy_sources() {
+async fn broken_source_fails_catalog_but_does_not_block_healthy_query() {
     let harness = GrpcHarness::new().await;
 
     harness
@@ -48,18 +50,23 @@ async fn broken_source_does_not_block_healthy_sources() {
     )
     .expect("remove broken source secret file");
 
-    let tables = harness.list_tables().await;
+    let catalog_error = harness
+        .catalog_client()
+        .list_catalog(Request::new(ListCatalogRequest {
+            workspace: Some(default_workspace()),
+            schema_name: String::new(),
+            kind: 1,
+            pagination: Some(PaginationRequest {
+                limit: 0,
+                offset: 0,
+            }),
+        }))
+        .await
+        .expect_err("broken source should fail catalog listing closed");
+    assert_eq!(catalog_error.code(), tonic::Code::FailedPrecondition);
     assert!(
-        tables
-            .iter()
-            .any(|table| table.schema_name == "local_messages"),
-        "healthy source should remain queryable"
-    );
-    assert!(
-        !tables
-            .iter()
-            .any(|table| table.schema_name == "secured_messages"),
-        "broken source should be omitted from registered tables"
+        catalog_error.message().contains("secured_messages"),
+        "catalog error should identify the broken source: {catalog_error}"
     );
 
     let healthy = harness
