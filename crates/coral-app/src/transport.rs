@@ -488,15 +488,16 @@ mod tests {
 
     use super::{
         GrpcMethodMetadata, GrpcServerMethod, annotate_request_context, grpc_method, query_status,
-        query_test_result_to_proto, table_summary_to_proto, table_to_proto,
-        workspace_name_from_proto, workspace_to_proto,
+        query_test_result_to_proto, table_function_to_proto, table_summary_to_proto,
+        table_to_proto, workspace_name_from_proto, workspace_to_proto,
     };
     use crate::bootstrap::AppError;
     use crate::episode::EpisodeId;
     use crate::query::manager::QueryManagerError;
     use crate::workspaces::WorkspaceName;
     use coral_engine::{
-        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableInfo,
+        ColumnInfo, CoreError, QueryTestResult as EngineQueryTestResult, TableFunctionInfo,
+        TableInfo,
     };
 
     #[test]
@@ -685,6 +686,33 @@ mod tests {
         assert_eq!(proto.description, "User records");
         assert_eq!(proto.guide, "Filter by org_id.");
         assert_eq!(proto.required_filters, vec!["org_id"]);
+    }
+
+    #[test]
+    fn table_function_to_proto_preserves_argument_metadata() {
+        let workspace_name = WorkspaceName::parse("default").expect("workspace");
+        let function = TableFunctionInfo {
+            schema_name: "demo".to_string(),
+            function_name: "search".to_string(),
+            description: "Search demo records".to_string(),
+            arguments: vec![coral_engine::TableFunctionArgumentInfo {
+                name: "payload".to_string(),
+                required: true,
+                values: Vec::new(),
+            }],
+            result_columns: Vec::new(),
+        };
+
+        let proto = table_function_to_proto(&workspace_name, function);
+
+        assert_eq!(proto.workspace, Some(workspace_to_proto(&workspace_name)));
+        assert_eq!(proto.schema_name, "demo");
+        assert_eq!(proto.name, "search");
+        assert_eq!(proto.description, "Search demo records");
+        assert_eq!(proto.arguments.len(), 1);
+        assert_eq!(proto.arguments[0].name, "payload");
+        assert!(proto.arguments[0].required);
+        assert!(proto.arguments[0].values.is_empty());
     }
 
     #[test]

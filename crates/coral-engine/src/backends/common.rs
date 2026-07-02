@@ -6,8 +6,8 @@ use std::sync::{Arc, OnceLock};
 use crate::{QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver};
 use async_trait::async_trait;
 use coral_spec::{
-    ColumnSpec, FilterSpec, ManifestInputKind, ManifestInputSpec, SearchLimitsSpec, SourceBackend,
-    SourceTableFunctionSpec, TableCommon,
+    ColumnSpec, FilterSpec, ManifestDataType, ManifestInputKind, ManifestInputSpec,
+    SearchLimitsSpec, SourceBackend, SourceTableFunctionSpec, TableCommon,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::TableProvider;
@@ -61,7 +61,6 @@ pub(crate) struct RegisteredTableFunction {
     pub(crate) description: String,
     pub(crate) arguments: Vec<RegisteredTableFunctionArgument>,
     pub(crate) result_columns: Vec<RegisteredTableFunctionResultColumn>,
-    pub(crate) arg_names: Vec<String>,
     pub(crate) search_limits_json: Option<String>,
 }
 
@@ -77,6 +76,7 @@ pub(crate) struct RegisteredFilter {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredTableFunctionArgument {
     pub(crate) name: String,
+    pub(crate) data_type: ManifestDataType,
     pub(crate) required: bool,
     pub(crate) values: Vec<String>,
 }
@@ -337,6 +337,7 @@ pub(crate) fn build_registered_table_function(
         .iter()
         .map(|arg| RegisteredTableFunctionArgument {
             name: arg.name.clone(),
+            data_type: arg.data_type,
             required: arg.required,
             values: arg.values.clone(),
         })
@@ -359,7 +360,6 @@ pub(crate) fn build_registered_table_function(
         description: function.description.clone(),
         arguments,
         result_columns,
-        arg_names: function.args.iter().map(|arg| arg.name.clone()).collect(),
         search_limits_json: function.search_limits.as_ref().map(serialize_search_limits),
     }
 }

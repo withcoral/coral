@@ -148,6 +148,32 @@ functions:
     }
 
     #[test]
+    fn validate_manifest_schema_accepts_table_function_arg_type() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+base_url: https://example.com
+functions:
+  - name: search_messages
+    args:
+      - name: include_archived
+        type: Boolean
+        bind:
+          arg: include_archived
+    request:
+      method: GET
+      path: /messages/search
+",
+        );
+
+        validate_manifest_schema(&manifest)
+            .expect("table function argument data types should pass schema validation");
+    }
+
+    #[test]
     fn validate_manifest_schema_directly_rejects_v4_manifest() {
         let manifest = manifest_json(
             r"

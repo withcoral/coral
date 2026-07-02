@@ -863,6 +863,7 @@
       "required": ["name", "bind"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "type": { "$ref": "#/$defs/manifest_data_type" },
         "required": { "type": "boolean" },
         "values": {
           "type": "array",

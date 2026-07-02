@@ -1144,6 +1144,7 @@ mod tests {
             detail_hints: Vec::new(),
             args: vec![TableFunctionArgSpec {
                 name: "query".to_string(),
+                data_type: ManifestDataType::Utf8,
                 required: true,
                 values: vec![],
                 bind: FunctionArgBinding {

@@ -16,7 +16,8 @@ use crate::backends::RegisteredTableFunction;
 
 pub(crate) trait ScopedTableFunctionSignature {
     fn display_name(&self) -> &str;
-    fn arg_names(&self) -> &[String];
+    fn arg_count(&self) -> usize;
+    fn arg_name(&self, index: usize) -> Option<&str>;
     fn contains(&self, name: &str) -> bool;
 }
 
@@ -193,14 +194,31 @@ pub(crate) fn lower_named_args_to_positional_exprs(
 ) -> Result<Vec<Expr>> {
     let mut supplied = collect_named_args(function, args, context)?;
 
-    function
-        .arg_names()
-        .iter()
-        .map(|name| match supplied.remove(name) {
-            Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
-            None => Ok(Expr::Literal(ScalarValue::Null, None)),
-        })
+    (0..function.arg_count())
+        .map(|index| lower_positional_arg(function, index, &mut supplied, context))
         .collect()
+}
+
+fn lower_positional_arg(
+    function: &dyn ScopedTableFunctionSignature,
+    index: usize,
+    supplied: &mut HashMap<String, SqlExpr>,
+    context: &mut dyn RelationPlannerContext,
+) -> Result<Expr> {
+    let name = declared_arg_name(function, index)?;
+    match supplied.remove(name) {
+        Some(sql_expr) => context.sql_to_expr(sql_expr, &DFSchema::empty()),
+        None => Ok(Expr::Literal(ScalarValue::Null, None)),
+    }
+}
+
+fn declared_arg_name(function: &dyn ScopedTableFunctionSignature, index: usize) -> Result<&str> {
+    function.arg_name(index).ok_or_else(|| {
+        DataFusionError::Internal(format!(
+            "{} argument index {index} missing from signature",
+            function.display_name()
+        ))
+    })
 }
 
 fn collect_named_args(

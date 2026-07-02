@@ -31,12 +31,15 @@ use datafusion::logical_expr::{
 use datafusion::optimizer::AnalyzerRule;
 use datafusion::prelude::SessionContext;
 
-use crate::backends::{RegisteredTableFunction, SourceFunctionProviderFactory};
+use crate::backends::{
+    RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
+};
 use crate::runtime::scoped_table_functions::{
     ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature, call_parts,
     find_placeholder, lower_named_args_to_positional_exprs, original_relation, qualified_name,
     reject_settings, reject_unsupported_modifiers,
 };
+use coral_spec::ManifestDataType;
 
 pub(crate) const SOURCE_FUNCTION_NODE_NAME: &str = "CoralSourceFunction";
 
@@ -126,15 +129,15 @@ impl RelationPlanner for SourceFunctionRegistry {
         let (call_args, alias) = call_parts(relation);
         reject_settings(&call, &call_args)?;
 
-        let args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
-        let node = SourceFunctionNode::new(function, args)?;
+        let lowered_args = lower_named_args_to_positional_exprs(function, &call_args, context)?;
+        let node = SourceFunctionNode::new(function, lowered_args)?;
 
         // Fully-literal calls validate eagerly so argument-value errors keep
         // surfacing at planning time, exactly as they did when binding ran
         // inside SQL planning. Binding is pure value capture (no I/O), so the
         // analyzer repeating it later is cheap.
         if !node.has_parameter_placeholders() {
-            node.factory.provider_for_args(&node.args)?;
+            node.factory.provider_for_args(&node.call_args)?;
         }
 
         let plan = LogicalPlan::Extension(Extension {
@@ -150,28 +153,45 @@ impl RelationPlanner for SourceFunctionRegistry {
 struct SourceFunction {
     display_name: String,
     table_reference: TableReference,
-    arg_names: Vec<String>,
-    known_args: HashSet<String>,
+    arguments: Vec<SourceFunctionArgument>,
     factory: Arc<dyn SourceFunctionProviderFactory>,
 }
 
 impl SourceFunction {
     fn from_registered(function: &RegisteredTableFunction) -> Self {
-        let arg_names = function.arg_names.clone();
+        let arguments = function
+            .arguments
+            .iter()
+            .map(SourceFunctionArgument::from_registered)
+            .collect::<Vec<_>>();
         Self {
             display_name: qualified_name(&function.schema_name, &function.function_name),
             table_reference: TableReference::partial(
                 function.schema_name.clone(),
                 function.function_name.clone(),
             ),
-            known_args: arg_names.iter().cloned().collect(),
-            arg_names,
+            arguments,
             factory: Arc::clone(&function.factory),
         }
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.known_args.contains(name)
+        self.arguments.iter().any(|argument| argument.name == name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SourceFunctionArgument {
+    pub(crate) name: String,
+    pub(crate) data_type: ManifestDataType,
+}
+
+impl SourceFunctionArgument {
+    fn from_registered(argument: &RegisteredTableFunctionArgument) -> Self {
+        Self {
+            name: argument.name.clone(),
+            data_type: argument.data_type,
+        }
     }
 }
 
@@ -180,8 +200,14 @@ impl ScopedTableFunctionSignature for SourceFunction {
         &self.display_name
     }
 
-    fn arg_names(&self) -> &[String] {
-        &self.arg_names
+    fn arg_count(&self) -> usize {
+        self.arguments.len()
+    }
+
+    fn arg_name(&self, index: usize) -> Option<&str> {
+        self.arguments
+            .get(index)
+            .map(|argument| argument.name.as_str())
     }
 
     fn contains(&self, name: &str) -> bool {
@@ -205,14 +231,14 @@ pub(crate) struct SourceFunctionNode {
     /// Two-part `schema.function` reference, so result columns qualify the
     /// same way table columns do (`github.pulls.id`, `pulls.id`).
     table_reference: TableReference,
-    arg_names: Vec<String>,
-    args: Vec<Expr>,
+    declared_args: Vec<SourceFunctionArgument>,
+    call_args: Vec<Expr>,
     schema: DFSchemaRef,
     factory: Arc<dyn SourceFunctionProviderFactory>,
 }
 
 impl SourceFunctionNode {
-    fn new(function: &SourceFunction, args: Vec<Expr>) -> Result<Self> {
+    fn new(function: &SourceFunction, call_args: Vec<Expr>) -> Result<Self> {
         let schema = Arc::new(DFSchema::try_from_qualified_schema(
             function.table_reference.clone(),
             function.factory.schema().as_ref(),
@@ -220,28 +246,36 @@ impl SourceFunctionNode {
         Ok(Self {
             display_name: function.display_name.clone(),
             table_reference: function.table_reference.clone(),
-            arg_names: function.arg_names.clone(),
-            args,
+            declared_args: function.arguments.clone(),
+            call_args,
             schema,
             factory: Arc::clone(&function.factory),
         })
     }
 
     fn has_parameter_placeholders(&self) -> bool {
-        self.args.iter().any(|arg| find_placeholder(arg).is_some())
+        self.call_args
+            .iter()
+            .any(|arg| find_placeholder(arg).is_some())
     }
 
     pub(crate) fn table_reference(&self) -> &TableReference {
         &self.table_reference
     }
 
+    pub(crate) fn declared_args_with_call_exprs(
+        &self,
+    ) -> impl Iterator<Item = (&SourceFunctionArgument, &Expr)> {
+        self.declared_args.iter().zip(&self.call_args)
+    }
+
     fn reject_unbound_parameters(&self) -> Result<()> {
-        for (name, arg) in self.arg_names.iter().zip(&self.args) {
-            if let Some(placeholder) = find_placeholder(arg) {
+        for (declared_arg, call_expr) in self.declared_args_with_call_exprs() {
+            if let Some(placeholder) = find_placeholder(call_expr) {
                 return Err(DataFusionError::Plan(format!(
-                    "{} argument '{name}' is bound to parameter {placeholder}, \
+                    "{} argument '{}' is bound to parameter {placeholder}, \
                      but no value was provided for it",
-                    self.display_name
+                    self.display_name, declared_arg.name
                 )));
             }
         }
@@ -250,7 +284,7 @@ impl SourceFunctionNode {
 
     fn to_provider_scan(&self) -> Result<LogicalPlan> {
         self.reject_unbound_parameters()?;
-        let provider = self.factory.provider_for_args(&self.args)?;
+        let provider = self.factory.provider_for_args(&self.call_args)?;
         LogicalPlanBuilder::scan(
             self.table_reference.clone(),
             provider_as_source(provider),
@@ -260,14 +294,15 @@ impl SourceFunctionNode {
     }
 }
 
-// Node identity is the function name plus its argument expressions; `schema`
-// participates so renamed manifests never compare equal. The remaining fields
-// are derived from the same registry entry as `display_name` (and `factory`
-// cannot implement `PartialEq`), so they are deliberately excluded.
+// Node identity is the function name plus its declared argument signature and
+// call expressions. `schema` participates so renamed manifests never compare
+// equal. The factory is derived from the same registry entry as `display_name`
+// and cannot implement `PartialEq`, so it is deliberately excluded.
 impl PartialEq for SourceFunctionNode {
     fn eq(&self, other: &Self) -> bool {
         self.display_name == other.display_name
-            && self.args == other.args
+            && self.call_args == other.call_args
+            && self.declared_args == other.declared_args
             && self.schema == other.schema
     }
 }
@@ -277,7 +312,8 @@ impl Eq for SourceFunctionNode {}
 impl Hash for SourceFunctionNode {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.display_name.hash(state);
-        self.args.hash(state);
+        self.call_args.hash(state);
+        self.declared_args.hash(state);
         self.schema.hash(state);
     }
 }
@@ -305,7 +341,7 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
     }
 
     fn expressions(&self) -> Vec<Expr> {
-        self.args.clone()
+        self.call_args.clone()
     }
 
     fn fmt_for_explain(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -319,11 +355,11 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
                 self.display_name
             )));
         }
-        if exprs.len() != self.args.len() {
+        if exprs.len() != self.call_args.len() {
             return Err(DataFusionError::Plan(format!(
                 "source function {} expected {} argument expressions, got {}",
                 self.display_name,
-                self.args.len(),
+                self.call_args.len(),
                 exprs.len()
             )));
         }
@@ -332,7 +368,7 @@ impl UserDefinedLogicalNodeCore for SourceFunctionNode {
         // positional here, so the alias carries no meaning -- strip it before
         // binding sees the value.
         Ok(Self {
-            args: exprs.into_iter().map(Expr::unalias).collect(),
+            call_args: exprs.into_iter().map(Expr::unalias).collect(),
             ..self.clone()
         })
     }

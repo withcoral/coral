@@ -90,7 +90,7 @@ pub enum SourceBackend {
 /// (Arrow) types. The variant spellings ("Utf8", "Int64", ...) are a wire
 /// contract pinned by the `PascalCase` serde representation and the manifest
 /// JSON schema.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq, Hash)]
 #[serde(rename_all = "PascalCase")]
 pub enum ManifestDataType {
     Utf8,
@@ -347,11 +347,17 @@ pub struct SourceTableFunctionSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TableFunctionArgSpec {
     pub name: String,
+    #[serde(rename = "type", default = "default_table_function_arg_data_type")]
+    pub data_type: ManifestDataType,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub values: Vec<String>,
     pub bind: FunctionArgBinding,
+}
+
+fn default_table_function_arg_data_type() -> ManifestDataType {
+    ManifestDataType::Utf8
 }
 
 /// How a table function argument contributes to the provider request.
@@ -1264,6 +1270,25 @@ mod tests {
         .unwrap();
         assert_eq!(spec.kind, SourceTableFunctionKind::Search);
         assert_eq!(spec.search_limits.unwrap().default_top_k, 10);
+    }
+
+    #[test]
+    fn table_function_arg_data_type_defaults_to_utf8_and_deserializes() {
+        let spec: SourceTableFunctionSpec = serde_json::from_value(serde_json::json!({
+            "name": "search_issues",
+            "args": [
+                { "name": "q", "bind": { "arg": "query" } },
+                { "name": "include_archived", "type": "Boolean", "bind": { "arg": "archived" } }
+            ],
+            "request": { "path": "/search/issues" }
+        }))
+        .unwrap();
+
+        let [query, include_archived] = spec.args.as_slice() else {
+            panic!("expected two table function args");
+        };
+        assert_eq!(query.data_type, ManifestDataType::Utf8);
+        assert_eq!(include_archived.data_type, ManifestDataType::Boolean);
     }
 
     #[test]

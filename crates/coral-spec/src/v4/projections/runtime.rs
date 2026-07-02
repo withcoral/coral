@@ -33,6 +33,7 @@ pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
+            data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
             bind: FunctionArgBinding {
@@ -49,6 +50,7 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
+            data_type: input.data_type,
             required: input.required,
             values: Vec::new(),
             bind: FunctionArgBinding {
