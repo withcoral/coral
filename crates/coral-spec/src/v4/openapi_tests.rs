@@ -48,6 +48,131 @@ paths: {}
         Some("https://statusgator.com/api/v3")
     );
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps related naming metadata cases together."
+)]
+fn importer_preserves_openapi_operation_naming_metadata() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/settings/billing/ai-credit-usage:
+    get:
+      tags: ['', 'billing', 'ignored']
+      operationId: billing/get-github-billing-ai-credit-usage-report-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /quotes:
+    get:
+      tags: ['forex', 'finance', 'quotes']
+      operationId: quotes/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Quote'}
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /fallback:
+    get:
+      tags: ['misc']
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Usage:
+      type: object
+      properties:
+        total: {type: integer}
+    Quote:
+      type: object
+      properties:
+        symbol: {type: string}
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation.naming.as_ref()))
+        .collect::<BTreeMap<_, _>>();
+    let billing = operations
+        .get("billing_get_github_billing_ai_credit_usage_report_org")
+        .and_then(|naming| *naming)
+        .expect("billing naming metadata");
+    assert_eq!(billing.group.as_deref(), Some("billing"));
+    assert_eq!(
+        billing.operation.as_deref(),
+        Some("get_github_billing_ai_credit_usage_report_org")
+    );
+
+    let quotes = operations
+        .get("quotes_list")
+        .and_then(|naming| *naming)
+        .expect("quotes naming metadata");
+    assert_eq!(quotes.group.as_deref(), Some("forex"));
+    assert_eq!(quotes.operation.as_deref(), Some("list"));
+
+    let items = operations
+        .get("items_list")
+        .and_then(|naming| *naming)
+        .expect("items naming metadata");
+    assert_eq!(items.group.as_deref(), None);
+    assert_eq!(items.operation.as_deref(), Some("list"));
+
+    let fallback = operations
+        .get("get_fallback")
+        .and_then(|naming| *naming)
+        .expect("fallback naming metadata");
+    assert_eq!(fallback.group.as_deref(), Some("misc"));
+    assert_eq!(fallback.operation.as_deref(), None);
+}
+
 #[test]
 fn importer_recognizes_common_wrapped_list_response_fields() {
     let manifest = parse_source_manifest_yaml(

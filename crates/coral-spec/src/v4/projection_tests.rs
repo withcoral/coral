@@ -43,6 +43,185 @@ surfaces:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps issue regression cases together."
+)]
+fn tagged_openapi_operations_use_grouped_operation_names() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/settings/billing/ai-credit-usage:
+    get:
+      tags: [billing]
+      operationId: billing/get-github-billing-ai-credit-usage-report-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /users/{username}/settings/billing/ai-credit-usage:
+    get:
+      tags: [billing]
+      operationId: billing/get-github-billing-ai-credit-usage-report-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /users/{username}/repos:
+    get:
+      tags: [repos]
+      operationId: repos/list-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Repository'}
+  /users/{username}/subscriptions:
+    get:
+      tags: [activity]
+      operationId: activity/list-repos-watched-by-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Repository'}
+  /orgs/{org}/projects/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-items-for-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /users/{username}/projects/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-items-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /orgs/{org}/projects/views/{view_id}/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-view-items-for-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+        - {name: view_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+  /users/{username}/projects/views/{view_id}/items:
+    get:
+      tags: [projects]
+      operationId: projects/list-view-items-for-user
+      parameters:
+        - {name: username, in: path, required: true, schema: {type: string}}
+        - {name: view_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/ProjectV2ItemWithContent'}
+components:
+  schemas:
+    Usage:
+      type: object
+      properties:
+        total: {type: integer}
+    Repository:
+      type: object
+      properties:
+        id: {type: integer}
+    ProjectV2ItemWithContent:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let names = catalog
+        .projections
+        .iter()
+        .map(|projection| projection.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected = [
+        "billing_get_github_billing_ai_credit_usage_report_org",
+        "billing_get_github_billing_ai_credit_usage_report_user",
+        "repos_list_for_user",
+        "activity_list_repos_watched_by_user",
+        "projects_list_items_for_org",
+        "projects_list_items_for_user",
+        "projects_list_view_items_for_org",
+        "projects_list_view_items_for_user",
+    ];
+    for name in expected {
+        assert!(names.contains(name), "missing {name}: {names:?}");
+    }
+    assert!(
+        names.iter().all(|name| !name.contains("__")),
+        "tag-grouped names should not need hash suffixes: {names:?}"
+    );
+    assert!(
+        catalog
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "PROJECTION_NAME_COLLISION_RESOLVED"),
+        "tag-grouped names should not need collision diagnostics: {:?}",
+        catalog.diagnostics
+    );
+}
+
+#[test]
 fn projection_generation_keeps_pagination_inputs_internal() {
     let manifest = parse_source_manifest_yaml(
         r"

@@ -267,6 +267,17 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
     }
 }
 
+pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
+    let naming = operation.naming.as_ref()?;
+    let group = non_empty_naming_part(naming.group.as_deref())?;
+    let operation = non_empty_naming_part(naming.operation.as_deref())?;
+    Some(format!("{group}_{operation}"))
+}
+
+fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {
+    part.filter(|part| !part.is_empty())
+}
+
 fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
     if is_search && let Some(search_entity) = search_entity_from_path(operation) {
         return search_entity;

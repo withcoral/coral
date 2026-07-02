@@ -24,11 +24,21 @@ pub struct IrOperation {
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
     pub entity: Option<IrEntityCandidate>,
     pub execution: IrExecutionAttachment,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationNaming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +150,8 @@ pub enum IrExecutionAttachment {
 mod tests {
     use super::{
         HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-        IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality, SemanticIr,
+        IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+        SemanticIr,
     };
     use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
@@ -163,6 +174,10 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                naming: Some(IrOperationNaming {
+                    group: Some("issues".to_string()),
+                    operation: Some("list".to_string()),
+                }),
                 inputs: Vec::new(),
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -232,6 +247,7 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                naming: None,
                 inputs: vec![IrOperationInput {
                     name: "cursor".to_string(),
                     location: IrInputLocation::ToolArg,
