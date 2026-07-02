@@ -89,7 +89,6 @@ paths:
   /quotes:
     get:
       tags: ['forex', 'finance', 'quotes']
-      operationId: quotes/list
       responses:
         '200':
           content:
@@ -152,11 +151,11 @@ components:
     );
 
     let quotes = operations
-        .get("quotes_list")
+        .get("get_quotes")
         .and_then(|naming| *naming)
         .expect("quotes naming metadata");
     assert_eq!(quotes.group.as_deref(), Some("forex"));
-    assert_eq!(quotes.operation.as_deref(), Some("list"));
+    assert_eq!(quotes.operation.as_deref(), Some("get_quotes"));
 
     let items = operations
         .get("items_list")
@@ -170,7 +169,16 @@ components:
         .and_then(|naming| *naming)
         .expect("fallback naming metadata");
     assert_eq!(fallback.group.as_deref(), Some("misc"));
-    assert_eq!(fallback.operation.as_deref(), None);
+    assert_eq!(fallback.operation.as_deref(), Some("get_fallback"));
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let quotes_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "get_quotes")
+        .expect("quotes projection");
+    assert_eq!(quotes_projection.name, "forex_get_quotes");
+    assert!(matches!(quotes_projection.kind, ProjectionKind::Table));
 }
 
 #[test]

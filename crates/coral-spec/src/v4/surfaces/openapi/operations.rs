@@ -34,7 +34,7 @@ impl OpenApiImporter<'_> {
             || fallback_operation_id(method_name, path),
             |raw| normalize_identifier(raw, "operation"),
         );
-        let naming = openapi_operation_naming(op_obj, raw_operation_id);
+        let naming = openapi_operation_naming(op_obj, raw_operation_id, &operation_id);
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
@@ -235,6 +235,7 @@ impl OpenApiImporter<'_> {
 fn openapi_operation_naming(
     operation: &Map<String, Value>,
     raw_operation_id: Option<&str>,
+    normalized_operation_id: &str,
 ) -> Option<IrOperationNaming> {
     let group = operation
         .get("tags")
@@ -247,6 +248,7 @@ fn openapi_operation_naming(
         .map(|tag| normalize_identifier(tag, "group"));
     let operation = raw_operation_id
         .and_then(operation_id_leaf)
+        .or_else(|| group.as_ref().map(|_| normalized_operation_id))
         .map(|leaf| normalize_identifier(leaf, "operation"));
 
     if group.is_none() && operation.is_none() {
