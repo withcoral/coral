@@ -1,0 +1,20 @@
+name: sentry_v4
+description: Query issues, events, projects, releases, deployments, teams, and members
+  from Sentry.
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://raw.githubusercontent.com/getsentry/sentry/master/api-docs/openapi.json
+    inputs:
+      SENTRY_TOKEN:
+        kind: secret
+        hint: |
+          Use an internal-integration token. It needs the `org:read`, `event:read`,
+          `member:read`, `project:read`, `project:releases`, and `team:read` scopes.
+    auth:
+      type: HeaderAuth
+      headers:
+        - name: Authorization
+          from: template
+          template: Bearer {{input.SENTRY_TOKEN}}

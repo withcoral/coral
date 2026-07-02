@@ -59,6 +59,12 @@ impl<'a> OpenApiImporter<'a> {
         let mut operations = Vec::new();
         let mut operation_ids = HashSet::new();
         for (path, path_item) in paths {
+            let mut path_diagnostics = Vec::new();
+            let Some(path_item) = self.resolve_ref(path_item, path, &mut path_diagnostics) else {
+                self.diagnostics.extend(path_diagnostics);
+                continue;
+            };
+            self.diagnostics.extend(path_diagnostics);
             let Some(path_item) = path_item.as_object() else {
                 continue;
             };

@@ -48,6 +48,54 @@ paths: {}
         Some("https://statusgator.com/api/v3")
     );
 }
+
+#[test]
+fn importer_resolves_path_item_refs() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    $ref: '#/x-path-items/items'
+x-path-items:
+  items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    assert_eq!(ir.operations.len(), 1);
+    assert_eq!(ir.operations.first().expect("operation").id, "items_list");
+}
+
 #[test]
 fn importer_recognizes_common_wrapped_list_response_fields() {
     let manifest = parse_source_manifest_yaml(
