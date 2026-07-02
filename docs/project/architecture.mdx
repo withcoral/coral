@@ -64,7 +64,7 @@ The local server and core orchestrator.
 | --- | --- |
 | Server bootstrap | In-process gRPC server lifecycle (`bootstrap/`) |
 | Source management | Install, add from file, list, validate, remove (`sources/`) |
-| Workspace state | Config, secrets, and workspace layout (`state/`, `storage/`) |
+| Workspace state and lifecycle | Workspace service plus config, secrets, and layout (`workspaces/`, `state/`, `storage/`) |
 | Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
 | Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
 | Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
@@ -114,7 +114,7 @@ The shared gRPC contract.
 
 | Owns                 | Details                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------- |
-| Protobuf definitions | `proto/coral/v1/` — `query.proto`, `sources.proto`, `catalog.proto`, `resources.proto` |
+| Protobuf definitions | `proto/coral/v1/` transport contracts for Coral services and messages |
 | Generated bindings   | Tonic-generated Rust types and service traits                                          |
 
 All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.

@@ -1,477 +1,40 @@
-use std::sync::Arc;
+use rmcp::model::{CallToolResult, Tool};
+use serde_json::Value;
 
-use rmcp::{
-    ErrorData,
-    model::{CallToolResult, Tool, ToolAnnotations},
+use super::catalog::{
+    describe_table_tool, list_catalog_tool, list_columns_tool, search_catalog_tool,
 };
-use serde_json::{Map, Value, json};
+use super::context::ToolDescriptionContext;
+use super::episode::{open_episode_tool, with_episode_id_argument};
+use super::feedback::feedback_tool;
+use super::sql::sql_tool;
 
-use coral_api::{CORAL_EPISODE_ID_MAX_LEN, CORAL_EPISODE_INTENT_MAX_CHARS};
-
-use super::{
-    Pagination, connected_source_names_text, parse_pagination, parse_pagination_with_limits,
-    schema::json_object_schema, sql_input_schema, sql_output_schema,
-};
-
-const EPISODE_ID_ARGUMENT_DESCRIPTION: &str = "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode.";
-const EPISODE_ID_JSON_SCHEMA_PATTERN: &str = "^[!-~]+$";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ToolDescriptionContext {
-    pub(crate) visible_table_count: usize,
-    pub(crate) visible_function_count: usize,
-    connected_source_names: Vec<String>,
-}
-
-impl ToolDescriptionContext {
-    pub(crate) fn new(
-        visible_table_count: usize,
-        visible_function_count: usize,
-        mut connected_source_names: Vec<String>,
-    ) -> Self {
-        connected_source_names.sort();
-        connected_source_names.dedup();
-        Self {
-            visible_table_count,
-            visible_function_count,
-            connected_source_names,
-        }
+pub(crate) fn available_tools(
+    context: &ToolDescriptionContext,
+    episodes_enabled: bool,
+    feedback_enabled: bool,
+) -> Vec<Tool> {
+    let mut tools = vec![
+        sql_tool(context),
+        list_catalog_tool(context),
+        search_catalog_tool(context),
+        describe_table_tool(),
+        list_columns_tool(),
+    ];
+    if episodes_enabled {
+        tools = tools.into_iter().map(with_episode_id_argument).collect();
+        tools.push(open_episode_tool());
     }
-
-    fn connected_sources_sentence(&self) -> String {
-        connected_source_names_text(&self.connected_source_names).map_or_else(
-            || "No connected user sources are currently configured.".to_string(),
-            |names| format!("Connected sources/schemas include: {names}."),
-        )
+    if feedback_enabled {
+        let feedback = feedback_tool();
+        let feedback = if episodes_enabled {
+            with_episode_id_argument(feedback)
+        } else {
+            feedback
+        };
+        tools.push(feedback);
     }
-}
-
-pub(crate) struct ListCatalogArguments {
-    pub(crate) schema: Option<String>,
-    pub(crate) kind: Option<CatalogToolKind>,
-    pub(crate) pagination: Pagination,
-}
-
-pub(crate) struct SearchCatalogArguments {
-    pub(crate) pattern: String,
-    pub(crate) schema: Option<String>,
-    pub(crate) kind: Option<CatalogToolKind>,
-    pub(crate) ignore_case: bool,
-    pub(crate) pagination: Pagination,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CatalogToolKind {
-    Table,
-    TableFunction,
-}
-
-pub(crate) struct DescribeTableArguments {
-    pub(crate) schema: String,
-    pub(crate) table: String,
-}
-
-pub(crate) struct ListColumnsArguments {
-    pub(crate) schema: String,
-    pub(crate) table: String,
-    pub(crate) pattern: Option<String>,
-    pub(crate) ignore_case: bool,
-    pub(crate) required_only: bool,
-    pub(crate) pagination: Pagination,
-}
-
-pub(crate) struct OpenEpisodeArguments {
-    pub(crate) intent: String,
-    pub(crate) parent_episode_id: Option<String>,
-}
-
-pub(crate) fn sql_tool(context: &ToolDescriptionContext) -> Tool {
-    Tool::new("sql", sql_tool_description(context), sql_input_schema())
-        .with_raw_output_schema(sql_output_schema())
-        .with_annotations(
-            ToolAnnotations::with_title("Run SQL")
-                .read_only(true)
-                .destructive(false)
-                .idempotent(true)
-                .open_world(true),
-        )
-}
-
-pub(crate) fn list_catalog_tool(context: &ToolDescriptionContext) -> Tool {
-    Tool::new(
-        "list_catalog",
-        format!(
-            "List database catalog items for Coral sources. {} {} table(s) and {} table function(s) are currently visible.",
-            context.connected_sources_sentence(),
-            context.visible_table_count,
-            context.visible_function_count
-        ),
-        json_object_schema(&json!({
-            "type": "object",
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Optional exact SQL schema name to list."
-                },
-                "kind": {
-                    "description": "Optional item kind to list. Omit or pass null to list all catalog items.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "enum": ["table", "table_function"]
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
-    )
-    .with_raw_output_schema(list_catalog_output_schema())
-    .with_annotations(
-        ToolAnnotations::with_title("List Catalog")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
-}
-
-pub(crate) fn search_catalog_tool(context: &ToolDescriptionContext) -> Tool {
-    Tool::new(
-        "search_catalog",
-        search_catalog_description(context),
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["pattern"],
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Rust regex pattern to match database catalog metadata."
-                },
-                "schema": {
-                    "type": "string",
-                    "description": "Optional exact SQL schema name to search."
-                },
-                "kind": {
-                    "description": "Optional item kind to search. Omit or pass null to search all catalog items.",
-                    "anyOf": [
-                        {
-                            "type": "string",
-                            "enum": ["table", "table_function"]
-                        },
-                        {
-                            "type": "null"
-                        }
-                    ]
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Whether regex matching is case-insensitive. Defaults to true."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum catalog items to return, from 1 to 100. Defaults to 20.",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 20
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching catalog items to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
-    )
-    .with_raw_output_schema(search_catalog_output_schema())
-    .with_annotations(
-        ToolAnnotations::with_title("Search Catalog")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
-}
-
-pub(crate) fn describe_table_tool() -> Tool {
-    Tool::new(
-        "describe_table",
-        "Describe one database table without returning full column definitions.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["schema", "table"],
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Exact SQL schema name."
-                },
-                "table": {
-                    "type": "string",
-                    "description": "Exact table name within the SQL schema."
-                }
-            }
-        })),
-    )
-    .with_annotations(
-        ToolAnnotations::with_title("Describe Table")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
-}
-
-pub(crate) fn list_columns_tool() -> Tool {
-    Tool::new(
-        "list_columns",
-        "List columns for one database table with optional regex and required-filter narrowing.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["schema", "table"],
-            "properties": {
-                "schema": {
-                    "type": "string",
-                    "description": "Exact SQL schema name."
-                },
-                "table": {
-                    "type": "string",
-                    "description": "Exact table name within the SQL schema."
-                },
-                "pattern": {
-                    "type": "string",
-                    "description": "Optional Rust regex matched against column names, descriptions, and data types."
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Whether regex matching is case-insensitive. Defaults to true."
-                },
-                "required_only": {
-                    "type": "boolean",
-                    "description": "Only return columns that are required filters. Defaults to false."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum columns to return, from 1 to 200. Defaults to 50.",
-                    "minimum": 1,
-                    "maximum": 200,
-                    "default": 50
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Number of matching columns to skip. Defaults to 0.",
-                    "minimum": 0,
-                    "maximum": u32::MAX,
-                    "default": 0
-                }
-            }
-        })),
-    )
-    .with_raw_output_schema(list_columns_output_schema())
-    .with_annotations(
-        ToolAnnotations::with_title("List Columns")
-            .read_only(true)
-            .destructive(false)
-            .idempotent(true)
-            .open_world(false),
-    )
-}
-
-pub(crate) fn feedback_tool() -> Tool {
-    Tool::new(
-        "feedback",
-        "Submit feedback when you are blocked. Coral stores the report locally and uploads an anonymous copy, without user identifiers, to Coral's hosted feedback service to improve Coral's performance.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["trying_to_do", "tried", "stuck"],
-            "properties": {
-                "trying_to_do": {
-                    "type": "string",
-                    "description": "What you were trying to do."
-                },
-                "tried": {
-                    "type": "string",
-                    "description": "What you already tried."
-                },
-                "stuck": {
-                    "type": "string",
-                    "description": "Where you got blocked."
-                }
-            }
-        })),
-    )
-    .with_annotations(
-        ToolAnnotations::with_title("Store Feedback Report")
-            .read_only(false)
-            .destructive(false)
-            .idempotent(false)
-            .open_world(true),
-    )
-}
-
-pub(crate) fn open_episode_tool() -> Tool {
-    Tool::new(
-        "open_episode",
-        "Open a Coral episode for the current task. Call this once at the start of a task, then pass the returned episode_id on subsequent Coral tool calls for that task.",
-        json_object_schema(&json!({
-            "type": "object",
-            "required": ["intent"],
-            "properties": {
-                "intent": {
-                    "type": "string",
-                    "description": "Natural-language description of the task this episode should group.",
-                    "minLength": 1,
-                    "maxLength": CORAL_EPISODE_INTENT_MAX_CHARS
-                },
-                "parent_episode_id": nullable_episode_id_schema(Some(
-                    "Optional parent episode id when this task is a child of an existing episode."
-                ))
-            }
-        })),
-    )
-    .with_raw_output_schema(open_episode_output_schema())
-    .with_annotations(
-        ToolAnnotations::with_title("Open Episode")
-            .read_only(false)
-            .destructive(false)
-            .idempotent(false)
-            .open_world(false),
-    )
-}
-
-pub(crate) fn required_string_argument(
-    arguments: Option<&Map<String, Value>>,
-    key: &str,
-) -> Result<String, ErrorData> {
-    let value = arguments
-        .and_then(|arguments| arguments.get(key))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            ErrorData::invalid_params(format!("missing string argument '{key}'"), None)
-        })?;
-    Ok(value.to_string())
-}
-
-pub(crate) fn open_episode_arguments(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<OpenEpisodeArguments, ErrorData> {
-    Ok(OpenEpisodeArguments {
-        intent: required_string_argument(arguments, "intent")?,
-        parent_episode_id: optional_episode_id_argument(arguments, "parent_episode_id")?,
-    })
-}
-
-pub(crate) fn list_catalog_arguments(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<ListCatalogArguments, ErrorData> {
-    Ok(ListCatalogArguments {
-        schema: optional_string_argument(arguments, "schema")?,
-        kind: optional_catalog_kind_argument(arguments)?,
-        pagination: parse_pagination(arguments)?,
-    })
-}
-
-pub(crate) fn search_catalog_arguments(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<SearchCatalogArguments, ErrorData> {
-    Ok(SearchCatalogArguments {
-        pattern: required_string_argument(arguments, "pattern")?,
-        schema: optional_string_argument(arguments, "schema")?,
-        kind: optional_catalog_kind_argument(arguments)?,
-        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        pagination: parse_pagination_with_limits(arguments, 20, 100)?,
-    })
-}
-
-fn optional_catalog_kind_argument(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<Option<CatalogToolKind>, ErrorData> {
-    let Some(kind) = optional_string_argument(arguments, "kind")? else {
-        return Ok(None);
-    };
-    match kind.as_str() {
-        "table" => Ok(Some(CatalogToolKind::Table)),
-        "table_function" => Ok(Some(CatalogToolKind::TableFunction)),
-        _ => Err(ErrorData::invalid_params(
-            "argument 'kind' must be 'table' or 'table_function'",
-            None,
-        )),
-    }
-}
-
-pub(crate) fn describe_table_arguments(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<DescribeTableArguments, ErrorData> {
-    Ok(DescribeTableArguments {
-        schema: required_string_argument(arguments, "schema")?,
-        table: required_string_argument(arguments, "table")?,
-    })
-}
-
-pub(crate) fn list_columns_arguments(
-    arguments: Option<&Map<String, Value>>,
-) -> Result<ListColumnsArguments, ErrorData> {
-    Ok(ListColumnsArguments {
-        schema: required_string_argument(arguments, "schema")?,
-        table: required_string_argument(arguments, "table")?,
-        pattern: optional_non_empty_string_argument(arguments, "pattern")?,
-        ignore_case: optional_bool_argument(arguments, "ignore_case", true)?,
-        required_only: optional_bool_argument(arguments, "required_only", false)?,
-        pagination: parse_pagination(arguments)?,
-    })
-}
-
-pub(crate) fn optional_episode_id_argument(
-    arguments: Option<&Map<String, Value>>,
-    key: &str,
-) -> Result<Option<String>, ErrorData> {
-    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let value = value.as_str().ok_or_else(|| {
-        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
-    })?;
-    if value.is_empty() {
-        return Err(ErrorData::invalid_params(
-            format!("argument '{key}' must not be empty"),
-            None,
-        ));
-    }
-    if value.len() > CORAL_EPISODE_ID_MAX_LEN {
-        return Err(ErrorData::invalid_params(
-            format!("argument '{key}' must be at most {CORAL_EPISODE_ID_MAX_LEN} bytes"),
-            None,
-        ));
-    }
-    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
-        return Err(ErrorData::invalid_params(
-            format!("argument '{key}' must be graphic ASCII with no spaces or control bytes"),
-            None,
-        ));
-    }
-    Ok(Some(value.to_string()))
+    tools
 }
 
 pub(crate) fn build_tool_result(value: Value) -> CallToolResult {
@@ -480,490 +43,12 @@ pub(crate) fn build_tool_result(value: Value) -> CallToolResult {
     result
 }
 
-fn sql_tool_description(context: &ToolDescriptionContext) -> String {
-    if context.visible_table_count == 0 {
-        format!(
-            "Execute 1 to 10 independent read-only SQL queries against the Coral database using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} No user tables are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first.",
-            context.connected_sources_sentence()
-        )
-    } else {
-        format!(
-            "Execute 1 to 10 independent read-only SQL queries against the Coral database across connected Coral sources/schemas using queries[]. Each entry must be independent and must not depend on another entry's rows, errors, or side effects. {} {} table(s) are currently visible. You MUST prefer this tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources. Use catalog tools only to discover schemas, tables, functions, columns, and filters first. Use JOIN, CROSS JOIN, CTEs, subqueries, and aggregates inside one query when work is dependent.",
-            context.connected_sources_sentence(),
-            context.visible_table_count
-        )
-    }
-}
-
-fn search_catalog_description(context: &ToolDescriptionContext) -> String {
-    format!(
-        "Search database catalog metadata with a Rust regex across connected Coral sources/schemas. {} {} table(s) and {} table function(s) are currently visible.",
-        context.connected_sources_sentence(),
-        context.visible_table_count,
-        context.visible_function_count
-    )
-}
-
-pub(crate) fn with_episode_id_argument(mut tool: Tool) -> Tool {
-    add_episode_id_property(Arc::make_mut(&mut tool.input_schema));
-    tool
-}
-
-fn add_episode_id_property(schema: &mut Map<String, Value>) {
-    schema
-        .entry("properties")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .expect("tool input properties are an object")
-        .insert(
-            "episode_id".to_string(),
-            nullable_episode_id_schema(Some(EPISODE_ID_ARGUMENT_DESCRIPTION)),
-        );
-}
-
-fn nullable_episode_id_schema(description: Option<&str>) -> Value {
-    let mut schema = json!({
-        "anyOf": [
-            episode_id_string_schema(),
-            {
-                "type": "null"
-            }
-        ]
-    });
-    if let Some(description) = description {
-        schema
-            .as_object_mut()
-            .expect("nullable episode id schema is an object")
-            .insert("description".to_string(), json!(description));
-    }
-    schema
-}
-
-fn episode_id_string_schema() -> Value {
-    json!({
-        "type": "string",
-        "minLength": 1,
-        "maxLength": CORAL_EPISODE_ID_MAX_LEN,
-        "pattern": EPISODE_ID_JSON_SCHEMA_PATTERN
-    })
-}
-
-fn open_episode_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["episode_id", "parent_episode_id", "message", "instructions"],
-        "additionalProperties": false,
-        "properties": {
-            "episode_id": episode_id_string_schema(),
-            "parent_episode_id": nullable_episode_id_schema(None),
-            "message": { "type": "string" },
-            "instructions": { "type": "string" }
-        }
-    }))
-}
-
-fn list_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_table_item_output_schema(),
-                        catalog_table_function_item_output_schema()
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
-fn catalog_table_item_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["kind", "schema_name", "name", "sql_reference", "description", "table"],
-        "additionalProperties": false,
-        "properties": {
-            "kind": { "enum": ["table"] },
-            "schema_name": { "type": "string" },
-            "name": { "type": "string" },
-            "sql_reference": { "type": "string" },
-            "description": { "type": "string" },
-            "table": {
-                "type": "object",
-                "required": ["table_name", "guide", "required_filters"],
-                "additionalProperties": false,
-                "properties": {
-                    "table_name": { "type": "string" },
-                    "guide": { "type": "string" },
-                    "required_filters": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn catalog_table_function_item_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": [
-            "kind",
-            "schema_name",
-            "name",
-            "sql_reference",
-            "sql_call_example",
-            "description",
-            "table_function"
-        ],
-        "additionalProperties": false,
-        "properties": {
-            "kind": { "enum": ["table_function"] },
-            "schema_name": { "type": "string" },
-            "name": { "type": "string" },
-            "sql_reference": { "type": "string" },
-            "sql_call_example": { "type": "string" },
-            "description": { "type": "string" },
-            "table_function": {
-                "type": "object",
-                "required": ["function_name", "arguments", "result_columns"],
-                "additionalProperties": false,
-                "properties": {
-                    "function_name": { "type": "string" },
-                    "arguments": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["name", "required", "values"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "name": { "type": "string" },
-                                "required": { "type": "boolean" },
-                                "values": {
-                                    "type": "array",
-                                    "items": { "type": "string" }
-                                }
-                            }
-                        }
-                    },
-                    "result_columns": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "required": ["column_name", "data_type", "is_nullable", "description"],
-                            "additionalProperties": false,
-                            "properties": {
-                                "column_name": { "type": "string" },
-                                "data_type": { "type": "string" },
-                                "is_nullable": { "type": "boolean" },
-                                "description": { "type": "string" }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn search_catalog_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "required": ["items", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        catalog_search_item_output_schema(catalog_table_item_output_schema()),
-                        catalog_search_item_output_schema(catalog_table_function_item_output_schema())
-                    ]
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    }))
-}
-
-fn catalog_search_item_output_schema(mut schema: Value) -> Value {
-    let object = schema
-        .as_object_mut()
-        .expect("catalog item schema is an object");
-    object
-        .get_mut("required")
-        .and_then(Value::as_array_mut)
-        .expect("catalog item schema has required array")
-        .push(json!("matched_fields"));
-    object
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .expect("catalog item schema has properties object")
-        .insert(
-            "matched_fields".to_string(),
-            json!({
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": [
-                        "schema_name",
-                        "table_name",
-                        "function_name",
-                        "name",
-                        "description",
-                        "guide",
-                        "required_filters",
-                        "arguments",
-                        "result_columns"
-                    ]
-                }
-            }),
-        );
-    schema
-}
-
-fn list_columns_output_schema() -> Arc<Map<String, Value>> {
-    json_object_schema(&json!({
-        "type": "object",
-        "oneOf": [
-            list_columns_page_output_schema(),
-            missing_table_output_schema()
-        ]
-    }))
-}
-
-fn list_columns_page_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["schema_name", "table_name", "columns", "total", "limit", "offset", "has_more"],
-        "additionalProperties": false,
-        "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "columns": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": [
-                        "column_name",
-                        "data_type",
-                        "is_nullable",
-                        "is_virtual",
-                        "is_required_filter",
-                        "description",
-                        "ordinal_position"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                        "column_name": { "type": "string" },
-                        "data_type": { "type": "string" },
-                        "is_nullable": { "type": "boolean" },
-                        "is_virtual": { "type": "boolean" },
-                        "is_required_filter": { "type": "boolean" },
-                        "description": { "type": "string" },
-                        "ordinal_position": {
-                            "type": "integer",
-                            "minimum": 0
-                        },
-                        "matched_fields": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {
-                                "type": "string",
-                                "enum": ["column_name", "description", "data_type"]
-                            }
-                        }
-                    }
-                }
-            },
-            "total": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0
-            },
-            "has_more": { "type": "boolean" },
-            "next_offset": {
-                "type": "integer",
-                "minimum": 0
-            }
-        }
-    })
-}
-
-fn missing_table_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["found", "requested", "available_schemas", "same_schema_tables", "suggestions", "suggested_calls"],
-        "additionalProperties": false,
-        "properties": {
-            "found": { "enum": [false] },
-            "requested": {
-                "type": "object",
-                "required": ["schema", "table"],
-                "additionalProperties": false,
-                "properties": {
-                    "schema": { "type": "string" },
-                    "table": { "type": "string" }
-                }
-            },
-            "available_schemas": {
-                "type": "array",
-                "items": { "type": "string" }
-            },
-            "same_schema_tables": {
-                "type": "array",
-                "items": missing_table_summary_output_schema()
-            },
-            "suggestions": {
-                "type": "array",
-                "items": missing_table_summary_output_schema()
-            },
-            "suggested_calls": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["tool", "arguments"],
-                    "additionalProperties": false,
-                    "properties": {
-                        "tool": {
-                            "type": "string",
-                            "enum": ["search_catalog", "list_catalog"]
-                        },
-                        "arguments": { "type": "object" }
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn missing_table_summary_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["schema_name", "table_name", "name", "description", "required_filters"],
-        "additionalProperties": false,
-        "properties": {
-            "schema_name": { "type": "string" },
-            "table_name": { "type": "string" },
-            "name": { "type": "string" },
-            "description": { "type": "string" },
-            "required_filters": {
-                "type": "array",
-                "items": { "type": "string" }
-            }
-        }
-    })
-}
-
-pub(crate) fn optional_string_argument(
-    arguments: Option<&Map<String, Value>>,
-    key: &str,
-) -> Result<Option<String>, ErrorData> {
-    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let value = value.as_str().ok_or_else(|| {
-        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
-    })?;
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value.to_string()))
-    }
-}
-
-fn optional_non_empty_string_argument(
-    arguments: Option<&Map<String, Value>>,
-    key: &str,
-) -> Result<Option<String>, ErrorData> {
-    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
-        return Ok(None);
-    };
-    let value = value.as_str().ok_or_else(|| {
-        ErrorData::invalid_params(format!("argument '{key}' must be a string"), None)
-    })?;
-    let value = value.trim();
-    if value.is_empty() {
-        Err(ErrorData::invalid_params(
-            format!("argument '{key}' must not be empty"),
-            None,
-        ))
-    } else {
-        Ok(Some(value.to_string()))
-    }
-}
-
-fn optional_bool_argument(
-    arguments: Option<&Map<String, Value>>,
-    key: &str,
-    default: bool,
-) -> Result<bool, ErrorData> {
-    let Some(value) = arguments.and_then(|arguments| arguments.get(key)) else {
-        return Ok(default);
-    };
-    value.as_bool().ok_or_else(|| {
-        ErrorData::invalid_params(format!("argument '{key}' must be a boolean"), None)
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::{Map, Value, json};
+    use rmcp::model::Tool;
+    use serde_json::{Value, json};
 
-    use super::{
-        EPISODE_ID_ARGUMENT_DESCRIPTION, ToolDescriptionContext, build_tool_result,
-        connected_source_names_text, list_catalog_arguments, search_catalog_arguments,
-        search_catalog_tool, sql_tool, with_episode_id_argument,
-    };
+    use super::{ToolDescriptionContext, available_tools, build_tool_result};
 
     #[test]
     fn success_tool_result_uses_structured_content_only() {
@@ -990,23 +75,12 @@ mod tests {
     }
 
     #[test]
-    fn catalog_kind_argument_accepts_null_as_all_kinds() {
-        let mut arguments = Map::new();
-        arguments.insert("kind".to_string(), Value::Null);
-        let list = list_catalog_arguments(Some(&arguments)).expect("list arguments");
-        assert_eq!(list.kind, None);
-
-        arguments.insert("pattern".to_string(), Value::String("issue".to_string()));
-        let search = search_catalog_arguments(Some(&arguments)).expect("search arguments");
-        assert_eq!(search.kind, None);
-    }
-
-    #[test]
-    fn tool_descriptions_include_connected_sources() {
+    fn available_tools_include_connected_sources_in_descriptions() {
         let context =
             ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
 
-        let sql_tool = sql_tool(&context);
+        let tools = available_tools(&context, false, false);
+        let sql_tool = tool_by_name(&tools, "sql");
         let sql_description = sql_tool.description.as_deref().expect("sql description");
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
         assert!(sql_description.contains("42 table(s) are currently visible"));
@@ -1030,26 +104,20 @@ mod tests {
         assert!(sql_input_description.contains("independent"));
         assert!(sql_tool.output_schema.is_some());
 
-        let search_description = search_catalog_tool(&context)
+        let search_description = tool_by_name(&tools, "search_catalog")
             .description
+            .as_deref()
             .expect("search description");
         assert!(search_description.contains("Connected sources/schemas include: github, linear"));
         assert!(search_description.contains("42 table(s) and 3 table function(s)"));
     }
 
     #[test]
-    fn with_episode_id_argument_decorates_tool_schema() {
+    fn available_tools_decorate_episode_aware_tools() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tool = sql_tool(&context);
-        let properties = tool
-            .input_schema
-            .get("properties")
-            .and_then(Value::as_object)
-            .expect("input properties");
-        assert!(!properties.contains_key("episode_id"));
-
-        let tool = with_episode_id_argument(tool);
-        let episode_id_schema = tool
+        let tools = available_tools(&context, true, false);
+        let sql_tool = tool_by_name(&tools, "sql");
+        let episode_id_schema = sql_tool
             .input_schema
             .get("properties")
             .and_then(Value::as_object)
@@ -1058,21 +126,137 @@ mod tests {
 
         assert_eq!(
             episode_id_schema.get("description").and_then(Value::as_str),
-            Some(EPISODE_ID_ARGUMENT_DESCRIPTION)
+            Some(
+                "Optional episode id returned by open_episode. Pass it on subsequent Coral tool calls for the same task so Coral can attribute the call to that episode."
+            )
+        );
+
+        let open_episode = tool_by_name(&tools, "open_episode");
+        let properties = open_episode
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("open_episode properties");
+        assert!(!properties.contains_key("episode_id"));
+    }
+
+    #[test]
+    fn available_tools_add_feedback_last_when_enabled() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tools = available_tools(&context, true, true);
+
+        assert_eq!(
+            tools.last().map(|tool| tool.name.as_ref()),
+            Some("feedback")
+        );
+        let properties = tools
+            .last()
+            .expect("feedback tool")
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("feedback properties");
+        assert!(properties.contains_key("episode_id"));
+    }
+
+    #[test]
+    fn available_tools_keep_default_order() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tools = available_tools(&context, false, false);
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "sql",
+                "list_catalog",
+                "search_catalog",
+                "describe_table",
+                "list_columns"
+            ]
         );
     }
 
     #[test]
-    fn connected_source_names_are_not_capped_in_descriptions() {
+    fn tool_descriptions_do_not_cap_connected_source_names() {
         let names = (0..14)
             .map(|index| format!("source_{index:02}"))
             .collect::<Vec<_>>();
+        let context = ToolDescriptionContext::new(1, 0, names);
 
-        let text = connected_source_names_text(&names).expect("source names text");
+        let tools = available_tools(&context, false, false);
+        let description = tool_by_name(&tools, "sql")
+            .description
+            .as_deref()
+            .expect("sql description")
+            .to_string();
 
-        assert!(text.contains("source_00"));
-        assert!(text.contains("source_12"));
-        assert!(text.contains("source_13"));
-        assert!(!text.contains("and 2 more"));
+        assert!(description.contains("source_00"));
+        assert!(description.contains("source_12"));
+        assert!(description.contains("source_13"));
+        assert!(!description.contains("and 2 more"));
+    }
+
+    #[test]
+    fn available_tools_do_not_mutate_base_tool_schemas() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let default_tools = available_tools(&context, false, false);
+        let episode_tools = available_tools(&context, true, false);
+
+        let default_properties = tool_by_name(&default_tools, "sql")
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("default properties");
+        let episode_properties = tool_by_name(&episode_tools, "sql")
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("episode properties");
+
+        assert!(!default_properties.contains_key("episode_id"));
+        assert!(episode_properties.contains_key("episode_id"));
+    }
+
+    #[test]
+    fn feedback_tool_is_not_decorated_when_episodes_are_disabled() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tools = available_tools(&context, false, true);
+        let feedback = tools.last().expect("feedback tool");
+        let properties = feedback
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("feedback properties");
+
+        assert_eq!(feedback.name, "feedback");
+        assert!(!properties.contains_key("episode_id"));
+    }
+
+    #[test]
+    fn all_advertised_tools_have_object_input_schemas() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+
+        for tool in available_tools(&context, true, true) {
+            assert_eq!(
+                tool.input_schema.get("type"),
+                Some(&Value::String("object".into()))
+            );
+            assert!(
+                matches!(tool.input_schema.get("properties"), Some(Value::Object(_))),
+                "tool '{}' should advertise properties",
+                tool.name
+            );
+        }
+    }
+
+    fn tool_by_name<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
+        tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("tool '{name}' should be advertised"))
     }
 }

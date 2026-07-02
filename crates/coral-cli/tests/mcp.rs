@@ -15,14 +15,17 @@ use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
-use coral_api::v1::{ExecuteSqlRequest, ImportSourceRequest, import_source_response};
+use coral_api::v1::{
+    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source, SourceCredentialStorage,
+    SourceOrigin, Workspace, import_source_response,
+};
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
-use harness::MockServer;
+use harness::{MockServer, MockServerConfig};
 use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
     service::RunningService,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
@@ -43,6 +46,41 @@ fn json_object(value: &Value) -> Map<String, Value> {
 fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
     fs::create_dir_all(server.config_dir())?;
     fs::write(server.config_dir().join("config.toml"), raw)
+}
+
+fn write_workspace_scoped_source_config(server: &MockServer) -> Result<(), io::Error> {
+    write_config(
+        server,
+        r#"
+[workspaces.default.sources.github]
+origin = "bundled"
+
+[workspaces.work.sources.jira]
+origin = "bundled"
+"#,
+    )
+}
+
+fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
+    assert_eq!(
+        workspace.map(|workspace| workspace.name.as_str()),
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
+    );
+}
+
+fn source_fixture(workspace_name: &str, source_name: &str) -> Source {
+    Source {
+        workspace: Some(Workspace {
+            name: workspace_name.to_string(),
+        }),
+        name: source_name.to_string(),
+        version: "1.0.0".to_string(),
+        secrets: Vec::new(),
+        variables: Vec::new(),
+        origin: SourceOrigin::Imported as i32,
+        credential_storage: SourceCredentialStorage::File as i32,
+    }
 }
 
 fn run_features_command(
@@ -174,6 +212,15 @@ async fn structured_tool_content(
         "tool results should not duplicate structured payloads as text content"
     );
     Ok(result.structured_content.expect("structured content"))
+}
+
+fn tool_error_text(result: &CallToolResult) -> &str {
+    result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.as_str())
+        .expect("tool error text content")
 }
 
 async fn write_jsonrpc_message(
@@ -461,6 +508,114 @@ storage = "file"
         child.wait().await?;
     }
     server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![source_fixture("work", "linear")],
+        },
+    ))
+    .await;
+    write_workspace_scoped_source_config(&server)?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .args(["--workspace", "work"])
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "initialize instructions should include selected workspace: {instructions}"
+    );
+    assert!(
+        instructions.contains("Connected Coral sources: linear."),
+        "initialize instructions should include app-provided source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Connected Coral sources: jira."),
+        "initialize instructions should not use config-store source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Recent successful Coral SQL examples"),
+        "non-default workspace initialize instructions should not use default-workspace query history: {instructions}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    assert_raw_tools_list_contract(&tools_list);
+
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_workspace_name(count_request.workspace.as_ref(), "work");
+    let list_sources_requests = server.list_sources_requests();
+    assert!(
+        !list_sources_requests.is_empty(),
+        "expected at least one list_sources call"
+    );
+    for request in &list_sources_requests {
+        assert_workspace_name(request.workspace.as_ref(), "work");
+    }
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await;
     Ok(())
 }
 
@@ -1103,10 +1258,18 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
         )
         .await?;
     assert_eq!(mixed_sql.is_error, Some(true));
-    assert!(
-        mixed_sql.content.is_empty(),
-        "tool errors should not include text fallback content"
-    );
+    let mixed_sql_detail = mixed_sql
+        .structured_content
+        .as_ref()
+        .expect("structured content")["data"]["results"][1]["error"]["detail"]
+        .as_str()
+        .expect("structured query error detail")
+        .to_string();
+    {
+        let mixed_sql_text = tool_error_text(&mixed_sql);
+        assert!(mixed_sql_text.contains("Query [1]: Query request is invalid"));
+        assert!(mixed_sql_text.contains(&mixed_sql_detail));
+    }
     let mixed_sql = mixed_sql.structured_content.expect("structured content");
     assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
     let mixed_sql_batch = &mixed_sql["data"];

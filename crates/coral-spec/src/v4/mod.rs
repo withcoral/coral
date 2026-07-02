@@ -5,9 +5,9 @@
 
 pub const V4_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 pub const SURFACE_IMPORTER_VERSION: &str = "surface-import-v1";
-pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v3";
+pub const OPENAPI_IMPORTER_VERSION: &str = "openapi-v4";
 pub const MCP_IMPORTER_VERSION: &str = "mcp-tools-v1";
-pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v6";
+pub const PROJECTION_GENERATOR_VERSION: &str = "derive-read-v7";
 
 mod artifacts;
 mod diagnostics;
@@ -34,9 +34,9 @@ pub use artifacts::{
 pub use diagnostics::{Diagnostic, DiagnosticSeverity};
 pub use ir::{
     HttpMethod, IrEntityCandidate, IrExecutionAttachment, IrField, IrInputLocation, IrOperation,
-    IrOperationInput, IrOperationOutput, IrScalarType, IrType, IrTypeShape, McpExecutionAttachment,
-    OutputCardinality, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
-    RestResponseAttachment, SemanticIr,
+    IrOperationInput, IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape,
+    McpExecutionAttachment, OutputCardinality, RestExecutionAttachment, RestParameterBinding,
+    RestRequestBody, RestResponseAttachment, SemanticIr,
 };
 pub use manifest::{
     McpRuntimeConfig, OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,

@@ -107,6 +107,7 @@ fn http_manifest_for_surface(
                     projection.name, projection.operation_id
                 ))
             })?;
+        let rest = rest_execution_for_operation(operation)?;
         let request = request_spec_for_projection(projection, operation)
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
         let columns = projection_column_specs(projection);
@@ -125,8 +126,8 @@ fn http_manifest_for_surface(
                     },
                     request,
                     requests: Vec::new(),
-                    response: rest_response_for_operation(operation)?,
-                    pagination: projection.pagination.clone(),
+                    response: rest.response.response.clone(),
+                    pagination: rest.pagination.clone(),
                 });
             }
             ProjectionKind::TableFunction { function_kind } => {
@@ -139,8 +140,8 @@ fn http_manifest_for_surface(
                     detail_hints: projection.detail_hints.clone(),
                     args: projection_arg_specs(projection),
                     request,
-                    response: rest_response_for_operation(operation)?,
-                    pagination: projection.pagination.clone(),
+                    response: rest.response.response.clone(),
+                    pagination: rest.pagination.clone(),
                     columns,
                 });
             }
@@ -164,11 +165,11 @@ fn http_manifest_for_surface(
     })
 }
 
-fn rest_response_for_operation(
+fn rest_execution_for_operation(
     operation: &coral_spec::v4::IrOperation,
-) -> Result<ResponseSpec, AppError> {
+) -> Result<&coral_spec::v4::RestExecutionAttachment, AppError> {
     match &operation.execution {
-        IrExecutionAttachment::Rest(rest) => Ok(rest.response.response.clone()),
+        IrExecutionAttachment::Rest(rest) => Ok(rest),
         IrExecutionAttachment::Mcp(_) => Err(AppError::FailedPrecondition(format!(
             "DSL v4 operation '{}' is not a REST operation",
             operation.id
@@ -399,31 +400,95 @@ mod tests {
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
-        Fingerprint, IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
-        MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
-        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog,
-        ProjectionKind, ProjectionVisibility, SURFACE_IMPORTER_VERSION, SemanticIr,
-        SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION,
-        V4MaterializedSource, V4SourceCommon, V4SourceManifest, V4Surface,
+        Fingerprint, HttpMethod, IrExecutionAttachment, IrOperation, IrOperationOutput,
+        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig,
+        OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection,
+        ProjectionCatalog, ProjectionKind, ProjectionVisibility, RestExecutionAttachment,
+        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
+        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
+        V4SourceCommon, V4SourceManifest, V4Surface,
     };
+    use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
 
     use super::{runtime_components_for_v4_source, surface_base_url};
 
     fn surface_without_authored_base_url() -> V4Surface {
+        openapi_surface_with_base_url("rest", "demo", "")
+    }
+
+    fn openapi_surface(id: &str, relation_namespace: &str) -> V4Surface {
+        openapi_surface_with_base_url(id, relation_namespace, "https://api.example.com")
+    }
+
+    fn openapi_surface_with_base_url(
+        id: &str,
+        relation_namespace: &str,
+        base_url: &str,
+    ) -> V4Surface {
         V4Surface {
-            id: "rest".to_string(),
-            relation_namespace: "demo".to_string(),
+            id: id.to_string(),
+            relation_namespace: relation_namespace.to_string(),
             surface_type: SurfaceType::OpenApi,
             descriptor: SurfaceDescriptor::File {
                 file: PathBuf::from("/tmp/openapi.yaml"),
             },
             inputs: Vec::new(),
             runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
-                base_url: coral_spec::ParsedTemplate::parse("").expect("empty template"),
+                base_url: coral_spec::ParsedTemplate::parse(base_url).expect("base_url template"),
                 auth: AuthSpec::default(),
                 request_headers: Vec::new(),
                 rate_limit: RateLimitSpec::default(),
             }),
+        }
+    }
+
+    fn rest_materialized_surface_with_pagination(
+        surface_id: &str,
+        operation_id: &str,
+        pagination: PaginationSpec,
+    ) -> MaterializedSurface {
+        MaterializedSurface {
+            surface_id: surface_id.to_string(),
+            semantic_ir: SemanticIr {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                surface_id: surface_id.to_string(),
+                surface_type: SurfaceType::OpenApi,
+                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
+                operations: vec![IrOperation {
+                    id: operation_id.to_string(),
+                    method_name: operation_id.to_string(),
+                    description: String::new(),
+                    deprecated: false,
+                    read_only: true,
+                    naming: None,
+                    inputs: Vec::new(),
+                    output: IrOperationOutput {
+                        cardinality: coral_spec::v4::OutputCardinality::List,
+                        type_ref: "item".to_string(),
+                        row_path: Vec::new(),
+                    },
+                    entity: None,
+                    execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
+                        method: HttpMethod::Get,
+                        path_template: "/items".to_string(),
+                        parameters: Vec::new(),
+                        request_body: None,
+                        response: RestResponseAttachment {
+                            status_code: 200,
+                            media_type: "application/json".to_string(),
+                            response: ResponseSpec::default(),
+                        },
+                        pagination,
+                    })),
+                    diagnostics: Vec::new(),
+                }],
+                types: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            source_document_sha256: String::new(),
+            normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
+            raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
         }
     }
 
@@ -515,6 +580,7 @@ mod tests {
                     description: String::new(),
                     deprecated: false,
                     read_only: true,
+                    naming: None,
                     inputs: Vec::new(),
                     output: IrOperationOutput {
                         cardinality: coral_spec::v4::OutputCardinality::List,
@@ -550,7 +616,6 @@ mod tests {
             visibility: ProjectionVisibility::Published,
             inputs: Vec::new(),
             columns: Vec::new(),
-            pagination: coral_spec::PaginationSpec::default(),
             search_limits: None,
             detail_hints: Vec::new(),
             diagnostics: Vec::new(),
@@ -606,6 +671,82 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(schema_names, ["github_v4_rest", "github_v4_mcp"]);
+    }
+
+    #[test]
+    fn rest_runtime_component_keeps_operation_pagination() {
+        let surface = openapi_surface("rest", "github_v4_rest");
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: Vec::new(),
+            surfaces: vec![surface],
+        };
+        let pagination = PaginationSpec {
+            mode: PaginationMode::Page,
+            page_size: Some(PageSizeSpec {
+                default: 30,
+                max: 100,
+                query_param: Some("per_page".to_string()),
+                body_path: Vec::new(),
+            }),
+            page_param: Some("page".to_string()),
+            page_start: 1,
+            max_pages: Some(7),
+            ..PaginationSpec::default()
+        };
+        let materialized = V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![rest_materialized_surface_with_pagination(
+                "rest",
+                "rest_list_issues",
+                pagination.clone(),
+            )],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+                projections: vec![published_projection(
+                    "rest",
+                    "github_v4_rest",
+                    "rest_list_issues",
+                )],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let components =
+            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+        let coral_engine::RuntimeSourceComponent::Http(http) =
+            components.first().expect("http component")
+        else {
+            panic!("expected HTTP component");
+        };
+        let table_pagination = &http.tables.first().expect("http table").pagination;
+
+        assert_eq!(table_pagination.mode, PaginationMode::Page);
+        assert_eq!(table_pagination.page_param.as_deref(), Some("page"));
+        assert_eq!(table_pagination.page_start, 1);
+        assert_eq!(table_pagination.max_pages, Some(7));
+        assert_eq!(
+            table_pagination
+                .page_size
+                .as_ref()
+                .and_then(|page_size| page_size.query_param.as_deref()),
+            Some("per_page")
+        );
     }
 
     #[test]

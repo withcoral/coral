@@ -18,7 +18,8 @@ use super::model::{
     ProjectionVisibility, SqlInputExposure,
 };
 use super::names::{
-    is_search_operation, projection_guide, projection_name, resolve_projection_name_collisions,
+    is_search_operation, projection_guide, projection_name, projection_name_from_operation_naming,
+    resolve_projection_name_collisions,
 };
 use super::pagination::pagination_query_param_names;
 
@@ -121,7 +122,7 @@ fn generate_projection(
         .collect::<Vec<_>>();
     let columns = projection_columns(ir, operation);
     let name = generated_projection_name(operation, is_search);
-    let guide = projection_guide(&kind, &inputs, &pagination, is_search);
+    let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
         name,
         namespace: namespace.to_string(),
@@ -133,7 +134,6 @@ fn generate_projection(
         visibility,
         inputs,
         columns,
-        pagination,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
@@ -204,7 +204,8 @@ fn has_public_mcp_inputs(operation: &IrOperation, mcp: &crate::v4::McpExecutionA
 
 fn generated_projection_name(operation: &IrOperation, is_search: bool) -> String {
     let name = match &operation.execution {
-        IrExecutionAttachment::Rest(_) => projection_name(operation, is_search),
+        IrExecutionAttachment::Rest(_) => projection_name_from_operation_naming(operation)
+            .unwrap_or_else(|| projection_name(operation, is_search)),
         IrExecutionAttachment::Mcp(_) => normalize_identifier(&operation.id, "projection"),
     };
     if name.is_empty() {

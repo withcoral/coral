@@ -7,7 +7,7 @@ use coral_api::v1::{
     ValidateSourceResponse, catalog_item, import_source_response,
 };
 use coral_client::{
-    AppClient, CatalogClient, QueryClient, SourceClient, batches_to_json_rows,
+    AppClient, CatalogClient, QueryClient, SourceClient, WorkspaceClient, batches_to_json_rows,
     decode_execute_sql_response, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
@@ -18,6 +18,7 @@ use tonic::Request;
 pub(crate) struct GrpcHarness {
     temp_dir: TempDir,
     config_dir: PathBuf,
+    local_trace_store_dir: Option<PathBuf>,
     app: AppClient,
     _server: RunningServer,
 }
@@ -46,12 +47,14 @@ impl GrpcHarness {
             .start()
             .await
             .expect("start server");
+        let local_trace_store_dir = server.local_trace_store_dir().map(Path::to_path_buf);
         let app = AppClient::connect(server.endpoint_uri())
             .await
             .expect("connect client");
         Self {
             temp_dir,
             config_dir,
+            local_trace_store_dir,
             app,
             _server: server,
         }
@@ -65,6 +68,10 @@ impl GrpcHarness {
         &self.config_dir
     }
 
+    pub(crate) fn local_trace_store_dir(&self) -> Option<&Path> {
+        self.local_trace_store_dir.as_deref()
+    }
+
     pub(crate) fn source_client(&self) -> SourceClient {
         self.app.source_client()
     }
@@ -75,6 +82,10 @@ impl GrpcHarness {
 
     pub(crate) fn query_client(&self) -> QueryClient {
         self.app.query_client()
+    }
+
+    pub(crate) fn workspace_client(&self) -> WorkspaceClient {
+        self.app.workspace_client()
     }
 
     pub(crate) async fn import_source(

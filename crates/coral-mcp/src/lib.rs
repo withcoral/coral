@@ -107,6 +107,8 @@ pub struct McpOptions {
     pub source_names: Vec<String>,
     /// Successful SQL examples to include in MCP initialize instructions.
     pub query_examples: Vec<McpQueryExample>,
+    /// Workspace scoped to this MCP server instance.
+    pub workspace: Option<coral_api::v1::Workspace>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

@@ -1,10 +1,15 @@
 use coral_client::{DecodedStatusError, decode_status_error};
-use rmcp::{ErrorData, model::CallToolResult};
+use rmcp::{
+    ErrorData,
+    model::{CallToolResult, Content},
+};
+use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ToolError {
     pub(crate) summary: String,
     pub(crate) detail: String,
@@ -18,28 +23,69 @@ pub(crate) struct ToolError {
 }
 
 pub(crate) fn tool_error_result(error: ToolError, data: Option<Value>) -> CallToolResult {
-    let structured = serde_json::to_value(StructuredToolErrorValue { error, data })
-        .expect("tool error value serializes");
+    let content = vec![Content::text(tool_error_text(&error, data.as_ref()))];
+    let structured = match data {
+        Some(data) => serde_json::to_value(ToolErrorWithData { error, data })
+            .expect("tool error value with data serializes"),
+        None => {
+            serde_json::to_value(ToolErrorValue { error }).expect("tool error value serializes")
+        }
+    };
     let mut result = CallToolResult::structured_error(structured);
-    result.content = Vec::new();
+    result.content = content;
     result
 }
 
-pub(crate) fn tool_error_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["summary", "detail", "grpc_code", "retryable", "metadata"],
-        "additionalProperties": false,
-        "properties": {
-            "summary": { "type": "string" },
-            "detail": { "type": "string" },
-            "hint": { "type": "string" },
-            "grpc_code": { "type": "string" },
-            "reason": { "type": "string" },
-            "retryable": { "type": "boolean" },
-            "metadata": { "type": "object", "additionalProperties": { "type": "string" } }
-        }
-    })
+fn tool_error_text(error: &ToolError, data: Option<&Value>) -> String {
+    let mut lines = vec![format!("Error: {}", error.summary)];
+    if !error.detail.trim().is_empty() && error.detail != error.summary {
+        lines.push(format!("Detail: {}", error.detail));
+    }
+    if let Some(hint) = error.hint.as_deref() {
+        lines.push(format!("Hint: {hint}"));
+    }
+    if error.reason.as_deref() == Some("SQL_BATCH_PARTIAL_FAILURE") {
+        lines.extend(query_error_text(data));
+    }
+    lines.join("\n")
+}
+
+fn query_error_text(data: Option<&Value>) -> Vec<String> {
+    let Some(results) = data
+        .and_then(|data| data.get("results"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+
+    results
+        .iter()
+        .filter(|result| result.get("status").and_then(Value::as_str) == Some("error"))
+        .filter_map(|result| {
+            let error = result.get("error")?;
+            let summary = error
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("Query failed");
+            let detail = error.get("detail").and_then(Value::as_str).unwrap_or("");
+            let label = result
+                .get("index")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "Query".to_string(), |index| format!("Query [{index}]"));
+            let mut lines = vec![format!("{label}: {summary}")];
+            if !detail.trim().is_empty() && detail != summary {
+                lines.push(format!("  Detail: {detail}"));
+            }
+            if let Some(hint) = error
+                .get("hint")
+                .and_then(Value::as_str)
+                .filter(|hint| !hint.trim().is_empty())
+            {
+                lines.push(format!("  Hint: {hint}"));
+            }
+            Some(lines.join("\n"))
+        })
+        .collect()
 }
 
 pub(crate) fn tool_error_from_status(operation: &str, status: &tonic::Status) -> ToolError {
@@ -127,11 +173,16 @@ pub(crate) fn status_to_error_data(status: &tonic::Status) -> ErrorData {
     }
 }
 
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ToolErrorWithData<T> {
+    pub(crate) error: ToolError,
+    pub(crate) data: T,
+}
+
 #[derive(Serialize)]
-struct StructuredToolErrorValue {
+struct ToolErrorValue {
     error: ToolError,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -155,13 +206,22 @@ mod tests {
 
     use std::collections::HashMap;
 
-    use rmcp::model::ErrorCode;
+    use rmcp::model::{CallToolResult, ErrorCode};
     use tonic::{Code, Status};
     use tonic_types::{ErrorDetail, StatusExt as _};
 
     use coral_client::CORAL_ERROR_DOMAIN;
 
     use super::{ToolError, status_to_error_data, tool_error_from_status, tool_error_result};
+
+    fn first_text_content(result: &CallToolResult) -> &str {
+        result
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .map(|text| text.text.as_str())
+            .expect("tool error text content")
+    }
 
     #[test]
     fn tool_error_result_includes_structured_error_payload() {
@@ -178,7 +238,9 @@ mod tests {
             None,
         );
         assert_eq!(result.is_error, Some(true));
-        assert!(result.content.is_empty());
+        let text = first_text_content(&result);
+        assert!(text.contains("Error: Query failed"));
+        assert!(text.contains("Detail: planner error"));
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["grpc_code"], "InvalidArgument");
         assert_eq!(json["error"]["retryable"], false);
@@ -206,10 +268,52 @@ mod tests {
         );
 
         assert_eq!(result.is_error, Some(true));
-        assert!(result.content.is_empty());
         let json = result.structured_content.expect("structured content");
         assert_eq!(json["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
         assert_eq!(json["data"]["total_count"], 2);
+    }
+
+    #[test]
+    fn tool_error_result_surfaces_per_query_detail_in_content() {
+        let result = tool_error_result(
+            ToolError {
+                summary: "One or more SQL queries failed".to_string(),
+                detail: "Inspect `data.results` for per-query successes and errors.".to_string(),
+                hint: None,
+                grpc_code: "Unknown".to_string(),
+                reason: Some("SQL_BATCH_PARTIAL_FAILURE".to_string()),
+                retryable: false,
+                metadata: HashMap::new(),
+            },
+            Some(serde_json::json!({
+                "total_count": 2,
+                "results": [
+                    {
+                        "index": 0,
+                        "status": "success",
+                        "rows": []
+                    },
+                    {
+                        "index": 1,
+                        "status": "error",
+                        "error": {
+                            "summary": "Query request is invalid",
+                            "detail": "table 'nope' not found",
+                            "hint": "Check the SQL and retry.",
+                            "grpc_code": "InvalidArgument",
+                            "retryable": false,
+                            "metadata": {}
+                        }
+                    }
+                ]
+            })),
+        );
+
+        let text = first_text_content(&result);
+        assert!(text.contains("Query [1]: Query request is invalid"));
+        assert!(text.contains("  Detail: table 'nope' not found"));
+        assert!(text.contains("  Hint: Check the SQL and retry."));
+        assert!(!text.contains("Query [0]"));
     }
 
     #[test]

@@ -388,7 +388,6 @@ impl CredentialMaterialGuard<'_> {
         )
     }
 
-    #[cfg(test)]
     pub(crate) fn remove_material(&self, storage: CredentialStorageKind) -> Result<(), AppError> {
         self.manager
             .store

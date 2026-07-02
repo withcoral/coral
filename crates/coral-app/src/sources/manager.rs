@@ -27,12 +27,11 @@ use crate::sources::materialization::{
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::storage::fs;
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
 use coral_spec::{ManifestCredentialMethodKind, ManifestInputKind, ManifestOAuthCredentialSpec};
 use coral_spec::{ValidatedSourceManifest, parse_source_manifest_yaml};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct SourceManager {
@@ -40,6 +39,7 @@ pub(crate) struct SourceManager {
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
     layout: AppStateLayout,
+    lifecycle_lock: WorkspaceLifecycleLock,
 }
 
 pub(crate) struct CreateBundledSourceCommand {
@@ -168,16 +168,32 @@ fn materialization_inputs_from_bindings(
 }
 
 impl SourceManager {
+    #[cfg(test)]
+    pub(crate) fn new_for_tests(
+        config_store: ConfigStore,
+        credential_manager: CredentialManager,
+        layout: AppStateLayout,
+    ) -> Self {
+        Self::new(
+            config_store,
+            credential_manager,
+            layout,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        )
+    }
+
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
         layout: AppStateLayout,
+        lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
         Self {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
             layout,
+            lifecycle_lock,
         }
     }
 
@@ -350,6 +366,7 @@ impl SourceManager {
         materialization_manifest_yaml: &str,
         origin: SourceOrigin,
     ) -> Result<InstalledSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
         self.validate_runtime_schema_names_available(
             workspace_name,
             &candidate.name,
@@ -419,18 +436,40 @@ impl SourceManager {
             bindings,
             &oauth_input_keys,
         )?;
-        let stored_material_for_materialization = stored_material.clone();
-        let bindings = self
-            .bindings_with_oauth_material(
+        let preflight_bindings = Self::validate_oauth_import_preflight(
+            candidate,
+            bindings,
+            &stored_material,
+            &oauth_credential_retrievals,
+        )?;
+        let oauth_material = self
+            .retrieve_oauth_material(
                 candidate,
-                bindings,
-                stored_material,
+                &preflight_bindings.variables,
                 oauth_credential_retrievals,
                 events,
             )
             .await?;
+        let _lifecycle_guard = self.lifecycle_lock.lock();
+        self.validate_runtime_schema_names_available(
+            workspace_name,
+            &candidate.name,
+            materialization_manifest_yaml,
+        )?;
+        let stored_material = self.source_stored_material_for_validation(
+            workspace_name,
+            candidate,
+            bindings,
+            &oauth_input_keys,
+        )?;
+        let mut validation_material = stored_material.clone();
+        for material in &oauth_material {
+            validation_material.insert(material.input_key.clone(), material.access_token.clone());
+        }
+        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
+        merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
         let materialization_inputs =
-            materialization_inputs_from_bindings(&bindings, &stored_material_for_materialization);
+            materialization_inputs_from_bindings(&bindings, &stored_material);
         self.persist_source(
             workspace_name,
             PersistSourceRequest {
@@ -457,6 +496,7 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
+        let _lifecycle_guard = self.lifecycle_lock.lock();
         let source_dir = self.layout.source_dir(workspace_name, source_name);
         let credential_set_id = CredentialSetId::for_source(source_name);
         let credential_guard = self
@@ -481,37 +521,32 @@ impl SourceManager {
             },
             credential_material,
         };
-        let source_dir_backup =
-            source_dir.with_file_name(format!("{source_name}.delete.rollback.{}", Uuid::new_v4()));
-        let had_source_dir = source_dir.exists();
-        if had_source_dir {
-            if source_dir_backup.exists() {
-                std::fs::remove_dir_all(&source_dir_backup)?;
+        let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
+        if let Some(credential_storage) = credential_storage
+            && let Err(error) =
+                credential_guard.remove_material_with_state_lock_held(credential_storage)
+        {
+            let restore_dir_result = source_dir_backup.restore();
+            self.restore_source_rollback_state_with_state_lock_held(
+                workspace_name,
+                source_name,
+                Some(previous),
+                None,
+                &credential_guard,
+            );
+            if let Err(restore_error) = restore_dir_result {
+                return Err(AppError::FailedPrecondition(format!(
+                    "failed to remove source credentials for '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
+                    source_dir_backup.backup_path().display()
+                )));
             }
-            if let Err(error) = std::fs::rename(&source_dir, &source_dir_backup) {
-                self.restore_source_rollback_state_with_state_lock_held(
-                    workspace_name,
-                    source_name,
-                    Some(previous),
-                    None,
-                    &credential_guard,
-                );
-                return Err(error.into());
-            }
+            return Err(error);
         }
         if let Err(error) = self
             .config_store
             .remove_source_unlocked(workspace_name, source_name)
         {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
-                return Err(AppError::FailedPrecondition(format!(
-                    "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
-                )));
-            }
+            let restore_dir_result = source_dir_backup.restore();
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 source_name,
@@ -519,33 +554,15 @@ impl SourceManager {
                 None,
                 &credential_guard,
             );
-            return Err(error);
-        }
-        if let Some(credential_storage) = credential_storage
-            && let Err(error) =
-                credential_guard.remove_material_with_state_lock_held(credential_storage)
-        {
-            if had_source_dir
-                && source_dir_backup.exists()
-                && let Err(restore_error) = std::fs::rename(&source_dir_backup, &source_dir)
-            {
+            if let Err(restore_error) = restore_dir_result {
                 return Err(AppError::FailedPrecondition(format!(
                     "failed to remove source '{source_name}': {error}; failed to restore source directory from '{}': {restore_error}",
-                    source_dir_backup.display()
+                    source_dir_backup.backup_path().display()
                 )));
             }
-            self.restore_source_rollback_state_with_state_lock_held(
-                workspace_name,
-                source_name,
-                Some(previous),
-                None,
-                &credential_guard,
-            );
             return Err(error);
         }
-        if source_dir_backup.exists() {
-            std::fs::remove_dir_all(&source_dir_backup)?;
-        }
+        source_dir_backup.commit()?;
         cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
         cleanup_empty_parent(
             &self.layout.workspaces_root(),
@@ -1019,37 +1036,6 @@ impl SourceManager {
             materials.push(material);
         }
         Ok(materials)
-    }
-
-    async fn bindings_with_oauth_material(
-        &self,
-        candidate: &CandidateSource,
-        bindings: &SourceBindings,
-        stored_material: BTreeMap<String, String>,
-        oauth_credential_retrievals: Vec<SourceOAuthCredentialRetrieval>,
-        events: ImportSourceEventSender,
-    ) -> Result<ValidatedBindings, AppError> {
-        let preflight_bindings = Self::validate_oauth_import_preflight(
-            candidate,
-            bindings,
-            &stored_material,
-            &oauth_credential_retrievals,
-        )?;
-        let oauth_material = self
-            .retrieve_oauth_material(
-                candidate,
-                &preflight_bindings.variables,
-                oauth_credential_retrievals,
-                events,
-            )
-            .await?;
-        let mut validation_material = stored_material;
-        for material in &oauth_material {
-            validation_material.insert(material.input_key.clone(), material.access_token.clone());
-        }
-        let mut bindings = validate_bindings(candidate, bindings, &validation_material)?;
-        merge_oauth_material_into_bindings(&mut bindings, oauth_material)?;
-        Ok(bindings)
     }
 
     fn load_source_rollback_state(
@@ -1556,6 +1542,7 @@ mod tests {
     };
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
+    use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -1793,7 +1780,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(config_store.clone(), credential_manager, layout.clone());
+        let manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager,
+            layout.clone(),
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
 
         let workspace_name = default_workspace();
         let original_manifest = manifest_without_secrets();
@@ -1878,7 +1870,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager.clone(),
+            layout,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
 
         let workspace_name = default_workspace();
         manager
@@ -1942,7 +1939,12 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
-        let manager = SourceManager::new(config_store.clone(), credential_manager.clone(), layout);
+        let manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
 
         let workspace_name = default_workspace();
         manager
@@ -2017,6 +2019,86 @@ tables:
             )
             .expect("read material after delete");
         assert!(material.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_source_preserves_credentials_when_directory_staging_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(
+            config_store.clone(),
+            credential_manager.clone(),
+            layout,
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
+
+        let workspace_name = default_workspace();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest_with_secret(),
+                    bindings: SourceBindings {
+                        variables: Vec::new(),
+                        secrets: vec![SourceBinding {
+                            key: "API_TOKEN".to_string(),
+                            value: "secret-token".to_string(),
+                        }],
+                    },
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("secured_messages").expect("source");
+        let source_dir = manager.layout.source_dir(&workspace_name, &source_name);
+        let source_parent = source_dir.parent().expect("source parent");
+        let original_permissions = std::fs::metadata(source_parent)
+            .expect("source parent metadata")
+            .permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_mode(0o500);
+        std::fs::set_permissions(source_parent, readonly_permissions)
+            .expect("make source parent unwritable");
+
+        let delete_result = manager.delete_source(&workspace_name, &source_name);
+
+        std::fs::set_permissions(source_parent, original_permissions)
+            .expect("restore source parent permissions");
+        let error = delete_result.expect_err("directory staging should fail");
+        assert!(
+            matches!(error, crate::bootstrap::AppError::Io(_)),
+            "unexpected delete error: {error}"
+        );
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let material = credential_manager
+            .read_material(
+                &workspace_name,
+                &credential_set_id,
+                CredentialStorageKind::File,
+            )
+            .expect("read credential material after staging failure");
+        assert_eq!(
+            material.get("API_TOKEN").map(String::as_str),
+            Some("secret-token"),
+            "credential material should be preserved when directory staging fails"
+        );
+        assert!(
+            config_store
+                .get_source(&workspace_name, &source_name)
+                .is_ok(),
+            "source config should be preserved when directory staging fails"
+        );
+        assert!(
+            source_dir.exists(),
+            "source directory should remain when staging fails"
+        );
     }
 
     fn manifest_with_oauth_secret(token_url: &str, redirect_port: u16) -> String {
@@ -2164,7 +2246,8 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store.clone(), credential_manager, layout);
+        let manager =
+            SourceManager::new_for_tests(config_store.clone(), credential_manager, layout);
         let candidate = candidate_with_secret("OPTIONAL_TOKEN", false);
 
         config_store
@@ -2217,7 +2300,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
 
         let disabled = manager
             .discover_sources(&default_workspace())
@@ -2241,7 +2325,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
 
         let installed = manager
             .import_source(
@@ -2256,8 +2341,8 @@ tables:
         assert_eq!(installed.name.as_str(), "github_v4_test");
         let source_name = SourceName::parse("github_v4_test").expect("source");
         let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
-        assert!(materialized.join("fingerprint.yaml").exists());
-        assert!(materialized.join("projections.yaml").exists());
+        assert!(materialized.join(FINGERPRINT_FILENAME).exists());
+        assert!(materialized.join(PROJECTIONS_FILENAME).exists());
         assert!(
             materialized
                 .join("surfaces")
@@ -2281,7 +2366,7 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture()).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -2343,7 +2428,7 @@ tables:
             v4_openapi_fixture_with_defaulted_input_server_url(),
         )
         .expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -2381,7 +2466,7 @@ tables:
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout,
@@ -2414,7 +2499,7 @@ tables:
         layout.ensure().expect("ensure layout");
         let openapi_file = descriptor_temp.path().join("github-openapi.yaml");
         std::fs::write(&openapi_file, v4_openapi_fixture_with_metadata()).expect("write fixture");
-        let manager = SourceManager::new(
+        let manager = SourceManager::new_for_tests(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
             layout.clone(),
@@ -2453,7 +2538,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         let source_dir = layout.source_dir(&default_workspace(), &source_name);
@@ -2555,7 +2641,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
 
         let source = manager
             .import_source(
@@ -2591,7 +2677,8 @@ tables:
             CredentialStoragePreference::Auto,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
 
@@ -2661,7 +2748,8 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
         let source_name = SourceName::parse("public_messages").expect("source");
 
         let source = manager
@@ -2702,7 +2790,7 @@ tables:
             CredentialStoragePreference::Keychain,
         );
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
 
         let error = manager
             .import_source(
@@ -2731,7 +2819,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -2784,7 +2873,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
 
         let source_name = SourceName::parse("secured_messages").expect("source");
         manager
@@ -2832,7 +2922,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -2889,7 +2980,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager, layout.clone());
         let source_name = SourceName::parse("secured_messages").expect("source");
         let secret_path = layout.secret_file(&default_workspace(), &source_name);
         std::fs::create_dir_all(&secret_path).expect("create blocking secret directory");
@@ -2924,7 +3016,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         credential_manager
@@ -2990,7 +3083,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store.clone());
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout.clone());
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout.clone());
         let workspace_name = default_workspace();
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
@@ -3086,7 +3180,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let fixture = OAuthFixture::new();
@@ -3186,7 +3281,8 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager.clone(), layout);
+        let manager =
+            SourceManager::new_for_tests(config_store, credential_manager.clone(), layout);
         let source_name = SourceName::parse("secured_messages").expect("source");
         let credential_set_id = CredentialSetId::for_source(&source_name);
         manager
@@ -3262,7 +3358,7 @@ tables:
         let config_store = ConfigStore::new(layout.clone());
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
-        let manager = SourceManager::new(config_store, credential_manager, layout);
+        let manager = SourceManager::new_for_tests(config_store, credential_manager, layout);
         let redirect_port = free_loopback_port();
         let (event_tx, mut event_rx) = import_event_channel();
 

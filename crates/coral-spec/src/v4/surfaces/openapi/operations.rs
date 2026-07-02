@@ -5,7 +5,8 @@ use serde_json::{Map, Value};
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{
     HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-    IrScalarType, RestExecutionAttachment, RestParameterBinding, RestRequestBody,
+    IrOperationNaming, IrScalarType, RestExecutionAttachment, RestParameterBinding,
+    RestRequestBody,
 };
 use crate::v4::naming::normalize_identifier;
 use crate::v4::surfaces::json_schema::{
@@ -28,13 +29,12 @@ impl OpenApiImporter<'_> {
                 "OpenAPI operation {method_name} {path} must be a mapping"
             ))
         })?;
-        let operation_id = op_obj
-            .get("operationId")
-            .and_then(Value::as_str)
-            .map_or_else(
-                || fallback_operation_id(method_name, path),
-                |raw| normalize_identifier(raw, "operation"),
-            );
+        let raw_operation_id = op_obj.get("operationId").and_then(Value::as_str);
+        let operation_id = raw_operation_id.map_or_else(
+            || fallback_operation_id(method_name, path),
+            |raw| normalize_identifier(raw, "operation"),
+        );
+        let naming = openapi_operation_naming(op_obj, raw_operation_id, &operation_id);
         let method = parse_http_method(method_name);
         let mut diagnostics = Vec::new();
         let parameters = self.import_parameters(path_item, op_obj, &operation_id, &mut diagnostics);
@@ -70,6 +70,7 @@ impl OpenApiImporter<'_> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             read_only: method == HttpMethod::Get,
+            naming,
             inputs: parameters,
             output,
             entity,
@@ -229,6 +230,39 @@ impl OpenApiImporter<'_> {
             type_ref,
         })
     }
+}
+
+fn openapi_operation_naming(
+    operation: &Map<String, Value>,
+    raw_operation_id: Option<&str>,
+    normalized_operation_id: &str,
+) -> Option<IrOperationNaming> {
+    let group = operation
+        .get("tags")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|tag| !tag.is_empty())
+        .map(|tag| normalize_identifier(tag, "group"));
+    let operation = raw_operation_id
+        .and_then(operation_id_leaf)
+        .or_else(|| group.as_ref().map(|_| normalized_operation_id))
+        .map(|leaf| normalize_identifier(leaf, "operation"));
+
+    if group.is_none() && operation.is_none() {
+        return None;
+    }
+
+    Some(IrOperationNaming { group, operation })
+}
+
+fn operation_id_leaf(raw_operation_id: &str) -> Option<&str> {
+    raw_operation_id.rsplit('/').find_map(|segment| {
+        let trimmed = segment.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
 }
 
 fn parse_http_method(method: &str) -> HttpMethod {
