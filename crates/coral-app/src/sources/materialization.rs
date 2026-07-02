@@ -19,6 +19,7 @@ use coral_spec::{
     ManifestOAuthClientSecretTransport, ManifestOAuthFlowKind, ManifestOAuthPkceMode,
     ManifestOAuthRedirectUriPortMode, ManifestOAuthScopeDelimiter, ParsedTemplate,
 };
+use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -31,8 +32,11 @@ use crate::workspaces::WorkspaceName;
 
 const DESCRIPTOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_OPENAPI_EXPANDED_BYTES: usize = 16 * 1024 * 1024;
+const MAX_OPENAPI_REF_LOADED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_OPENAPI_REF_DEPTH: usize = 64;
 const MAX_OPENAPI_REF_DOCUMENTS: usize = 256;
+const MAX_OPENAPI_EXPANDED_NODES: usize = 200_000;
 const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
@@ -845,6 +849,12 @@ struct OpenApiDescriptor {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug)]
+struct OpenApiUrlDescriptor {
+    final_url: url::Url,
+    bytes: Vec<u8>,
+}
+
 fn read_openapi_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
     let descriptor = read_descriptor(surface)?;
     let root_value = parse_openapi_document(&descriptor.location, &descriptor.bytes)?;
@@ -865,10 +875,10 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<OpenApiDescrip
         coral_spec::v4::SurfaceDescriptor::Url { url } => {
             let mut parsed = parse_descriptor_url(url)?;
             parsed.set_fragment(None);
-            let bytes = read_url_descriptor(parsed.as_str())?;
+            let descriptor = read_url_descriptor(parsed.as_str())?;
             Ok(OpenApiDescriptor {
-                location: OpenApiDocumentLocation::Url(parsed),
-                bytes,
+                location: OpenApiDocumentLocation::Url(descriptor.final_url),
+                bytes: descriptor.bytes,
             })
         }
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
@@ -908,15 +918,26 @@ fn parse_openapi_document(
 struct OpenApiExternalRefResolver {
     root_location: OpenApiDocumentLocation,
     documents: BTreeMap<String, Value>,
+    document_locations: BTreeMap<String, OpenApiDocumentLocation>,
+    expanded_bytes: usize,
+    expanded_nodes: usize,
+    loaded_ref_bytes: usize,
 }
 
 impl OpenApiExternalRefResolver {
     fn new(root_location: OpenApiDocumentLocation, root_value: Value) -> Self {
         let mut documents = BTreeMap::new();
-        documents.insert(root_location.cache_key(), root_value);
+        let root_key = root_location.cache_key();
+        documents.insert(root_key.clone(), root_value);
+        let mut document_locations = BTreeMap::new();
+        document_locations.insert(root_key, root_location.clone());
         Self {
             root_location,
             documents,
+            document_locations,
+            expanded_bytes: 0,
+            expanded_nodes: 0,
+            loaded_ref_bytes: 0,
         }
     }
 
@@ -949,11 +970,27 @@ impl OpenApiExternalRefResolver {
         depth: usize,
         resolving: &mut BTreeSet<String>,
     ) -> Result<Value, AppError> {
+        let mut path = Vec::new();
+        self.bundle_value_at(location, value, depth, resolving, &mut path, false)
+    }
+
+    fn bundle_value_at(
+        &mut self,
+        location: &OpenApiDocumentLocation,
+        value: Value,
+        depth: usize,
+        resolving: &mut BTreeSet<String>,
+        path: &mut Vec<String>,
+        charge_expansion: bool,
+    ) -> Result<Value, AppError> {
         if depth > MAX_OPENAPI_REF_DEPTH {
             return Err(AppError::FailedPrecondition(format!(
                 "OpenAPI descriptor '{}' exceeds maximum $ref depth {MAX_OPENAPI_REF_DEPTH}",
                 location.display()
             )));
+        }
+        if charge_expansion {
+            self.reserve_expanded_node(location)?;
         }
         match value {
             Value::Object(object) => {
@@ -965,17 +1002,77 @@ impl OpenApiExternalRefResolver {
                 }
                 let mut bundled = serde_json::Map::with_capacity(object.len());
                 for (key, value) in object {
-                    bundled.insert(key, self.bundle_value(location, value, depth, resolving)?);
+                    if should_skip_openapi_ref_walk(path, &key) {
+                        bundled.insert(key, value);
+                        continue;
+                    }
+                    path.push(key.clone());
+                    let value = self.bundle_value_at(
+                        location,
+                        value,
+                        depth,
+                        resolving,
+                        path,
+                        charge_expansion,
+                    );
+                    path.pop();
+                    bundled.insert(key, value?);
                 }
                 Ok(Value::Object(bundled))
             }
             Value::Array(items) => items
                 .into_iter()
-                .map(|item| self.bundle_value(location, item, depth, resolving))
+                .map(|item| {
+                    self.bundle_value_at(location, item, depth, resolving, path, charge_expansion)
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
             other => Ok(other),
         }
+    }
+
+    fn reserve_expanded_node(
+        &mut self,
+        location: &OpenApiDocumentLocation,
+    ) -> Result<(), AppError> {
+        if self.expanded_nodes >= MAX_OPENAPI_EXPANDED_NODES {
+            return Err(AppError::FailedPrecondition(format!(
+                "OpenAPI descriptor '{}' expands beyond {MAX_OPENAPI_EXPANDED_NODES} JSON nodes while resolving $refs",
+                location.display()
+            )));
+        }
+        self.expanded_nodes += 1;
+        Ok(())
+    }
+
+    fn reserve_expanded_bytes(
+        &mut self,
+        location: &OpenApiDocumentLocation,
+        bytes: usize,
+    ) -> Result<(), AppError> {
+        if self.expanded_bytes.saturating_add(bytes) > MAX_OPENAPI_EXPANDED_BYTES {
+            return Err(AppError::FailedPrecondition(format!(
+                "OpenAPI descriptor '{}' expands beyond {MAX_OPENAPI_EXPANDED_BYTES} bytes while resolving $refs",
+                location.display()
+            )));
+        }
+        self.expanded_bytes += bytes;
+        Ok(())
+    }
+
+    fn reserve_loaded_ref_bytes(
+        &mut self,
+        location: &OpenApiDocumentLocation,
+        bytes: usize,
+    ) -> Result<(), AppError> {
+        if self.loaded_ref_bytes.saturating_add(bytes) > MAX_OPENAPI_REF_LOADED_BYTES {
+            return Err(AppError::FailedPrecondition(format!(
+                "OpenAPI descriptor '{}' loads more than {MAX_OPENAPI_REF_LOADED_BYTES} bytes of external $ref documents",
+                location.display()
+            )));
+        }
+        self.loaded_ref_bytes += bytes;
+        Ok(())
     }
 
     fn bundle_ref(
@@ -986,56 +1083,176 @@ impl OpenApiExternalRefResolver {
         resolving: &mut BTreeSet<String>,
     ) -> Result<Value, AppError> {
         let resolved = resolve_openapi_ref_location(base, reference)?;
+        self.validate_ref_boundary(reference, &resolved.location)?;
+        let document_location = self.ensure_document(&resolved.location)?;
+        self.validate_ref_boundary(reference, &document_location)?;
         let guard = format!(
             "{}#{}",
-            resolved.location.cache_key(),
+            document_location.cache_key(),
             resolved.pointer.as_deref().unwrap_or_default()
         );
         if !resolving.insert(guard.clone()) {
-            return Err(AppError::FailedPrecondition(format!(
-                "OpenAPI descriptor '{}' contains a cyclic $ref through '{reference}'",
-                base.display()
-            )));
+            return Ok(json!({
+                "type": "object",
+                "additionalProperties": true,
+            }));
         }
 
-        let document = self.document(&resolved.location)?.clone();
-        let target = match resolved.pointer.as_deref() {
-            Some(pointer) if !pointer.is_empty() => document.pointer(pointer).cloned(),
-            Some(_) | None => Some(document),
-        }
-        .ok_or_else(|| {
-            AppError::FailedPrecondition(format!(
-                "OpenAPI descriptor '{}' reference '{reference}' was not found",
-                base.display()
-            ))
-        })?;
-        let bundled = self.bundle_value(&resolved.location, target, depth + 1, resolving);
+        let estimated_bytes = {
+            let document = self.document(&document_location)?;
+            let target =
+                openapi_ref_target(document, resolved.pointer.as_deref()).ok_or_else(|| {
+                    AppError::FailedPrecondition(format!(
+                        "OpenAPI descriptor '{}' reference '{reference}' was not found",
+                        base.display()
+                    ))
+                })?;
+            estimated_json_value_bytes(target)
+        };
+        self.reserve_expanded_bytes(&document_location, estimated_bytes)?;
+        let document = self.document(&document_location)?.clone();
+        let target = openapi_ref_target(&document, resolved.pointer.as_deref())
+            .cloned()
+            .ok_or_else(|| {
+                AppError::FailedPrecondition(format!(
+                    "OpenAPI descriptor '{}' reference '{reference}' was not found",
+                    base.display()
+                ))
+            })?;
+        let mut path = Vec::new();
+        let bundled = self.bundle_value_at(
+            &document_location,
+            target,
+            depth + 1,
+            resolving,
+            &mut path,
+            true,
+        );
         resolving.remove(&guard);
         bundled
     }
 
-    fn document(&mut self, location: &OpenApiDocumentLocation) -> Result<&Value, AppError> {
-        let key = location.cache_key();
-        if !self.documents.contains_key(&key) {
-            if self.documents.len() >= MAX_OPENAPI_REF_DOCUMENTS {
+    fn validate_ref_boundary(
+        &self,
+        reference: &str,
+        location: &OpenApiDocumentLocation,
+    ) -> Result<(), AppError> {
+        match (&self.root_location, location) {
+            (OpenApiDocumentLocation::File(root), OpenApiDocumentLocation::File(file)) => {
+                let root_dir = root.parent().unwrap_or_else(|| Path::new("/"));
+                if !file.starts_with(root_dir) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "OpenAPI descriptor '{}' reference '{reference}' resolves outside descriptor directory '{}'",
+                        self.root_location.display(),
+                        root_dir.display()
+                    )));
+                }
+            }
+            (OpenApiDocumentLocation::Url(root), OpenApiDocumentLocation::Url(url)) => {
+                if !same_url_origin(root, url) {
+                    return Err(AppError::FailedPrecondition(format!(
+                        "OpenAPI descriptor '{}' reference '{reference}' resolves outside descriptor origin '{}'",
+                        self.root_location.display(),
+                        url_origin_display(root)
+                    )));
+                }
+            }
+            (OpenApiDocumentLocation::Url(_), OpenApiDocumentLocation::File(_)) => {
                 return Err(AppError::FailedPrecondition(format!(
-                    "OpenAPI descriptor '{}' references more than {MAX_OPENAPI_REF_DOCUMENTS} documents",
+                    "OpenAPI descriptor '{}' reference '{reference}' resolves to a local file",
                     self.root_location.display()
                 )));
             }
-            let bytes = match location {
-                OpenApiDocumentLocation::Url(url) => read_url_descriptor(url.as_str())?,
-                OpenApiDocumentLocation::File(file) => read_file_descriptor(file)?,
-            };
-            let value = parse_openapi_document(location, &bytes)?;
-            self.documents.insert(key.clone(), value);
+            (OpenApiDocumentLocation::File(_), OpenApiDocumentLocation::Url(_)) => {}
         }
+        Ok(())
+    }
+
+    fn document(&mut self, location: &OpenApiDocumentLocation) -> Result<&Value, AppError> {
+        let effective_location = self.ensure_document(location)?;
+        let key = effective_location.cache_key();
         self.documents.get(&key).ok_or_else(|| {
             AppError::FailedPrecondition(format!(
                 "OpenAPI descriptor '{}' could not be loaded",
-                location.display()
+                effective_location.display()
             ))
         })
+    }
+
+    fn ensure_document(
+        &mut self,
+        location: &OpenApiDocumentLocation,
+    ) -> Result<OpenApiDocumentLocation, AppError> {
+        let key = location.cache_key();
+        if let Some(effective_location) = self.document_locations.get(&key) {
+            return Ok(effective_location.clone());
+        }
+        if self.documents.len() >= MAX_OPENAPI_REF_DOCUMENTS {
+            return Err(AppError::FailedPrecondition(format!(
+                "OpenAPI descriptor '{}' references more than {MAX_OPENAPI_REF_DOCUMENTS} documents",
+                self.root_location.display()
+            )));
+        }
+        let (effective_location, bytes) = match location {
+            OpenApiDocumentLocation::Url(url) => {
+                let allowed_origin = match &self.root_location {
+                    OpenApiDocumentLocation::Url(root) => Some(root),
+                    OpenApiDocumentLocation::File(_) => None,
+                };
+                let descriptor =
+                    read_url_descriptor_with_allowed_origin(url.as_str(), allowed_origin)?;
+                (
+                    OpenApiDocumentLocation::Url(descriptor.final_url),
+                    descriptor.bytes,
+                )
+            }
+            OpenApiDocumentLocation::File(file) => (
+                OpenApiDocumentLocation::File(file.clone()),
+                read_file_descriptor(file)?,
+            ),
+        };
+        self.reserve_loaded_ref_bytes(&effective_location, bytes.len())?;
+        let effective_key = effective_location.cache_key();
+        let value = parse_openapi_document(&effective_location, &bytes)?;
+        self.documents.insert(effective_key.clone(), value);
+        self.document_locations
+            .insert(key, effective_location.clone());
+        self.document_locations
+            .insert(effective_key, effective_location.clone());
+        if !self.documents.contains_key(&effective_location.cache_key()) {
+            return Err(AppError::FailedPrecondition(format!(
+                "OpenAPI descriptor '{}' could not be cached",
+                effective_location.display()
+            )));
+        }
+        Ok(effective_location)
+    }
+}
+
+fn openapi_ref_target<'a>(document: &'a Value, pointer: Option<&str>) -> Option<&'a Value> {
+    match pointer {
+        Some(pointer) if !pointer.is_empty() => document.pointer(pointer),
+        Some(_) | None => Some(document),
+    }
+}
+
+fn estimated_json_value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(number) => number.to_string().len(),
+        Value::String(string) => string.len().saturating_add(2),
+        Value::Array(items) => items.iter().fold(2usize, |total, item| {
+            total
+                .saturating_add(1)
+                .saturating_add(estimated_json_value_bytes(item))
+        }),
+        Value::Object(object) => object.iter().fold(2usize, |total, (key, value)| {
+            total
+                .saturating_add(key.len())
+                .saturating_add(4)
+                .saturating_add(estimated_json_value_bytes(value))
+        }),
     }
 }
 
@@ -1058,9 +1275,20 @@ fn resolve_openapi_ref_location(
     reference: &str,
 ) -> Result<OpenApiResolvedRef, AppError> {
     let (document_ref, pointer) = split_openapi_ref(reference);
-    let pointer = pointer.map(json_pointer_from_fragment);
+    let pointer = pointer
+        .map(json_pointer_from_fragment)
+        .transpose()
+        .map_err(|error| {
+            AppError::InvalidInput(format!(
+                "OpenAPI descriptor reference '{reference}' has an invalid URI fragment: {error}"
+            ))
+        })?;
     let location = if document_ref.is_empty() {
         base.clone()
+    } else if url::Url::parse(document_ref).is_ok() {
+        let mut url = parse_descriptor_url(document_ref)?;
+        url.set_fragment(None);
+        OpenApiDocumentLocation::Url(url)
     } else {
         match base {
             OpenApiDocumentLocation::Url(url) => {
@@ -1074,9 +1302,9 @@ fn resolve_openapi_ref_location(
                 OpenApiDocumentLocation::Url(resolved)
             }
             OpenApiDocumentLocation::File(file) => {
-                let path = Path::new(document_ref);
+                let path = file_path_from_openapi_document_ref(reference, document_ref)?;
                 let candidate = if path.is_absolute() {
-                    path.to_path_buf()
+                    path
                 } else {
                     file.parent().unwrap_or_else(|| Path::new(".")).join(path)
                 };
@@ -1095,14 +1323,78 @@ fn split_openapi_ref(reference: &str) -> (&str, Option<&str>) {
         })
 }
 
-fn json_pointer_from_fragment(fragment: &str) -> String {
-    if fragment.is_empty() {
-        String::new()
-    } else if fragment.starts_with('/') {
-        fragment.to_string()
-    } else {
-        format!("/{fragment}")
+fn should_skip_openapi_ref_walk(path: &[String], key: &str) -> bool {
+    if path.is_empty() && matches!(key, "x-path-items" | "x-paths") {
+        return false;
     }
+    let named_map = is_openapi_named_map(path);
+    (matches!(key, "example" | "examples") || key.starts_with("x-")) && !named_map
+}
+
+fn is_openapi_named_map(path: &[String]) -> bool {
+    let Some(last) = path.last().map(String::as_str) else {
+        return false;
+    };
+    if matches!(last, "properties" | "$defs") {
+        return true;
+    }
+    matches!(
+        path,
+        [component, map]
+            if component == "components"
+                && matches!(
+                    map.as_str(),
+                    "callbacks"
+                        | "examples"
+                        | "headers"
+                        | "links"
+                        | "parameters"
+                        | "pathItems"
+                        | "requestBodies"
+                        | "responses"
+                        | "schemas"
+                        | "securitySchemes"
+                )
+    )
+}
+
+fn same_url_origin(left: &url::Url, right: &url::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn url_origin_display(url: &url::Url) -> String {
+    match (url.host_str(), url.port_or_known_default()) {
+        (Some(host), Some(port)) => format!("{}://{}:{}", url.scheme(), host, port),
+        (Some(host), None) => format!("{}://{}", url.scheme(), host),
+        (None, _) => url.scheme().to_string(),
+    }
+}
+
+fn file_path_from_openapi_document_ref(
+    reference: &str,
+    document_ref: &str,
+) -> Result<PathBuf, AppError> {
+    let decoded = percent_decode_str(document_ref)
+        .decode_utf8()
+        .map_err(|error| {
+            AppError::InvalidInput(format!(
+                "OpenAPI descriptor reference '{reference}' has an invalid URI path: {error}"
+            ))
+        })?;
+    Ok(Path::new(decoded.as_ref()).to_path_buf())
+}
+
+fn json_pointer_from_fragment(fragment: &str) -> Result<String, std::str::Utf8Error> {
+    let decoded = percent_decode_str(fragment).decode_utf8()?;
+    Ok(if decoded.is_empty() {
+        String::new()
+    } else if decoded.starts_with('/') {
+        decoded.into_owned()
+    } else {
+        format!("/{decoded}")
+    })
 }
 
 pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
@@ -1129,10 +1421,18 @@ pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppEr
     Ok(canonical)
 }
 
-fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
+fn read_url_descriptor(url: &str) -> Result<OpenApiUrlDescriptor, AppError> {
+    read_url_descriptor_with_allowed_origin(url, None)
+}
+
+fn read_url_descriptor_with_allowed_origin(
+    url: &str,
+    allowed_origin: Option<&url::Url>,
+) -> Result<OpenApiUrlDescriptor, AppError> {
     let url = url.to_string();
     let panic_url = url.clone();
-    std::thread::spawn(move || read_url_descriptor_on_blocking_thread(&url))
+    let allowed_origin = allowed_origin.cloned();
+    std::thread::spawn(move || read_url_descriptor_on_blocking_thread(&url, allowed_origin))
         .join()
         .map_err(|_panic| {
             AppError::Unavailable(format!(
@@ -1141,12 +1441,29 @@ fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
         })?
 }
 
-fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError> {
+fn read_url_descriptor_on_blocking_thread(
+    url: &str,
+    allowed_origin: Option<url::Url>,
+) -> Result<OpenApiUrlDescriptor, AppError> {
     ensure_https_descriptor_url(url)?;
+    let redirect_origin = allowed_origin;
     let client = reqwest::blocking::Client::builder()
         .timeout(DESCRIPTOR_FETCH_TIMEOUT)
         .https_only(true)
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("too many redirects");
+            }
+            if attempt.url().scheme() != "https" {
+                return attempt.error("redirect target must use HTTPS");
+            }
+            if let Some(origin) = redirect_origin.as_ref()
+                && !same_url_origin(origin, attempt.url())
+            {
+                return attempt.error("redirect target leaves OpenAPI descriptor origin");
+            }
+            attempt.follow()
+        }))
         .user_agent(DESCRIPTOR_USER_AGENT)
         .build()
         .map_err(|error| {
@@ -1171,6 +1488,8 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
             response.status()
         )));
     }
+    let mut final_url = response.url().clone();
+    final_url.set_fragment(None);
     if let Some(length) = response.content_length()
         && length > MAX_DESCRIPTOR_BYTES
     {
@@ -1190,7 +1509,7 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
             "OpenAPI descriptor '{url}' is too large: exceeds {MAX_DESCRIPTOR_BYTES} bytes"
         )));
     }
-    Ok(bytes)
+    Ok(OpenApiUrlDescriptor { final_url, bytes })
 }
 
 fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {
@@ -1580,7 +1899,7 @@ paths:
           "application/json": {
             "schema": {
               "type": "array",
-              "items": { "$ref": "../components/schemas/item.json#/Item" }
+              "items": { "$ref": "../components/schemas/item%20schema.json#/Item%20Type" }
             }
           }
         }
@@ -1606,12 +1925,358 @@ paths:
         )
         .expect("write parameter");
         std::fs::write(
+            schemas_dir.join("item schema.json"),
+            r#"
+{
+  "Item Type": {
+    "type": "object",
+    "required": ["id"],
+    "properties": {
+      "id": { "type": "string" },
+      "name": { "type": "string" },
+      "examples": { "$ref": "example%20field.json#/Example%20Field" }
+    }
+  }
+}
+"#,
+        )
+        .expect("write schema");
+        std::fs::write(
+            schemas_dir.join("example field.json"),
+            r#"
+{
+  "Example Field": {
+    "type": "string"
+  }
+}
+"#,
+        )
+        .expect("write example property schema");
+        (descriptor_temp, root)
+    }
+
+    #[test]
+    fn resolve_openapi_ref_location_accepts_absolute_https_refs_from_file_base() {
+        let base = OpenApiDocumentLocation::File(PathBuf::from("/tmp/openapi.yaml"));
+
+        let resolved = resolve_openapi_ref_location(
+            &base,
+            "https://example.com/schemas.yaml#/components/schemas/Foo%20Bar",
+        )
+        .expect("resolve ref");
+
+        let OpenApiDocumentLocation::Url(url) = resolved.location else {
+            panic!("expected URL location");
+        };
+        assert_eq!(url.as_str(), "https://example.com/schemas.yaml");
+        assert_eq!(
+            resolved.pointer.as_deref(),
+            Some("/components/schemas/Foo Bar")
+        );
+    }
+
+    #[test]
+    fn resolve_openapi_ref_location_rejects_non_https_absolute_refs() {
+        let base = OpenApiDocumentLocation::File(PathBuf::from("/tmp/openapi.yaml"));
+
+        let error = resolve_openapi_ref_location(
+            &base,
+            "http://example.com/schemas.yaml#/components/schemas/Foo",
+        )
+        .expect_err("non-HTTPS refs must fail");
+
+        assert!(
+            error.to_string().contains("must use HTTPS"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn json_pointer_from_fragment_decodes_uri_fragments() {
+        assert_eq!(
+            json_pointer_from_fragment("/components/schemas/Foo%20Bar").expect("decode space"),
+            "/components/schemas/Foo Bar"
+        );
+        assert_eq!(
+            json_pointer_from_fragment("/components/schemas/Foo+Bar").expect("preserve plus"),
+            "/components/schemas/Foo+Bar"
+        );
+        assert!(
+            json_pointer_from_fragment("/components/schemas/%FF").is_err(),
+            "invalid UTF-8 escapes must fail"
+        );
+    }
+
+    #[test]
+    fn openapi_ref_bundler_rejects_expansion_budget_exhaustion() {
+        let root = OpenApiDocumentLocation::File(PathBuf::from("/tmp/openapi.yaml"));
+        let mut resolver = OpenApiExternalRefResolver::new(root.clone(), json!({}));
+        resolver.expanded_nodes = MAX_OPENAPI_EXPANDED_NODES;
+        let mut resolving = BTreeSet::new();
+        let mut path = Vec::new();
+
+        let error = resolver
+            .bundle_value_at(&root, json!(null), 0, &mut resolving, &mut path, true)
+            .expect_err("exhausted expansion budget must fail");
+
+        assert!(
+            error.to_string().contains("expands beyond"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn openapi_ref_bundler_rejects_expanded_byte_budget_exhaustion() {
+        let root = OpenApiDocumentLocation::File(PathBuf::from("/tmp/openapi.yaml"));
+        let mut resolver = OpenApiExternalRefResolver::new(root.clone(), json!({}));
+        resolver.expanded_bytes = MAX_OPENAPI_EXPANDED_BYTES - 1;
+
+        let error = resolver
+            .reserve_expanded_bytes(&root, 2)
+            .expect_err("exhausted byte budget must fail");
+
+        assert!(
+            error.to_string().contains("expands beyond"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn openapi_ref_bundler_rejects_loaded_ref_byte_budget_exhaustion() {
+        let root = OpenApiDocumentLocation::File(PathBuf::from("/tmp/openapi.yaml"));
+        let mut resolver = OpenApiExternalRefResolver::new(root.clone(), json!({}));
+        resolver.loaded_ref_bytes = MAX_OPENAPI_REF_LOADED_BYTES - 1;
+
+        let error = resolver
+            .reserve_loaded_ref_bytes(&root, 2)
+            .expect_err("exhausted loaded-byte budget must fail");
+
+        assert!(
+            error.to_string().contains("external $ref documents"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn openapi_ref_boundary_rejects_file_refs_outside_root_dir() {
+        let root = OpenApiDocumentLocation::File(PathBuf::from("/tmp/spec/openapi.yaml"));
+        let resolver = OpenApiExternalRefResolver::new(root, json!({}));
+        let outside = OpenApiDocumentLocation::File(PathBuf::from("/tmp/secrets.yaml"));
+
+        let error = resolver
+            .validate_ref_boundary("../secrets.yaml", &outside)
+            .expect_err("outside file refs must fail");
+
+        assert!(
+            error.to_string().contains("outside descriptor directory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn openapi_ref_boundary_rejects_url_refs_outside_root_origin() {
+        let root = OpenApiDocumentLocation::Url(
+            parse_descriptor_url("https://api.example.com/openapi.yaml").expect("root URL"),
+        );
+        let resolver = OpenApiExternalRefResolver::new(root, json!({}));
+        let same_origin = OpenApiDocumentLocation::Url(
+            parse_descriptor_url("https://api.example.com/components.yaml")
+                .expect("same-origin URL"),
+        );
+        resolver
+            .validate_ref_boundary("components.yaml", &same_origin)
+            .expect("same-origin ref");
+        let cross_origin = OpenApiDocumentLocation::Url(
+            parse_descriptor_url("https://other.example.com/components.yaml")
+                .expect("cross-origin URL"),
+        );
+
+        let error = resolver
+            .validate_ref_boundary("https://other.example.com/components.yaml", &cross_origin)
+            .expect_err("cross-origin refs must fail");
+
+        assert!(
+            error.to_string().contains("outside descriptor origin"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_rejects_external_file_refs_outside_descriptor_dir() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let outside_temp = TempDir::new().expect("outside temp dir");
+        let root = descriptor_temp.path().join("openapi.yaml");
+        let outside = outside_temp.path().join("secret.yaml");
+        std::fs::write(
+            &outside,
+            r"
+Secret:
+  type: object
+  properties:
+    value: {type: string}
+",
+        )
+        .expect("write outside file");
+        std::fs::write(
+            &root,
+            format!(
+                r#"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "{}#/Secret"
+"#,
+                outside.display()
+            ),
+        )
+        .expect("write root descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: openapi_ref_boundary_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+            root.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name = SourceName::parse("openapi_ref_boundary_test").expect("source");
+
+        let error = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect_err("outside file refs must fail");
+
+        assert!(
+            error.to_string().contains("outside descriptor directory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_ignores_ref_shaped_example_payloads() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let root = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(
+            &root,
+            r#"
+openapi: 3.0.3
+x-example-payload:
+  $ref: "not-a-file.yaml"
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+                  example:
+                    $ref: "also-not-a-file.yaml"
+"#,
+        )
+        .expect("write root descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: openapi_ref_example_payload_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+            root.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name = SourceName::parse("openapi_ref_example_payload_test").expect("source");
+
+        build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build materialization");
+    }
+
+    #[test]
+    fn build_v4_materialization_bundles_external_refs_in_x_path_items() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let root = descriptor_temp.path().join("openapi.yaml");
+        let schemas_dir = descriptor_temp.path().join("components").join("schemas");
+        std::fs::create_dir_all(&schemas_dir).expect("schemas dir");
+        std::fs::write(
+            &root,
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    $ref: '#/x-path-items/items'
+x-path-items:
+  items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: components/schemas/item.json#/Item
+",
+        )
+        .expect("write root descriptor");
+        std::fs::write(
             schemas_dir.join("item.json"),
             r#"
 {
   "Item": {
     "type": "object",
-    "required": ["id"],
     "properties": {
       "id": { "type": "string" },
       "name": { "type": "string" }
@@ -1621,7 +2286,134 @@ paths:
 "#,
         )
         .expect("write schema");
-        (descriptor_temp, root)
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: openapi_x_path_items_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+            root.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name = SourceName::parse("openapi_x_path_items_test").expect("source");
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build materialization");
+
+        let projections: ProjectionCatalog =
+            read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
+        let projection = projections.projections.first().expect("projection");
+        assert_eq!(
+            projection
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name"]
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_allows_external_recursive_schemas() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let root = descriptor_temp.path().join("openapi.yaml");
+        let schemas_dir = descriptor_temp.path().join("components").join("schemas");
+        std::fs::create_dir_all(&schemas_dir).expect("schemas dir");
+        std::fs::write(
+            &root,
+            r"
+openapi: 3.0.3
+paths:
+  /trees:
+    get:
+      operationId: trees/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: components/schemas/tree.yaml#/Tree
+",
+        )
+        .expect("write root descriptor");
+        std::fs::write(
+            schemas_dir.join("tree.yaml"),
+            r"
+Tree:
+  type: object
+  properties:
+    id: {type: string}
+    children:
+      type: array
+      items:
+        $ref: '#/Tree'
+",
+        )
+        .expect("write recursive schema");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: openapi_recursive_external_schema_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+            root.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let source_name =
+            SourceName::parse("openapi_recursive_external_schema_test").expect("source");
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("build materialization");
+
+        let projections: ProjectionCatalog =
+            read_yaml(&build.temp_dir.join(PROJECTIONS_FILENAME)).expect("read projections");
+        let projection = projections.projections.first().expect("projection");
+        assert!(
+            projection.columns.iter().any(|column| column.name == "id"),
+            "{projection:#?}"
+        );
     }
 
     #[test]
@@ -1694,7 +2486,7 @@ surfaces:
                 .iter()
                 .map(|column| column.name.as_str())
                 .collect::<Vec<_>>(),
-            ["id", "name"]
+            ["id", "name", "examples"]
         );
         let raw = std::fs::read_to_string(
             build
@@ -2079,7 +2871,7 @@ surfaces:
 
     #[test]
     fn read_url_descriptor_rejects_non_https_urls() {
-        let error = read_url_descriptor_on_blocking_thread("http://example.com/openapi.yaml")
+        let error = read_url_descriptor_on_blocking_thread("http://example.com/openapi.yaml", None)
             .expect_err("plain HTTP descriptor should fail");
 
         assert!(

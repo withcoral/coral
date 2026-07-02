@@ -1233,6 +1233,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "percent-encoding",
  "prost",
  "regex",
  "reqwest 0.13.4",
