@@ -3145,7 +3145,7 @@ surface:
     }
 
     #[tokio::test]
-    async fn import_v4_source_persists_materialization_to_database() {
+    async fn import_v4_source_persists_materialization_in_database() {
         let temp = TempDir::new().expect("temp dir");
         let descriptor_temp = TempDir::new().expect("descriptor temp dir");
         let layout =
@@ -3171,25 +3171,28 @@ surface:
         assert_eq!(installed.name.as_str(), "github_v4_test");
         let source_name = SourceName::parse("github_v4_test").expect("source");
         let mut session = manager.db.as_ref();
-        let materialized = session
+        let materialization = session
             .materializations()
             .get(&default_workspace(), &source_name)
             .await
-            .expect("read materialization")
-            .expect("materialization should be persisted");
-        assert_eq!(materialized.materialization_version, "v4");
-        assert!(!materialized.fingerprint_yaml.is_empty());
-        assert!(!materialized.projections_yaml.is_empty());
-        let surface = materialized
+            .expect("read database materialization")
+            .expect("database materialization");
+        assert_eq!(materialization.materialization_version, "v4");
+        assert!(!materialization.fingerprint_yaml.is_empty());
+        assert!(!materialization.projections_yaml.is_empty());
+        assert!(!materialization.diagnostics_yaml.is_empty());
+        let surface = materialization
             .surfaces
             .first()
             .expect("materialization surface");
+        assert!(!surface.source_document_raw.is_empty());
+        assert!(!surface.source_document_yaml.is_empty());
         assert!(!surface.semantic_ir_yaml.is_empty());
         assert!(
             !layout
                 .v4_materialized_dir(&default_workspace(), &source_name)
                 .exists(),
-            "database-backed materialization should not leave a filesystem mirror"
+            "database materialization should not leave legacy final artifacts"
         );
 
         let info = manager
