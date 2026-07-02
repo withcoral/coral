@@ -8,11 +8,13 @@ use std::time::Duration;
 use coral_spec::v4::{
     Diagnostic, DiagnosticSeverity, Fingerprint, FingerprintSurface, MCP_IMPORTER_VERSION,
     MaterializedSurface, McpToolCatalog, OPENAPI_IMPORTER_VERSION, PROJECTION_GENERATOR_VERSION,
-    ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
-    V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
-    generate_projection_catalog, import_mcp_surface, import_openapi_surface,
-    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    validate_materialized_source, validate_openapi_base_url_template,
+    ProjectionCatalog, ProjectionPaginationInputSyncMode, SURFACE_IMPORTER_VERSION, SemanticIr,
+    SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
+    apply_parameter_metadata_overrides, generate_projection_catalog, import_mcp_surface,
+    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
+    openapi_document_metadata, parse_parameter_metadata_overrides_yaml,
+    sync_projection_pagination_inputs, validate_materialized_source,
+    validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -35,6 +37,7 @@ const DESCRIPTOR_USER_AGENT: &str = "coral-dsl-v4-materializer";
 pub(crate) const PROJECTIONS_FILENAME: &str = "projections.yaml";
 pub(crate) const FINGERPRINT_FILENAME: &str = "fingerprint.yaml";
 pub(crate) const DIAGNOSTICS_FILENAME: &str = "diagnostics.yaml";
+pub(crate) const PARAMETER_METADATA_OVERRIDE_FILENAME: &str = "parameter_metadata.yaml";
 
 #[derive(Debug)]
 pub(crate) struct MaterializationBuild {
@@ -155,6 +158,8 @@ pub(crate) fn load_v4_materialization(
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
     let projections_path = layout.v4_projections_file(workspace_name, source_name);
+    let projections_override_path =
+        layout.v4_projections_override_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
     if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
         return Err(incompatible_materialization_error(
@@ -172,12 +177,13 @@ pub(crate) fn load_v4_materialization(
         ));
     }
     let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let projections: ProjectionCatalog =
+    let mut projections: ProjectionCatalog =
         read_artifact_yaml(source_name, "projection catalog", &projections_path)?;
     validate_projection_catalog_header(source_name, manifest, &projections)?;
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
+    let mut semantic_irs = Vec::new();
     for fingerprint_surface in &fingerprint.surfaces {
         let surface = manifest
             .surface(&fingerprint_surface.surface_id)
@@ -197,8 +203,16 @@ pub(crate) fn load_v4_materialization(
         require_file(source_name, &raw_source_document_path)?;
         require_file(source_name, &normalized_source_document_path)?;
         require_file(source_name, &semantic_ir_path)?;
-        let semantic_ir: SemanticIr =
+        let mut semantic_ir: SemanticIr =
             read_artifact_yaml(source_name, "semantic IR", &semantic_ir_path)?;
+        apply_parameter_metadata_override_file(
+            layout,
+            workspace_name,
+            source_name,
+            &surface.id,
+            &mut semantic_ir,
+        )?;
+        semantic_irs.push(semantic_ir.clone());
         surfaces.push(MaterializedSurface {
             surface_id: surface.id.clone(),
             semantic_ir,
@@ -207,6 +221,12 @@ pub(crate) fn load_v4_materialization(
             raw_source_document_path,
         });
     }
+    let projection_sync_mode = if projections_override_path.exists() {
+        ProjectionPaginationInputSyncMode::PreserveExistingExposure
+    } else {
+        ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
+    };
+    sync_projection_pagination_inputs(&semantic_irs, &mut projections, projection_sync_mode);
     let materialized = V4MaterializedSource {
         fingerprint,
         surfaces,
@@ -369,6 +389,38 @@ fn read_raw_source_document_artifact(
                 path.display()
             ),
         )
+    })
+}
+
+fn apply_parameter_metadata_override_file(
+    layout: &AppStateLayout,
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+    surface_id: &str,
+    semantic_ir: &mut SemanticIr,
+) -> Result<(), AppError> {
+    let path = layout.v4_parameter_metadata_override_file(workspace_name, source_name, surface_id);
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = std::fs::read_to_string(&path).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to read DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let overrides = parse_parameter_metadata_overrides_yaml(&raw).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to parse DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
+    })?;
+    apply_parameter_metadata_overrides(semantic_ir, &overrides).map_err(|error| {
+        AppError::FailedPrecondition(format!(
+            "failed to apply DSL v4 parameter metadata override '{}': {error}",
+            path.display()
+        ))
     })
 }
 
@@ -1533,6 +1585,69 @@ surfaces:
         assert!(
             message.contains("Re-add the source"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_applies_parameter_metadata_override_without_rewriting_artifact() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path =
+            layout.v4_parameter_metadata_override_file(&workspace_name(), &source_name(), "rest");
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &override_path,
+            r"
+operation_overrides:
+  issues/list:
+    pagination:
+      mode: page
+      page_param: page_number
+      page_start: 1
+      page_size:
+        default: 50
+        max: 100
+        query_param: per_page
+",
+        )
+        .expect("write parameter metadata override");
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("load materialization with override");
+        let operation = materialized
+            .surfaces
+            .first()
+            .expect("surface")
+            .semantic_ir
+            .operations
+            .first()
+            .expect("operation");
+        let coral_spec::v4::IrExecutionAttachment::Rest(rest) = &operation.execution else {
+            panic!("expected REST operation");
+        };
+        assert_eq!(rest.pagination.mode, coral_spec::PaginationMode::Page);
+        assert_eq!(rest.pagination.page_param.as_deref(), Some("page_number"));
+
+        let semantic_ir_path = layout
+            .v4_surface_dir(&workspace_name(), &source_name(), "rest")
+            .join("semantic-ir.yaml");
+        let artifact_ir: SemanticIr =
+            read_yaml(&semantic_ir_path).expect("read persisted semantic IR");
+        let artifact_operation = artifact_ir.operations.first().expect("artifact operation");
+        let coral_spec::v4::IrExecutionAttachment::Rest(artifact_rest) =
+            &artifact_operation.execution
+        else {
+            panic!("expected REST operation");
+        };
+        assert_eq!(
+            artifact_rest.pagination.mode,
+            coral_spec::PaginationMode::None
         );
     }
 

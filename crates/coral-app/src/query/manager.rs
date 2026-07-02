@@ -1284,6 +1284,171 @@ surfaces:
         );
     }
 
+    #[tokio::test]
+    async fn installed_v4_source_uses_parameter_metadata_pagination_override() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/widgets"))
+            .respond_with(|request: &wiremock::Request| {
+                let page = request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == "page_number").then_some(value.into_owned()));
+                match page.as_deref() {
+                    Some("1") => ResponseTemplate::new(200).set_body_json(json!([
+                        {"id": 1},
+                        {"id": 2}
+                    ])),
+                    Some("2") => ResponseTemplate::new(200).set_body_json(json!([
+                        {"id": 3},
+                        {"id": 4}
+                    ])),
+                    other => ResponseTemplate::new(400)
+                        .set_body_string(format!("unexpected page_number {other:?}")),
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("widgets-openapi.yaml");
+        std::fs::write(&openapi_file, widgets_pagination_openapi(&server.uri()))
+            .expect("write OpenAPI fixture");
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_pagination_override
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import v4 source");
+
+        let source_name = SourceName::parse("github_v4_pagination_override").expect("source name");
+        write_widgets_parameter_metadata_override(
+            &fixture.manager.layout,
+            &workspace_name,
+            &source_name,
+        );
+
+        let execution = fixture
+            .manager
+            .execute_sql(
+                &workspace_name,
+                "SELECT id FROM github_v4_pagination_override.widgets LIMIT 3",
+                &QueryAttribution::default(),
+            )
+            .await
+            .expect("query executes");
+
+        assert_eq!(
+            execution_to_rows(&execution),
+            vec![json!({"id": 1}), json!({"id": 2}), json!({"id": 3})]
+        );
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request recording should be enabled");
+        let pages = request_query_values(&requests, "page_number");
+        let page_sizes = request_query_values(&requests, "per_page");
+        assert_eq!(pages, ["1", "2"]);
+        assert_eq!(page_sizes, ["2", "2"]);
+    }
+
+    fn widgets_pagination_openapi(server_uri: &str) -> String {
+        format!(
+            r"
+openapi: 3.0.3
+info:
+  title: Widgets
+servers:
+  - url: {server_uri}
+paths:
+  /widgets:
+    get:
+      operationId: widgets/list
+      parameters:
+        - name: page_number
+          in: query
+          required: true
+          schema: {{type: integer}}
+        - name: per_page
+          in: query
+          required: true
+          schema: {{type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {{type: integer}}
+"
+        )
+    }
+
+    fn write_widgets_parameter_metadata_override(
+        layout: &AppStateLayout,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) {
+        let override_path =
+            layout.v4_parameter_metadata_override_file(workspace_name, source_name, "rest");
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &override_path,
+            r"
+pagination:
+  - name: widgets_page_number
+    match:
+      operation_ids: [widgets/list]
+    mode: page
+    page_param: page_number
+    page_start: 1
+    page_size:
+      default: 2
+      max: 2
+      query_param: per_page
+",
+        )
+        .expect("write parameter metadata override");
+    }
+
+    fn request_query_values(requests: &[wiremock::Request], query_key: &str) -> Vec<String> {
+        requests
+            .iter()
+            .map(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .find_map(|(key, value)| (key == query_key).then_some(value.into_owned()))
+                    .expect("query param")
+            })
+            .collect()
+    }
+
     #[test]
     fn load_query_sources_fails_closed_for_missing_v4_materialization() {
         let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());

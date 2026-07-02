@@ -7,7 +7,8 @@ use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, choose_native_strateg
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::materialization::{
-    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PROJECTIONS_FILENAME,
+    DIAGNOSTICS_FILENAME, FINGERPRINT_FILENAME, PARAMETER_METADATA_OVERRIDE_FILENAME,
+    PROJECTIONS_FILENAME,
 };
 use crate::storage::fs::ensure_dir;
 use crate::workspaces::{WorkspaceName, WorkspacePaths};
@@ -198,6 +199,15 @@ impl AppStateLayout {
         self.v4_overridden_or_materialized(workspace_name, source_name, PROJECTIONS_FILENAME)
     }
 
+    pub(crate) fn v4_projections_override_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> PathBuf {
+        self.v4_override_dir(workspace_name, source_name)
+            .join(PROJECTIONS_FILENAME)
+    }
+
     pub(crate) fn v4_diagnostics_file(
         &self,
         workspace_name: &WorkspaceName,
@@ -205,6 +215,18 @@ impl AppStateLayout {
     ) -> PathBuf {
         self.v4_materialized_dir(workspace_name, source_name)
             .join(DIAGNOSTICS_FILENAME)
+    }
+
+    pub(crate) fn v4_parameter_metadata_override_file(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+        surface_id: &str,
+    ) -> PathBuf {
+        self.v4_override_dir(workspace_name, source_name)
+            .join("surfaces")
+            .join(surface_id)
+            .join(PARAMETER_METADATA_OVERRIDE_FILENAME)
     }
 
     pub(crate) fn v4_surface_dir(
@@ -305,6 +327,16 @@ mod tests {
         assert_eq!(
             layout.v4_projections_file(&workspace_name, &source_name),
             override_file
+        );
+        assert_eq!(
+            layout.v4_projections_override_file(&workspace_name, &source_name),
+            override_file
+        );
+        assert_eq!(
+            layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),
+            config_dir
+                .join("workspaces/default/sources/github/overrides/surfaces/rest")
+                .join("parameter_metadata.yaml")
         );
     }
 }

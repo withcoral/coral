@@ -14,6 +14,7 @@ mod diagnostics;
 mod ir;
 mod manifest;
 mod naming;
+mod parameter_metadata;
 mod projections;
 mod schema;
 mod surfaces;
@@ -43,6 +44,11 @@ pub use manifest::{
     V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
 };
 pub use naming::normalize_identifier;
+pub use parameter_metadata::{
+    ParameterMetadataOverrides, ProjectionPaginationInputSyncMode,
+    apply_parameter_metadata_overrides, parse_parameter_metadata_overrides_yaml,
+    sync_projection_pagination_inputs,
+};
 pub use projections::{
     Projection, ProjectionCatalog, ProjectionColumn, ProjectionInput, ProjectionKind,
     ProjectionVisibility, SqlInputExposure, generate_projection_catalog, manifest_data_type_name,
