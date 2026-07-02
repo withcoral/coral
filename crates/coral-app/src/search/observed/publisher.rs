@@ -1,10 +1,5 @@
 //! Source-scan observed-values publisher wiring.
 
-#![allow(
-    dead_code,
-    reason = "observed-values provider substrate is staged before app wiring in the next PR"
-)]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

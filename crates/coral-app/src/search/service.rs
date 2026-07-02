@@ -194,18 +194,24 @@ fn clear_response_to_proto(
 }
 
 fn maintenance_result_to_proto(result: SearchMaintenanceResult) -> ProtoSearchMaintenanceResult {
+    let SearchMaintenanceResult {
+        provider,
+        state,
+        note,
+        detail,
+    } = result;
     ProtoSearchMaintenanceResult {
-        provider: provider_kind_to_proto(result.provider) as i32,
-        state: maintenance_state_to_proto(result.state) as i32,
-        note: result.note,
-        detail: result.detail.as_ref().map(maintenance_detail_to_proto),
+        provider: provider_kind_to_proto(provider) as i32,
+        state: maintenance_state_to_proto(state) as i32,
+        note,
+        detail: detail.as_ref().map(maintenance_detail_to_proto),
     }
 }
 
 fn maintenance_detail_to_proto(detail: &SearchMaintenanceDetail) -> ProtoMaintenanceDetail {
     match detail {
         SearchMaintenanceDetail::CatalogRebuild(result) => {
-            ProtoMaintenanceDetail::CatalogRebuild(catalog_rebuild_to_proto(*result))
+            ProtoMaintenanceDetail::CatalogRebuild(catalog_rebuild_to_proto(result))
         }
         SearchMaintenanceDetail::CatalogClear(result) => {
             ProtoMaintenanceDetail::CatalogClear(catalog_clear_to_proto(*result))
@@ -213,7 +219,7 @@ fn maintenance_detail_to_proto(detail: &SearchMaintenanceDetail) -> ProtoMainten
     }
 }
 
-fn catalog_rebuild_to_proto(result: CatalogRebuildMaintenanceResult) -> ProtoCatalogRebuildResult {
+fn catalog_rebuild_to_proto(result: &CatalogRebuildMaintenanceResult) -> ProtoCatalogRebuildResult {
     ProtoCatalogRebuildResult {
         old_document_count: result.old_document_count,
         new_document_count: result.new_document_count,
