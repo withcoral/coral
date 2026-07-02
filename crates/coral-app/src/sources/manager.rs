@@ -789,9 +789,13 @@ impl SourceManager {
                 (Vec::new(), None)
             };
 
-        let materialization_backup = if self.catalog_db.is_none()
-            && let Some(materialization_tmp) = request.materialization_tmp.as_ref()
-        {
+        let replaced_filesystem_materialization =
+            self.catalog_db.is_none() && request.materialization_tmp.is_some();
+        let materialization_backup = if replaced_filesystem_materialization {
+            let materialization_tmp = request
+                .materialization_tmp
+                .as_ref()
+                .expect("checked materialization tmp");
             match replace_v4_materialization(
                 &self.layout,
                 workspace_name,
@@ -834,12 +838,16 @@ impl SourceManager {
             request.materialization_tmp.as_deref(),
         ) {
             cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-            let restore_result = restore_materialization_backup(
-                &self.layout,
-                workspace_name,
-                &source_name,
-                materialization_backup,
-            );
+            let restore_result = if replaced_filesystem_materialization {
+                restore_materialization_backup(
+                    &self.layout,
+                    workspace_name,
+                    &source_name,
+                    materialization_backup,
+                )
+            } else {
+                Ok(())
+            };
             self.restore_source_rollback_state_with_state_lock_held(
                 workspace_name,
                 &source_name,

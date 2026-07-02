@@ -238,52 +238,11 @@ pub(crate) fn load_v4_materialization(
             "required artifact is missing",
         ));
     }
-    let fingerprint_yaml = read_artifact_string(source_name, "fingerprint", &fingerprint_path)?;
-    let fingerprint: Fingerprint =
-        parse_artifact_yaml(source_name, "fingerprint", &fingerprint_yaml)?;
-    validate_fingerprint_header(source_name, manifest, &fingerprint)?;
-    if fingerprint.manifest_sha256 != sha256_hex(manifest_yaml.as_bytes()) {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "manifest fingerprint does not match installed manifest",
-        ));
-    }
-    validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let materialized_dir = layout.v4_materialized_dir(workspace_name, source_name);
-    let mut surfaces = Vec::with_capacity(fingerprint.surfaces.len());
-    for surface in &fingerprint.surfaces {
-        let surface_dir = materialized_dir.join("surfaces").join(&surface.surface_id);
-        surfaces.push(MaterializationSurfaceRecord {
-            surface_id: surface.surface_id.clone(),
-            source_document_raw: read_artifact_bytes(
-                source_name,
-                "raw source document",
-                &surface_dir.join("source-document.raw"),
-            )?,
-            source_document_yaml: read_artifact_string(
-                source_name,
-                "normalized source document",
-                &surface_dir.join("source-document.yaml"),
-            )?,
-            semantic_ir_yaml: read_artifact_string(
-                source_name,
-                "semantic IR",
-                &surface_dir.join("semantic-ir.yaml"),
-            )?,
-        });
-    }
-    let record = MaterializationRecord {
-        materialization_version: "v4".to_string(),
-        fingerprint_yaml,
-        projections_yaml: read_artifact_string(
-            source_name,
-            "projection catalog",
-            &projections_path,
-        )?,
-        diagnostics_yaml: read_artifact_string(source_name, "diagnostics", &diagnostics_path)?,
-        created_at_unix_nanos: 0,
-        surfaces,
-    };
+    let record = materialization_record_from_dir(
+        source_name,
+        &layout.v4_materialized_dir(workspace_name, source_name),
+        0,
+    )?;
     load_v4_materialization_from_record(source_name, manifest_yaml, manifest, &record)
 }
 
@@ -1772,6 +1731,17 @@ surfaces:
             serde_yaml::to_string(&fingerprint).expect("encode fingerprint"),
         )
         .expect("write fingerprint");
+        let rest_dir = layout.v4_surface_dir(&workspace_name(), &source_name(), "rest");
+        let extra_dir = layout.v4_surface_dir(&workspace_name(), &source_name(), "extra");
+        std::fs::create_dir_all(&extra_dir).expect("create extra surface dir");
+        for artifact in [
+            "source-document.raw",
+            "source-document.yaml",
+            "semantic-ir.yaml",
+        ] {
+            std::fs::copy(rest_dir.join(artifact), extra_dir.join(artifact))
+                .expect("copy extra surface artifact");
+        }
 
         let error = load_v4_materialization(
             &layout,

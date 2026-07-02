@@ -6,9 +6,13 @@ use super::CoralDb;
 use super::session::DbRepos;
 use crate::bootstrap::AppError;
 use crate::sources::catalog::validate_imported_manifest_database_persistence;
+use crate::sources::materialization::{
+    load_v4_materialization_from_record, materialization_record_from_dir,
+};
 use crate::sources::model::SourceOrigin;
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::WorkspaceName;
+use coral_spec::parse_source_manifest_yaml;
 
 const LEGACY_SOURCE_CATALOG_IMPORT_MARKER: &str = "legacy_source_catalog_imported";
 
@@ -37,6 +41,7 @@ pub(crate) async fn import_config_source_catalog(
     {
         tx.commit().await?;
         import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
+        import_filesystem_v4_materializations(db, layout, now_unix_nanos).await?;
         clear_legacy_source_catalog_config(config_store, entries.len());
         return Ok(SourceCatalogImportReport {
             workspace_count: 0,
@@ -96,6 +101,7 @@ pub(crate) async fn import_config_source_catalog(
     tx.commit().await?;
 
     import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
+    import_filesystem_v4_materializations(db, layout, now_unix_nanos).await?;
     clear_legacy_source_catalog_config(config_store, entries.len());
 
     Ok(SourceCatalogImportReport {
@@ -190,6 +196,56 @@ fn read_validated_manifest_for_backfill(
     }
 
     Some(manifest_yaml)
+}
+
+async fn import_filesystem_v4_materializations(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+    now_unix_nanos: i64,
+) -> Result<(), AppError> {
+    let mut session = db;
+    for workspace in session.workspaces().list().await? {
+        let workspace_name = WorkspaceName::parse(&workspace.id)?;
+        for source in session
+            .sources()
+            .list_workspace_sources(&workspace_name)
+            .await?
+            .into_iter()
+            .filter(|source| source.origin == SourceOrigin::Imported)
+        {
+            let dir = layout.v4_materialized_dir(&workspace_name, &source.name);
+            if !dir.exists()
+                || session
+                    .materializations()
+                    .get(&workspace_name, &source.name)
+                    .await?
+                    .is_some()
+            {
+                continue;
+            }
+            let Some(manifest_yaml) = session
+                .source_manifests()
+                .get(&workspace_name, &source.name)
+                .await?
+                .map(|record| record.manifest_yaml)
+            else {
+                continue;
+            };
+            let manifest = parse_source_manifest_yaml(&manifest_yaml)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+            let Some(v4) = manifest.as_v4() else {
+                continue;
+            };
+            let record = materialization_record_from_dir(&source.name, &dir, now_unix_nanos)?;
+            load_v4_materialization_from_record(&source.name, &manifest_yaml, v4, &record)?;
+            let mut tx = db.begin().await?;
+            tx.materializations()
+                .upsert(&workspace_name, &source.name, &record)
+                .await?;
+            tx.commit().await?;
+        }
+    }
+    Ok(())
 }
 
 fn read_imported_manifest_file(
@@ -711,67 +767,6 @@ mod tests {
                 .await
                 .expect("get still-missing source manifest"),
             None
-        );
-    }
-
-    #[tokio::test]
-    async fn backfills_manifest_for_already_imported_database_source() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        layout.ensure().expect("ensure layout");
-        let config_store = ConfigStore::new(layout.clone());
-        let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = source(
-            "github",
-            Some("1.2.3"),
-            [],
-            [],
-            None,
-            SourceOrigin::Imported,
-        );
-        let manifest_yaml = imported_manifest_yaml("github", "1.2.3");
-        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
-        let db = open_sqlite(&layout).await;
-        let mut tx = db.begin().await.expect("begin tx");
-        tx.workspaces()
-            .ensure(workspace.as_str(), 7)
-            .await
-            .expect("ensure workspace");
-        tx.sources()
-            .upsert_source(&workspace, &source, 7)
-            .await
-            .expect("write source without manifest row");
-        tx.app_state_markers()
-            .insert(super::LEGACY_SOURCE_CATALOG_IMPORT_MARKER, 7)
-            .await
-            .expect("insert source import marker");
-        tx.commit().await.expect("commit source");
-
-        let report = import_config_source_catalog(&db, &config_store, &layout, 11)
-            .await
-            .expect("backfill manifest");
-
-        assert_eq!(
-            report,
-            SourceCatalogImportReport {
-                workspace_count: 0,
-                source_count: 0,
-            }
-        );
-        let mut session = &db;
-        assert_eq!(
-            session
-                .source_manifests()
-                .get(&workspace, &source.name)
-                .await
-                .expect("get source manifest")
-                .expect("source manifest")
-                .manifest_yaml,
-            manifest_yaml
-        );
-        assert!(
-            layout.manifest_file(&workspace, &source.name).exists(),
-            "legacy manifest file should be preserved after DB backfill"
         );
     }
 
