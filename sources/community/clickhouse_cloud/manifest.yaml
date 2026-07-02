@@ -1,6 +1,6 @@
 dsl_version: 3
 name: clickhouse_cloud
-version: 0.2.0
+version: 0.3.0
 description: ClickHouse Cloud remote MCP server (mcp.clickhouse.cloud).
 backend: mcp
 
@@ -10,14 +10,15 @@ inputs:
     hint: |
       ClickHouse Cloud OAuth access token. Click "Connect with ClickHouse
       Cloud" during `coral source add` to authorize through the browser —
-      Coral drives the OAuth flow and stores the resulting access token.
+      Coral registers a local OAuth client, drives the OAuth flow, and
+      stores the resulting access token.
 
-      Tokens last 1 hour. Until automatic refresh ships, re-run
-      `coral source add --file sources/community/clickhouse_cloud/manifest.yaml --interactive`
-      to mint a fresh one when queries start failing with MCP_AUTH_REQUIRED.
-      The `--interactive` flag is what triggers the browser-driven OAuth
-      method; without it Coral falls back to reading the token from a
-      `CLICKHOUSE_ACCESS_TOKEN` environment variable.
+      Coral refreshes access tokens when ClickHouse returns refresh metadata.
+      If queries start failing with MCP_AUTH_REQUIRED, re-run `coral source add
+      --file sources/community/clickhouse_cloud/manifest.yaml --interactive` to
+      mint a fresh access token. The `--interactive` flag is what triggers the
+      browser-driven OAuth method; without it Coral falls back to reading the
+      token from a `CLICKHOUSE_ACCESS_TOKEN` environment variable.
     credential:
       methods:
         - type: oauth
@@ -26,18 +27,18 @@ inputs:
             flow:
               type: authorization_code
               pkce: required
-            redirect_uri: http://127.0.0.1:53683/oauth/callback
+            resource: https://mcp.clickhouse.cloud/mcp
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
             endpoints:
               authorization_url: https://mcp.clickhouse.cloud/authorize
               token_url: https://mcp.clickhouse.cloud/token
             client:
-              id:
-                # Public client registered via Dynamic Client Registration
-                # against https://mcp.clickhouse.cloud/register. PKCE-only,
-                # no client secret. Shared across Coral installs is safe
-                # because each user's tokens are user-bound and PKCE
-                # protects the per-session code exchange.
-                default: c9249c91-5f7c-44ed-8e9f-cd328782dc03
+              dynamic_registration:
+                registration_url: https://mcp.clickhouse.cloud/register
+                client_name: Coral ClickHouse Cloud MCP
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
             scopes:
               scope:
                 delimiter: space

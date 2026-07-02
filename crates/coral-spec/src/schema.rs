@@ -612,4 +612,107 @@ tables:
             "expected error location to point at the server subtree, got: {message}"
         );
     }
+
+    #[test]
+    fn validate_manifest_schema_accepts_oauth_dynamic_client_registration() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+inputs:
+  MCP_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            resource: https://mcp.example.com/mcp
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                client_name: Coral MCP
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
+server:
+  transport: streamable_http
+  url: https://mcp.example.com/mcp
+  auth:
+    type: bearer
+    from: input
+    key: MCP_TOKEN
+tables:
+  - name: hello
+    tool: hello
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("OAuth dynamic client registration should pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_unknown_dynamic_registration_field() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                unsupported: true
+base_url: https://api.example.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: hello
+    description: Hello table
+    request:
+      method: GET
+      path: /hello
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+        let error = validate_manifest_schema(&manifest)
+            .expect_err("unknown DCR field should fail schema validation");
+        assert!(
+            error
+                .to_string()
+                .contains("is not valid under any of the schemas listed in the 'oneOf' keyword"),
+            "unexpected error: {error}"
+        );
+    }
 }

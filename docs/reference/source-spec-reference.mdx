@@ -666,14 +666,18 @@ inputs:
             flow:
               type: authorization_code
               pkce: required
+            resource: https://mcp.example.com/mcp
             redirect_uri: http://127.0.0.1:0/oauth/callback
             redirect_uri_port_mode: random
             endpoints:
               authorization_url: https://provider.example.com/oauth/authorize
               token_url: https://provider.example.com/oauth/token
             client:
-              id:
-                default: coral-client-id
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                client_name: Coral MCP
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
             scopes:
               scope:
                 delimiter: space
@@ -1209,11 +1213,12 @@ install (`coral source add --interactive`) and in the generated source docs:
 - `label` (string): the choice shown in the method picker.
 - `description` (string): a short one-line blurb for the method.
 - `hint` (string): markdown guidance shown next to the fields that method
-  collects — for example how to register the OAuth app, what the callback URL
-  is, or where to find an existing token. Keep each hint focused on the inputs
-  that method needs rather than restating the other methods. Prefer a per-method
-  `hint` over a single long input-level `hint` when the input offers several
-  methods, since the fields below the hint change with the selected method.
+  collects — for example whether Coral registers the OAuth client dynamically,
+  how to register a static OAuth app, what the callback URL is, or where to
+  find an existing token. Keep each hint focused on the inputs that method needs
+  rather than restating the other methods. Prefer a per-method `hint` over a
+  single long input-level `hint` when the input offers several methods, since
+  the fields below the hint change with the selected method.
 
 ```yaml
 inputs:
@@ -1288,10 +1293,13 @@ inputs:
 OAuth supports device-code flow and authorization-code flow.
 
 For device-code flow, declare `flow.type: device_code`,
-`endpoints.device_authorization_url`, `endpoints.token_url`, and a public
-client ID through `client.id.default`, `client.id.input`, or both. Device-code
-OAuth uses a public client ID only: `client.secret` must not be declared, and no
-callback URL, loopback listener, client secret, or PKCE setting is required.
+`endpoints.device_authorization_url`, `endpoints.token_url`, and either static
+client ID settings through `client.id.default` or `client.id.input`, or
+`client.dynamic_registration`. Device-code OAuth must not declare a static
+`client.secret`, and no callback URL, loopback listener, or PKCE setting is
+required. A dynamic registration response may still return a client secret;
+Coral uses it for token endpoint authentication according to
+`token_endpoint_auth_method`.
 
 For authorization-code flow, declare `flow.type: authorization_code`, an
 explicit `pkce` of `required` or `disabled`, `redirect_uri`,
@@ -1305,11 +1313,29 @@ sent only to the token endpoint and are never included in the authorization URL.
 They may be stored as internal credential metadata so Coral can refresh the
 access token without prompting the user again.
 
-OAuth endpoint URLs may include `{{input.KEY}}` templates for declared
+OAuth methods can also declare `client.dynamic_registration` with a
+`registration_url`. When no static client ID is provided, Coral dynamically
+registers a client during interactive credential setup and uses the returned
+client ID, optional client secret, and token endpoint auth method for the
+OAuth flow. Coral always sends `application_type: native` during Dynamic Client
+Registration because Coral OAuth setup uses native-app flows: loopback
+authorization-code redirects or device code. Source specs cannot configure a
+`web` Dynamic Client Registration application type. Set
+`request_refresh_token_grant: true` only when the provider supports registering
+clients for refresh-token grants and the source should request refresh-token
+support; otherwise Coral registers only the primary OAuth flow grant and still
+stores refresh tokens opportunistically if the token endpoint returns them.
+
+Use `resource` when the authorization server expects an OAuth resource
+indicator, such as OAuth-protected Streamable HTTP MCP servers. Coral sends the
+same resource value on authorization, device-code, token, and refresh requests.
+
+OAuth URLs may include `{{input.KEY}}` templates for declared
 `kind: variable` inputs, which Coral renders during OAuth credential setup. Use
 this for non-secret endpoint components such as a Microsoft tenant ID or site
-domain. OAuth endpoint templates do not support secret inputs, filters,
-function arguments, state, or inline defaults.
+domain. This applies to `endpoints.*`, `resource`, and
+`client.dynamic_registration.registration_url`. OAuth URL templates do not
+support secret inputs, filters, function arguments, state, or inline defaults.
 
 Scopes are declared under `scopes.scope`; `delimiter: space` represents
 `scope=a b`, and `delimiter: comma` represents `scope=a,b`. Coral stores OAuth

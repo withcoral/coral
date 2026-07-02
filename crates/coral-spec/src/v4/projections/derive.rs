@@ -122,7 +122,7 @@ fn generate_projection(
         .collect::<Vec<_>>();
     let columns = projection_columns(ir, operation);
     let name = generated_projection_name(operation, is_search);
-    let guide = projection_guide(&kind, &inputs, &pagination, is_search);
+    let guide = projection_guide(&kind, &inputs, is_search);
     let projection = Projection {
         name,
         namespace: namespace.to_string(),
@@ -134,7 +134,6 @@ fn generate_projection(
         visibility,
         inputs,
         columns,
-        pagination,
         search_limits: is_search.then_some(SearchLimitsSpec {
             default_top_k: 30,
             max_top_k: 100,
