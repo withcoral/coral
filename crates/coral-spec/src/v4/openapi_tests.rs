@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::{PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml};
+use crate::{
+    ManifestDataType, PaginationMode, SourceTableFunctionKind, parse_source_manifest_yaml,
+};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -182,7 +184,7 @@ components:
 }
 
 #[test]
-fn importer_recognizes_common_wrapped_list_response_fields() {
+fn importer_keeps_common_envelope_objects_as_singletons() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: statusgator
@@ -233,8 +235,8 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
-    assert_eq!(operation.output.row_path, vec!["data".to_string()]);
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
 
     let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog
@@ -242,7 +244,14 @@ components:
         .iter()
         .find(|projection| projection.operation_id == "listincidents")
         .expect("projection");
-    assert_eq!(projection.name, "incident");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("success"), Some(&ManifestDataType::Boolean));
+    assert_eq!(columns.get("data"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("pagination"), Some(&ManifestDataType::Json));
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
@@ -252,7 +261,7 @@ components:
 }
 
 #[test]
-fn importer_recognizes_single_array_payload_wrappers() {
+fn importer_keeps_single_array_payload_objects_as_singletons() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: github
@@ -301,18 +310,294 @@ components:
     )
     .expect("import");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.cardinality, OutputCardinality::WrappedList);
-    assert_eq!(operation.output.row_path, vec!["repositories".to_string()]);
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
 
     let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
-    assert_eq!(projection.name, "repository");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
+    assert_eq!(columns.get("repositories"), Some(&ManifestDataType::Json));
     assert!(matches!(
         projection.kind,
         ProjectionKind::TableFunction {
             function_kind: SourceTableFunctionKind::Table
         }
     ));
+}
+
+#[test]
+fn importer_keeps_search_result_objects_as_singletons() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /search/issues:
+    get:
+      operationId: search/issues-and-pull-requests
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total_count, incomplete_results, items, search_type]
+                properties:
+                  total_count: {type: integer}
+                  incomplete_results: {type: boolean}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: integer}
+                        number: {type: integer}
+                        title: {type: string}
+                        state: {type: string}
+                  search_type:
+                    type: string
+                    enum: [lexical, semantic, hybrid]
+                  lexical_fallback_reason:
+                    type: array
+                    items:
+                      type: string
+                      enum: [no_text_terms, quoted_text]
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
+
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let columns = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(columns.get("total_count"), Some(&ManifestDataType::Int64));
+    assert_eq!(
+        columns.get("incomplete_results"),
+        Some(&ManifestDataType::Boolean)
+    );
+    assert_eq!(columns.get("items"), Some(&ManifestDataType::Json));
+    assert_eq!(columns.get("search_type"), Some(&ManifestDataType::Utf8));
+    assert_eq!(
+        columns.get("lexical_fallback_reason"),
+        Some(&ManifestDataType::Json)
+    );
+    assert!(!columns.contains_key("id"));
+    assert!(!columns.contains_key("number"));
+    assert!(!columns.contains_key("title"));
+    assert!(!columns.contains_key("state"));
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The fixture mirrors the resource object shape that regressed."
+)]
+fn importer_keeps_resource_objects_with_array_fields_as_singletons() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/projectsV2/{project_number}/items/{item_id}:
+    get:
+      operationId: projects/get-org-item
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+        - {name: project_number, in: path, required: true, schema: {type: integer}}
+        - {name: item_id, in: path, required: true, schema: {type: integer}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectItemWithContent'}
+components:
+  schemas:
+    ProjectItemWithContent:
+      type: object
+      properties:
+        id:
+          type: number
+          description: The unique identifier of the project item.
+        node_id:
+          type: string
+          description: The node ID of the project item.
+        project_url:
+          type: string
+          format: uri
+          description: The API URL of the project that contains this item.
+        content_type:
+          type: string
+          enum: [Issue, PullRequest, DraftIssue, Redacted]
+          description: The type of content tracked in a project item.
+        content:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: The content of the item, which varies by content type.
+        creator:
+          type: object
+          properties:
+            login: {type: string}
+          description: A GitHub user.
+        created_at:
+          type: string
+          format: date-time
+          description: The time when the item was created.
+        updated_at:
+          type: string
+          format: date-time
+          description: The time when the item was last updated.
+        archived_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The time when the item was archived.
+        item_url:
+          type: string
+          format: uri
+          nullable: true
+          description: The API URL of this item.
+        fields:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: The fields and values associated with this item.
+      required: [id, content_type, created_at, updated_at, archived_at]
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
+
+    let row_type = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == operation.output.type_ref)
+        .expect("row type");
+    let IrTypeShape::Object { fields } = &row_type.shape else {
+        panic!("row type imported as {:?}", row_type.shape);
+    };
+    assert_eq!(fields.len(), 11);
+    assert!(fields.iter().any(|field| field.name == "fields"));
+
+    let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
+    let projection = catalog.projections.first().expect("projection");
+    let column_types = projection
+        .columns
+        .iter()
+        .map(|column| (column.name.as_str(), column.data_type))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(projection.columns.len(), 11);
+    assert_eq!(column_types.get("id"), Some(&ManifestDataType::Float64));
+    assert_eq!(
+        column_types.get("content_type"),
+        Some(&ManifestDataType::Utf8)
+    );
+    assert_eq!(
+        column_types.get("created_at"),
+        Some(&ManifestDataType::Timestamp)
+    );
+    assert_eq!(column_types.get("fields"), Some(&ManifestDataType::Json));
+}
+
+#[test]
+fn importer_keeps_named_array_fields_on_resource_objects_as_singletons() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: resources
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /bundles/{bundle_id}:
+    get:
+      operationId: bundles/get
+      parameters:
+        - {name: bundle_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
 }
 
 #[test]
@@ -361,14 +646,17 @@ components:
     )
     .expect("recursive schema imports");
     let operation = ir.operations.first().expect("operation");
-    assert_eq!(operation.output.type_ref, "tree");
+    assert_eq!(operation.output.cardinality, OutputCardinality::Singleton);
+    assert!(operation.output.row_path.is_empty());
 
     let types = ir
         .types
         .iter()
         .map(|ty| (ty.id.as_str(), ty))
         .collect::<BTreeMap<_, _>>();
-    let tree = types.get("tree").expect("tree type");
+    let tree = types
+        .get(operation.output.type_ref.as_str())
+        .expect("tree row type");
     let IrTypeShape::Object { fields } = &tree.shape else {
         panic!("tree should import as an object: {:?}", tree.shape);
     };
@@ -378,7 +666,6 @@ components:
         .collect::<BTreeMap<_, _>>();
 
     let id = fields.get("id").expect("id field");
-    assert_eq!(id.type_ref, "tree_id");
     assert!(matches!(
         types.get(id.type_ref.as_str()).expect("id type").shape,
         IrTypeShape::Scalar(IrScalarType::String)
@@ -1092,9 +1379,9 @@ paths:
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "The OpenAPI fixture keeps related response-driven pagination cases together."
+    reason = "The OpenAPI fixture keeps related pagination cardinality cases together."
 )]
-fn importer_infers_response_driven_pagination_modes() {
+fn importer_infers_response_pagination_only_for_list_responses() {
     let manifest = parse_source_manifest_yaml(
         r"
 name: response_pagination
@@ -1340,59 +1627,28 @@ paths:
         .map(|operation| (operation.id.as_str(), operation))
         .collect::<BTreeMap<_, _>>();
 
-    let cursor = &rest_execution(operations.get("cursor_list").expect("cursor")).pagination;
-    assert_eq!(cursor.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor.cursor_param.as_deref(), Some("cursor"));
-    assert_eq!(cursor.response_cursor_path, ["meta", "nextCursor"]);
-    assert_eq!(
-        cursor
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("limit")
-    );
-
-    let pagination_token = &rest_execution(
-        operations
-            .get("pagination_token_list")
-            .expect("pagination token"),
-    )
-    .pagination;
-    assert_eq!(pagination_token.mode, PaginationMode::CursorQuery);
-    assert_eq!(
-        pagination_token.cursor_param.as_deref(),
-        Some("pagination_token")
-    );
-    assert_eq!(
-        pagination_token.response_cursor_path,
-        ["meta", "next_token"]
-    );
-    assert_eq!(
-        pagination_token
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("max_results")
-    );
-
-    for (operation_id, cursor_param, response_path) in [
-        ("iterator_list", "iterator", &["paging", "iterator"][..]),
-        (
-            "start_cursor_list",
-            "start_cursor",
-            &["continuationToken"][..],
-        ),
-        (
-            "nested_next_list",
-            "cursor",
-            &["meta", "cursor", "next"][..],
-        ),
+    for operation_id in [
+        "cursor_list",
+        "pagination_token_list",
+        "iterator_list",
+        "start_cursor_list",
+        "nested_next_list",
+        "singleton_get",
+        "cursor_header_list",
+        "cursor_page_list",
+        "numeric_page_list",
     ] {
-        let pagination =
-            &rest_execution(operations.get(operation_id).expect("pagination operation")).pagination;
-        assert_eq!(pagination.mode, PaginationMode::CursorQuery);
-        assert_eq!(pagination.cursor_param.as_deref(), Some(cursor_param));
-        assert_eq!(pagination.response_cursor_path, response_path);
+        let operation = operations.get(operation_id).expect("operation");
+        assert_eq!(
+            operation.output.cardinality,
+            OutputCardinality::Singleton,
+            "{operation_id}"
+        );
+        assert_eq!(
+            rest_execution(operation).pagination.mode,
+            PaginationMode::None,
+            "{operation_id}"
+        );
     }
 
     let link = &rest_execution(operations.get("link_list").expect("link")).pagination;
@@ -1405,37 +1661,6 @@ paths:
             .and_then(|page_size| page_size.query_param.as_deref()),
         Some("per_page")
     );
-
-    let singleton = &rest_execution(operations.get("singleton_get").expect("singleton")).pagination;
-    assert_eq!(singleton.mode, PaginationMode::None);
-
-    let cursor_header =
-        &rest_execution(operations.get("cursor_header_list").expect("cursor header")).pagination;
-    assert_eq!(cursor_header.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor_header.cursor_param.as_deref(), Some("pageToken"));
-    assert_eq!(
-        cursor_header.response_cursor_header.as_deref(),
-        Some("X-Next-Cursor")
-    );
-    assert!(cursor_header.response_cursor_path.is_empty());
-
-    let cursor_page =
-        &rest_execution(operations.get("cursor_page_list").expect("cursor page")).pagination;
-    assert_eq!(cursor_page.mode, PaginationMode::CursorQuery);
-    assert_eq!(cursor_page.cursor_param.as_deref(), Some("page"));
-    assert_eq!(cursor_page.response_cursor_path, ["next_page"]);
-    assert_eq!(
-        cursor_page
-            .page_size
-            .as_ref()
-            .and_then(|page_size| page_size.query_param.as_deref()),
-        Some("limit")
-    );
-
-    let numeric_page =
-        &rest_execution(operations.get("numeric_page_list").expect("numeric page")).pagination;
-    assert_eq!(numeric_page.mode, PaginationMode::Page);
-    assert_eq!(numeric_page.page_param.as_deref(), Some("page"));
 
     let next_url = &rest_execution(
         operations
