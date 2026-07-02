@@ -33,7 +33,7 @@ Use this as the Coral entrypoint for external context. Query Coral before answer
 
 ## Query Rules
 
-- Use each table's `sql_reference`; write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
+- Use each table's `sql_reference` when available. If building a reference from `schema_name` and `table_name`, write `github.pulls` or `"github"."pulls"`, not `"github.pulls"`.
 - Use each table function's `sql_call_example`, filling in required arguments before querying it.
 - Keep metadata discovery bounded: page catalog discovery, query `coral.columns` for one table or `coral.table_functions` for one source when possible, and add `LIMIT` when reading broad metadata directly.
 - Virtual columns are filter-only and return `NULL`; check `is_virtual`.

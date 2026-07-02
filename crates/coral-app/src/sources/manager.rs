@@ -1568,6 +1568,7 @@ mod tests {
     };
     use crate::sources::SourceName;
     use crate::sources::catalog::describe_manifest;
+    use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
@@ -2386,8 +2387,8 @@ tables:
         assert_eq!(installed.name.as_str(), "github_v4_test");
         let source_name = SourceName::parse("github_v4_test").expect("source");
         let materialized = layout.v4_materialized_dir(&default_workspace(), &source_name);
-        assert!(materialized.join("fingerprint.yaml").exists());
-        assert!(materialized.join("projections.yaml").exists());
+        assert!(materialized.join(FINGERPRINT_FILENAME).exists());
+        assert!(materialized.join(PROJECTIONS_FILENAME).exists());
         assert!(
             materialized
                 .join("surfaces")

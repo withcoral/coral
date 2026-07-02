@@ -1723,15 +1723,23 @@ fn prompt_oauth_credential_inputs(
     oauth: &ManifestOAuthCredentialSpec,
 ) -> Result<Vec<OAuthCredentialInput>, anyhow::Error> {
     let mut values = Vec::new();
+    let mut prompted_client_id = None;
     if let Some(input_key) = oauth.client.id.input.as_deref()
-        && let Some(value) = prompt_oauth_client_id(input_key, oauth.client.id.default.as_deref())?
+        && let Some(value) = prompt_oauth_client_id(
+            input_key,
+            oauth.client.id.default.as_deref(),
+            oauth_client_id_allows_empty(oauth),
+        )?
     {
+        prompted_client_id = Some(value.clone());
         values.push(OAuthCredentialInput {
             key: input_key.to_string(),
             value,
         });
     }
-    if let Some(secret) = oauth.client.secret.as_ref() {
+    if oauth_client_secret_required_after_client_id_prompt(oauth, prompted_client_id.as_deref())
+        && let Some(secret) = oauth.client.secret.as_ref()
+    {
         let value = prompt_oauth_client_secret(&secret.input)?;
         values.push(OAuthCredentialInput {
             key: secret.input.clone(),
@@ -1741,12 +1749,35 @@ fn prompt_oauth_credential_inputs(
     Ok(values)
 }
 
+fn oauth_client_id_allows_empty(oauth: &ManifestOAuthCredentialSpec) -> bool {
+    oauth.client.dynamic_registration.is_some()
+}
+
+fn oauth_client_secret_required_after_client_id_prompt(
+    oauth: &ManifestOAuthCredentialSpec,
+    prompted_client_id: Option<&str>,
+) -> bool {
+    oauth.client.secret.is_some()
+        && (prompted_client_id.is_some_and(oauth_client_id_value_present)
+            || oauth
+                .client
+                .id
+                .default
+                .as_deref()
+                .is_some_and(oauth_client_id_value_present))
+}
+
+fn oauth_client_id_value_present(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
 fn prompt_oauth_client_id(
     input_key: &str,
     default: Option<&str>,
+    allow_dynamic_registration: bool,
 ) -> Result<Option<String>, anyhow::Error> {
     let theme = ColorfulTheme::default();
-    let prompt = if default.is_some_and(|value| !value.is_empty()) {
+    let prompt = if default.is_some_and(oauth_client_id_value_present) {
         format!("{input_key} [source default]")
     } else {
         input_key.to_string()
@@ -1755,10 +1786,23 @@ fn prompt_oauth_client_id(
         .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
+    resolve_oauth_client_id_prompt_value(input_key, &value, default, allow_dynamic_registration)
+}
+
+fn resolve_oauth_client_id_prompt_value(
+    input_key: &str,
+    value: &str,
+    default: Option<&str>,
+    allow_dynamic_registration: bool,
+) -> Result<Option<String>, anyhow::Error> {
+    let value = value.trim().to_string();
     if !value.is_empty() {
         return Ok(Some(value));
     }
-    if default.is_some_and(|value| !value.is_empty()) {
+    if default.is_some_and(oauth_client_id_value_present) {
+        return Ok(None);
+    }
+    if allow_dynamic_registration {
         return Ok(None);
     }
     Err(anyhow::anyhow!(
@@ -1833,7 +1877,11 @@ mod tests {
     use coral_api::v1::{SourceVariable, ValidateSourceResponse};
     use coral_spec::{
         ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
-        ManifestInputKind, ManifestInputSpec,
+        ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec,
+        ManifestOAuthClientSecretSpec, ManifestOAuthClientSecretTransport, ManifestOAuthClientSpec,
+        ManifestOAuthCredentialSpec, ManifestOAuthDynamicClientRegistrationAuthMethod,
+        ManifestOAuthDynamicClientRegistrationSpec, ManifestOAuthFlowKind, ManifestOAuthFlowSpec,
+        ManifestOAuthPkceMode, ManifestOAuthRedirectUriPortMode,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1846,10 +1894,29 @@ mod tests {
     use super::{
         CredentialPromptMode, RedirectPromptAction, ValidationFollowUp, ValidationSeverityMode,
         apply_redirect_prompt_key, collect_inputs_with_hint, expected_oauth_redirect,
-        finalize_input_value, render_redirect_prompt_key_echo, resolve_prompt_hint,
-        shell_quote_arg, source_name_arg, source_variables_map, submit_oauth_redirect_url,
+        finalize_input_value, oauth_client_id_allows_empty,
+        oauth_client_secret_required_after_client_id_prompt, render_redirect_prompt_key_echo,
+        resolve_oauth_client_id_prompt_value, resolve_prompt_hint, shell_quote_arg,
+        source_name_arg, source_variables_map, submit_oauth_redirect_url,
         validate_oauth_redirect_url, validation_follow_up,
     };
+
+    fn test_oauth_spec(client: ManifestOAuthClientSpec) -> ManifestOAuthCredentialSpec {
+        ManifestOAuthCredentialSpec {
+            flow: ManifestOAuthFlowSpec {
+                kind: ManifestOAuthFlowKind::AuthorizationCode,
+                pkce: ManifestOAuthPkceMode::Required,
+            },
+            resource: None,
+            redirect_uri: Some("http://127.0.0.1:53682/oauth/callback".to_string()),
+            redirect_uri_port_mode: ManifestOAuthRedirectUriPortMode::Fixed,
+            authorization_url: Some("https://provider.example.com/oauth/authorize".to_string()),
+            device_authorization_url: None,
+            token_url: "https://provider.example.com/oauth/token".to_string(),
+            client,
+            scopes: None,
+        }
+    }
 
     #[test]
     fn collect_inputs_reads_variables_and_secrets_from_lookup() {
@@ -2003,6 +2070,136 @@ mod tests {
 
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&variable));
         assert!(CredentialPromptMode::CredentialMethodFirst.reads_env_before_prompt(&plain_secret));
+    }
+
+    #[test]
+    fn dynamic_registration_allows_empty_client_id_even_with_static_secret() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn static_oauth_client_id_cannot_be_empty_without_dynamic_registration() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: None,
+            dynamic_registration: None,
+        });
+
+        assert!(!oauth_client_id_allows_empty(&oauth));
+    }
+
+    #[test]
+    fn dynamic_registration_fallback_skips_static_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth, None
+        ));
+    }
+
+    #[test]
+    fn dynamic_registration_treats_blank_client_id_prompt_as_absent() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value("OAUTH_CLIENT_ID", "   ", None, true)
+                .expect("dynamic registration should allow blank client id"),
+            None
+        );
+
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(!oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("   ")
+        ));
+    }
+
+    #[test]
+    fn client_id_prompt_value_is_trimmed_before_static_path() {
+        assert_eq!(
+            resolve_oauth_client_id_prompt_value(
+                "OAUTH_CLIENT_ID",
+                "  static-client  ",
+                None,
+                true,
+            )
+            .expect("non-empty client id should be accepted"),
+            Some("static-client".to_string())
+        );
+    }
+
+    #[test]
+    fn static_client_path_requires_client_secret_prompt() {
+        let oauth = test_oauth_spec(ManifestOAuthClientSpec {
+            id: ManifestOAuthClientIdSpec {
+                default: None,
+                input: Some("OAUTH_CLIENT_ID".to_string()),
+            },
+            secret: Some(ManifestOAuthClientSecretSpec {
+                input: "OAUTH_CLIENT_SECRET".to_string(),
+                transport: ManifestOAuthClientSecretTransport::BasicAuth,
+            }),
+            dynamic_registration: Some(ManifestOAuthDynamicClientRegistrationSpec {
+                registration_url: "https://provider.example.com/oauth/register".to_string(),
+                client_name: None,
+                token_endpoint_auth_method: ManifestOAuthDynamicClientRegistrationAuthMethod::None,
+                request_refresh_token_grant: false,
+            }),
+        });
+
+        assert!(oauth_client_secret_required_after_client_id_prompt(
+            &oauth,
+            Some("static-client")
+        ));
     }
 
     #[test]
