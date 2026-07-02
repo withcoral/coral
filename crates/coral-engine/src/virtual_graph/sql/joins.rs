@@ -6,7 +6,7 @@
 use super::*;
 
 impl<'a> Lowerer<'a> {
-    pub(super) fn render_optional_join_predicate(
+    fn render_optional_join_predicate(
         &self,
         relationship_index: usize,
     ) -> Result<Option<String>, CoreError> {
@@ -28,7 +28,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn render_optional_match_predicate(
+    fn render_optional_match_predicate(
         &self,
         optional_match: &OptionalMatchScope,
     ) -> Result<Option<String>, CoreError> {
@@ -39,7 +39,7 @@ impl<'a> Lowerer<'a> {
             .transpose()
     }
 
-    pub(super) fn join_condition_with_predicate(
+    fn join_condition_with_predicate(
         condition: String,
         optional_predicate: Option<&str>,
     ) -> String {
@@ -49,7 +49,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn relationship_outer_condition_for_known_node(
+    fn relationship_outer_condition_for_known_node(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         pattern: &'a RelationshipPattern,
@@ -65,7 +65,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn relationship_inner_unknown_condition_for_known_node(
+    fn relationship_inner_unknown_condition_for_known_node(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         pattern: &'a RelationshipPattern,
@@ -89,7 +89,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn relationship_pair_condition(
+    fn relationship_pair_condition(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         relationship_alias: &str,
@@ -126,7 +126,7 @@ impl<'a> Lowerer<'a> {
         Self::render_condition_disjunction(&conditions)
     }
 
-    pub(super) fn relationship_known_node_condition(
+    fn relationship_known_node_condition(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         pattern: &'a RelationshipPattern,
@@ -158,7 +158,7 @@ impl<'a> Lowerer<'a> {
         Self::render_condition_disjunction(&conditions)
     }
 
-    pub(super) fn relationship_orientations(
+    fn relationship_orientations(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
         pattern: &'a RelationshipPattern,

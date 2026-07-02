@@ -2219,11 +2219,6 @@ impl<'a> Lowerer<'a> {
                 local_nodes,
                 local_aliases,
             ),
-            ScalarExpression::Atan2 { y, x } => Ok(format!(
-                "atan2({}, {})",
-                self.render_scoped_scalar_expression(y, relationships, local_nodes, local_aliases)?,
-                self.render_scoped_scalar_expression(x, relationships, local_nodes, local_aliases)?
-            )),
             _ => unreachable!("scoped scalar expression handled above"),
         }
     }
