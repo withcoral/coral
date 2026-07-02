@@ -130,6 +130,9 @@
 - Use `!` only for breaking changes, placing it immediately before the colon:
   `type!: summary` or `type(scope)!: summary`. Local WIP commit messages can
   stay pragmatic unless the user explicitly asks for polished commit history.
+- If you add a source using dummy credentials in order to test a change, always
+  configure Coral to store those credentials on the filesystem. Do not store
+  dummy credentials in the OS keychain.
 
 ## Meta Changes
 
