@@ -317,7 +317,6 @@ impl QueryManager {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingGlobalSourceSpec { .. }
                     | AppError::MissingOrIncompatibleV4Materialization { .. }),
                 ) => {
                     return Err(error);
@@ -816,6 +815,39 @@ mod tests {
             .expect_err("missing workspace should fail closed");
 
         assert_workspace_not_found(error, &missing_workspace);
+    }
+
+    #[test]
+    fn load_query_sources_skips_source_with_missing_global_source_spec() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new());
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let workspace_name = WorkspaceName::default();
+        let source_name = SourceName::parse("orphaned_global").expect("source name");
+        fixture
+            .manager
+            .config_store
+            .upsert_source(
+                &workspace_name,
+                InstalledSource {
+                    name: source_name,
+                    version: Some("0.1.0".to_string()),
+                    variables: BTreeMap::new(),
+                    secrets: Vec::new(),
+                    credential_storage: None,
+                    origin: SourceOrigin::GlobalSpec,
+                },
+            )
+            .expect("persist source");
+
+        let (sources, _config) = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .expect("orphaned global source should be skipped");
+
+        assert!(
+            sources.is_empty(),
+            "orphaned global source should not be loaded"
+        );
     }
 
     #[tokio::test]

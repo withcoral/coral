@@ -55,8 +55,9 @@ version = "1.0.0"
 
 Sources installed from a global source spec store `origin = "global"` under the
 workspace source entry. Removing a global source spec does not remove those
-workspace sources, but validation and queries fail until you register the spec
-again or remove and re-add the source.
+workspace sources. Explicit validation for an orphaned source fails until you
+register the spec again or remove and re-add the source; query loading skips the
+orphaned source and continues with the rest of the workspace.
 
 ## Runtime features
 
