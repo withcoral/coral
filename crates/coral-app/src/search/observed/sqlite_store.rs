@@ -1,10 +1,5 @@
 //! `SQLite` observed-values queue and governance operations.
 
-#![allow(
-    dead_code,
-    reason = "observed-values provider substrate is staged before app wiring in the next PR"
-)]
-
 use rusqlite::{Connection, OptionalExtension as _, Transaction, TransactionBehavior, params};
 
 use crate::search::observed::sqlite_queue::{

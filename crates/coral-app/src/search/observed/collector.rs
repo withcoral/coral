@@ -1,10 +1,5 @@
 //! Observed-values batch collection.
 
-#![allow(
-    dead_code,
-    reason = "observed-values provider substrate is staged before app wiring in the next PR"
-)]
-
 use std::collections::HashSet;
 
 use arrow::array::{

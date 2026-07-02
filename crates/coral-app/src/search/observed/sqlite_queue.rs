@@ -1,10 +1,5 @@
 //! Durable observed-values queue records.
 
-#![allow(
-    dead_code,
-    reason = "observed-values provider substrate is staged before app wiring in the next PR"
-)]
-
 use serde::{Deserialize, Serialize};
 
 /// Snapshot of the workspace-wide and source-local invalidation counters.
