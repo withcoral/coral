@@ -17,10 +17,15 @@ const listTraceRequests = new Map<string, Promise<ListTracesResponse>>()
 const getTraceRequests = new Map<string, Promise<GetTraceResponse>>()
 
 function getTracesClient(): Promise<Client<typeof TraceService>> {
-  tracesClientPromise ??= ensureCoralRuntime().then((runtime) =>
+  if (tracesClientPromise) return tracesClientPromise
+  const promise = ensureCoralRuntime().then((runtime) =>
     createClient(TraceService, createGrpcWebTransport({ baseUrl: runtime.url })),
   )
-  return tracesClientPromise
+  promise.catch(() => {
+    if (tracesClientPromise === promise) tracesClientPromise = null
+  })
+  tracesClientPromise = promise
+  return promise
 }
 
 export async function listTraces(pageSize = 50, pageToken = ''): Promise<ListTracesResponse> {

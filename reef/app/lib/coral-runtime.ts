@@ -12,11 +12,18 @@ function fallbackRuntimeInfo(): SidecarInfo {
 
 export function ensureCoralRuntime(): Promise<SidecarInfo> {
   if (runtimeInfo) return Promise.resolve(runtimeInfo)
-  runtimePromise ??= loadCoralRuntime().then((info) => {
+  if (runtimePromise) return runtimePromise
+  const promise = loadCoralRuntime().then((info) => {
     runtimeInfo = info
     return info
   })
-  return runtimePromise
+  // Drop the cached promise on failure so a later call (e.g. a Retry) can
+  // re-attempt instead of re-resolving the same rejection forever.
+  promise.catch(() => {
+    if (runtimePromise === promise) runtimePromise = null
+  })
+  runtimePromise = promise
+  return promise
 }
 
 async function loadCoralRuntime(): Promise<SidecarInfo> {

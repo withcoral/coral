@@ -1,8 +1,10 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
 
 import type { Route } from './+types/root'
-import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
-import { readSidebarCollapsedCookieValue } from './components/sidebar/sidebar-state'
+import {
+  readSidebarCollapsedCookie,
+  readSidebarCollapsedCookieValue,
+} from './components/sidebar/sidebar-state'
 import { ensureCoralRuntime } from './lib/coral-runtime'
 import './styles/globals.css'
 import './wax/theme/global.css'

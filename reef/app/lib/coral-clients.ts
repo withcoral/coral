@@ -10,17 +10,27 @@ let queryClientPromise: Promise<Client<typeof QueryService>> | null = null
 let sourceClientPromise: Promise<Client<typeof SourceService>> | null = null
 
 export function getQueryClient(): Promise<Client<typeof QueryService>> {
-  queryClientPromise ??= ensureCoralRuntime().then((runtime) =>
+  if (queryClientPromise) return queryClientPromise
+  const promise = ensureCoralRuntime().then((runtime) =>
     createClient(QueryService, createGrpcWebTransport({ baseUrl: runtime.url })),
   )
-  return queryClientPromise
+  promise.catch(() => {
+    if (queryClientPromise === promise) queryClientPromise = null
+  })
+  queryClientPromise = promise
+  return promise
 }
 
 export function getSourceClient(): Promise<Client<typeof SourceService>> {
-  sourceClientPromise ??= ensureCoralRuntime().then((runtime) =>
+  if (sourceClientPromise) return sourceClientPromise
+  const promise = ensureCoralRuntime().then((runtime) =>
     createClient(SourceService, createGrpcWebTransport({ baseUrl: runtime.url })),
   )
-  return sourceClientPromise
+  promise.catch(() => {
+    if (sourceClientPromise === promise) sourceClientPromise = null
+  })
+  sourceClientPromise = promise
+  return promise
 }
 
 export const WORKSPACE = { name: 'default' } as const
