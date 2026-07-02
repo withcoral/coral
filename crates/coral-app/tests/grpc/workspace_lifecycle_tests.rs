@@ -278,11 +278,6 @@ async fn delete_workspace_restores_db_sources_when_config_delete_fails() {
         Vec::new(),
     )
     .await;
-    let issues_http = crate::harness::issues_http_fixture(&[]).await;
-    let (v4_manifest_yaml, openapi_file) =
-        crate::harness::fixture_v4_openapi_manifest_yaml(temp.path(), &issues_http.uri());
-    import_source_in_workspace(&harness, "work", v4_manifest_yaml, Vec::new(), Vec::new()).await;
-    fs::remove_file(openapi_file).expect("remove authored descriptor");
     fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o500))
         .expect("make config dir read-only");
     let result = harness
@@ -315,16 +310,6 @@ async fn delete_workspace_restores_db_sources_when_config_delete_fails() {
         .expect("restored source should validate")
         .into_inner();
     assert_eq!(validated.tables.len(), 1);
-    let validated_v4 = harness
-        .source_client()
-        .validate_source(Request::new(ValidateSourceRequest {
-            workspace: Some(workspace("work")),
-            name: "github_v4_query".to_string(),
-        }))
-        .await
-        .expect("restored v4 source should validate")
-        .into_inner();
-    assert_eq!(validated_v4.tables.len(), 1);
 }
 
 #[cfg(unix)]

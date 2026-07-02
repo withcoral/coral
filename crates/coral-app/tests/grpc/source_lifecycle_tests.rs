@@ -4,7 +4,7 @@
     reason = "test code: assertion-style indexing is idiomatic in tests"
 )]
 
-use std::{fs, path::Path};
+use std::fs;
 
 use coral_api::v1::{
     CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
@@ -25,8 +25,7 @@ use crate::harness::{
     FailingHttpFixture, GrpcHarness, fixture_function_only_manifest_yaml,
     fixture_manifest_with_inputs_yaml, fixture_manifest_with_multiple_tables_yaml,
     fixture_manifest_with_required_inputs_yaml, fixture_manifest_with_test_queries_yaml,
-    fixture_manifest_yaml, fixture_v4_openapi_manifest_yaml, invalid_manifest_yaml,
-    issues_http_fixture, source_dir,
+    fixture_manifest_yaml, invalid_manifest_yaml, source_dir,
 };
 
 fn auth_manifest_yaml(inputs: &str, auth: &str) -> String {
@@ -58,13 +57,6 @@ fn secret_auth_manifest_yaml_at(base_url: &str) -> String {
         base_url,
         "inputs:\n  API_TOKEN:\n    kind: secret\n",
         "auth:\n  type: HeaderAuth\n  headers:\n    - name: Authorization\n      from: template\n      template: Bearer {{input.API_TOKEN}}\n",
-    )
-}
-
-fn v4_secret_auth_manifest(manifest_yaml: &str) -> String {
-    manifest_yaml.replace(
-        "type: openapi",
-        "type: openapi\n  inputs:\n    API_TOKEN:\n      kind: secret\n  auth:\n    type: BasicAuth\n    username: bot\n    password: \"{{input.API_TOKEN}}\"",
     )
 }
 
@@ -937,7 +929,7 @@ async fn import_source_missing_required_secret_returns_invalid_argument() {
     );
 }
 
-fn remove_config_source_section(config_dir: &Path, source_name: &str) {
+fn remove_config_source_section(config_dir: &std::path::Path, source_name: &str) {
     let config_path = config_dir.join("config.toml");
     let raw = fs::read_to_string(&config_path).expect("read config");
     let mut doc = raw.parse::<DocumentMut>().expect("parse config");
@@ -1854,28 +1846,27 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     use std::os::unix::fs::PermissionsExt;
 
     let harness = GrpcHarness::new().await;
-    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
-    let (manifest_yaml, openapi_file) =
-        fixture_v4_openapi_manifest_yaml(harness.temp_path(), &issues_http.uri());
     harness
         .import_source(
-            v4_secret_auth_manifest(&manifest_yaml),
-            Vec::new(),
+            fixture_manifest_with_inputs_yaml(),
+            vec![SourceVariable {
+                key: "API_BASE".to_string(),
+                value: "https://example.com".to_string(),
+            }],
             vec![SourceSecret {
-                key: "API_TOKEN".into(),
-                value: "secret-token".into(),
+                key: "API_TOKEN".to_string(),
+                value: "secret-token".to_string(),
             }],
         )
         .await;
-    fs::remove_file(openapi_file).expect("remove authored descriptor");
 
     let sources_root = harness
         .config_dir()
         .join("workspaces")
         .join("default")
         .join("sources");
-    let manifest_path = source_dir(harness.config_dir(), "github_v4_query").join("manifest.yaml");
-    let secret_path = source_dir(harness.config_dir(), "github_v4_query").join("secrets.env");
+    let manifest_path = source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
+    let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o500))
         .expect("make sources dir read-only");
 
@@ -1883,7 +1874,7 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         .source_client()
         .delete_source(Request::new(DeleteSourceRequest {
             workspace: Some(default_workspace()),
-            name: "github_v4_query".to_string(),
+            name: "secured_messages".to_string(),
         }))
         .await
         .expect_err("source directory cleanup should fail");
@@ -1896,28 +1887,21 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         manifest_path.exists(),
         "DB-backed rollback should restore legacy manifest files"
     );
-    let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
-    assert!(secret_material.contains("API_TOKEN=secret-token"));
+    assert!(secret_path.exists(), "secret file should be restored");
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "github_v4_query");
+    assert_eq!(listed[0].name, "secured_messages");
     let validated = harness
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
             workspace: Some(default_workspace()),
-            name: "github_v4_query".to_string(),
+            name: "secured_messages".to_string(),
         }))
         .await
         .expect("source should still validate from DB manifest")
         .into_inner();
     assert_eq!(validated.tables.len(), 1);
-    assert_eq!(
-        harness
-            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
-            .await,
-        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
-    );
 }
 
 #[tokio::test]

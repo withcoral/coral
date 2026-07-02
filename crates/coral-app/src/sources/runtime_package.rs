@@ -19,9 +19,7 @@ use coral_spec::{
 };
 
 use crate::bootstrap::AppError;
-use crate::sources::materialization::{
-    LoadedV4Materialization, validate_materialized_surface_base_url,
-};
+use crate::sources::materialization::LoadedV4Materialization;
 
 #[cfg(test)]
 pub(crate) fn runtime_components_for_v4_source(
@@ -385,7 +383,6 @@ fn surface_base_url(
             ))
         })?,
     };
-    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let metadata = openapi_document_metadata(&bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to derive base_url for DSL v4 surface '{}': {error}",
@@ -441,11 +438,7 @@ mod tests {
     };
     use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
 
-    use super::{runtime_components_for_v4_source, surface_base_url};
-
-    fn surface_without_authored_base_url() -> V4Surface {
-        openapi_surface_with_base_url("rest", "demo", "")
-    }
+    use super::runtime_components_for_v4_source;
 
     fn openapi_surface(id: &str, relation_namespace: &str) -> V4Surface {
         openapi_surface_with_base_url(id, relation_namespace, "https://api.example.com")
@@ -520,38 +513,6 @@ mod tests {
             source_document_sha256: String::new(),
             normalized_source_document_path: PathBuf::from("/tmp/source-document.yaml"),
             raw_source_document_path: PathBuf::from("/tmp/source-document.raw"),
-        }
-    }
-
-    fn manifest_with_surface(surface: V4Surface) -> V4SourceManifest {
-        V4SourceManifest {
-            common: V4SourceCommon {
-                dsl_version: 4,
-                name: "demo".to_string(),
-                description: String::new(),
-                test_queries: Vec::new(),
-            },
-            declared_inputs: surface.inputs.clone(),
-            surfaces: vec![surface],
-        }
-    }
-
-    fn materialized_surface(raw_source_document_path: PathBuf) -> MaterializedSurface {
-        MaterializedSurface {
-            surface_id: "rest".to_string(),
-            semantic_ir: SemanticIr {
-                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
-                source_name: "demo".to_string(),
-                surface_id: "rest".to_string(),
-                surface_type: SurfaceType::OpenApi,
-                importer_version: OPENAPI_IMPORTER_VERSION.to_string(),
-                operations: Vec::new(),
-                types: Vec::new(),
-                diagnostics: Vec::new(),
-            },
-            source_document_sha256: String::new(),
-            normalized_source_document_path: raw_source_document_path.clone(),
-            raw_source_document_path,
         }
     }
 

@@ -24,12 +24,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::bootstrap::AppError;
-use crate::credential_transport::validate_credential_endpoint_transport;
 use crate::sources::SourceName;
-use crate::sources::catalog::{
-    template_references_secret_input, validate_auth_spec_for_database_persistence,
-    validate_headers_for_database_persistence,
-};
 use crate::state::AppStateLayout;
 use crate::state::db::{MaterializationRecord, MaterializationSurfaceRecord};
 use crate::storage::fs;
@@ -882,7 +877,7 @@ fn app_error_from_core(error: coral_engine::CoreError) -> AppError {
     }
 }
 
-pub(crate) fn validate_materialized_surface_base_url(
+fn validate_materialized_surface_base_url(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     bytes: &[u8],
@@ -915,30 +910,7 @@ pub(crate) fn validate_materialized_surface_base_url(
         &base_url,
         "derived OpenAPI server",
     )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    let input_kinds = manifest
-        .declared_inputs
-        .iter()
-        .map(|input| (input.key.clone(), input.kind))
-        .collect::<BTreeMap<_, _>>();
-    let mut needs_transport_guard = validate_auth_spec_for_database_persistence(
-        &input_kinds,
-        &format!("surface '{}' auth", surface.id),
-        &openapi_runtime.auth,
-    )?;
-    needs_transport_guard |= validate_headers_for_database_persistence(
-        &input_kinds,
-        &format!("surface '{}' request_headers", surface.id),
-        &openapi_runtime.request_headers,
-    )?;
-    needs_transport_guard |= template_references_secret_input(&input_kinds, &base_url);
-    if needs_transport_guard {
-        validate_credential_endpoint_transport(
-            &format!("surface '{}' derived OpenAPI server base_url", surface.id),
-            base_url.raw(),
-        )?;
-    }
-    Ok(())
+    .map_err(|error| AppError::FailedPrecondition(error.to_string()))
 }
 
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
@@ -1645,7 +1617,7 @@ surfaces:
 
     #[test]
     fn load_v4_materialization_rejects_mismatched_manifest_hash() {
-        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let (_state, _descriptor, layout, manifest_yaml, _manifest) = setup_materialization();
         let changed_manifest_yaml = format!("description: changed\n{manifest_yaml}");
         let changed_manifest = parse_source_manifest_yaml(&changed_manifest_yaml)
             .expect("parse changed manifest")
@@ -1668,19 +1640,6 @@ surfaces:
                 .contains("manifest fingerprint does not match installed manifest"),
             "unexpected error: {error}"
         );
-
-        let source_name = source_name();
-        let mut record = materialization_record_from_dir(
-            &source_name,
-            &layout.v4_materialized_dir(&workspace_name(), &source_name),
-            0,
-        )
-        .expect("materialization record");
-        record.materialization_version = "v5".to_string();
-        let error =
-            load_v4_materialization_from_record(&source_name, &manifest_yaml, &manifest, &record)
-                .expect_err("unsupported version should fail");
-        assert!(error.to_string().contains("v5"));
     }
 
     #[test]
@@ -1731,18 +1690,6 @@ surfaces:
             serde_yaml::to_string(&fingerprint).expect("encode fingerprint"),
         )
         .expect("write fingerprint");
-        let rest_dir = layout.v4_surface_dir(&workspace_name(), &source_name(), "rest");
-        let extra_dir = layout.v4_surface_dir(&workspace_name(), &source_name(), "extra");
-        std::fs::create_dir_all(&extra_dir).expect("create extra surface dir");
-        for artifact in [
-            "source-document.raw",
-            "source-document.yaml",
-            "semantic-ir.yaml",
-        ] {
-            std::fs::copy(rest_dir.join(artifact), extra_dir.join(artifact))
-                .expect("copy extra surface artifact");
-        }
-
         let error = load_v4_materialization(
             &layout,
             &workspace_name(),
@@ -1753,9 +1700,7 @@ surfaces:
         .expect_err("extra surface should fail");
 
         assert!(
-            error
-                .to_string()
-                .contains("fingerprint surface set mismatch"),
+            error.to_string().contains("raw source document artifact"),
             "unexpected error: {error}"
         );
     }

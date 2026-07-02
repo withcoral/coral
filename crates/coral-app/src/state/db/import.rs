@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 
-use super::CoralDb;
 use super::session::DbRepos;
+use super::{CoralDb, DbError, MaterializationRecord};
 use crate::bootstrap::AppError;
 use crate::sources::catalog::validate_imported_manifest_database_persistence;
 use crate::sources::materialization::{
@@ -231,21 +231,90 @@ async fn import_filesystem_v4_materializations(
             else {
                 continue;
             };
-            let manifest = parse_source_manifest_yaml(&manifest_yaml)
-                .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+            let Some(manifest) = v4_backfill_or_skip(
+                parse_source_manifest_yaml(&manifest_yaml),
+                &workspace_name,
+                &source.name,
+            ) else {
+                continue;
+            };
             let Some(v4) = manifest.as_v4() else {
                 continue;
             };
-            let record = materialization_record_from_dir(&source.name, &dir, now_unix_nanos)?;
-            load_v4_materialization_from_record(&source.name, &manifest_yaml, v4, &record)?;
-            let mut tx = db.begin().await?;
-            tx.materializations()
-                .upsert(&workspace_name, &source.name, &record)
-                .await?;
-            tx.commit().await?;
+            let Some(record) = v4_backfill_or_skip(
+                materialization_record_from_dir(&source.name, &dir, now_unix_nanos),
+                &workspace_name,
+                &source.name,
+            ) else {
+                continue;
+            };
+            if v4_backfill_or_skip(
+                load_v4_materialization_from_record(&source.name, &manifest_yaml, v4, &record),
+                &workspace_name,
+                &source.name,
+            )
+            .is_none()
+            {
+                continue;
+            }
+            upsert_imported_v4_materialization(db, &workspace_name, &source.name, &record).await?;
         }
     }
     Ok(())
+}
+
+fn v4_backfill_or_skip<T, E: std::fmt::Display>(
+    result: Result<T, E>,
+    workspace_name: &WorkspaceName,
+    source_name: &crate::sources::SourceName,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(
+                workspace = %workspace_name,
+                source = %source_name,
+                detail = %error,
+                "skipping legacy DSL v4 materialization database backfill; re-add the source to regenerate materialized artifacts"
+            );
+            None
+        }
+    }
+}
+
+async fn upsert_imported_v4_materialization(
+    db: &CoralDb,
+    workspace_name: &WorkspaceName,
+    source_name: &crate::sources::SourceName,
+    record: &MaterializationRecord,
+) -> Result<(), AppError> {
+    let mut tx = db.begin().await?;
+    match tx
+        .materializations()
+        .upsert(workspace_name, source_name, record)
+        .await
+    {
+        Ok(()) => tx.commit().await.map_err(AppError::from),
+        Err(error) if is_unique_constraint_error(&error) => {
+            tx.rollback().await?;
+            let mut session = db;
+            if session
+                .materializations()
+                .get(workspace_name, source_name)
+                .await?
+                .is_some()
+            {
+                Ok(())
+            } else {
+                Err(error.into())
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn is_unique_constraint_error(error: &DbError) -> bool {
+    matches!(error, DbError::Sqlx(sqlx::Error::Database(database_error)) if database_error.is_unique_violation())
 }
 
 fn read_imported_manifest_file(
@@ -305,11 +374,17 @@ mod tests {
     use super::{SourceCatalogImportReport, import_config_source_catalog};
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
+    use crate::sources::materialization::{
+        MaterializationInputs, build_v4_materialization_tmp, replace_v4_materialization,
+    };
     use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, DatabaseConfig, ResolvedDatabaseConfig};
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::WorkspaceName;
+    use coral_spec::parse_source_manifest_yaml;
+
+    const OPENAPI_FIXTURE: &str = r#"{"openapi":"3.0.3","servers":[{"url":"https://api.example.com"}],"paths":{"/issues":{"get":{"operationId":"issues/list","responses":{"200":{"content":{"application/json":{"schema":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"title":{"type":"string"}}}}}}}}}}}}"#;
 
     #[tokio::test]
     async fn imports_config_source_catalog_into_database() {
@@ -777,9 +852,47 @@ mod tests {
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let workspace = WorkspaceName::parse("default").expect("workspace");
-        let source = unsafe_secret_endpoint_source();
+        let unsafe_source = unsafe_secret_endpoint_source();
         let manifest_yaml = unsafe_secret_endpoint_manifest_yaml("github", "1.2.3");
-        write_manifest_file(&layout, &workspace, &source.name, &manifest_yaml);
+        write_manifest_file(&layout, &workspace, &unsafe_source.name, &manifest_yaml);
+        let healthy = source("healthy_v4", None, [], [], None, SourceOrigin::Imported);
+        let corrupt = source("corrupt_v4", None, [], [], None, SourceOrigin::Imported);
+        let healthy_descriptor = temp.path().join("healthy-openapi.json");
+        fs::write(&healthy_descriptor, OPENAPI_FIXTURE).expect("write OpenAPI fixture");
+        let healthy_manifest = format!(
+            "name: {}\ndsl_version: 4\nsurfaces:\n- id: rest\n  type: openapi\n  file: {}\n",
+            healthy.name,
+            healthy_descriptor.display()
+        );
+        let parsed_manifest = parse_source_manifest_yaml(&healthy_manifest)
+            .expect("parse manifest")
+            .as_v4()
+            .expect("v4 manifest")
+            .clone();
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace,
+            &healthy.name,
+            &healthy_manifest,
+            &parsed_manifest,
+            &MaterializationInputs::default(),
+            "test",
+        );
+        replace_v4_materialization(
+            &layout,
+            &workspace,
+            &healthy.name,
+            &build.expect("build materialization").temp_dir,
+        )
+        .expect("install legacy materialization");
+        let corrupt_manifest = healthy_manifest.replace("healthy_v4", "corrupt_v4");
+        fs::create_dir_all(layout.v4_materialized_dir(&workspace, &corrupt.name))
+            .expect("create corrupt materialization dir");
+        fs::write(
+            layout.v4_fingerprint_file(&workspace, &corrupt.name),
+            "not: [yaml",
+        )
+        .expect("corrupt fingerprint");
         let db = open_sqlite(&layout).await;
         let mut tx = db.begin().await.expect("begin tx");
         tx.workspaces()
@@ -787,26 +900,47 @@ mod tests {
             .await
             .expect("ensure workspace");
         tx.sources()
-            .upsert_source(&workspace, &source, 7)
+            .upsert_source(&workspace, &unsafe_source, 7)
             .await
             .expect("write source without manifest row");
-        tx.app_state_markers()
-            .insert(super::LEGACY_SOURCE_CATALOG_IMPORT_MARKER, 7)
-            .await
-            .expect("insert source import marker");
-        tx.commit().await.expect("commit source");
+        for (source, manifest) in [(&healthy, &healthy_manifest), (&corrupt, &corrupt_manifest)] {
+            tx.sources()
+                .upsert_source(&workspace, source, 7)
+                .await
+                .expect("upsert source");
+            tx.source_manifests()
+                .upsert(&workspace, &source.name, manifest, 7)
+                .await
+                .expect("upsert manifest");
+        }
+        tx.commit().await.expect("commit sources");
 
         import_config_source_catalog(&db, &config_store, &layout, 11)
             .await
-            .expect("invalid backfill manifest should not fail bootstrap import");
+            .expect("invalid backfills should not fail startup import");
 
         let mut session = &db;
         assert!(
             session
                 .source_manifests()
-                .get(&workspace, &source.name)
+                .get(&workspace, &unsafe_source.name)
                 .await
                 .expect("get skipped source manifest")
+                .is_none()
+        );
+        let mut materializations = session.materializations();
+        assert!(
+            materializations
+                .get(&workspace, &healthy.name)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            materializations
+                .get(&workspace, &corrupt.name)
+                .await
+                .unwrap()
                 .is_none()
         );
     }
