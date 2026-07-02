@@ -82,8 +82,10 @@ export async function deleteSource(name: string): Promise<void> {
 }
 
 function splitBindings(inputs: InstallInput[]) {
-  const variables = inputs.filter((i) => !i.secret).map((i) => ({ key: i.key, value: i.value }))
-  const secrets = inputs.filter((i) => i.secret).map((i) => ({ key: i.key, value: i.value }))
+  const variables = inputs
+    .filter((i) => !i.secret)
+    .map((i) => ({ key: i.key, value: i.value.trim() }))
+  const secrets = inputs.filter((i) => i.secret).map((i) => ({ key: i.key, value: i.value.trim() }))
   return { variables, secrets }
 }
 

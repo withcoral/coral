@@ -294,6 +294,20 @@ message SourceInfo {
   SourceCredentialStorage credential_storage = 7;
 }
 
+// One globally registered source-spec metadata record.
+message SourceSpecInfo {
+  // Canonical source name.
+  string name = 1;
+  // Human-readable description.
+  string description = 2;
+  // Manifest version string.
+  string version = 3;
+  // Prompted source inputs in stable manifest order.
+  repeated SourceInputSpec inputs = 4;
+  // Where this source spec came from.
+  SourceOrigin origin = 5;
+}
+
 // Lists all bundled sources available for one workspace.
 message DiscoverSourcesRequest {
   // Workspace used to mark which bundled sources are already installed.
@@ -477,7 +491,7 @@ message ListSourceSpecsRequest {}
 // Returns globally registered source-spec summaries.
 message ListSourceSpecsResponse {
   // Globally registered source specs.
-  repeated SourceInfo source_specs = 1;
+  repeated SourceSpecInfo source_specs = 1;
 }
 
 // Registers one user-supplied source manifest in the global source-spec registry.

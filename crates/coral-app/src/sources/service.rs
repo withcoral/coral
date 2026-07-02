@@ -284,7 +284,7 @@ impl SourceServiceApi for SourceService {
                 .list_source_specs()
                 .map_err(app_status)?
                 .into_iter()
-                .map(candidate_source_to_proto)
+                .map(source_spec_to_proto)
                 .collect();
             Ok(Response::new(ListSourceSpecsResponse { source_specs }))
         })
@@ -630,6 +630,20 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+    }
+}
+
+fn source_spec_to_proto(source: CandidateSource) -> SourceSpecInfo {
+    SourceSpecInfo {
+        name: source.name.as_str().to_string(),
+        description: source.description,
+        version: source.version.unwrap_or_default(),
+        inputs: source
+            .inputs
+            .into_iter()
+            .map(candidate_source_input_to_proto)
+            .collect(),
+        origin: proto_source_origin(source.origin) as i32,
     }
 }
 

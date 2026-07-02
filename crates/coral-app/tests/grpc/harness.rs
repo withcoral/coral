@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use coral_api::v1::{
     CreateSourceRequest, DeleteSourceSpecRequest, ExecuteSqlRequest, ImportSourceRequest,
     ListCatalogRequest, ListSourceSpecsRequest, ListSourcesRequest, PaginationRequest,
-    RegisterSourceSpecRequest, Source, SourceInfo, SourceSecret, SourceVariable, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, catalog_item, import_source_response,
+    RegisterSourceSpecRequest, Source, SourceInfo, SourceSecret, SourceSpecInfo, SourceVariable,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, catalog_item,
+    import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, WorkspaceClient, batches_to_json_rows,
@@ -128,7 +129,7 @@ impl GrpcHarness {
             .expect("register source spec response")
     }
 
-    pub(crate) async fn list_source_specs(&self) -> Vec<SourceInfo> {
+    pub(crate) async fn list_source_specs(&self) -> Vec<SourceSpecInfo> {
         self.source_client()
             .list_source_specs(Request::new(ListSourceSpecsRequest {}))
             .await

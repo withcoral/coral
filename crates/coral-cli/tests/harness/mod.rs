@@ -31,7 +31,7 @@ use coral_api::v1::{
     ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
     QueryPlan, RegisterSourceSpecRequest, RegisterSourceSpecResponse, SearchCatalogRequest,
     SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin, SourceSecretInput, Table, TableSummary, ValidateSourceRequest,
+    SourceOrigin, SourceSecretInput, SourceSpecInfo, Table, TableSummary, ValidateSourceRequest,
     ValidateSourceResponse, Workspace, catalog_item, create_source_with_o_auth_response,
     import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
@@ -351,9 +351,19 @@ fn mock_source_spec() -> SourceInfo {
     }
 }
 
+fn mock_listed_source_spec() -> SourceSpecInfo {
+    SourceSpecInfo {
+        name: "linear".to_string(),
+        description: "Linear data".to_string(),
+        version: "3.0.0".to_string(),
+        inputs: Vec::new(),
+        origin: SourceOrigin::GlobalSpec as i32,
+    }
+}
+
 fn mock_list_source_specs_response() -> ListSourceSpecsResponse {
     ListSourceSpecsResponse {
-        source_specs: vec![mock_source_spec()],
+        source_specs: vec![mock_listed_source_spec()],
     }
 }
 
