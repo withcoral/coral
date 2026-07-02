@@ -9,9 +9,13 @@ use super::{CoralDb, CoralTx, now_unix_nanos_i64};
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::catalog::validate_imported_manifest_database_persistence;
+use crate::sources::materialization::{
+    SourceDiagnosticReporter, load_v4_materialization_from_record, materialization_record_from_dir,
+};
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::{AppStateLayout, ConfigStore};
 use crate::workspaces::{WorkspaceName, WorkspaceRecord};
+use coral_spec::parse_source_manifest_yaml;
 
 const WORKSPACE_CATALOG_CUTOVER_ID: &str = "workspace_catalog_cutover_v1";
 const SOURCE_CATALOG_IMPORT_ID: &str = "source_catalog_import_v1";
@@ -37,6 +41,7 @@ pub(crate) async fn run_state_migrations(
     let now_unix_nanos = now_unix_nanos_i64()?;
     import_config_source_catalog(db, config_store, layout, now_unix_nanos).await?;
     import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
+    import_filesystem_v4_materializations(db, layout, now_unix_nanos).await?;
     remove_legacy_task_jsonl(config_store, layout)?;
     Ok(())
 }
@@ -402,6 +407,68 @@ fn read_validated_manifest_for_backfill(
     }
 
     Some(manifest_yaml)
+}
+
+async fn import_filesystem_v4_materializations(
+    db: &CoralDb,
+    layout: &AppStateLayout,
+    now_unix_nanos: i64,
+) -> Result<(), AppError> {
+    // One-time backfill: artifacts are re-validated on the normal load path, so
+    // this migration reports no per-source diagnostics of its own.
+    let diagnostic_reporter = SourceDiagnosticReporter::default();
+    let mut session = db;
+    for workspace in session.workspaces().list().await? {
+        let workspace_name = WorkspaceName::parse(&workspace.id)?;
+        for source in session
+            .sources()
+            .list_workspace_sources(&workspace_name)
+            .await?
+            .into_iter()
+            .filter(|source| source.origin == SourceOrigin::Imported)
+        {
+            let materialized_dir = layout.v4_materialized_dir(&workspace_name, &source.name);
+            if !materialized_dir.exists()
+                || session
+                    .materializations()
+                    .get(&workspace_name, &source.name)
+                    .await?
+                    .is_some()
+            {
+                continue;
+            }
+            let Some(manifest_yaml) = session
+                .source_manifests()
+                .get(&workspace_name, &source.name)
+                .await?
+                .map(|record| record.manifest_yaml)
+            else {
+                continue;
+            };
+            let manifest = parse_source_manifest_yaml(&manifest_yaml)
+                .map_err(|error| AppError::InvalidInput(error.to_string()))?;
+            let Some(v4) = manifest.as_v4() else {
+                continue;
+            };
+            let record =
+                materialization_record_from_dir(&source.name, &materialized_dir, now_unix_nanos)?;
+            load_v4_materialization_from_record(
+                layout,
+                &workspace_name,
+                &source.name,
+                &manifest_yaml,
+                v4,
+                &record,
+                &diagnostic_reporter,
+            )?;
+            let mut tx = db.begin().await?;
+            tx.materializations()
+                .upsert(&workspace_name, &source.name, &record)
+                .await?;
+            tx.commit().await?;
+        }
+    }
+    Ok(())
 }
 
 fn read_imported_manifest_file(

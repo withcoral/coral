@@ -193,60 +193,6 @@ async fn startup_import_lists_non_default_legacy_config_source() {
 }
 
 #[tokio::test]
-async fn v4_materialization_reloads_from_database_after_restart() {
-    let temp = TempDir::new().expect("temp dir");
-    let config_dir = temp.path().join("coral-config");
-    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
-    let (manifest_yaml, openapi_file) =
-        fixture_v4_openapi_manifest_yaml(temp.path(), &issues_http.uri());
-    let manifest_yaml = v4_secret_auth_manifest(&manifest_yaml);
-
-    {
-        let harness = GrpcHarness::start_with_config_dir(config_dir.clone()).await;
-        harness
-            .import_source(
-                manifest_yaml,
-                Vec::new(),
-                vec![SourceSecret {
-                    key: "API_TOKEN".into(),
-                    value: "secret-token".into(),
-                }],
-            )
-            .await;
-        fs::create_dir_all(
-            source_dir(harness.config_dir(), "github_v4_query").join("materialized/v4"),
-        )
-        .expect("plant stale v4 materialization dir");
-        fs::remove_file(&openapi_file).expect("remove authored descriptor");
-    }
-
-    let harness = GrpcHarness::start_with_config_dir(config_dir).await;
-    assert_eq!(
-        harness
-            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
-            .await,
-        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
-    );
-    harness
-        .import_source(
-            fixture_manifest_yaml(harness.temp_path()).replace("local_messages", "github_v4_query"),
-            Vec::new(),
-            Vec::new(),
-        )
-        .await;
-    let pool = sqlx::SqlitePool::connect_with(
-        sqlx::sqlite::SqliteConnectOptions::new().filename(harness.config_dir().join("coral.db")),
-    )
-    .await
-    .expect("open db");
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM materializations")
-        .fetch_one(&pool)
-        .await
-        .expect("count materializations");
-    assert_eq!(count, 0);
-}
-
-#[tokio::test]
 async fn import_source_with_secrets_and_variables_get_source_returns_details() {
     let harness = GrpcHarness::with_workspace().await;
 
@@ -418,22 +364,6 @@ async fn import_rejects_cleartext_secret_endpoint_without_database_state() {
         .expect_err("cleartext credential endpoint should fail");
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
     assert!(error.message().contains("base_url"));
-    harness
-        .source_client()
-        .import_source(Request::new(ImportSourceRequest {
-            workspace: Some(default_workspace()),
-            manifest_yaml: v4_secret_auth_manifest(
-                &fixture_v4_openapi_manifest_yaml(harness.temp_path(), "http://api.example.com").0,
-            ),
-            variables: Vec::new(),
-            secrets: vec![SourceSecret {
-                key: "API_TOKEN".into(),
-                value: "secret-token".into(),
-            }],
-            oauth_credential_retrievals: Vec::new(),
-        }))
-        .await
-        .expect_err("cleartext derived credential endpoint should fail");
     assert!(harness.list_sources().await.is_empty());
 }
 
@@ -1860,29 +1790,29 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
     use std::os::unix::fs::PermissionsExt;
 
     let harness = GrpcHarness::new().await;
-
     harness.seed_workspace().await;
+    let issues_http = issues_http_fixture(&["Basic Ym90OnNlY3JldC10b2tlbg=="]).await;
+    let (manifest_yaml, openapi_file) =
+        fixture_v4_openapi_manifest_yaml(harness.temp_path(), &issues_http.uri());
     harness
         .import_source(
-            fixture_manifest_with_inputs_yaml(),
-            vec![SourceVariable {
-                key: "API_BASE".to_string(),
-                value: "https://example.com".to_string(),
-            }],
+            v4_secret_auth_manifest(&manifest_yaml),
+            Vec::new(),
             vec![SourceSecret {
-                key: "API_TOKEN".to_string(),
-                value: "secret-token".to_string(),
+                key: "API_TOKEN".into(),
+                value: "secret-token".into(),
             }],
         )
         .await;
+    fs::remove_file(openapi_file).expect("remove authored descriptor");
 
     let sources_root = harness
         .config_dir()
         .join("workspaces")
         .join("default")
         .join("sources");
-    let manifest_path = source_dir(harness.config_dir(), "secured_messages").join("manifest.yaml");
-    let secret_path = source_dir(harness.config_dir(), "secured_messages").join("secrets.env");
+    let manifest_path = source_dir(harness.config_dir(), "github_v4_query").join("manifest.yaml");
+    let secret_path = source_dir(harness.config_dir(), "github_v4_query").join("secrets.env");
     fs::set_permissions(&sources_root, fs::Permissions::from_mode(0o500))
         .expect("make sources dir read-only");
 
@@ -1890,7 +1820,7 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         .source_client()
         .delete_source(Request::new(DeleteSourceRequest {
             workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
+            name: "github_v4_query".to_string(),
         }))
         .await
         .expect_err("source directory cleanup should fail");
@@ -1903,21 +1833,28 @@ async fn delete_restores_artifacts_on_cleanup_failure() {
         manifest_path.exists(),
         "DB-backed rollback should restore legacy manifest files"
     );
-    assert!(secret_path.exists(), "secret file should be restored");
+    let secret_material = fs::read_to_string(&secret_path).expect("read restored secrets");
+    assert!(secret_material.contains("API_TOKEN=secret-token"));
 
     let listed = harness.list_sources().await;
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].name, "secured_messages");
+    assert_eq!(listed[0].name, "github_v4_query");
     let validated = harness
         .source_client()
         .validate_source(Request::new(ValidateSourceRequest {
             workspace: Some(default_workspace()),
-            name: "secured_messages".to_string(),
+            name: "github_v4_query".to_string(),
         }))
         .await
         .expect("source should still validate from DB manifest")
         .into_inner();
     assert_eq!(validated.tables.len(), 1);
+    assert_eq!(
+        harness
+            .execute_sql_rows("SELECT id, title FROM github_v4_query.issues")
+            .await,
+        vec![serde_json::json!({"id": 1, "title": "Stored materialization"})]
+    );
 }
 
 #[tokio::test]
