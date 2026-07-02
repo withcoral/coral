@@ -673,8 +673,8 @@ impl SourceManager {
             return Err(error);
         }
         source_dir_backup.commit()?;
-        cleanup_empty_parent(&self.layout.workspaces_root(), source_dir.parent());
-        cleanup_empty_parent(
+        fs::cleanup_empty_parent_dirs(&self.layout.workspaces_root(), source_dir.parent());
+        fs::cleanup_empty_parent_dirs(
             &self.layout.workspaces_root(),
             self.layout.workspace_dir(workspace_name).parent(),
         );
@@ -1289,7 +1289,7 @@ impl SourceManager {
             }
             None => {}
         }
-        cleanup_empty_parent(&self.layout.workspaces_root(), manifest_path.parent());
+        fs::cleanup_empty_parent_dirs(&self.layout.workspaces_root(), manifest_path.parent());
         Ok(())
     }
 
@@ -1668,25 +1668,6 @@ fn durable_import_manifest_yaml(
         );
     }
     serde_yaml::to_string(&value).map_err(AppError::from)
-}
-
-fn cleanup_empty_parent(root: &std::path::Path, path: Option<&std::path::Path>) {
-    let Some(mut current) = path.map(std::path::Path::to_path_buf) else {
-        return;
-    };
-    while current.starts_with(root) && current != root {
-        let Ok(mut entries) = std::fs::read_dir(&current) else {
-            break;
-        };
-        if entries.next().is_some() {
-            break;
-        }
-        let next = current.parent().unwrap_or(root).to_path_buf();
-        if std::fs::remove_dir(&current).is_err() {
-            break;
-        }
-        current = next;
-    }
 }
 
 #[cfg(test)]

@@ -99,27 +99,8 @@ impl RemovedGlobalSourceSpec for FsRemovedGlobalSourceSpec {
 
     fn commit(self: Box<Self>) -> Result<(), AppError> {
         self.backup.commit()?;
-        cleanup_empty_parent(&self.root, self.parent.as_deref());
+        fs::cleanup_empty_parent_dirs(&self.root, self.parent.as_deref());
         Ok(())
-    }
-}
-
-fn cleanup_empty_parent(root: &Path, path: Option<&Path>) {
-    let Some(mut current) = path.map(Path::to_path_buf) else {
-        return;
-    };
-    while current.starts_with(root) && current != root {
-        let Ok(mut entries) = std::fs::read_dir(&current) else {
-            break;
-        };
-        if entries.next().is_some() {
-            break;
-        }
-        let next = current.parent().unwrap_or(root).to_path_buf();
-        if std::fs::remove_dir(&current).is_err() {
-            break;
-        }
-        current = next;
     }
 }
 

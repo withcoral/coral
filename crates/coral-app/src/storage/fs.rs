@@ -127,6 +127,25 @@ impl DirectoryBackup {
     }
 }
 
+pub(crate) fn cleanup_empty_parent_dirs(root: &Path, path: Option<&Path>) {
+    let Some(mut current) = path.map(Path::to_path_buf) else {
+        return;
+    };
+    while current.starts_with(root) && current != root {
+        let Ok(mut entries) = fs::read_dir(&current) else {
+            break;
+        };
+        if entries.next().is_some() {
+            break;
+        }
+        let next = current.parent().unwrap_or(root).to_path_buf();
+        if fs::remove_dir(&current).is_err() {
+            break;
+        }
+        current = next;
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct FileLock {
     _file: File,

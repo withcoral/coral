@@ -40,8 +40,23 @@ Installed sources for that workspace live under
 There is no separate active-workspace key in `config.toml`; use
 `CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
 Source specs imported from files and source credential material remain scoped
-to the source installation in a workspace. Reusable global source specs and
-reusable credential references are not config objects today.
+to the source installation in a workspace.
+
+## Global Source Specs
+
+Reusable global source specs are indexed under `[source_specs]` and store their
+manifest artifacts under `source_specs/<name>` inside Coral's local state
+directory.
+
+```toml
+[source_specs.internal_crm]
+version = "1.0.0"
+```
+
+Sources installed from a global source spec store `origin = "global"` under the
+workspace source entry. Removing a global source spec does not remove those
+workspace sources, but validation and queries fail until you register the spec
+again or remove and re-add the source.
 
 ## Runtime features
 
