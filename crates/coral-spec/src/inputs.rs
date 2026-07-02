@@ -13,10 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Map, Value};
 use url::Url;
 
-use crate::{
-    ManifestError, ParsedTemplate, Result, TemplateNamespace, is_loopback_url,
-    validate_https_or_loopback_scheme_name, validate_https_or_loopback_unresolved_host_scheme,
-};
+use crate::{ManifestError, ParsedTemplate, Result, TemplateNamespace};
 
 const RESERVED_INPUT_KEY_PREFIXES: &[&str] = &["__coral"];
 
@@ -191,50 +188,8 @@ fn render_oauth_endpoint_url(
 }
 
 fn validate_oauth_provider_endpoint_template_prefix(context: &str, raw_prefix: &str) -> Result<()> {
-    // The prefix may end in the literal scheme delimiter before a required
-    // variable supplies the host, e.g. `http://{{input.HOST}}/oauth/token`.
-    // Validate the known scheme here; the fully rendered URL is validated by
-    // `render_oauth_endpoint_url` before any OAuth request is made.
-    if let Some(scheme) = raw_prefix.strip_suffix(':')
-        && is_url_scheme_name(scheme)
-    {
-        return validate_https_or_loopback_unresolved_host_scheme(context, scheme)
-            .map_err(ManifestError::validation);
-    }
-    if let Some((scheme, authority_prefix)) = raw_prefix.split_once("://") {
-        let authority_may_continue = !authority_prefix
-            .chars()
-            .any(|ch| matches!(ch, '/' | '?' | '#'));
-        if authority_may_continue {
-            return validate_https_or_loopback_unresolved_host_scheme(context, scheme)
-                .map_err(ManifestError::validation);
-        }
-    }
-    let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
-    if let Ok(url) = Url::parse(parse_prefix) {
-        return validate_https_or_loopback_scheme_name(
-            context,
-            url.scheme(),
-            is_loopback_url(&url),
-        )
-        .map_err(ManifestError::validation);
-    }
-    let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
-        return Ok(());
-    };
-    validate_https_or_loopback_unresolved_host_scheme(context, scheme)
+    crate::url_policy::validate_https_or_loopback_template_prefix(context, raw_prefix)
         .map_err(ManifestError::validation)
-}
-
-fn is_url_scheme_name(value: &str) -> bool {
-    let Some(first) = value.chars().next() else {
-        return false;
-    };
-    first.is_ascii_alphabetic()
-        && value
-            .chars()
-            .skip(1)
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
 
 /// Supported loopback redirect URI port binding modes.
@@ -2170,6 +2125,24 @@ tables: []
     }
 
     #[test]
+    fn accepts_uppercase_https_oauth_endpoint_templates_with_unresolved_authority() {
+        for token_url in [
+            "HTTPS://{{input.OAUTH_HOST}}/oauth/token",
+            "HTTPS:{{input.OAUTH_HOST}}/oauth/token",
+        ] {
+            collect(
+                &oauth_input(DEFAULT_OAUTH_CLIENT)
+                    .replace(
+                        "  API_TOKEN:\n",
+                        "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                    )
+                    .replace("https://provider.example.com/oauth/token", token_url),
+            )
+            .expect("uppercase HTTPS scheme prefix should be accepted");
+        }
+    }
+
+    #[test]
     fn defers_oauth_endpoint_url_parsing_when_required_variable_supplies_authority() {
         let inputs = collect(
             &oauth_input(DEFAULT_OAUTH_CLIENT)
@@ -2265,6 +2238,29 @@ tables: []
                 ),
         )
         .expect_err("plain HTTP scheme prefix should fail with unresolved authority");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must use https when the host is supplied by a required input"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_uppercase_http_oauth_endpoint_templates_without_authority_slashes() {
+        let error = collect(
+            &oauth_input(DEFAULT_OAUTH_CLIENT)
+                .replace(
+                    "  API_TOKEN:\n",
+                    "  OAUTH_HOST:\n    kind: variable\n  API_TOKEN:\n",
+                )
+                .replace(
+                    "https://provider.example.com/oauth/token",
+                    "HTTP:{{input.OAUTH_HOST}}/oauth/token",
+                ),
+        )
+        .expect_err("uppercase plain HTTP scheme prefix should fail with unresolved authority");
 
         assert!(
             error

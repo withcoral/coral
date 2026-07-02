@@ -41,13 +41,13 @@ pub fn validate_https_or_loopback_scheme_name(
     scheme: &str,
     host_is_loopback: bool,
 ) -> Result<(), String> {
-    match scheme {
+    match scheme.to_ascii_lowercase().as_str() {
         "https" => Ok(()),
         "http" if host_is_loopback => Ok(()),
         "http" => Err(format!(
             "{context} must use https unless it targets localhost"
         )),
-        scheme => Err(format!(
+        _ => Err(format!(
             "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
         )),
     }
@@ -63,13 +63,61 @@ pub fn validate_https_or_loopback_unresolved_host_scheme(
     context: &str,
     scheme: &str,
 ) -> Result<(), String> {
-    match scheme {
+    match scheme.to_ascii_lowercase().as_str() {
         "https" => Ok(()),
         "http" => Err(format!(
             "{context} must use https when the host is supplied by a required input"
         )),
-        scheme => Err(format!(
+        _ => Err(format!(
             "{context} has unsupported scheme '{scheme}'; use https unless it targets localhost"
         )),
     }
+}
+
+/// Enforces the https-or-loopback policy for a URL template prefix that ends
+/// before a required input value.
+///
+/// If the prefix has no URL scheme, the required input may supply the whole
+/// authority and the fully rendered URL must be checked later. If the prefix
+/// exposes a scheme but leaves the authority unresolved, only `https` is
+/// accepted at manifest-validation time.
+pub(crate) fn validate_https_or_loopback_template_prefix(
+    context: &str,
+    raw_prefix: &str,
+) -> Result<(), String> {
+    if let Some(scheme) = raw_prefix.strip_suffix(':')
+        && is_url_scheme_name(scheme)
+    {
+        return validate_https_or_loopback_unresolved_host_scheme(context, scheme);
+    }
+
+    if let Some((scheme, authority_prefix)) = raw_prefix.split_once("://") {
+        let authority_may_continue = !authority_prefix
+            .chars()
+            .any(|ch| matches!(ch, '/' | '?' | '#'));
+        if authority_may_continue {
+            return validate_https_or_loopback_unresolved_host_scheme(context, scheme);
+        }
+    }
+
+    let parse_prefix = raw_prefix.strip_suffix(':').unwrap_or(raw_prefix);
+    if let Ok(url) = Url::parse(parse_prefix) {
+        return validate_https_or_loopback_scheme(context, &url);
+    }
+
+    let Some((scheme, _rest)) = raw_prefix.split_once("://") else {
+        return Ok(());
+    };
+    validate_https_or_loopback_unresolved_host_scheme(context, scheme)
+}
+
+fn is_url_scheme_name(value: &str) -> bool {
+    let Some(first) = value.chars().next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && value
+            .chars()
+            .skip(1)
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
 }
