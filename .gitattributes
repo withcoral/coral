@@ -2,6 +2,7 @@
 
 # Dependency resolver outputs.
 Cargo.lock linguist-generated
+apps/desktop/package-lock.json linguist-generated
 apps/ui/package-lock.json linguist-generated
 apps/reef/package-lock.json linguist-generated
 
