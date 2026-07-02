@@ -16,8 +16,8 @@ use coral_api::v1::{
     ImportSourceRequest, ImportSourceResponse, ListSourceSpecsRequest, ListSourcesRequest,
     OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess,
     RegisterSourceSpecRequest, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    create_source_with_o_auth_response, import_source_response, query_test_result,
+    SourceSecret, SourceSpecInfo, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    Workspace, create_source_with_o_auth_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error};
@@ -99,7 +99,9 @@ pub(crate) async fn list_sources(
         .sources)
 }
 
-pub(crate) async fn list_source_specs(app: &AppClient) -> Result<Vec<SourceInfo>, anyhow::Error> {
+pub(crate) async fn list_source_specs(
+    app: &AppClient,
+) -> Result<Vec<SourceSpecInfo>, anyhow::Error> {
     Ok(app
         .source_client()
         .list_source_specs(Request::new(ListSourceSpecsRequest {}))
@@ -152,6 +154,28 @@ pub(crate) async fn add_named_source(
             name: name.to_string(),
             variables,
             secrets,
+            resolve_inputs_from_environment: false,
+        }))
+        .await?
+        .into_inner();
+    response
+        .source
+        .ok_or_else(|| anyhow::anyhow!("create source response missing source"))
+}
+
+pub(crate) async fn add_named_source_from_environment(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<Source, anyhow::Error> {
+    let response = app
+        .source_client()
+        .create_source(Request::new(CreateSourceRequest {
+            workspace: Some(workspace.clone()),
+            name: name.to_string(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            resolve_inputs_from_environment: true,
         }))
         .await?
         .into_inner();

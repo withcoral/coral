@@ -145,6 +145,7 @@ impl GrpcHarness {
                 name: name.to_string(),
                 variables: Vec::new(),
                 secrets: Vec::new(),
+                resolve_inputs_from_environment: false,
             }))
             .await
             .expect("create global source")

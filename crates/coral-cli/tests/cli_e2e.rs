@@ -1147,6 +1147,9 @@ async fn source_add_name_installs_global_source_when_not_bundled() {
     assert_eq!(create_requests.len(), 1, "expected one create_source call");
     assert_eq!(create_requests[0].name, "linear");
     assert_default_workspace(create_requests[0].workspace.as_ref());
+    assert!(create_requests[0].resolve_inputs_from_environment);
+    assert!(create_requests[0].variables.is_empty());
+    assert!(create_requests[0].secrets.is_empty());
     let validate_requests = server.validate_source_requests();
     assert_eq!(
         validate_requests.len(),
@@ -1159,7 +1162,7 @@ async fn source_add_name_installs_global_source_when_not_bundled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn source_add_reports_missing_env_vars_without_interactive() {
+async fn source_add_requests_app_environment_resolution_without_interactive() {
     let server = MockServer::start().await;
 
     let assert = server
@@ -1167,21 +1170,19 @@ async fn source_add_reports_missing_env_vars_without_interactive() {
         .args(["source", "add", "github"])
         .env_remove("GITHUB_TOKEN")
         .assert()
-        .failure();
+        .success();
 
-    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        stderr.contains("missing required environment variable"),
-        "expected missing env var error: {stderr}"
+        stdout.contains("Added source github"),
+        "expected add confirmation: {stdout}"
     );
-    assert!(
-        stderr.contains("GITHUB_TOKEN"),
-        "expected missing env var to name GITHUB_TOKEN: {stderr}"
-    );
-    assert!(
-        stderr.contains("coral source add --interactive github"),
-        "expected exact interactive recovery command: {stderr}"
-    );
+    let create_requests = server.create_source_requests();
+    assert_eq!(create_requests.len(), 1, "expected one create_source call");
+    assert_eq!(create_requests[0].name, "github");
+    assert!(create_requests[0].resolve_inputs_from_environment);
+    assert!(create_requests[0].variables.is_empty());
+    assert!(create_requests[0].secrets.is_empty());
 
     server.shutdown().await;
 }

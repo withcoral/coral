@@ -330,6 +330,8 @@ message CreateSourceRequest {
   repeated SourceVariable variables = 3;
   // Source-owned secret values.
   repeated SourceSecret secrets = 4;
+  // Resolve manifest inputs from the app process environment.
+  bool resolve_inputs_from_environment = 5;
 }
 
 // Returns the installed source.

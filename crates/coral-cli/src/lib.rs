@@ -1019,24 +1019,20 @@ async fn install_named_source(
     available: SourceInfo,
     interactive: bool,
 ) -> Result<Source, anyhow::Error> {
-    let inputs = available
-        .inputs
-        .iter()
-        .map(manifest_input_from_proto)
-        .collect::<Result<Vec<_>, _>>()?;
     let origin = SourceOrigin::try_from(available.origin).unwrap_or(SourceOrigin::Unspecified);
     match origin {
         SourceOrigin::Bundled | SourceOrigin::GlobalSpec if interactive => {
+            let inputs = available
+                .inputs
+                .iter()
+                .map(manifest_input_from_proto)
+                .collect::<Result<Vec<_>, _>>()?;
             let inputs = source_ops::prompt_for_inputs_with_credential_methods(&inputs)?;
             source_ops::add_named_source_with_credentials(app, workspace, &available.name, inputs)
                 .await
         }
         SourceOrigin::Bundled | SourceOrigin::GlobalSpec => {
-            let (variables, secrets) = source_ops::collect_inputs_from_env(
-                &inputs,
-                format!("coral source add --interactive {}", available.name),
-            )?;
-            source_ops::add_named_source(app, workspace, &available.name, variables, secrets).await
+            source_ops::add_named_source_from_environment(app, workspace, &available.name).await
         }
         SourceOrigin::Imported | SourceOrigin::Unspecified => Err(anyhow::anyhow!(
             "source '{}' cannot be added by name; use --file for imported manifests",

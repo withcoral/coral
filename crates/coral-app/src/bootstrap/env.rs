@@ -49,6 +49,14 @@ fn coral_config_dir_override() -> Option<PathBuf> {
     std::env::var_os(CORAL_CONFIG_DIR).map(PathBuf::from)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+pub(crate) fn source_input_env_value(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AppEnvironment, CORAL_CONFIG_DIR, coral_config_dir_override};

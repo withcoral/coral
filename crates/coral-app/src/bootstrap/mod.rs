@@ -13,6 +13,7 @@ use crate::telemetry::{
 };
 use crate::workspaces::WorkspaceName;
 
+pub(crate) use env::source_input_env_value;
 #[cfg(test)]
 pub(crate) use error::MAX_STATUS_DETAIL_BYTES;
 pub(crate) use error::{app_status, core_status};
