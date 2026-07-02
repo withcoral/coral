@@ -268,9 +268,9 @@ surfaces:
         .iter()
         .map(|input| (input.wire_name.as_str(), input.sql_exposure))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::Filter));
-    assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::Filter));
-    assert_eq!(exposures.get("state"), Some(&SqlInputExposure::Filter));
+    assert_eq!(exposures.get("owner"), Some(&SqlInputExposure::FunctionArg));
+    assert_eq!(exposures.get("repo"), Some(&SqlInputExposure::FunctionArg));
+    assert_eq!(exposures.get("state"), Some(&SqlInputExposure::FunctionArg));
     assert_eq!(exposures.get("page"), Some(&SqlInputExposure::Internal));
     assert_eq!(exposures.get("per_page"), Some(&SqlInputExposure::Internal));
 
@@ -278,8 +278,14 @@ surfaces:
         .into_iter()
         .map(|filter| filter.name)
         .collect::<BTreeSet<_>>();
+    assert!(filter_names.is_empty());
+
+    let arg_names = projection_arg_specs(projection)
+        .into_iter()
+        .map(|arg| arg.name)
+        .collect::<BTreeSet<_>>();
     assert_eq!(
-        filter_names,
+        arg_names,
         BTreeSet::from(["owner".to_string(), "repo".to_string(), "state".to_string()])
     );
 
@@ -287,8 +293,8 @@ surfaces:
         .into_iter()
         .map(|column| column.name)
         .collect::<BTreeSet<_>>();
-    assert!(column_names.contains("owner"));
-    assert!(column_names.contains("repo"));
+    assert!(!column_names.contains("owner"));
+    assert!(!column_names.contains("repo"));
     assert!(column_names.contains("state"));
     assert!(!column_names.contains("page"));
     assert!(!column_names.contains("per_page"));
@@ -300,6 +306,15 @@ surfaces:
         .map(|param| param.name.as_str())
         .collect::<BTreeSet<_>>();
     assert_eq!(query_names, BTreeSet::from(["state"]));
+    assert!(matches!(
+        &request
+            .query
+            .iter()
+            .find(|param| param.name == "state")
+            .expect("state query")
+            .value,
+        crate::ValueSourceSpec::Arg { .. }
+    ));
     assert!(
         !projection.guide.contains("paginate"),
         "projection guide should not describe pagination: {}",
@@ -462,27 +477,28 @@ components:
     )
     .expect("import");
     let catalog = generate_projection_catalog(v4, std::slice::from_ref(&ir)).expect("catalog");
-    let table_projection = catalog
+    let list_projection = catalog
         .projections
         .iter()
         .find(|projection| projection.operation_id == "list_items")
-        .expect("table projection");
-    let table_operation = ir
+        .expect("list projection");
+    let list_operation = ir
         .operations
         .iter()
-        .find(|operation| operation.id == table_projection.operation_id)
-        .expect("table operation");
-    let table_request =
-        request_spec_for_projection(table_projection, table_operation).expect("table request");
+        .find(|operation| operation.id == list_projection.operation_id)
+        .expect("list operation");
+    let list_request =
+        request_spec_for_projection(list_projection, list_operation).expect("list request");
     assert_eq!(
-        table_request.path.raw(),
-        "/tenants/{{filter.tenant|%7Cpublic%7D%7D}}/items"
+        list_request.path.raw(),
+        "/tenants/{{arg.tenant|%7Cpublic%7D%7D}}/items"
     );
-    let table_filter = projection_filter_specs(table_projection)
+    assert!(projection_filter_specs(list_projection).is_empty());
+    let list_arg = projection_arg_specs(list_projection)
         .into_iter()
-        .find(|filter| filter.name == "tenant")
-        .expect("tenant filter");
-    assert!(!table_filter.required);
+        .find(|arg| arg.name == "tenant")
+        .expect("tenant arg");
+    assert!(!list_arg.required);
 
     let search_projection = catalog
         .projections
@@ -520,7 +536,7 @@ components:
         .expect("namespace request");
     assert_eq!(
         namespace_request.path.raw(),
-        "/namespaces/{{filter.namespace|%252E}}/items"
+        "/namespaces/{{arg.namespace|%252E}}/items"
     );
 }
 
@@ -659,7 +675,12 @@ components:
         .get("pulls_list")
         .expect("pulls_list projection");
     assert_eq!(pulls.0, "pull_requests");
-    assert!(matches!(pulls.1, ProjectionKind::Table));
+    assert!(matches!(
+        pulls.1,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
     let commits = names_by_operation
         .get("repos_list_commits")
         .expect("repos_list_commits projection");

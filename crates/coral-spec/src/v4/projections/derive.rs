@@ -69,14 +69,14 @@ fn generate_projection(
     let rest = rest_execution(operation);
     let mut visibility = initial_projection_visibility(operation, rest);
     let mut projection_diagnostics = operation.diagnostics.clone();
-    let kind = projection_kind(operation, is_search);
+    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
+    let pagination_query_params = pagination_query_param_names(&pagination);
+    let kind = projection_kind(operation, is_search, &pagination_query_params);
     let sql_exposure = if matches!(kind, ProjectionKind::Table) {
         SqlInputExposure::Filter
     } else {
         SqlInputExposure::FunctionArg
     };
-    let pagination = rest.map_or_else(PaginationSpec::default, |rest| rest.pagination.clone());
-    let pagination_query_params = pagination_query_param_names(&pagination);
     let mut used_input_names = HashSet::new();
     let use_sql_input_normalization = matches!(operation.execution, IrExecutionAttachment::Mcp(_));
     let inputs = operation
@@ -85,7 +85,7 @@ fn generate_projection(
         .map(|input| {
             let (exposure, pagination_owned_input) = match &operation.execution {
                 IrExecutionAttachment::Rest(_) => {
-                    projection_input_sql_exposure(input, sql_exposure, &pagination_query_params)
+                    rest_input_exposure(input, sql_exposure, &pagination_query_params)
                 }
                 IrExecutionAttachment::Mcp(mcp) if mcp_pagination_owns_input(mcp, input) => {
                     (SqlInputExposure::Internal, true)
@@ -175,14 +175,17 @@ fn initial_projection_visibility(
     }
 }
 
-fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
+fn projection_kind(
+    operation: &IrOperation,
+    is_search: bool,
+    pagination_query_params: &HashSet<&str>,
+) -> ProjectionKind {
     let function_kind = match &operation.execution {
         IrExecutionAttachment::Rest(_) | IrExecutionAttachment::Mcp(_) if is_search => {
             Some(SourceTableFunctionKind::Search)
         }
         IrExecutionAttachment::Rest(_)
-            if operation.output.cardinality == OutputCardinality::Singleton
-                && operation.inputs.iter().any(|input| input.required) =>
+            if has_required_public_rest_input(operation, pagination_query_params) =>
         {
             Some(SourceTableFunctionKind::Table)
         }
@@ -192,6 +195,17 @@ fn projection_kind(operation: &IrOperation, is_search: bool) -> ProjectionKind {
     };
     function_kind.map_or(ProjectionKind::Table, |function_kind| {
         ProjectionKind::TableFunction { function_kind }
+    })
+}
+
+fn has_required_public_rest_input(
+    operation: &IrOperation,
+    pagination_query_params: &HashSet<&str>,
+) -> bool {
+    operation.inputs.iter().any(|input| {
+        input.required
+            && rest_input_exposure(input, SqlInputExposure::Filter, pagination_query_params).0
+                == SqlInputExposure::Filter
     })
 }
 
@@ -219,7 +233,7 @@ fn projection_input_required(input: &IrOperationInput) -> bool {
     input.required && (input.default_value.is_none() || input.location == IrInputLocation::ToolArg)
 }
 
-fn projection_input_sql_exposure(
+fn rest_input_exposure(
     input: &IrOperationInput,
     default_exposure: SqlInputExposure,
     pagination_query_params: &HashSet<&str>,

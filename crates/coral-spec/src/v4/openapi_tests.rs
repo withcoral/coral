@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::parse_source_manifest_yaml;
+use crate::{SourceTableFunctionKind, parse_source_manifest_yaml};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -243,7 +243,12 @@ components:
         .find(|projection| projection.operation_id == "listincidents")
         .expect("projection");
     assert_eq!(projection.name, "incidents");
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
@@ -302,7 +307,12 @@ components:
     let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     assert_eq!(projection.name, "repositories");
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
@@ -512,7 +522,12 @@ components:
         .expect("projection");
     assert_eq!(projection.name, "issues");
     assert_eq!(projection.visibility, ProjectionVisibility::Published);
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
