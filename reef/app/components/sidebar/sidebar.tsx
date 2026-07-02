@@ -104,8 +104,7 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
       <div className={styles.nav}>
         {NAV_ITEMS.map((item) => {
           const isActive = item.paths.includes(location.pathname)
-
-          return (
+          const button = (
             <SidebarButton
               aria-label={item.label}
               as={NavLink}
@@ -117,6 +116,15 @@ export function Sidebar({ initialIsMinimized }: SidebarProps) {
             >
               {item.label}
             </SidebarButton>
+          )
+
+          // Collapsed sidebar hides the label — surface it on hover instead.
+          return isMinimized ? (
+            <Tooltip content={item.label} key={item.label} side="right">
+              {button}
+            </Tooltip>
+          ) : (
+            button
           )
         })}
       </div>

@@ -233,9 +233,12 @@ async function stopServices(): Promise<void> {
 function registerIpcHandlers() {
   ipcMain.handle('coral:await-initialization', async (): Promise<SidecarInfo> => {
     const started = await ensureSidecar()
-    // Packaged renderer runs under coral-app:// and reaches the sidecar through
-    // the same-origin proxy; dev runs over Vite's http origin and hits it directly.
-    return { url: app.isPackaged ? APP_GRPC_BASE : started.url, packaged: started.packaged }
+    // Key off how the window was actually loaded, not app.isPackaged: whenever
+    // the renderer runs under coral-app:// (no dev override) it must use the
+    // same-origin proxy, or its gRPC calls are cross-origin and CSP-blocked.
+    // Only the Vite dev override hits the sidecar directly.
+    const url = rendererUrl() === null ? APP_GRPC_BASE : started.url
+    return { url, packaged: started.packaged }
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))

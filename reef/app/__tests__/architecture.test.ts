@@ -343,6 +343,12 @@ describe('Architectural Tests', () => {
       expect(routeConfig).toContain("route('traces', 'routes/traces.tsx')")
       // Settings is gated to the desktop build, but the route entry is still present.
       expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
+
+      // Structural check: every route is nested inside the layout, and settings
+      // keeps its desktop-only conditional spread.
+      expect(routeConfig).toMatch(
+        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx'\),\s*route\('traces', 'routes\/traces\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
+      )
     })
 
     it('route files should not have circular dependencies', () => {

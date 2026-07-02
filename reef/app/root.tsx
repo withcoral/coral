@@ -93,7 +93,10 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function clientLoader(_args: Route.ClientLoaderArgs) {
-  await ensureCoralRuntime()
+  // Warm the runtime, but best-effort: a sidecar failure must not fail the whole
+  // app shell. Route-level fetches surface connectivity errors where they're
+  // handled with inline loading/error states.
+  await ensureCoralRuntime().catch(() => undefined)
   return {
     sidebarIsMinimized:
       typeof document === 'undefined' ? false : readSidebarCollapsedCookieValue(document.cookie),

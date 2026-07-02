@@ -4,10 +4,11 @@ let runtimeInfo: SidecarInfo | null = null
 let runtimePromise: Promise<SidecarInfo> | null = null
 
 function fallbackRuntimeInfo(): SidecarInfo {
-  return {
-    packaged: false,
-    url: import.meta.env.VITE_CORAL_GRPC_WEB_URL ?? window.location.origin,
-  }
+  const envUrl = import.meta.env.VITE_CORAL_GRPC_WEB_URL
+  // Guard the window deref so SSR/test paths (no window) don't hard-crash before
+  // any network call — require an explicit URL there instead.
+  const url = envUrl ?? (typeof window === 'undefined' ? '' : window.location.origin)
+  return { packaged: false, url }
 }
 
 export function ensureCoralRuntime(): Promise<SidecarInfo> {

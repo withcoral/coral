@@ -161,7 +161,17 @@ async function proxyToSidecar(
 
   // A main-process fetch is not subject to CORS, so the sidecar needs no CORS
   // layer for this path.
-  return net.fetch(target, { method: request.method, headers: request.headers, body })
+  try {
+    return await net.fetch(target, { method: request.method, headers: request.headers, body })
+  } catch (error) {
+    // The sidecar can die between resolve and fetch — return a controlled 502
+    // instead of surfacing a raw network failure to the renderer.
+    console.error('[app-renderer] sidecar proxy request failed', error)
+    return new Response('Sidecar request failed', {
+      status: 502,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
 }
 
 export function registerAppProtocol(resolveSidecarBaseUrl: () => Promise<string>): void {
