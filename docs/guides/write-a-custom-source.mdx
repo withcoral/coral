@@ -176,42 +176,6 @@ For field-level details and examples, see [Credential methods](/reference/source
 
 Keep each method's `hint` scoped to the fields that method collects. If OAuth endpoint URLs need non-secret install-time configuration, declare those values as source variables; see [Source inputs](/reference/source-spec-reference#source-inputs).
 
-When an API supports either a complete pasted API-key header or an OAuth access
-token, declare both credential inputs as optional secrets, then use
-`from: one_of` and put the pasted header first, followed by a `from: bearer`
-fallback for the raw OAuth token.
-
-```yaml
-inputs:
-  DEMO_API_KEY:
-    kind: secret
-    required: false
-  DEMO_OAUTH_ACCESS_TOKEN:
-    kind: secret
-    required: false
-```
-
-### OAuth client and redirect options
-
-Choose OAuth client settings from the provider's OAuth app and token endpoint requirements:
-
-- Use `pkce: required` for public clients when the provider supports it. Use `pkce: disabled` only for providers that do not support PKCE.
-- When the provider supports OAuth Dynamic Client Registration, put `client.dynamic_registration.registration_url` under the OAuth method. Coral registers a native client during interactive setup and uses the returned client ID for the authorization/device and token requests, so users do not need to create an OAuth app manually. Source specs cannot configure a `web` Dynamic Client Registration application type. Set `request_refresh_token_grant: true` only when the provider supports registering clients for refresh-token grants.
-- When the token endpoint requires client authentication with a client secret, prompt for both OAuth client values: set `client.id.input`, `client.secret.input`, and `client.secret.transport` (`basic_auth` or `request_body`) to match the token endpoint.
-- When the provider requires pre-registered redirect URIs with exact ports, use `redirect_uri_port_mode: fixed` with a non-zero port and tell users to register that exact URI in the OAuth app.
-- For OAuth-protected MCP Streamable HTTP servers, set `oauth.resource` to the MCP server URL when the authorization server requires OAuth resource indicators.
-- When OAuth URLs need non-secret install-time configuration, such as a Microsoft tenant ID, declare that value as a `kind: variable` input and reference it with `{{input.KEY}}` in `endpoints.authorization_url`, `endpoints.token_url`, `endpoints.device_authorization_url`, `resource`, or `client.dynamic_registration.registration_url`. OAuth URL templates do not support secrets, filters, function arguments, state, or inline defaults.
-
-### Install-time input collection
-
-When you run `coral source add --file`, Coral reads each declared `input` from an environment variable of the same name, or prompts for it when you pass `--interactive`. `kind: variable` values go to source variables; `kind: secret` values go to the secret store. API keys, bearer tokens, OAuth access tokens, passwords, private keys, and authorization values must be secrets, even when the credential is read-only. Declaring an input only configures storage; it does not send the value to the API. Runtime request fields such as `auth.headers`, `BasicAuth`, `CustomAuth`, and request headers decide where stored inputs are used. For secret inputs, `credential.methods` controls how the secret is collected: `type: source_config` means environment-variable lookup by default or an interactive prompt with `--interactive`; OAuth device-code and authorization-code methods describe alternative install-time retrieval choices.
-
-For OAuth credential methods, Coral stores provider refresh metadata when it is
-returned and uses it to keep short-lived access tokens usable without asking
-users to reconnect. Coral can only refresh when the token response includes a
-refresh token, so choose OAuth scopes accordingly and document any provider or
-client settings that are required to issue refresh tokens.
-
 For the full set of HTTP response, pagination, auth, input, and column fields, see [HTTP-backed tables](/reference/source-spec-reference#http-backed-tables).
 
 ## Tips

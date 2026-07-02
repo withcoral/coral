@@ -86,10 +86,7 @@ pub(crate) struct OAuthCredentialMaterial {
 struct OAuthSessionCommon {
     input_key: String,
     endpoints: ManifestOAuthEndpointUrls,
-    client_id: String,
-    client_secret: Option<String>,
-    client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
-    dynamic_client_registration: Option<DynamicClientRegistrationMaterial>,
+    client: ResolvedOAuthClient,
     resource: Option<String>,
 }
 
@@ -150,21 +147,13 @@ struct ResolvedOAuthClient {
     client_id: String,
     client_secret: Option<String>,
     client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
-    dynamic_client_registration: Option<DynamicClientRegistrationMaterial>,
-}
-
-struct DynamicClientRegistrationMaterial {
-    registration_client_uri: Option<String>,
-    registration_access_token: Option<String>,
-    client_id_issued_at: Option<String>,
-    client_secret_expires_at: Option<String>,
+    dynamic_client_registration: bool,
 }
 
 struct DynamicClientRegistrationResponse {
-    client_id: String,
-    client_secret: Option<String>,
-    client_secret_transport: Option<ManifestOAuthClientSecretTransport>,
-    material: DynamicClientRegistrationMaterial,
+    id: String,
+    secret: Option<String>,
+    secret_transport: Option<ManifestOAuthClientSecretTransport>,
 }
 
 struct OAuthRefreshConfig {
@@ -183,6 +172,73 @@ struct OAuthAuthorizationRequest<'a> {
     source_inputs: &'a BTreeMap<String, String>,
     credential_inputs: BTreeMap<String, String>,
     resource: Option<String>,
+}
+
+const OAUTH_METADATA_METHOD_VALUE: &str = "oauth";
+
+#[derive(Clone, Copy)]
+enum OAuthMetadataKey {
+    Method,
+    AccessTokenExpiresAt,
+    RefreshToken,
+    TokenType,
+    Scope,
+    ClientId,
+    TokenUrl,
+    Resource,
+    ClientSecretTransport,
+    ClientSecret,
+    DynamicClientRegistration,
+}
+
+impl OAuthMetadataKey {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Method => "method",
+            Self::AccessTokenExpiresAt => "access_token_expires_at",
+            Self::RefreshToken => "refresh_token",
+            Self::TokenType => "token_type",
+            Self::Scope => "scope",
+            Self::ClientId => "client_id",
+            Self::TokenUrl => "token_url",
+            Self::Resource => "resource",
+            Self::ClientSecretTransport => "client_secret_transport",
+            Self::ClientSecret => "client_secret",
+            Self::DynamicClientRegistration => "dynamic_client_registration",
+        }
+    }
+
+    fn key(self, prefix: &str) -> String {
+        format!("{prefix}{}", self.suffix())
+    }
+
+    fn get<'a>(self, prefix: &str, metadata: &'a BTreeMap<String, String>) -> Option<&'a str> {
+        metadata.get(&self.key(prefix)).map(String::as_str)
+    }
+
+    fn insert(
+        self,
+        prefix: &str,
+        metadata: &mut BTreeMap<String, String>,
+        value: impl Into<String>,
+    ) {
+        metadata.insert(self.key(prefix), value.into());
+    }
+
+    fn insert_optional(
+        self,
+        prefix: &str,
+        metadata: &mut BTreeMap<String, String>,
+        value: Option<&str>,
+    ) {
+        if let Some(value) = value {
+            self.insert(prefix, metadata, value);
+        }
+    }
+
+    fn remove(self, prefix: &str, metadata: &mut BTreeMap<String, String>) {
+        metadata.remove(&self.key(prefix));
+    }
 }
 
 impl OAuthCredentialService {
@@ -287,10 +343,7 @@ impl OAuthCredentialService {
         let common = OAuthSessionCommon {
             input_key,
             endpoints,
-            client_id: client.client_id,
-            client_secret: client.client_secret,
-            client_secret_transport: client.client_secret_transport,
-            dynamic_client_registration: client.dynamic_client_registration,
+            client,
             resource,
         };
         let session = AuthorizationCodeSessionConfig {
@@ -416,10 +469,7 @@ impl OAuthCredentialService {
         let common = OAuthSessionCommon {
             input_key,
             endpoints,
-            client_id: client.client_id,
-            client_secret: client.client_secret,
-            client_secret_transport: client.client_secret_transport,
-            dynamic_client_registration: client.dynamic_client_registration,
+            client,
             resource,
         };
         let session = DeviceCodeSessionConfig {
@@ -633,7 +683,7 @@ async fn resolve_oauth_client(
             client_id,
             client_secret: resolve_client_secret(oauth, credential_inputs)?,
             client_secret_transport: oauth.client.secret.as_ref().map(|secret| secret.transport),
-            dynamic_client_registration: None,
+            dynamic_client_registration: false,
         });
     }
     let Some(registration) = oauth.client.dynamic_registration.as_ref() else {
@@ -642,10 +692,10 @@ async fn resolve_oauth_client(
     let registered =
         register_dynamic_client(http, oauth, registration, source_inputs, redirect_uri).await?;
     Ok(ResolvedOAuthClient {
-        client_id: registered.client_id,
-        client_secret: registered.client_secret,
-        client_secret_transport: registered.client_secret_transport,
-        dynamic_client_registration: Some(registered.material),
+        client_id: registered.id,
+        client_secret: registered.secret,
+        client_secret_transport: registered.secret_transport,
+        dynamic_client_registration: true,
     })
 }
 
@@ -866,24 +916,9 @@ fn parse_dynamic_client_registration_response(
     let client_secret_transport =
         dynamic_client_auth_method_transport(response_auth_method, client_secret.as_deref())?;
     Ok(DynamicClientRegistrationResponse {
-        client_id,
-        client_secret,
-        client_secret_transport,
-        material: DynamicClientRegistrationMaterial {
-            registration_client_uri: optional_json_string_like_field(
-                &body,
-                "registration_client_uri",
-            ),
-            registration_access_token: optional_json_string_like_field(
-                &body,
-                "registration_access_token",
-            ),
-            client_id_issued_at: optional_json_string_like_field(&body, "client_id_issued_at"),
-            client_secret_expires_at: optional_json_string_like_field(
-                &body,
-                "client_secret_expires_at",
-            ),
-        },
+        id: client_id,
+        secret: client_secret,
+        secret_transport: client_secret_transport,
     })
 }
 
@@ -1297,9 +1332,9 @@ async fn poll_device_token(
         let request = apply_oauth_client_auth(
             request,
             &mut form,
-            &session.common.client_id,
-            session.common.client_secret.as_deref(),
-            session.common.client_secret_transport,
+            &session.common.client.client_id,
+            session.common.client.client_secret.as_deref(),
+            session.common.client.client_secret_transport,
         )?;
         let response = request.form(&form).send().await.map_err(|error| {
             AppError::FailedPrecondition(format!("OAuth device token request failed: {error}"))
@@ -1375,9 +1410,9 @@ async fn exchange_authorization_code(
     request = apply_oauth_client_auth(
         request,
         &mut form,
-        &session.common.client_id,
-        session.common.client_secret.as_deref(),
-        session.common.client_secret_transport,
+        &session.common.client.client_id,
+        session.common.client.client_secret.as_deref(),
+        session.common.client.client_secret_transport,
     )?;
     if let Some(verifier) = session.code_verifier.as_deref() {
         form.push(("code_verifier", verifier.to_string()));
@@ -1536,17 +1571,6 @@ fn optional_json_u64_field(body: &Value, field: &str) -> Option<u64> {
         .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
 }
 
-fn optional_json_string_like_field(body: &Value, field: &str) -> Option<String> {
-    let value = body.get(field)?;
-    if let Some(value) = value.as_str().filter(|value| !value.is_empty()) {
-        return Some(value.to_string());
-    }
-    if let Some(value) = value.as_u64() {
-        return Some(value.to_string());
-    }
-    None
-}
-
 fn oauth_error_message(body: &Value) -> Option<String> {
     let error = body.get("error").and_then(Value::as_str)?;
     let description = body
@@ -1566,85 +1590,59 @@ fn oauth_credential_material(
 ) -> OAuthCredentialMaterial {
     let prefix = oauth_metadata_prefix(&session.input_key);
     let mut internal_metadata = BTreeMap::new();
-    internal_metadata.insert(format!("{prefix}method"), "oauth".to_string());
+    OAuthMetadataKey::Method.insert(&prefix, &mut internal_metadata, OAUTH_METADATA_METHOD_VALUE);
     if let Some(expires_at) = token.expires_at {
-        internal_metadata.insert(
-            format!("{prefix}access_token_expires_at"),
+        OAuthMetadataKey::AccessTokenExpiresAt.insert(
+            &prefix,
+            &mut internal_metadata,
             expires_at.to_rfc3339(),
         );
     }
     if let Some(refresh_token) = token.refresh_token.as_deref() {
-        internal_metadata.insert(format!("{prefix}refresh_token"), refresh_token.to_string());
+        OAuthMetadataKey::RefreshToken.insert(&prefix, &mut internal_metadata, refresh_token);
     }
     if let Some(token_type) = token.token_type.as_deref() {
-        internal_metadata.insert(format!("{prefix}token_type"), token_type.to_string());
+        OAuthMetadataKey::TokenType.insert(&prefix, &mut internal_metadata, token_type);
     }
     if let Some(scope) = token.scope.as_deref() {
-        internal_metadata.insert(format!("{prefix}scope"), scope.to_string());
+        OAuthMetadataKey::Scope.insert(&prefix, &mut internal_metadata, scope);
     }
-    internal_metadata.insert(format!("{prefix}client_id"), session.client_id.clone());
-    internal_metadata.insert(
-        format!("{prefix}token_url"),
+    OAuthMetadataKey::ClientId.insert(
+        &prefix,
+        &mut internal_metadata,
+        session.client.client_id.clone(),
+    );
+    OAuthMetadataKey::TokenUrl.insert(
+        &prefix,
+        &mut internal_metadata,
         session.endpoints.token_url.clone(),
     );
-    insert_optional_metadata(
+    OAuthMetadataKey::Resource.insert_optional(
+        &prefix,
         &mut internal_metadata,
-        format!("{prefix}resource"),
         session.resource.as_deref(),
     );
-    insert_optional_metadata(
+    OAuthMetadataKey::ClientSecretTransport.insert_optional(
+        &prefix,
         &mut internal_metadata,
-        format!("{prefix}client_secret_transport"),
         session
+            .client
             .client_secret_transport
             .map(ManifestOAuthClientSecretTransport::label),
     );
-    insert_optional_metadata(
+    OAuthMetadataKey::ClientSecret.insert_optional(
+        &prefix,
         &mut internal_metadata,
-        format!("{prefix}client_secret"),
-        session.client_secret.as_deref(),
+        session.client.client_secret.as_deref(),
     );
-    if let Some(registration) = session.dynamic_client_registration.as_ref() {
-        internal_metadata.insert(
-            format!("{prefix}dynamic_client_registration"),
-            "true".to_string(),
-        );
-        insert_optional_metadata(
-            &mut internal_metadata,
-            format!("{prefix}registration_client_uri"),
-            registration.registration_client_uri.as_deref(),
-        );
-        insert_optional_metadata(
-            &mut internal_metadata,
-            format!("{prefix}registration_access_token"),
-            registration.registration_access_token.as_deref(),
-        );
-        insert_optional_metadata(
-            &mut internal_metadata,
-            format!("{prefix}client_id_issued_at"),
-            registration.client_id_issued_at.as_deref(),
-        );
-        insert_optional_metadata(
-            &mut internal_metadata,
-            format!("{prefix}client_secret_expires_at"),
-            registration.client_secret_expires_at.as_deref(),
-        );
+    if session.client.dynamic_client_registration {
+        OAuthMetadataKey::DynamicClientRegistration.insert(&prefix, &mut internal_metadata, "true");
     }
     OAuthCredentialMaterial {
         input_key: session.input_key.clone(),
         access_token: token.access_token.clone(),
         internal_metadata,
         safe_metadata: safe_metadata(token),
-    }
-}
-
-fn insert_optional_metadata(
-    metadata: &mut BTreeMap<String, String>,
-    key: String,
-    value: Option<&str>,
-) {
-    if let Some(value) = value {
-        metadata.insert(key, value.to_string());
     }
 }
 
@@ -1665,14 +1663,11 @@ fn oauth_refresh_config(
     oauth: &ManifestOAuthCredentialSpec,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<OAuthRefreshConfig>, AppError> {
-    if material
-        .get(&format!("{metadata_prefix}method"))
-        .map(String::as_str)
-        != Some("oauth")
+    if OAuthMetadataKey::Method.get(metadata_prefix, material) != Some(OAUTH_METADATA_METHOD_VALUE)
     {
         return Ok(None);
     }
-    let Some(expires_at) = material.get(&format!("{metadata_prefix}access_token_expires_at"))
+    let Some(expires_at) = OAuthMetadataKey::AccessTokenExpiresAt.get(metadata_prefix, material)
     else {
         return Ok(None);
     };
@@ -1687,10 +1682,10 @@ fn oauth_refresh_config(
     if expires_at > now + chrono::Duration::seconds(REFRESH_EXPIRY_SKEW_SECONDS) {
         return Ok(None);
     }
-    let Some(refresh_token) = material
-        .get(&format!("{metadata_prefix}refresh_token"))
+    let Some(refresh_token) = OAuthMetadataKey::RefreshToken
+        .get(metadata_prefix, material)
         .filter(|value| !value.is_empty())
-        .cloned()
+        .map(ToString::to_string)
     else {
         if expires_at > now {
             return Ok(None);
@@ -1699,10 +1694,10 @@ fn oauth_refresh_config(
             "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because no refresh token is stored; reconnect the source"
         )));
     };
-    let client_id = material
-        .get(&format!("{metadata_prefix}client_id"))
+    let client_id = OAuthMetadataKey::ClientId
+        .get(metadata_prefix, material)
         .filter(|value| !value.is_empty())
-        .cloned()
+        .map(ToString::to_string)
         .or_else(|| oauth.client.id.default.clone())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
@@ -1710,15 +1705,14 @@ fn oauth_refresh_config(
                 "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client ID metadata is missing"
             ))
         })?;
-    let token_url = material
-        .get(&format!("{metadata_prefix}token_url"))
+    let token_url = OAuthMetadataKey::TokenUrl
+        .get(metadata_prefix, material)
         .filter(|value| !value.is_empty())
-        .cloned()
-        .unwrap_or_else(|| oauth.token_url.clone());
+        .map_or_else(|| oauth.token_url.clone(), ToString::to_string);
     let resource =
         oauth_refresh_resource(access_token_material_key, metadata_prefix, oauth, material)?;
-    let client_secret_transport = material
-        .get(&format!("{metadata_prefix}client_secret_transport"))
+    let client_secret_transport = OAuthMetadataKey::ClientSecretTransport
+        .get(metadata_prefix, material)
         .map(|value| {
             ManifestOAuthClientSecretTransport::from_label(value).ok_or_else(|| {
                 AppError::FailedPrecondition(format!(
@@ -1728,10 +1722,10 @@ fn oauth_refresh_config(
         })
         .transpose()?
         .or_else(|| oauth.client.secret.as_ref().map(|secret| secret.transport));
-    let client_secret = material
-        .get(&format!("{metadata_prefix}client_secret"))
+    let client_secret = OAuthMetadataKey::ClientSecret
+        .get(metadata_prefix, material)
         .filter(|value| !value.is_empty())
-        .cloned();
+        .map(ToString::to_string);
     if client_secret_transport.is_some() && client_secret.is_none() {
         return Err(AppError::FailedPrecondition(format!(
             "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because client secret metadata is missing"
@@ -1753,20 +1747,27 @@ fn oauth_refresh_resource(
     oauth: &ManifestOAuthCredentialSpec,
     material: &BTreeMap<String, String>,
 ) -> Result<Option<String>, AppError> {
-    if let Some(resource) = material
-        .get(&format!("{metadata_prefix}resource"))
+    if let Some(resource) = OAuthMetadataKey::Resource
+        .get(metadata_prefix, material)
         .filter(|value| !value.is_empty())
     {
-        return Ok(Some(resource.clone()));
+        return Ok(Some(resource.to_string()));
     }
 
+    oauth_refresh_manifest_resource(access_token_material_key, oauth)
+}
+
+fn oauth_refresh_manifest_resource(
+    access_token_material_key: &str,
+    oauth: &ManifestOAuthCredentialSpec,
+) -> Result<Option<String>, AppError> {
     let Some(resource_template) = oauth.resource.as_deref().filter(|value| !value.is_empty())
     else {
         return Ok(None);
     };
     let template = ParsedTemplate::parse(resource_template).map_err(|error| {
         AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the manifest resource is invalid: {error}"
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the manifest resource template is invalid: {error}"
         ))
     })?;
     if template.tokens().next().is_some() {
@@ -1775,11 +1776,17 @@ fn oauth_refresh_resource(
         )));
     }
 
-    oauth.resource(&BTreeMap::new()).map_err(|error| {
+    let url = Url::parse(resource_template).map_err(|error| {
         AppError::FailedPrecondition(format!(
-            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the manifest resource is invalid: {error}"
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the literal manifest resource is invalid: {error}"
         ))
-    })
+    })?;
+    if url.fragment().is_some() {
+        return Err(AppError::FailedPrecondition(format!(
+            "OAuth access token for source secret '{access_token_material_key}' expired and cannot be refreshed because OAuth resource metadata is missing and the literal manifest resource must not include a fragment"
+        )));
+    }
+    Ok(Some(resource_template.to_string()))
 }
 
 fn apply_refreshed_token(
@@ -1792,32 +1799,27 @@ fn apply_refreshed_token(
         access_token_material_key.to_string(),
         token.access_token.clone(),
     );
-    material.insert(format!("{metadata_prefix}method"), "oauth".to_string());
+    OAuthMetadataKey::Method.insert(metadata_prefix, material, OAUTH_METADATA_METHOD_VALUE);
     match token.expires_at {
         Some(expires_at) => {
-            material.insert(
-                format!("{metadata_prefix}access_token_expires_at"),
+            OAuthMetadataKey::AccessTokenExpiresAt.insert(
+                metadata_prefix,
+                material,
                 expires_at.to_rfc3339(),
             );
         }
         None => {
-            material.remove(&format!("{metadata_prefix}access_token_expires_at"));
+            OAuthMetadataKey::AccessTokenExpiresAt.remove(metadata_prefix, material);
         }
     }
     if let Some(refresh_token) = token.refresh_token.as_deref() {
-        material.insert(
-            format!("{metadata_prefix}refresh_token"),
-            refresh_token.to_string(),
-        );
+        OAuthMetadataKey::RefreshToken.insert(metadata_prefix, material, refresh_token);
     }
     if let Some(token_type) = token.token_type.as_deref() {
-        material.insert(
-            format!("{metadata_prefix}token_type"),
-            token_type.to_string(),
-        );
+        OAuthMetadataKey::TokenType.insert(metadata_prefix, material, token_type);
     }
     if let Some(scope) = token.scope.as_deref() {
-        material.insert(format!("{metadata_prefix}scope"), scope.to_string());
+        OAuthMetadataKey::Scope.insert(metadata_prefix, material, scope);
     }
 }
 
@@ -1865,11 +1867,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthSessionCommon,
-        RefreshOAuthCredentialRequest, ResolvedOAuthClient, StartOAuthCredentialRequest,
-        basic_client_authorization, dynamic_client_registration_grant_types,
-        join_dynamic_client_registration_scope_values, join_scope_values,
-        material_key_belongs_to_input, oauth_metadata_prefix,
+        AuthorizationCodeSessionConfig, OAuthCredentialService, OAuthMetadataKey,
+        OAuthSessionCommon, RefreshOAuthCredentialRequest, ResolvedOAuthClient,
+        StartOAuthCredentialRequest, basic_client_authorization,
+        dynamic_client_registration_grant_types, join_dynamic_client_registration_scope_values,
+        join_scope_values, material_key_belongs_to_input, oauth_metadata_prefix,
         parse_dynamic_client_registration_response, parse_token_response, pkce_challenge,
         receive_callback, request_device_code,
     };
@@ -1888,6 +1890,53 @@ mod tests {
     use url::Url;
 
     static EMPTY_SOURCE_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
+
+    fn metadata_key(input_key: &str, key: OAuthMetadataKey) -> String {
+        key.key(&oauth_metadata_prefix(input_key))
+    }
+
+    fn assert_public_dcr_metadata(metadata: &BTreeMap<String, String>, input_key: &str) {
+        assert_eq!(
+            metadata
+                .get(&metadata_key(input_key, OAuthMetadataKey::ClientId))
+                .map(String::as_str),
+            Some("registered-client")
+        );
+        assert_eq!(
+            metadata
+                .get(&metadata_key(input_key, OAuthMetadataKey::Resource))
+                .map(String::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+        assert_eq!(
+            metadata
+                .get(&metadata_key(
+                    input_key,
+                    OAuthMetadataKey::DynamicClientRegistration
+                ))
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(!metadata.contains_key(&metadata_key(input_key, OAuthMetadataKey::ClientSecret)));
+    }
+
+    fn assert_no_dcr_client_management_metadata(
+        metadata: &BTreeMap<String, String>,
+        input_key: &str,
+    ) {
+        let prefix = oauth_metadata_prefix(input_key);
+        for suffix in [
+            "registration_client_uri",
+            "registration_access_token",
+            "client_id_issued_at",
+            "client_secret_expires_at",
+        ] {
+            assert!(
+                !metadata.contains_key(&format!("{prefix}{suffix}")),
+                "DCR client-management metadata should not store {suffix}"
+            );
+        }
+    }
 
     #[test]
     fn joins_scope_values_with_configured_delimiter() {
@@ -2102,6 +2151,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_refresh_uses_literal_manifest_resource_when_metadata_is_missing() {
+        let fixture = OAuthFixture::new(Some(
+            r#"{"access_token":"refreshed-token","token_type":"Bearer","expires_in":3600}"#,
+        ));
+        let mut oauth = oauth_spec(
+            &fixture.token_url,
+            free_loopback_port(),
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        oauth.resource = Some("https://mcp.example.com/mcp".to_string());
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (format!("{prefix}token_url"), fixture.token_url.clone()),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let refreshed = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect("refresh oauth material");
+        let captured = fixture.token_server.await.expect("token server");
+
+        assert!(refreshed);
+        assert_eq!(
+            captured.form.get("resource").map(String::as_str),
+            Some("https://mcp.example.com/mcp")
+        );
+    }
+
+    #[tokio::test]
     async fn oauth_refresh_rejects_template_resource_without_stored_metadata() {
         let mut oauth = oauth_spec(
             "http://127.0.0.1:9/token",
@@ -2149,6 +2250,58 @@ mod tests {
             error
                 .to_string()
                 .contains("rendered OAuth resource metadata is missing"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_rejects_literal_manifest_resource_fragment() {
+        let mut oauth = oauth_spec(
+            "http://127.0.0.1:9/token",
+            53682,
+            ManifestOAuthPkceMode::Disabled,
+            ManifestOAuthClientSpec {
+                id: ManifestOAuthClientIdSpec {
+                    default: Some("default-client".to_string()),
+                    input: None,
+                },
+                secret: None,
+                dynamic_registration: None,
+            },
+        );
+        oauth.resource = Some("https://mcp.example.com/mcp#fragment".to_string());
+        let prefix = oauth_metadata_prefix("API_TOKEN");
+        let mut material = BTreeMap::from([
+            ("API_TOKEN".to_string(), "expired-token".to_string()),
+            (format!("{prefix}method"), "oauth".to_string()),
+            (
+                format!("{prefix}access_token_expires_at"),
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+            ),
+            (
+                format!("{prefix}refresh_token"),
+                "stored-refresh-token".to_string(),
+            ),
+            (format!("{prefix}client_id"), "stored-client".to_string()),
+            (
+                format!("{prefix}token_url"),
+                "http://127.0.0.1:9/token".to_string(),
+            ),
+        ]);
+        let service = OAuthCredentialService::new();
+
+        let error = service
+            .refresh_if_needed(
+                RefreshOAuthCredentialRequest::for_source_input("API_TOKEN", &oauth),
+                &mut material,
+            )
+            .await
+            .expect_err("literal resource fragments should fail before refresh");
+
+        assert!(
+            error
+                .to_string()
+                .contains("literal manifest resource must not include a fragment"),
             "unexpected error: {error}"
         );
     }
@@ -2542,34 +2695,9 @@ mod tests {
             Some("https://mcp.example.com/mcp")
         );
         assert!(!token.form.contains_key("client_secret"));
-        let prefix = oauth_metadata_prefix("MCP_ACCESS_TOKEN");
         assert_eq!(completed.access_token, "access-token");
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{prefix}client_id"))
-                .map(String::as_str),
-            Some("registered-client")
-        );
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{prefix}resource"))
-                .map(String::as_str),
-            Some("https://mcp.example.com/mcp")
-        );
-        assert_eq!(
-            completed
-                .internal_metadata
-                .get(&format!("{prefix}registration_access_token"))
-                .map(String::as_str),
-            Some("registration-access")
-        );
-        assert!(
-            !completed
-                .internal_metadata
-                .contains_key(&format!("{prefix}client_secret"))
-        );
+        assert_public_dcr_metadata(&completed.internal_metadata, "MCP_ACCESS_TOKEN");
+        assert_no_dcr_client_management_metadata(&completed.internal_metadata, "MCP_ACCESS_TOKEN");
     }
 
     #[tokio::test]
@@ -2718,12 +2846,19 @@ mod tests {
         assert_eq!(
             completed
                 .internal_metadata
-                .get(&format!(
-                    "{}client_secret",
-                    oauth_metadata_prefix("API_TOKEN")
-                ))
+                .get(&metadata_key("API_TOKEN", OAuthMetadataKey::ClientSecret))
                 .map(String::as_str),
             Some("registered-secret")
+        );
+        assert_eq!(
+            completed
+                .internal_metadata
+                .get(&metadata_key(
+                    "API_TOKEN",
+                    OAuthMetadataKey::ClientSecretTransport
+                ))
+                .map(String::as_str),
+            Some("basic_auth")
         );
     }
 
@@ -2793,7 +2928,7 @@ mod tests {
             client_id: "device-client".to_string(),
             client_secret: None,
             client_secret_transport: None,
-            dynamic_client_registration: None,
+            dynamic_client_registration: false,
         };
 
         let result = request_device_code(
@@ -2910,10 +3045,12 @@ mod tests {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
                 endpoints,
-                client_id: "client".to_string(),
-                client_secret: None,
-                client_secret_transport: None,
-                dynamic_client_registration: None,
+                client: ResolvedOAuthClient {
+                    client_id: "client".to_string(),
+                    client_secret: None,
+                    client_secret_transport: None,
+                    dynamic_client_registration: false,
+                },
                 resource: None,
             },
             state: "expected-state".to_string(),
@@ -2980,10 +3117,12 @@ mod tests {
             common: OAuthSessionCommon {
                 input_key: "API_TOKEN".to_string(),
                 endpoints,
-                client_id: "client".to_string(),
-                client_secret: None,
-                client_secret_transport: None,
-                dynamic_client_registration: None,
+                client: ResolvedOAuthClient {
+                    client_id: "client".to_string(),
+                    client_secret: None,
+                    client_secret_transport: None,
+                    dynamic_client_registration: false,
+                },
                 resource: None,
             },
             state: "expected-state".to_string(),
