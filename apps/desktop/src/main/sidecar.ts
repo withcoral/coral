@@ -29,7 +29,7 @@ export function desktopRoot(): string {
 }
 
 export function repoRoot(): string {
-  return resolve(moduleDir(), '..', '..', '..')
+  return resolve(moduleDir(), '..', '..', '..', '..')
 }
 
 export function bundledCoralPath(): string {
@@ -58,7 +58,7 @@ export async function externalCoralPath(): Promise<string> {
     }
   }
 
-  throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix desktop` first.')
+  throw new Error('No Coral binary is available yet. Run `npm run stage:coral --prefix apps/desktop` first.')
 }
 
 function devSidecarCommand(): { command: string; args: string[]; cwd: string } {

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
-const repoRoot = resolve(desktopRoot, '..')
+const repoRoot = resolve(desktopRoot, '..', '..')
 const electronViteBin = resolve(
   desktopRoot,
   'node_modules',
@@ -83,7 +83,7 @@ function waitForAppUrl(child) {
 process.once('SIGINT', () => shutdown('SIGINT'))
 process.once('SIGTERM', () => shutdown('SIGTERM'))
 
-const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'reef'], {
+const appDevServer = spawnChild('npm', ['run', 'dev', '--prefix', 'apps/reef'], {
   cwd: repoRoot,
   env: {
     ...process.env,

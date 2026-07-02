@@ -25,13 +25,13 @@ The MSW setup is Playwright-side only. Do not add browser `setupWorker()` or
 From the repository root:
 
 ```sh
-npm run test:ui --prefix ui
-npm run test:ui:headed --prefix ui
-npm run test:ui:debug --prefix ui
-npm run test:ui:screencast --prefix ui
+npm run test:ui --prefix apps/ui
+npm run test:ui:headed --prefix apps/ui
+npm run test:ui:debug --prefix apps/ui
+npm run test:ui:screencast --prefix apps/ui
 ```
 
-Screencast review mode writes `.webm` files under `ui/test-results/**`. These
+Screencast review mode writes `.webm` files under `apps/ui/test-results/**`. These
 artifacts are ignored by git.
 
 ## How to write tests
@@ -81,7 +81,7 @@ treat that as a missing MSW handler, not as a server-start problem.
 
 ## Review video and annotations
 
-`npm run test:ui:screencast --prefix ui` enables the `review` fixture. Use it to
+`npm run test:ui:screencast --prefix apps/ui` enables the `review` fixture. Use it to
 make recordings understandable:
 
 ```ts
@@ -103,5 +103,5 @@ Default screencast settings favor review quality over speed: 1440x900
 frames, quality 100, action overlays, and sequential workers. Adjust with:
 
 ```sh
-PW_UI_REVIEW_PAUSE_MS=1800 npm run test:ui:screencast --prefix ui
+PW_UI_REVIEW_PAUSE_MS=1800 npm run test:ui:screencast --prefix apps/ui
 ```

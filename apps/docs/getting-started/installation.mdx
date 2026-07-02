@@ -120,8 +120,8 @@ Coral ships as a single local CLI. Once installed, the same binary is used for s
     To include the local UI, build the UI first and enable `embedded-ui`:
 
     ```powershell
-    npm ci --prefix ui
-    npm run build --prefix ui
+    npm ci --prefix apps/ui
+    npm run build --prefix apps/ui
     cargo build --release --locked -p coral-cli --features embedded-ui
     ```
   </Tab>

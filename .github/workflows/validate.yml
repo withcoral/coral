@@ -67,20 +67,20 @@ jobs:
             ui-build:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
+              - 'apps/ui/**'
             ui-tests:
               - '.github/workflows/validate.yml'
               - 'crates/coral-api/proto/**'
-              - 'ui/**'
+              - 'apps/ui/**'
             reef-checks:
               - '.github/workflows/validate.yml'
-              - 'reef/**'
+              - 'apps/reef/**'
               # Reef re-exports the desktop IPC bridge types, so a change there
               # can break the reef type-check.
-              - 'desktop/src/shared/types.ts'
+              - 'apps/desktop/src/shared/types.ts'
             desktop-checks:
               - '.github/workflows/validate.yml'
-              - 'desktop/**'
+              - 'apps/desktop/**'
             proto-lint:
               - '.github/workflows/validate.yml'
               - 'Makefile'
@@ -103,7 +103,7 @@ jobs:
               - 'xtask/src/sources.rs'
               - 'crates/coral-spec/**'
               - 'sources/core/**'
-              - 'docs/**'
+              - 'apps/docs/**'
               - 'CHANGELOG.md'
             schema-freshness:
               - '.github/workflows/validate.yml'
@@ -284,32 +284,32 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/ui/package-lock.json
 
       - name: Install UI dependencies
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
 
       - name: Lint and format check
-        run: npm run check --prefix ui
+        run: npm run check --prefix apps/ui
 
       - name: Build UI
-        run: npm run build --prefix ui
+        run: npm run build --prefix apps/ui
 
       - name: Verify UI entrypoint
-        run: test -s ui/dist/index.html
+        run: test -s apps/ui/dist/index.html
 
       - name: Verify production build excludes test mocks
         run: |
-          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' ui/dist; then
+          if grep -R -E 'mockServiceWorker|setupWorker|@msw/playwright|mockScenario|PW_UI_SCREENCAST' apps/ui/dist; then
             echo 'Production UI build contains test/mock-only code' >&2
             exit 1
           fi
@@ -328,28 +328,28 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/ui/package-lock.json
 
       - name: Install UI dependencies
-        run: npm ci --prefix ui
+        run: npm ci --prefix apps/ui
 
       - name: Type-check UI tests
-        run: npm run test:ui:type-check --prefix ui
+        run: npm run test:ui:type-check --prefix apps/ui
 
       - name: Install Chromium for Playwright
-        run: npm exec --prefix ui -- playwright install --with-deps chromium
+        run: npm exec --prefix apps/ui -- playwright install --with-deps chromium
 
       - name: Run UI tests
-        run: npm run test:ui --prefix ui
+        run: npm run test:ui --prefix apps/ui
 
       - name: Upload UI test artifacts
         if: ${{ failure() }}
@@ -357,8 +357,8 @@ jobs:
         with:
           name: ui-test-results
           path: |
-            ui/test-results/**
-            ui/playwright-report/**
+            apps/ui/test-results/**
+            apps/ui/playwright-report/**
           if-no-files-found: ignore
 
   reef-checks:
@@ -375,34 +375,34 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: reef/.node-version
+          node-version-file: apps/reef/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: reef/.node-version
+          node-version-file: apps/reef/.node-version
           cache: npm
-          cache-dependency-path: reef/package-lock.json
+          cache-dependency-path: apps/reef/package-lock.json
 
       - name: Install Reef dependencies
-        run: npm ci --prefix reef
+        run: npm ci --prefix apps/reef
 
       - name: Lint and format check
-        run: npm run check --prefix reef
+        run: npm run check --prefix apps/reef
 
       - name: Type-check Reef
-        run: npm run typecheck --prefix reef
+        run: npm run typecheck --prefix apps/reef
 
       - name: Install Chromium for Reef browser tests
-        run: npm exec --prefix reef -- playwright install --with-deps chromium
+        run: npm exec --prefix apps/reef -- playwright install --with-deps chromium
 
       - name: Test Reef
-        run: npm test --prefix reef
+        run: npm test --prefix apps/reef
 
       - name: Build Reef
-        run: npm run build --prefix reef
+        run: npm run build --prefix apps/reef
 
   desktop-checks:
     name: Desktop checks
@@ -418,24 +418,24 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: desktop/.node-version
+          node-version-file: apps/desktop/.node-version
           package-manager-cache: false
 
       - name: Set up Node with trusted npm cache
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: desktop/.node-version
+          node-version-file: apps/desktop/.node-version
           cache: npm
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Install desktop dependencies
-        run: npm ci --prefix desktop
+        run: npm ci --prefix apps/desktop
 
       # Type-check only; the full build stages the Rust binary + reef, which the
       # rust/reef jobs already cover.
       - name: Type-check desktop
-        run: npm run check --prefix desktop
+        run: npm run check --prefix apps/desktop
 
   proto-lint:
     name: Lint protobuf API
@@ -550,15 +550,15 @@ jobs:
       - name: Set up Node for Mintlify validation
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version-file: ui/.node-version
+          node-version-file: apps/ui/.node-version
           package-manager-cache: false
 
       - name: Validate Mintlify docs
-        working-directory: docs
+        working-directory: apps/docs
         run: npx --yes mint validate
 
       - name: Check Mintlify links
-        working-directory: docs
+        working-directory: apps/docs
         run: npx --yes mint broken-links
 
   schema-freshness:

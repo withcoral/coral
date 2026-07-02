@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
 const desktopRoot = resolve(import.meta.dirname, '..')
-const repoRoot = resolve(desktopRoot, '..')
+const repoRoot = resolve(desktopRoot, '..', '..')
 const outputDir = resolve(desktopRoot, 'resources', 'coral')
 const binaryName = process.platform === 'win32' ? 'coral.exe' : 'coral'
 const targetBinary = resolve(repoRoot, 'target', 'release', binaryName)
@@ -27,10 +27,10 @@ function run(command, args, options = {}) {
   })
 }
 
-await run('npm', ['ci', '--prefix', 'ui'])
-await run('npm', ['run', 'build', '--prefix', 'ui'])
-await run('npm', ['ci', '--prefix', 'reef'])
-await run('npm', ['run', 'build', '--prefix', 'reef'], {
+await run('npm', ['ci', '--prefix', 'apps/ui'])
+await run('npm', ['run', 'build', '--prefix', 'apps/ui'])
+await run('npm', ['ci', '--prefix', 'apps/reef'])
+await run('npm', ['run', 'build', '--prefix', 'apps/reef'], {
   env: {
     ...process.env,
     CORAL_DESKTOP_APP: '1',

@@ -35,7 +35,7 @@ export function registerAppSchemePrivileges(): void {
 }
 
 function rendererRoot(): string {
-  return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'reef', 'build', 'client')
+  return app.isPackaged ? join(process.resourcesPath, 'app') : resolve(repoRoot(), 'apps', 'reef', 'build', 'client')
 }
 
 function isInside(root: string, candidate: string): boolean {

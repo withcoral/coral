@@ -31,9 +31,9 @@ app lifecycle, window and menu, and MCP client configuration.
 ## Development
 
 ```shell
-npm install --prefix desktop
-npm install --prefix reef
-npm run dev --prefix desktop
+npm install --prefix apps/desktop
+npm install --prefix apps/reef
+npm run dev --prefix apps/desktop
 ```
 
 The desktop dev command starts the Reef dev server first, then launches Electron
@@ -50,19 +50,19 @@ cargo run --locked -p coral-cli -- ui --no-open --port 0
 ## Build
 
 ```shell
-npm run build --prefix desktop
+npm run build --prefix apps/desktop
 ```
 
-The build script first builds the legacy `ui/` bundle needed by the current
+The build script first builds the legacy `apps/ui/` bundle needed by the current
 `coral ui` sidecar mode, then builds Reef in desktop SPA mode, compiles the
-release Coral binary, and stages it under `desktop/resources/coral/` for
+release Coral binary, and stages it under `apps/desktop/resources/coral/` for
 Electron packaging.
 
 ```shell
-npm run package:dir --prefix desktop
+npm run package:dir --prefix apps/desktop
 ```
 
-Use `npm run package:dmg --prefix desktop` for the macOS drag-and-drop DMG.
+Use `npm run package:dmg --prefix apps/desktop` for the macOS drag-and-drop DMG.
 
-> Run the `--prefix desktop` commands from the repo root. If you are already in
-> `desktop/`, drop the flag (e.g. `npm run package:dir`).
+> Run the `--prefix apps/desktop` commands from the repo root. If you are already in
+> `apps/desktop/`, drop the flag (e.g. `npm run package:dir`).

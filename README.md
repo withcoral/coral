@@ -1,4 +1,4 @@
-![Coral cover](./docs/images/cover.png)
+![Coral cover](./apps/docs/images/cover.png)
 
 [![CI](https://github.com/withcoral/coral/actions/workflows/validate.yml/badge.svg)](https://github.com/withcoral/coral/actions/workflows/validate.yml)
 [![Release](https://img.shields.io/github/v/release/withcoral/coral)](https://github.com/withcoral/coral/releases)
@@ -13,11 +13,11 @@ runtime over MCP so agents can use it without bespoke tool glue.
 
 You can ask your agents complex questions about your data:
 
-![coral sql demo](./docs/images/claude-query-example.png)
+![coral sql demo](./apps/docs/images/claude-query-example.png)
 
 Or run SQL queries yourself:
 
-![coral sql demo](./docs/images/coral-sql-join.gif)
+![coral sql demo](./apps/docs/images/coral-sql-join.gif)
 
 ## Why Coral
 
@@ -193,7 +193,7 @@ coral sql "
 "
 ```
 
-![coral sql query demo](./docs/images/sql-query-readme.gif)
+![coral sql query demo](./apps/docs/images/sql-query-readme.gif)
 
 ### Next steps
 
