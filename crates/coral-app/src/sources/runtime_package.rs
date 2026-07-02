@@ -461,6 +461,7 @@ mod tests {
                     description: String::new(),
                     deprecated: false,
                     read_only: true,
+                    naming: None,
                     inputs: Vec::new(),
                     output: IrOperationOutput {
                         cardinality: coral_spec::v4::OutputCardinality::List,
