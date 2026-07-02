@@ -462,7 +462,7 @@ const COMMUNITY_INTRO: &str = concat!(
     "<Note>\n",
     "  Community sources are not included in `coral source discover`. Import one directly\n",
     "  into the current workspace with `coral source add --file`, or register it globally\n",
-    "  with `coral source spec add --file` and then install it by name with `coral source add <name>`.\n",
+    "  with `coral source-spec add --file` and then install it by name with `coral source add <name>`.\n",
     "</Note>\n",
 );
 

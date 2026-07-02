@@ -71,6 +71,8 @@ enum Command {
     Sql(SqlArgs),
     /// Manage data sources
     Source(SourceArgs),
+    /// Manage globally registered source specs
+    SourceSpec(SourceSpecArgs),
     /// Manage workspaces
     Workspace(WorkspaceArgs),
     /// Interactive wizard to set up Coral and explore use cases
@@ -338,8 +340,6 @@ enum SourceCommand {
     },
     /// Add a new source
     Add(SourceAddArgs),
-    /// Manage globally registered source specs
-    Spec(SourceSpecArgs),
     /// Lint manifest file
     Lint { file: PathBuf },
     /// Test connectivity for a source
@@ -423,6 +423,7 @@ impl Command {
         match self {
             Command::Sql(_)
             | Command::Source(_)
+            | Command::SourceSpec(_)
             | Command::Workspace(_)
             | Command::Onboard
             | Command::McpStdio(_) => RequiredRuntime::AppClient,
@@ -617,6 +618,7 @@ async fn run_no_runtime_command(
         Command::Ui(args) => run_ui(args).await.map_err(Into::into),
         Command::Sql(_)
         | Command::Source(_)
+        | Command::SourceSpec(_)
         | Command::Workspace(_)
         | Command::Onboard
         | Command::McpStdio(_) => {
@@ -655,6 +657,7 @@ async fn run_app_command(
             print_batches(result.batches(), args.format)?;
         }
         Command::Source(args) => run_source(&app, workspace, args).await?,
+        Command::SourceSpec(args) => run_source_spec(&app, args).await?,
         Command::Workspace(args) => run_workspace(&app, args).await?,
         Command::Onboard => {
             onboard::run(&app, workspace).await?;
@@ -852,7 +855,6 @@ async fn run_source(
             source_ops::print_source_info(app, workspace, &name, verbose).await?;
         }
         SourceCommand::Add(args) => run_source_add(app, workspace, args).await?,
-        SourceCommand::Spec(args) => run_source_spec(app, args).await?,
         SourceCommand::Lint { file } => {
             source_ops::load_validated_manifest_file(&file)?;
             println!("Manifest is valid");
@@ -1148,6 +1150,26 @@ mod tests {
         let cli = Cli::try_parse_from(["coral", "source", "list"]).expect("source list parses");
 
         assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+    }
+
+    #[test]
+    fn source_spec_command_uses_app_runtime_without_workspace_selection() {
+        let cli =
+            Cli::try_parse_from(["coral", "source-spec", "list"]).expect("source-spec parses");
+
+        assert_eq!(cli.command.required_runtime(), RequiredRuntime::AppClient);
+        assert!(!cli.command.uses_selected_workspace());
+    }
+
+    #[test]
+    fn source_spec_command_is_not_nested_under_source() {
+        let error = Cli::try_parse_from(["coral", "source", "spec", "list"])
+            .expect_err("source spec should not be nested under source");
+
+        assert!(
+            error.to_string().contains("unrecognized subcommand"),
+            "unexpected parse error: {error}"
+        );
     }
 
     #[test]

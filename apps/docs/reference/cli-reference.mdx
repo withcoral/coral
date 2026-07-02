@@ -63,7 +63,7 @@ coral sql "DESCRIBE datadog.hosts"
 
 ## `coral source`
 
-Manage configured sources, bundled source specs, workspace-local imports, and globally registered source specs.
+Manage configured sources, bundled source specs, and workspace-local imports.
 
 ### `coral source discover`
 
@@ -123,7 +123,7 @@ coral source add --file ./local-messages.yaml
 
 When you pass `<NAME>`, Coral first looks for a bundled source with that name.
 If none exists, it looks in the global source-spec registry created by
-`coral source spec add --file`. When you pass `--file`, the manifest is imported
+`coral source-spec add --file`. When you pass `--file`, the manifest is imported
 only into the selected workspace.
 
 By default, Coral reads each declared input from an environment variable of the
@@ -159,19 +159,19 @@ Coral stores the source secrets in plaintext file storage and shows
 `file (plaintext)` in source output. Sources with no stored secret material show
 `none`.
 
-### `coral source spec`
+## `coral source-spec`
 
 Manage source specs in the global registry. Registered specs are reusable
-install targets for any workspace.
+install targets for any workspace and are not scoped to `--workspace`.
 
 ```shellscript
-coral source spec add --file ./internal-crm.yaml
-coral source spec list
+coral source-spec add --file ./internal-crm.yaml
+coral source-spec list
 coral source add internal_crm --workspace work
-coral source spec remove internal_crm
+coral source-spec remove internal_crm
 ```
 
-`coral source spec remove <NAME>` removes the registry entry and its global
+`coral source-spec remove <NAME>` removes the registry entry and its global
 manifest artifact. Existing workspace sources installed from that spec are not
 removed, but they become orphaned and fail validation or query loading until you
 register the spec again or remove and re-add the source.
@@ -209,7 +209,7 @@ feedback reports, episode logs, and workspace-attributed local trace history.
 
 Imported source specs and source credential material are attached to the source
 installation in that workspace. Reusable global source specs are managed with
-`coral source spec` and are not removed when you delete a workspace.
+`coral source-spec` and are not removed when you delete a workspace.
 
 ### `coral workspace list`
 

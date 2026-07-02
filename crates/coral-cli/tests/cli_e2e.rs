@@ -384,7 +384,7 @@ async fn source_spec_list_renders_registered_specs() {
 
     let assert = server
         .cmd()
-        .args(["source", "spec", "list"])
+        .args(["source-spec", "list"])
         .assert()
         .success();
 
@@ -418,7 +418,7 @@ async fn source_spec_list_renders_empty_state() {
 
     let assert = server
         .cmd()
-        .args(["source", "spec", "list"])
+        .args(["source-spec", "list"])
         .assert()
         .success();
 
@@ -457,8 +457,7 @@ tables:
     let assert = server
         .cmd()
         .args([
-            "source",
-            "spec",
+            "source-spec",
             "add",
             "--file",
             manifest_file.to_str().expect("manifest path utf8"),
@@ -481,7 +480,7 @@ async fn source_spec_remove_deletes_registered_spec() {
 
     let assert = server
         .cmd()
-        .args(["source", "spec", "remove", "linear"])
+        .args(["source-spec", "remove", "linear"])
         .assert()
         .success();
 
