@@ -294,6 +294,20 @@ message SourceInfo {
   SourceCredentialStorage credential_storage = 7;
 }
 
+// One globally registered source-spec metadata record.
+message SourceSpecInfo {
+  // Canonical source name.
+  string name = 1;
+  // Human-readable description.
+  string description = 2;
+  // Manifest version string.
+  string version = 3;
+  // Prompted source inputs in stable manifest order.
+  repeated SourceInputSpec inputs = 4;
+  // Where this source spec came from.
+  SourceOrigin origin = 5;
+}
+
 // Lists all bundled sources available for one workspace.
 message DiscoverSourcesRequest {
   // Workspace used to mark which bundled sources are already installed.
@@ -306,11 +320,11 @@ message DiscoverSourcesResponse {
   repeated SourceInfo sources = 1;
 }
 
-// Installs one bundled source by name.
-message CreateBundledSourceRequest {
+// Installs one named source by resolving registered global specs before bundled sources.
+message CreateSourceRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
-  // Canonical bundled source name.
+  // Canonical source name.
   string name = 2;
   // Visible configured non-secret variables.
   repeated SourceVariable variables = 3;
@@ -318,17 +332,17 @@ message CreateBundledSourceRequest {
   repeated SourceSecret secrets = 4;
 }
 
-// Returns the installed bundled source.
-message CreateBundledSourceResponse {
+// Returns the installed source.
+message CreateSourceResponse {
   // The installed source resource.
   Source source = 1;
 }
 
-// Installs one bundled source with app-owned OAuth credential retrieval.
-message CreateBundledSourceWithOAuthRequest {
+// Installs one named source with app-owned OAuth credential retrieval.
+message CreateSourceWithOAuthRequest {
   // Owning workspace resource.
   Workspace workspace = 1;
-  // Canonical bundled source name.
+  // Canonical source name.
   string name = 2;
   // Visible configured non-secret variables.
   repeated SourceVariable variables = 3;
@@ -338,11 +352,11 @@ message CreateBundledSourceWithOAuthRequest {
   repeated OAuthCredentialRetrieval oauth_credential_retrievals = 5;
 }
 
-// Streaming event emitted while installing a bundled source with OAuth.
-message CreateBundledSourceWithOAuthResponse {
+// Streaming event emitted while installing a named source with OAuth.
+message CreateSourceWithOAuthResponse {
   // Installation progress or completion event.
   oneof event {
-    // Bundled source installation completed.
+    // Source installation completed.
     Source source = 1;
     // OAuth authorization URL is ready.
     OAuthCredentialAuthorization oauth_authorization = 2;
@@ -467,8 +481,44 @@ message GetSourceInfoRequest {
 
 // Returns source metadata.
 message GetSourceInfoResponse {
-  // Metadata for the installed or bundled source.
+  // Metadata for the installed, registered global, or bundled source.
   SourceInfo source_info = 1;
+}
+
+// Lists globally registered source specs.
+message ListSourceSpecsRequest {}
+
+// Returns globally registered source-spec summaries.
+message ListSourceSpecsResponse {
+  // Globally registered source specs.
+  repeated SourceSpecInfo source_specs = 1;
+}
+
+// Registers one user-supplied source manifest in the global source-spec registry.
+message RegisterSourceSpecRequest {
+  // Raw source manifest YAML to validate and register.
+  string manifest_yaml = 1;
+}
+
+// Returns the registered source-spec metadata.
+message RegisterSourceSpecResponse {
+  // Registered source spec metadata.
+  SourceInfo source_spec = 1;
+}
+
+// Deletes one globally registered source spec.
+//
+// Installed global-origin sources are intentionally not removed; they become
+// orphaned until the spec is registered again or the source is removed.
+message DeleteSourceSpecRequest {
+  // Bare source-spec name to remove.
+  string name = 1;
+}
+
+// Returns the source-spec metadata that was removed.
+message DeleteSourceSpecResponse {
+  // Removed source spec metadata.
+  SourceInfo source_spec = 1;
 }
 
 // Deletes one registered source and its managed artifacts.
@@ -535,16 +585,22 @@ service SourceService {
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   // Fetches one registered source.
   rpc GetSource(GetSourceRequest) returns (GetSourceResponse);
-  // Fetches metadata for one installed or bundled source.
+  // Fetches metadata for one installed, registered global, or bundled source.
   rpc GetSourceInfo(GetSourceInfoRequest) returns (GetSourceInfoResponse);
-  // Installs one bundled source.
-  rpc CreateBundledSource(CreateBundledSourceRequest) returns (CreateBundledSourceResponse);
-  // Installs one bundled source with app-owned OAuth credential retrieval.
-  rpc CreateBundledSourceWithOAuth(CreateBundledSourceWithOAuthRequest)
-      returns (stream CreateBundledSourceWithOAuthResponse);
+  // Installs one named source by resolving registered global specs before bundled sources.
+  rpc CreateSource(CreateSourceRequest) returns (CreateSourceResponse);
+  // Installs one named source with app-owned OAuth credential retrieval.
+  rpc CreateSourceWithOAuth(CreateSourceWithOAuthRequest)
+      returns (stream CreateSourceWithOAuthResponse);
   // Imports one user-provided source manifest, streaming credential retrieval
   // progress before the final source event when credentials are app-owned.
   rpc ImportSource(ImportSourceRequest) returns (stream ImportSourceResponse);
+  // Lists globally registered source specs.
+  rpc ListSourceSpecs(ListSourceSpecsRequest) returns (ListSourceSpecsResponse);
+  // Registers one source manifest in the global source-spec registry.
+  rpc RegisterSourceSpec(RegisterSourceSpecRequest) returns (RegisterSourceSpecResponse);
+  // Deletes one globally registered source spec.
+  rpc DeleteSourceSpec(DeleteSourceSpecRequest) returns (DeleteSourceSpecResponse);
   // Deletes a registered source.
   rpc DeleteSource(DeleteSourceRequest) returns (DeleteSourceResponse);
   // Validates that a registered source is queryable.

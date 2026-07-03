@@ -7,7 +7,7 @@
 use std::fs;
 
 use coral_api::v1::{
-    CreateBundledSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
+    CreateSourceRequest, DeleteSourceRequest, DiscoverSourcesRequest, ExecuteSqlRequest,
     ExplainSqlRequest, GetSourceInfoRequest, GetSourceRequest, ImportSourceRequest,
     ListCatalogRequest, OauthCredentialFlowType, OauthCredentialScopeDelimiter, PaginationRequest,
     QueryTestFailure, QueryTestSuccess, SourceCredentialStorage, SourceOrigin, SourceSecret,
@@ -69,6 +69,71 @@ async fn import_source_persists_and_lists() {
         listed[0].credential_storage,
         SourceCredentialStorage::Unspecified as i32
     );
+}
+
+#[tokio::test]
+async fn global_source_spec_registers_installs_and_orphans_on_delete() {
+    let harness = GrpcHarness::new().await;
+    let manifest_yaml = fixture_manifest_yaml(harness.temp_path());
+
+    let registered = harness.register_source_spec(manifest_yaml.clone()).await;
+
+    assert_eq!(registered.name, "local_messages");
+    assert_eq!(registered.version, "0.1.0");
+    assert!(!registered.installed);
+    assert_eq!(registered.origin, SourceOrigin::GlobalSpec as i32);
+    let source_specs = harness.list_source_specs().await;
+    assert_eq!(source_specs.len(), 1);
+    assert_eq!(source_specs[0].name, "local_messages");
+    let config_raw =
+        fs::read_to_string(harness.config_dir().join("config.toml")).expect("read config");
+    assert!(config_raw.contains("[source_specs.local_messages]"));
+    assert_eq!(
+        fs::read_to_string(
+            harness
+                .config_dir()
+                .join("source_specs")
+                .join("local_messages")
+                .join("manifest.yaml")
+        )
+        .expect("read global source spec manifest"),
+        manifest_yaml
+    );
+    assert!(harness.list_sources().await.is_empty());
+
+    let created = harness.create_source("local_messages").await;
+
+    assert_eq!(created.name, "local_messages");
+    assert_eq!(created.version, "0.1.0");
+    assert_eq!(created.origin, SourceOrigin::GlobalSpec as i32);
+    assert!(
+        !source_dir(harness.config_dir(), "local_messages")
+            .join("manifest.yaml")
+            .exists()
+    );
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].origin, SourceOrigin::GlobalSpec as i32);
+    harness.validate_source("local_messages").await;
+
+    let removed = harness.delete_source_spec("local_messages").await;
+
+    assert_eq!(removed.name, "local_messages");
+    assert!(harness.list_source_specs().await.is_empty());
+    let listed = harness.list_sources().await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "local_messages");
+    assert_eq!(listed[0].origin, SourceOrigin::GlobalSpec as i32);
+    let error = harness
+        .source_client()
+        .validate_source(Request::new(ValidateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "local_messages".to_string(),
+        }))
+        .await
+        .expect_err("orphaned global source should fail validation");
+    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+    assert!(error.message().contains("global source spec"));
 }
 
 #[tokio::test]
@@ -779,7 +844,7 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
 
     harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {
@@ -965,12 +1030,12 @@ async fn get_source_info_uses_effective_installed_imported_manifest() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_registers_tables() {
+async fn create_source_registers_tables() {
     let harness = GrpcHarness::new().await;
 
     harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {
@@ -993,12 +1058,12 @@ async fn create_bundled_source_registers_tables() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_missing_required_secret_returns_invalid_argument() {
+async fn create_source_missing_required_secret_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![SourceVariable {
@@ -1018,12 +1083,12 @@ async fn create_bundled_source_missing_required_secret_returns_invalid_argument(
 }
 
 #[tokio::test]
-async fn create_bundled_source_missing_required_variable_returns_invalid_argument() {
+async fn create_source_missing_required_variable_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: Vec::new(),
@@ -1043,12 +1108,12 @@ async fn create_bundled_source_missing_required_variable_returns_invalid_argumen
 }
 
 #[tokio::test]
-async fn create_bundled_source_unknown_input_returns_invalid_argument() {
+async fn create_source_unknown_input_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![
@@ -1073,12 +1138,12 @@ async fn create_bundled_source_unknown_input_returns_invalid_argument() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
+async fn create_source_repeated_secret_returns_invalid_argument() {
     let harness = GrpcHarness::new().await;
 
     let error = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "sentry".to_string(),
             variables: vec![SourceVariable {
@@ -1107,12 +1172,12 @@ async fn create_bundled_source_repeated_secret_returns_invalid_argument() {
 }
 
 #[tokio::test]
-async fn create_bundled_source_does_not_persist_manifest_to_config_dir() {
+async fn create_source_does_not_persist_manifest_to_config_dir() {
     let harness = GrpcHarness::new().await;
 
     let created = harness
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(default_workspace()),
             name: "github".to_string(),
             variables: vec![SourceVariable {

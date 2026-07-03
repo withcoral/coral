@@ -11,13 +11,12 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, DeleteSourceRequest, DiscoverSourcesRequest,
-    GetSourceInfoRequest, ImportSourceRequest, ImportSourceResponse, ListSourcesRequest,
-    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess, Source,
-    SourceCredentialStorage, SourceInfo, SourceOrigin, SourceSecret, SourceVariable,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    create_bundled_source_with_o_auth_response, import_source_response, query_test_result,
+    CreateSourceRequest, CreateSourceWithOAuthRequest, CreateSourceWithOAuthResponse,
+    DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest, ImportSourceRequest,
+    ImportSourceResponse, ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval,
+    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
+    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse, Workspace,
+    create_source_with_o_auth_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error};
@@ -99,7 +98,7 @@ pub(crate) async fn list_sources(
         .sources)
 }
 
-pub(crate) async fn add_bundled_source(
+pub(crate) async fn add_named_source(
     app: &AppClient,
     workspace: &Workspace,
     name: &str,
@@ -108,7 +107,7 @@ pub(crate) async fn add_bundled_source(
 ) -> Result<Source, anyhow::Error> {
     let response = app
         .source_client()
-        .create_bundled_source(Request::new(CreateBundledSourceRequest {
+        .create_source(Request::new(CreateSourceRequest {
             workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables,
@@ -118,7 +117,7 @@ pub(crate) async fn add_bundled_source(
         .into_inner();
     response
         .source
-        .ok_or_else(|| anyhow::anyhow!("create bundled source response missing source"))
+        .ok_or_else(|| anyhow::anyhow!("create source response missing source"))
 }
 
 pub(crate) async fn import_source(
@@ -182,18 +181,18 @@ impl CredentialPromptMode {
     }
 }
 
-pub(crate) async fn add_bundled_source_with_credentials(
+pub(crate) async fn add_named_source_with_credentials(
     app: &AppClient,
     workspace: &Workspace,
     name: &str,
     inputs: CollectedSourceInputs,
 ) -> Result<Source, anyhow::Error> {
     if inputs.oauth_credential_retrievals.is_empty() {
-        return add_bundled_source(app, workspace, name, inputs.variables, inputs.secrets).await;
+        return add_named_source(app, workspace, name, inputs.variables, inputs.secrets).await;
     }
     let response = app
         .source_client()
-        .create_bundled_source_with_o_auth(Request::new(CreateBundledSourceWithOAuthRequest {
+        .create_source_with_o_auth(Request::new(CreateSourceWithOAuthRequest {
             workspace: Some(workspace.clone()),
             name: name.to_string(),
             variables: inputs.variables,
@@ -201,7 +200,7 @@ pub(crate) async fn add_bundled_source_with_credentials(
             oauth_credential_retrievals: inputs.oauth_credential_retrievals,
         }))
         .await?;
-    source_from_bundled_credential_stream(response.into_inner(), &inputs.oauth_labels).await
+    source_from_create_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
 
 pub(crate) async fn import_source_with_credentials(
@@ -233,8 +232,8 @@ pub(crate) async fn import_source_with_credentials(
     source_from_import_credential_stream(response.into_inner(), &inputs.oauth_labels).await
 }
 
-async fn source_from_bundled_credential_stream(
-    mut stream: tonic::Streaming<CreateBundledSourceWithOAuthResponse>,
+async fn source_from_create_credential_stream(
+    mut stream: tonic::Streaming<CreateSourceWithOAuthResponse>,
     oauth_labels: &BTreeMap<String, String>,
 ) -> Result<Source, anyhow::Error> {
     let mut redirect_prompt = OAuthRedirectPastePrompt::default();
@@ -301,22 +300,18 @@ enum CredentialStreamEvent {
     OAuthCompleted,
 }
 
-impl From<create_bundled_source_with_o_auth_response::Event> for CredentialStreamEvent {
-    fn from(event: create_bundled_source_with_o_auth_response::Event) -> Self {
+impl From<create_source_with_o_auth_response::Event> for CredentialStreamEvent {
+    fn from(event: create_source_with_o_auth_response::Event) -> Self {
         match event {
-            create_bundled_source_with_o_auth_response::Event::Source(source) => {
-                Self::Source(source)
+            create_source_with_o_auth_response::Event::Source(source) => Self::Source(source),
+            create_source_with_o_auth_response::Event::OauthAuthorization(authorization) => {
+                Self::OAuthAuthorization {
+                    input_key: authorization.input_key,
+                    authorization_url: authorization.authorization_url,
+                    user_code: authorization.user_code,
+                }
             }
-            create_bundled_source_with_o_auth_response::Event::OauthAuthorization(
-                authorization,
-            ) => Self::OAuthAuthorization {
-                input_key: authorization.input_key,
-                authorization_url: authorization.authorization_url,
-                user_code: authorization.user_code,
-            },
-            create_bundled_source_with_o_auth_response::Event::OauthCompleted(_) => {
-                Self::OAuthCompleted
-            }
+            create_source_with_o_auth_response::Event::OauthCompleted(_) => Self::OAuthCompleted,
         }
     }
 }

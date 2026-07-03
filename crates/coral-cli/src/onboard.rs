@@ -66,7 +66,7 @@ pub(crate) async fn run(app: &AppClient, workspace: &Workspace) -> Result<(), an
                 if source.installed {
                     run_installed_source_menu(app, workspace, &theme, source).await?;
                 } else {
-                    run_add_bundled_source(app, workspace, source).await?;
+                    run_add_named_source(app, workspace, source).await?;
                     match run_next_steps(app, workspace, &theme).await? {
                         NextStepChoice::AddMoreSources => {}
                         NextStepChoice::Exit => return Ok(()),
@@ -179,13 +179,9 @@ async fn run_installed_source_menu(
                 &inputs,
                 source_ops::CredentialPromptMode::CredentialMethodFirst,
             )?;
-            let result = source_ops::add_bundled_source_with_credentials(
-                app,
-                workspace,
-                &source.name,
-                inputs,
-            )
-            .await?;
+            let result =
+                source_ops::add_named_source_with_credentials(app, workspace, &source.name, inputs)
+                    .await?;
             println!("Reconfigured source {}", result.name);
             source_ops::validate_and_warn(
                 app,
@@ -201,7 +197,7 @@ async fn run_installed_source_menu(
     Ok(())
 }
 
-async fn run_add_bundled_source(
+async fn run_add_named_source(
     app: &AppClient,
     workspace: &Workspace,
     source: &SourceInfo,
@@ -216,8 +212,7 @@ async fn run_add_bundled_source(
         source_ops::CredentialPromptMode::CredentialMethodFirst,
     )?;
     let result =
-        source_ops::add_bundled_source_with_credentials(app, workspace, &source.name, inputs)
-            .await?;
+        source_ops::add_named_source_with_credentials(app, workspace, &source.name, inputs).await?;
     println!("Added source {}", result.name);
     source_ops::validate_and_warn(
         app,

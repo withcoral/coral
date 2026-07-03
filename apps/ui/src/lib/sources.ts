@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 
 import {
-  CreateBundledSourceRequestSchema,
-  CreateBundledSourceWithOAuthRequestSchema,
+  CreateSourceRequestSchema,
+  CreateSourceWithOAuthRequestSchema,
   DeleteSourceRequestSchema,
   DiscoverSourcesRequestSchema,
   GetSourceInfoRequestSchema,
@@ -15,7 +15,7 @@ import {
 
 import { sourceClient, WORKSPACE } from './coral-clients'
 
-export type SourceOriginLabel = 'bundled' | 'imported' | 'unknown'
+export type SourceOriginLabel = 'bundled' | 'imported' | 'global-spec' | 'unknown'
 
 export interface CatalogEntry {
   name: string
@@ -38,6 +38,7 @@ export interface InstallInput {
 export function originLabel(origin: SourceOrigin): SourceOriginLabel {
   if (origin === SourceOrigin.BUNDLED) return 'bundled'
   if (origin === SourceOrigin.IMPORTED) return 'imported'
+  if (origin === SourceOrigin.GLOBAL_SPEC) return 'global-spec'
   return 'unknown'
 }
 
@@ -81,22 +82,24 @@ export async function deleteSource(name: string): Promise<void> {
 }
 
 function splitBindings(inputs: InstallInput[]) {
-  const variables = inputs.filter((i) => !i.secret).map((i) => ({ key: i.key, value: i.value }))
-  const secrets = inputs.filter((i) => i.secret).map((i) => ({ key: i.key, value: i.value }))
+  const variables = inputs
+    .filter((i) => !i.secret)
+    .map((i) => ({ key: i.key, value: i.value.trim() }))
+  const secrets = inputs.filter((i) => i.secret).map((i) => ({ key: i.key, value: i.value.trim() }))
   return { variables, secrets }
 }
 
-export async function createBundledSource(name: string, inputs: InstallInput[]): Promise<Source> {
+export async function createSource(name: string, inputs: InstallInput[]): Promise<Source> {
   const { variables, secrets } = splitBindings(inputs)
-  const resp = await sourceClient.createBundledSource(
-    create(CreateBundledSourceRequestSchema, {
+  const resp = await sourceClient.createSource(
+    create(CreateSourceRequestSchema, {
       workspace: WORKSPACE,
       name,
       variables,
       secrets,
     }),
   )
-  if (!resp.source) throw new Error(`createBundledSource returned no source`)
+  if (!resp.source) throw new Error(`createSource returned no source`)
   return resp.source
 }
 
@@ -112,16 +115,16 @@ export interface OAuthFlowCallbacks {
   onCompleted?: (event: { inputKey: string; metadata: Map<string, string> }) => void
 }
 
-/** Run the bundled-source OAuth install stream and deliver progress events. */
-export async function createBundledSourceWithOAuth(
+/** Run the source OAuth install stream and deliver progress events. */
+export async function createSourceWithOAuth(
   name: string,
   inputs: InstallInput[],
   oauthRetrievals: OAuthCredentialRetrieval[],
   callbacks: OAuthFlowCallbacks = {},
 ): Promise<Source> {
   const { variables, secrets } = splitBindings(inputs)
-  const stream = sourceClient.createBundledSourceWithOAuth(
-    create(CreateBundledSourceWithOAuthRequestSchema, {
+  const stream = sourceClient.createSourceWithOAuth(
+    create(CreateSourceWithOAuthRequestSchema, {
       workspace: WORKSPACE,
       name,
       variables,

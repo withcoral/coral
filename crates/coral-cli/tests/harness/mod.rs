@@ -19,20 +19,21 @@ use coral_api::v1::source_service_server::{SourceService, SourceServiceServer};
 use coral_api::v1::workspace_service_server::{WorkspaceService, WorkspaceServiceServer};
 use coral_api::v1::{
     CatalogCounts, CatalogItem, CatalogSearchResult, Column, ColumnSearchResult,
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
-    DeleteSourceRequest, DeleteSourceResponse, DeleteWorkspaceRequest, DeleteWorkspaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DiscoverSourcesRequest, DiscoverSourcesResponse,
-    ExecuteSqlRequest, ExecuteSqlResponse, ExplainSqlRequest, ExplainSqlResponse,
-    GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest, GetSourceResponse,
-    ImportSourceRequest, ImportSourceResponse, ListCatalogRequest, ListCatalogResponse,
-    ListColumnsRequest, ListColumnsResponse, ListSourcesRequest, ListSourcesResponse,
+    CreateSourceRequest, CreateSourceResponse, CreateSourceWithOAuthRequest,
+    CreateSourceWithOAuthResponse, CreateWorkspaceRequest, CreateWorkspaceResponse,
+    DeleteSourceRequest, DeleteSourceResponse, DeleteSourceSpecRequest, DeleteSourceSpecResponse,
+    DeleteWorkspaceRequest, DeleteWorkspaceResponse, DescribeTableRequest, DescribeTableResponse,
+    DiscoverSourcesRequest, DiscoverSourcesResponse, ExecuteSqlRequest, ExecuteSqlResponse,
+    ExplainSqlRequest, ExplainSqlResponse, GetSourceInfoRequest, GetSourceInfoResponse,
+    GetSourceRequest, GetSourceResponse, ImportSourceRequest, ImportSourceResponse,
+    ListCatalogRequest, ListCatalogResponse, ListColumnsRequest, ListColumnsResponse,
+    ListSourceSpecsRequest, ListSourceSpecsResponse, ListSourcesRequest, ListSourcesResponse,
     ListWorkspacesRequest, ListWorkspacesResponse, PaginationRequest, PaginationResponse,
-    QueryPlan, SearchCatalogRequest, SearchCatalogResponse, Source, SourceCredentialStorage,
-    SourceInfo, SourceInputSpec, SourceOrigin, SourceSecretInput, Table, TableSummary,
-    ValidateSourceRequest, ValidateSourceResponse, Workspace, catalog_item,
-    create_bundled_source_with_o_auth_response, import_source_response,
-    source_input_spec::Input as ProtoSourceInput,
+    QueryPlan, RegisterSourceSpecRequest, RegisterSourceSpecResponse, SearchCatalogRequest,
+    SearchCatalogResponse, Source, SourceCredentialStorage, SourceInfo, SourceInputSpec,
+    SourceOrigin, SourceSecretInput, SourceSpecInfo, Table, TableSummary, ValidateSourceRequest,
+    ValidateSourceResponse, Workspace, catalog_item, create_source_with_o_auth_response,
+    import_source_response, source_input_spec::Input as ProtoSourceInput,
 };
 use coral_api::{
     CORAL_EPISODE_ID_METADATA_KEY, CORAL_ERROR_DOMAIN, CORAL_ERROR_REASON_SOURCE_NOT_FOUND,
@@ -62,6 +63,18 @@ fn mock_source() -> Source {
         variables: Vec::new(),
         origin: SourceOrigin::Bundled as i32,
         credential_storage: SourceCredentialStorage::File as i32,
+    }
+}
+
+fn mock_global_source() -> Source {
+    Source {
+        workspace: Some(workspace()),
+        name: "linear".to_string(),
+        version: "3.0.0".to_string(),
+        secrets: Vec::new(),
+        variables: Vec::new(),
+        origin: SourceOrigin::GlobalSpec as i32,
+        credential_storage: SourceCredentialStorage::Unspecified as i32,
     }
 }
 
@@ -326,6 +339,34 @@ fn mock_discover_response() -> DiscoverSourcesResponse {
     }
 }
 
+fn mock_source_spec() -> SourceInfo {
+    SourceInfo {
+        name: "linear".to_string(),
+        description: "Linear data".to_string(),
+        version: "3.0.0".to_string(),
+        inputs: Vec::new(),
+        installed: false,
+        origin: SourceOrigin::GlobalSpec as i32,
+        credential_storage: SourceCredentialStorage::Unspecified as i32,
+    }
+}
+
+fn mock_listed_source_spec() -> SourceSpecInfo {
+    SourceSpecInfo {
+        name: "linear".to_string(),
+        description: "Linear data".to_string(),
+        version: "3.0.0".to_string(),
+        inputs: Vec::new(),
+        origin: SourceOrigin::GlobalSpec as i32,
+    }
+}
+
+fn mock_list_source_specs_response() -> ListSourceSpecsResponse {
+    ListSourceSpecsResponse {
+        source_specs: vec![mock_listed_source_spec()],
+    }
+}
+
 fn mock_validate_response() -> ValidateSourceResponse {
     ValidateSourceResponse {
         source: Some(mock_source()),
@@ -365,6 +406,7 @@ fn mock_source_info(name: &str) -> Result<SourceInfo, Status> {
             origin: SourceOrigin::Bundled as i32,
             credential_storage: SourceCredentialStorage::Unspecified as i32,
         }),
+        "linear" => Ok(mock_source_spec()),
         "jira" => Ok(SourceInfo {
             name: "jira".to_string(),
             description: "Jira data".to_string(),
@@ -463,6 +505,7 @@ impl<T> MockResult<T> {
 pub(crate) struct MockServerConfig {
     execute_sql_override: Option<MockResult<ExecuteSqlResponse>>,
     discover_sources: MockResult<DiscoverSourcesResponse>,
+    list_source_specs: MockResult<ListSourceSpecsResponse>,
     list_sources: MockResult<ListSourcesResponse>,
     list_workspaces: MockResult<ListWorkspacesResponse>,
     validate_source: MockResult<ValidateSourceResponse>,
@@ -474,6 +517,7 @@ impl Default for MockServerConfig {
         Self {
             execute_sql_override: None,
             discover_sources: MockResult::ok(mock_discover_response()),
+            list_source_specs: MockResult::ok(mock_list_source_specs_response()),
             list_sources: MockResult::ok(ListSourcesResponse {
                 sources: vec![
                     Source {
@@ -513,6 +557,11 @@ impl MockServerConfig {
 
     pub(crate) fn with_list_sources(mut self, response: ListSourcesResponse) -> Self {
         self.list_sources = MockResult::ok(response);
+        self
+    }
+
+    pub(crate) fn with_list_source_specs(mut self, response: ListSourceSpecsResponse) -> Self {
+        self.list_source_specs = MockResult::ok(response);
         self
     }
 
@@ -616,9 +665,12 @@ struct Captured {
     list_sources: Mutex<Vec<ListSourcesRequest>>,
     get_source: Mutex<Vec<GetSourceRequest>>,
     get_source_info: Mutex<Vec<GetSourceInfoRequest>>,
-    create_bundled_source: Mutex<Vec<CreateBundledSourceRequest>>,
-    create_bundled_source_with_oauth: Mutex<Vec<CreateBundledSourceWithOAuthRequest>>,
+    create_source: Mutex<Vec<CreateSourceRequest>>,
+    create_source_with_oauth: Mutex<Vec<CreateSourceWithOAuthRequest>>,
     import_source: Mutex<Vec<ImportSourceRequest>>,
+    list_source_specs: Mutex<Vec<ListSourceSpecsRequest>>,
+    register_source_spec: Mutex<Vec<RegisterSourceSpecRequest>>,
+    delete_source_spec: Mutex<Vec<DeleteSourceSpecRequest>>,
     delete_source: Mutex<Vec<DeleteSourceRequest>>,
     validate_source: Mutex<Vec<ValidateSourceRequest>>,
     list_workspaces: Mutex<Vec<ListWorkspacesRequest>>,
@@ -862,20 +914,17 @@ struct MockSourceService {
     captured: Arc<Captured>,
 }
 
-type MockBundledSourceStream =
-    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
+type MockSourceStream =
+    Pin<Box<dyn Stream<Item = Result<CreateSourceWithOAuthResponse, Status>> + Send>>;
 type MockImportSourceStream =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 
-fn mock_bundled_source_stream() -> MockBundledSourceStream {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<CreateBundledSourceWithOAuthResponse, Status>>(1);
-    tx.try_send(Ok(CreateBundledSourceWithOAuthResponse {
-        event: Some(create_bundled_source_with_o_auth_response::Event::Source(
-            mock_source(),
-        )),
+fn mock_source_stream(source: Source) -> MockSourceStream {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<CreateSourceWithOAuthResponse, Status>>(1);
+    tx.try_send(Ok(CreateSourceWithOAuthResponse {
+        event: Some(create_source_with_o_auth_response::Event::Source(source)),
     }))
-    .expect("send mock bundled source credential event");
+    .expect("send mock source credential event");
     Box::pin(ReceiverStream::new(rx))
 }
 
@@ -890,7 +939,7 @@ fn mock_import_source_stream() -> MockImportSourceStream {
 
 #[tonic::async_trait]
 impl SourceService for MockSourceService {
-    type CreateBundledSourceWithOAuthStream = MockBundledSourceStream;
+    type CreateSourceWithOAuthStream = MockSourceStream;
     type ImportSourceStream = MockImportSourceStream;
 
     async fn discover_sources(
@@ -950,30 +999,42 @@ impl SourceService for MockSourceService {
         }))
     }
 
-    async fn create_bundled_source(
+    async fn create_source(
         &self,
-        request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
+        request: Request<CreateSourceRequest>,
+    ) -> Result<Response<CreateSourceResponse>, Status> {
+        let request = request.into_inner();
+        let source = if request.name == "linear" {
+            mock_global_source()
+        } else {
+            mock_source()
+        };
         self.captured
-            .create_bundled_source
+            .create_source
             .lock()
-            .expect("create_bundled_source capture")
-            .push(request.into_inner());
-        Ok(Response::new(CreateBundledSourceResponse {
-            source: Some(mock_source()),
+            .expect("create_source capture")
+            .push(request);
+        Ok(Response::new(CreateSourceResponse {
+            source: Some(source),
         }))
     }
 
-    async fn create_bundled_source_with_o_auth(
+    async fn create_source_with_o_auth(
         &self,
-        request: Request<CreateBundledSourceWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
+        request: Request<CreateSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateSourceWithOAuthStream>, Status> {
+        let request = request.into_inner();
+        let source = if request.name == "linear" {
+            mock_global_source()
+        } else {
+            mock_source()
+        };
         self.captured
-            .create_bundled_source_with_oauth
+            .create_source_with_oauth
             .lock()
-            .expect("create_bundled_source_with_oauth capture")
-            .push(request.into_inner());
-        Ok(Response::new(mock_bundled_source_stream()))
+            .expect("create_source_with_oauth capture")
+            .push(request);
+        Ok(Response::new(mock_source_stream(source)))
     }
 
     async fn import_source(
@@ -986,6 +1047,48 @@ impl SourceService for MockSourceService {
             .expect("import_source capture")
             .push(request.into_inner());
         Ok(Response::new(mock_import_source_stream()))
+    }
+
+    async fn list_source_specs(
+        &self,
+        request: Request<ListSourceSpecsRequest>,
+    ) -> Result<Response<ListSourceSpecsResponse>, Status> {
+        self.captured
+            .list_source_specs
+            .lock()
+            .expect("list_source_specs capture")
+            .push(request.into_inner());
+        Ok(Response::new(
+            self.config.list_source_specs.clone().into_tonic_result()?,
+        ))
+    }
+
+    async fn register_source_spec(
+        &self,
+        request: Request<RegisterSourceSpecRequest>,
+    ) -> Result<Response<RegisterSourceSpecResponse>, Status> {
+        self.captured
+            .register_source_spec
+            .lock()
+            .expect("register_source_spec capture")
+            .push(request.into_inner());
+        Ok(Response::new(RegisterSourceSpecResponse {
+            source_spec: Some(mock_source_spec()),
+        }))
+    }
+
+    async fn delete_source_spec(
+        &self,
+        request: Request<DeleteSourceSpecRequest>,
+    ) -> Result<Response<DeleteSourceSpecResponse>, Status> {
+        self.captured
+            .delete_source_spec
+            .lock()
+            .expect("delete_source_spec capture")
+            .push(request.into_inner());
+        Ok(Response::new(DeleteSourceSpecResponse {
+            source_spec: Some(mock_source_spec()),
+        }))
     }
 
     async fn delete_source(
@@ -1217,6 +1320,38 @@ impl MockServer {
             .get_source_info
             .lock()
             .expect("get_source_info capture")
+            .clone()
+    }
+
+    pub(crate) fn create_source_requests(&self) -> Vec<CreateSourceRequest> {
+        self.captured
+            .create_source
+            .lock()
+            .expect("create_source capture")
+            .clone()
+    }
+
+    pub(crate) fn list_source_specs_requests(&self) -> Vec<ListSourceSpecsRequest> {
+        self.captured
+            .list_source_specs
+            .lock()
+            .expect("list_source_specs capture")
+            .clone()
+    }
+
+    pub(crate) fn register_source_spec_requests(&self) -> Vec<RegisterSourceSpecRequest> {
+        self.captured
+            .register_source_spec
+            .lock()
+            .expect("register_source_spec capture")
+            .clone()
+    }
+
+    pub(crate) fn delete_source_spec_requests(&self) -> Vec<DeleteSourceSpecRequest> {
+        self.captured
+            .delete_source_spec
+            .lock()
+            .expect("delete_source_spec capture")
             .clone()
     }
 

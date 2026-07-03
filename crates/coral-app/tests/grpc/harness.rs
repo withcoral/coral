@@ -2,9 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use coral_api::v1::{
-    ExecuteSqlRequest, ImportSourceRequest, ListCatalogRequest, ListSourcesRequest,
-    PaginationRequest, Source, SourceSecret, SourceVariable, TableSummary, ValidateSourceRequest,
-    ValidateSourceResponse, catalog_item, import_source_response,
+    CreateSourceRequest, DeleteSourceSpecRequest, ExecuteSqlRequest, ImportSourceRequest,
+    ListCatalogRequest, ListSourceSpecsRequest, ListSourcesRequest, PaginationRequest,
+    RegisterSourceSpecRequest, Source, SourceInfo, SourceSecret, SourceSpecInfo, SourceVariable,
+    TableSummary, ValidateSourceRequest, ValidateSourceResponse, catalog_item,
+    import_source_response,
 };
 use coral_client::{
     AppClient, CatalogClient, QueryClient, SourceClient, WorkspaceClient, batches_to_json_rows,
@@ -115,6 +117,52 @@ impl GrpcHarness {
                 _ => None,
             })
             .expect("import source response")
+    }
+
+    pub(crate) async fn register_source_spec(&self, manifest_yaml: String) -> SourceInfo {
+        self.source_client()
+            .register_source_spec(Request::new(RegisterSourceSpecRequest { manifest_yaml }))
+            .await
+            .expect("register source spec")
+            .into_inner()
+            .source_spec
+            .expect("register source spec response")
+    }
+
+    pub(crate) async fn list_source_specs(&self) -> Vec<SourceSpecInfo> {
+        self.source_client()
+            .list_source_specs(Request::new(ListSourceSpecsRequest {}))
+            .await
+            .expect("list source specs")
+            .into_inner()
+            .source_specs
+    }
+
+    pub(crate) async fn create_source(&self, name: &str) -> Source {
+        self.source_client()
+            .create_source(Request::new(CreateSourceRequest {
+                workspace: Some(default_workspace()),
+                name: name.to_string(),
+                variables: Vec::new(),
+                secrets: Vec::new(),
+            }))
+            .await
+            .expect("create global source")
+            .into_inner()
+            .source
+            .expect("create global source response")
+    }
+
+    pub(crate) async fn delete_source_spec(&self, name: &str) -> SourceInfo {
+        self.source_client()
+            .delete_source_spec(Request::new(DeleteSourceSpecRequest {
+                name: name.to_string(),
+            }))
+            .await
+            .expect("delete source spec")
+            .into_inner()
+            .source_spec
+            .expect("delete source spec response")
     }
 
     pub(crate) async fn list_sources(&self) -> Vec<Source> {

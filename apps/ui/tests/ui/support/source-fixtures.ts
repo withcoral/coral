@@ -1,8 +1,8 @@
 import { create } from '@bufbuild/protobuf'
 
 import {
-  CreateBundledSourceResponseSchema,
-  CreateBundledSourceWithOAuthResponseSchema,
+  CreateSourceResponseSchema,
+  CreateSourceWithOAuthResponseSchema,
   DeleteSourceResponseSchema,
   DiscoverSourcesResponseSchema,
   GetSourceInfoResponseSchema,
@@ -296,12 +296,12 @@ export const getInstalledLinearResponse = create(GetSourceResponseSchema, {
   source: installedLinear,
 })
 
-export const createLinearResponse = create(CreateBundledSourceResponseSchema, {
+export const createLinearResponse = create(CreateSourceResponseSchema, {
   source: installedLinear,
 })
 
 export const createGithubOauthResponses = [
-  create(CreateBundledSourceWithOAuthResponseSchema, {
+  create(CreateSourceWithOAuthResponseSchema, {
     event: {
       case: 'oauthAuthorization',
       value: create(OAuthCredentialAuthorizationSchema, {
@@ -314,7 +314,7 @@ export const createGithubOauthResponses = [
       }),
     },
   }),
-  create(CreateBundledSourceWithOAuthResponseSchema, {
+  create(CreateSourceWithOAuthResponseSchema, {
     event: {
       case: 'oauthCompleted',
       value: create(OAuthCredentialCompletedSchema, {
@@ -323,7 +323,7 @@ export const createGithubOauthResponses = [
       }),
     },
   }),
-  create(CreateBundledSourceWithOAuthResponseSchema, {
+  create(CreateSourceWithOAuthResponseSchema, {
     event: {
       case: 'source',
       value: installedBundledGithub,

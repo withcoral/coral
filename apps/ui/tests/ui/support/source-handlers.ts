@@ -1,10 +1,10 @@
 import { http } from 'msw'
 
 import {
-  CreateBundledSourceRequestSchema,
-  CreateBundledSourceResponseSchema,
-  CreateBundledSourceWithOAuthRequestSchema,
-  CreateBundledSourceWithOAuthResponseSchema,
+  CreateSourceRequestSchema,
+  CreateSourceResponseSchema,
+  CreateSourceWithOAuthRequestSchema,
+  CreateSourceWithOAuthResponseSchema,
   DeleteSourceRequestSchema,
   DeleteSourceResponseSchema,
   DiscoverSourcesResponseSchema,
@@ -41,8 +41,8 @@ const discoverUrl = '*/coral.v1.SourceService/DiscoverSources'
 const listUrl = '*/coral.v1.SourceService/ListSources'
 const getUrl = '*/coral.v1.SourceService/GetSource'
 const getInfoUrl = '*/coral.v1.SourceService/GetSourceInfo'
-const createBundledUrl = '*/coral.v1.SourceService/CreateBundledSource'
-const createBundledWithOAuthUrl = '*/coral.v1.SourceService/CreateBundledSourceWithOAuth'
+const createUrl = '*/coral.v1.SourceService/CreateSource'
+const createWithOAuthUrl = '*/coral.v1.SourceService/CreateSourceWithOAuth'
 const deleteUrl = '*/coral.v1.SourceService/DeleteSource'
 
 function sourceInfoResponse(name: string) {
@@ -89,10 +89,10 @@ export function sourceLifecycleHandlers() {
       if (!response) return grpcWebError(5, `source ${message.name} not found`)
       return grpcWebResponse(GetSourceResponseSchema, response)
     }),
-    http.post(createBundledUrl, async ({ request }) => {
-      const message = await grpcWebRequest(CreateBundledSourceRequestSchema, request)
+    http.post(createUrl, async ({ request }) => {
+      const message = await grpcWebRequest(CreateSourceRequestSchema, request)
       if (message.name !== 'linear') {
-        throw new Error(`expected CreateBundledSource for linear, got ${message.name}`)
+        throw new Error(`expected CreateSource for linear, got ${message.name}`)
       }
 
       createCalls += 1
@@ -102,12 +102,12 @@ export function sourceLifecycleHandlers() {
       } else if (createCalls === 2) {
         expectLinearSecret(token ?? '', 'lin_test_token_v2', 'edit')
       } else {
-        throw new Error(`unexpected CreateBundledSource call ${createCalls}`)
+        throw new Error(`unexpected CreateSource call ${createCalls}`)
       }
 
       listResponse = listAfterLinearInstallResponse
       discoverResponse = discoverAfterLinearInstallResponse
-      return grpcWebResponse(CreateBundledSourceResponseSchema, createLinearResponse)
+      return grpcWebResponse(CreateSourceResponseSchema, createLinearResponse)
     }),
     http.post(deleteUrl, async ({ request }) => {
       const message = await grpcWebRequest(DeleteSourceRequestSchema, request)
@@ -138,10 +138,10 @@ export function sourceOAuthInstallHandlers() {
       if (message.name !== 'github') return grpcWebError(5, `source ${message.name} not found`)
       return grpcWebResponse(GetSourceResponseSchema, getInstalledBundledGithubResponse)
     }),
-    http.post(createBundledWithOAuthUrl, async ({ request }) => {
-      const message = await grpcWebRequest(CreateBundledSourceWithOAuthRequestSchema, request)
+    http.post(createWithOAuthUrl, async ({ request }) => {
+      const message = await grpcWebRequest(CreateSourceWithOAuthRequestSchema, request)
       if (message.name !== 'github') {
-        throw new Error(`expected CreateBundledSourceWithOAuth for github, got ${message.name}`)
+        throw new Error(`expected CreateSourceWithOAuth for github, got ${message.name}`)
       }
       const retrieval = message.oauthCredentialRetrievals[0]
       if (
@@ -155,7 +155,7 @@ export function sourceOAuthInstallHandlers() {
       listResponse = listAfterGithubOauthResponse
       discoverResponse = discoverInitialResponse
       return grpcWebStreamResponse(
-        CreateBundledSourceWithOAuthResponseSchema,
+        CreateSourceWithOAuthResponseSchema,
         createGithubOauthResponses,
         { delayMs: 1500 },
       )

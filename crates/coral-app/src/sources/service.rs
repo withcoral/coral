@@ -6,22 +6,23 @@ use std::task::{Context, Poll};
 
 use coral_api::v1::source_service_server::SourceService as SourceServiceApi;
 use coral_api::v1::{
-    CreateBundledSourceRequest, CreateBundledSourceResponse, CreateBundledSourceWithOAuthRequest,
-    CreateBundledSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest,
-    DeleteSourceResponse, DiscoverSourcesRequest, DiscoverSourcesResponse, GetSourceInfoRequest,
-    GetSourceInfoResponse, GetSourceRequest, GetSourceResponse, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
+    CreateSourceRequest, CreateSourceResponse, CreateSourceWithOAuthRequest,
+    CreateSourceWithOAuthResponse, CredentialMetadata, DeleteSourceRequest, DeleteSourceResponse,
+    DeleteSourceSpecRequest, DeleteSourceSpecResponse, DiscoverSourcesRequest,
+    DiscoverSourcesResponse, GetSourceInfoRequest, GetSourceInfoResponse, GetSourceRequest,
+    GetSourceResponse, ImportSourceRequest, ImportSourceResponse, ListSourceSpecsRequest,
+    ListSourceSpecsResponse, ListSourcesRequest, ListSourcesResponse, OAuthCredentialAuthorization,
     OAuthCredentialClient, OAuthCredentialClientId, OAuthCredentialClientSecret,
     OAuthCredentialCompleted, OAuthCredentialEndpoints, OAuthCredentialInput,
     OAuthCredentialMethod, OAuthCredentialRetrieval, OAuthCredentialScope, OAuthCredentialScopes,
     OAuthDynamicClientRegistration, OauthCredentialClientSecretTransport, OauthCredentialFlowType,
     OauthCredentialPkceMode, OauthCredentialRedirectUriPortMode, OauthCredentialScopeDelimiter,
-    OauthDynamicClientRegistrationAuthMethod, Source, SourceConfigCredentialMethod,
-    SourceCredential, SourceCredentialMethod,
-    SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo, SourceInputSpec,
-    SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput, SourceVariable,
-    SourceVariableInput, ValidateSourceRequest, ValidateSourceResponse,
-    create_bundled_source_with_o_auth_response, import_source_response,
+    OauthDynamicClientRegistrationAuthMethod, RegisterSourceSpecRequest,
+    RegisterSourceSpecResponse, Source, SourceConfigCredentialMethod, SourceCredential,
+    SourceCredentialMethod, SourceCredentialStorage as ProtoSourceCredentialStorage, SourceInfo,
+    SourceInputSpec, SourceOrigin as ProtoSourceOrigin, SourceSecret, SourceSecretInput,
+    SourceSpecInfo, SourceVariable, SourceVariableInput, ValidateSourceRequest,
+    ValidateSourceResponse, create_source_with_o_auth_response, import_source_response,
     source_credential_method::Method as ProtoCredentialMethod,
     source_input_spec::Input as ProtoSourceInput,
 };
@@ -40,8 +41,8 @@ use crate::sources::SourceName;
 use crate::sources::manager::{
     CreateSourceCommand, CreateSourceWithOAuthCommand, ImportSourceCommand,
     ImportSourceEventSender, ImportSourceWithCredentialsCommand, ImportSourceWithCredentialsEvent,
-    PendingImportSourceWithCredentialsEvent, SourceBinding, SourceBindings, SourceManager,
-    SourceOAuthCredentialRetrieval,
+    PendingImportSourceWithCredentialsEvent, RegisterSourceSpecCommand, SourceBinding,
+    SourceBindings, SourceManager, SourceOAuthCredentialRetrieval,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
 use crate::transport::{
@@ -71,7 +72,7 @@ impl SourceService {
 
 #[tonic::async_trait]
 impl SourceServiceApi for SourceService {
-    type CreateBundledSourceWithOAuthStream = CreateBundledSourceWithOAuthResponseStreamBox;
+    type CreateSourceWithOAuthStream = CreateSourceWithOAuthResponseStreamBox;
     type ImportSourceStream = ImportSourceResponseStreamBox;
 
     async fn discover_sources(
@@ -154,18 +155,18 @@ impl SourceServiceApi for SourceService {
         .await
     }
 
-    async fn create_bundled_source(
+    async fn create_source(
         &self,
-        request: Request<CreateBundledSourceRequest>,
-    ) -> Result<Response<CreateBundledSourceResponse>, Status> {
+        request: Request<CreateSourceRequest>,
+    ) -> Result<Response<CreateSourceResponse>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
-            let bundled_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
             let command = CreateSourceCommand {
-                name: bundled_name,
+                name: source_name,
                 bindings: source_bindings_from_proto(request.variables, request.secrets),
             };
             let response_workspace_name = workspace_name.clone();
@@ -173,7 +174,7 @@ impl SourceServiceApi for SourceService {
                 sources.create_source(&workspace_name, &command)
             })
             .await?;
-            Ok(Response::new(CreateBundledSourceResponse {
+            Ok(Response::new(CreateSourceResponse {
                 source: Some(installed_source_to_proto(
                     &response_workspace_name,
                     installed,
@@ -183,10 +184,10 @@ impl SourceServiceApi for SourceService {
         .await
     }
 
-    async fn create_bundled_source_with_o_auth(
+    async fn create_source_with_o_auth(
         &self,
-        request: Request<CreateBundledSourceWithOAuthRequest>,
-    ) -> Result<Response<Self::CreateBundledSourceWithOAuthStream>, Status> {
+        request: Request<CreateSourceWithOAuthRequest>,
+    ) -> Result<Response<Self::CreateSourceWithOAuthStream>, Status> {
         let span = grpc_span(&request);
         let sources = self.sources.clone();
         instrument_grpc(span.clone(), async move {
@@ -213,9 +214,9 @@ impl SourceServiceApi for SourceService {
                     })
                 });
             Ok(Response::new(Box::pin(stream.map(|response| {
-                response.map(create_bundled_source_with_o_auth_response_from_import_response)
+                response.map(create_source_with_o_auth_response_from_import_response)
             }))
-                as Self::CreateBundledSourceWithOAuthStream))
+                as Self::CreateSourceWithOAuthStream))
         })
         .await
     }
@@ -272,6 +273,64 @@ impl SourceServiceApi for SourceService {
         .await
     }
 
+    async fn list_source_specs(
+        &self,
+        request: Request<ListSourceSpecsRequest>,
+    ) -> Result<Response<ListSourceSpecsResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let source_specs = sources
+                .list_source_specs()
+                .map_err(app_status)?
+                .into_iter()
+                .map(source_spec_to_proto)
+                .collect();
+            Ok(Response::new(ListSourceSpecsResponse { source_specs }))
+        })
+        .await
+    }
+
+    async fn register_source_spec(
+        &self,
+        request: Request<RegisterSourceSpecRequest>,
+    ) -> Result<Response<RegisterSourceSpecResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let command = RegisterSourceSpecCommand {
+                manifest_yaml: request.manifest_yaml,
+            };
+            let source_spec =
+                run_blocking_source_operation(move || sources.register_source_spec(&command))
+                    .await?;
+            Ok(Response::new(RegisterSourceSpecResponse {
+                source_spec: Some(candidate_source_to_proto(source_spec)),
+            }))
+        })
+        .await
+    }
+
+    async fn delete_source_spec(
+        &self,
+        request: Request<DeleteSourceSpecRequest>,
+    ) -> Result<Response<DeleteSourceSpecResponse>, Status> {
+        let span = grpc_span(&request);
+        let sources = self.sources.clone();
+        instrument_grpc(span, async move {
+            let request = request.into_inner();
+            let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let source_spec =
+                run_blocking_source_operation(move || sources.delete_source_spec(&source_name))
+                    .await?;
+            Ok(Response::new(DeleteSourceSpecResponse {
+                source_spec: Some(candidate_source_to_proto(source_spec)),
+            }))
+        })
+        .await
+    }
+
     async fn delete_source(
         &self,
         request: Request<DeleteSourceRequest>,
@@ -317,8 +376,8 @@ impl SourceServiceApi for SourceService {
     }
 }
 
-type CreateBundledSourceWithOAuthResponseStreamBox =
-    Pin<Box<dyn Stream<Item = Result<CreateBundledSourceWithOAuthResponse, Status>> + Send>>;
+type CreateSourceWithOAuthResponseStreamBox =
+    Pin<Box<dyn Stream<Item = Result<CreateSourceWithOAuthResponse, Status>> + Send>>;
 type ImportSourceResponseStreamBox =
     Pin<Box<dyn Stream<Item = Result<ImportSourceResponse, Status>> + Send>>;
 type ImportSourceFuture = Pin<Box<dyn Future<Output = Result<InstalledSource, Status>> + Send>>;
@@ -499,21 +558,21 @@ fn import_source_event_to_proto(event: ImportSourceWithCredentialsEvent) -> Impo
     ImportSourceResponse { event: Some(event) }
 }
 
-fn create_bundled_source_with_o_auth_response_from_import_response(
+fn create_source_with_o_auth_response_from_import_response(
     response: ImportSourceResponse,
-) -> CreateBundledSourceWithOAuthResponse {
+) -> CreateSourceWithOAuthResponse {
     let event = response.event.map(|event| match event {
         import_source_response::Event::Source(source) => {
-            create_bundled_source_with_o_auth_response::Event::Source(source)
+            create_source_with_o_auth_response::Event::Source(source)
         }
         import_source_response::Event::OauthAuthorization(authorization) => {
-            create_bundled_source_with_o_auth_response::Event::OauthAuthorization(authorization)
+            create_source_with_o_auth_response::Event::OauthAuthorization(authorization)
         }
         import_source_response::Event::OauthCompleted(completed) => {
-            create_bundled_source_with_o_auth_response::Event::OauthCompleted(completed)
+            create_source_with_o_auth_response::Event::OauthCompleted(completed)
         }
     });
-    CreateBundledSourceWithOAuthResponse { event }
+    CreateSourceWithOAuthResponse { event }
 }
 
 fn installed_source_to_proto(workspace_name: &WorkspaceName, source: InstalledSource) -> Source {
@@ -571,6 +630,20 @@ fn candidate_source_to_proto(source: CandidateSource) -> SourceInfo {
         installed: source.installed,
         origin: proto_source_origin(source.origin) as i32,
         credential_storage: proto_source_credential_storage(source.credential_storage) as i32,
+    }
+}
+
+fn source_spec_to_proto(source: CandidateSource) -> SourceSpecInfo {
+    SourceSpecInfo {
+        name: source.name.as_str().to_string(),
+        description: source.description,
+        version: source.version.unwrap_or_default(),
+        inputs: source
+            .inputs
+            .into_iter()
+            .map(candidate_source_input_to_proto)
+            .collect(),
+        origin: proto_source_origin(source.origin) as i32,
     }
 }
 
