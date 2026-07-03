@@ -1032,6 +1032,66 @@ paths:
     );
 }
 
+#[test]
+fn importer_resolves_same_document_uri_refs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let openapi_file = temp.path().join("openapi.yaml");
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: same_document_uri_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          $ref: openapi.yaml#/components/responses/Items
+components:
+  responses:
+    Items:
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: openapi.yaml#/components/schemas/Item
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("same-document URI refs should import");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert_eq!(operation.output.type_ref, "item");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+}
+
 fn write_external_ref_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("paths")).expect("paths dir");
     std::fs::create_dir_all(root.join("parameters")).expect("parameters dir");

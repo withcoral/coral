@@ -73,7 +73,9 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
             surface.id
         ))
     })?;
-    let reachable_document = reachable_openapi_document(document);
+    let mut document = document.clone();
+    normalize_same_document_refs(&parsed_descriptor_url, &mut document);
+    let reachable_document = reachable_openapi_document(&document);
     let mut seen = BTreeSet::new();
     let mut external_documents = BTreeMap::new();
     collect_external_ref_documents(
@@ -90,7 +92,7 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
         ))
     })?;
     if external_documents.is_empty() {
-        return Ok(document.clone());
+        return Ok(document);
     }
 
     let mut registry = jsonschema::Registry::new();
@@ -194,6 +196,7 @@ fn collect_ref_documents(
     if !external_documents.contains_key(&document_uri_string) {
         let mut document = retrieve_external_ref_document(base_uri, &document_uri)?;
         annotate_ref_sites(&mut document);
+        normalize_same_document_refs(&document_uri, &mut document);
         external_documents.insert(document_uri_string.clone(), document);
     }
     let external_document = external_documents
@@ -325,6 +328,43 @@ fn insert_json_pointer_segments(document: &mut Value, segments: &[String], value
 
 fn decode_json_pointer_segment(segment: &str) -> String {
     segment.replace("~1", "/").replace("~0", "~")
+}
+
+fn normalize_same_document_refs(base_uri: &Url, value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+                && let Some(local_reference) = same_document_local_ref(base_uri, reference)
+            {
+                object.insert("$ref".to_string(), Value::String(local_reference));
+            }
+            for value in object.values_mut() {
+                normalize_same_document_refs(base_uri, value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                normalize_same_document_refs(base_uri, value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn same_document_local_ref(base_uri: &Url, reference: &str) -> Option<String> {
+    if reference.starts_with('#') {
+        return None;
+    }
+    let resolved_ref_uri = base_uri.join(reference).ok()?;
+    let fragment = resolved_ref_uri.fragment()?.to_string();
+    if !fragment.starts_with('/') {
+        return None;
+    }
+    let mut document_uri = resolved_ref_uri;
+    document_uri.set_fragment(None);
+    let mut base_document_uri = base_uri.clone();
+    base_document_uri.set_fragment(None);
+    (document_uri == base_document_uri).then(|| format!("#{fragment}"))
 }
 
 fn openapi_document_base_uri(surface: &V4Surface) -> Result<String> {
