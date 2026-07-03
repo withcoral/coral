@@ -39,6 +39,18 @@ pub enum AppError {
         /// Specific materialization mismatch or missing-artifact detail.
         detail: String,
     },
+    /// A user-maintained DSL v4 projection override is malformed or stale.
+    #[error(
+        "failed precondition: source '{source_name}' has invalid DSL v4 projection override '{override_path}': {detail}. Edit or remove the override file."
+    )]
+    InvalidV4ProjectionOverride {
+        /// Source name whose override failed validation.
+        source_name: String,
+        /// Projection override path that failed validation.
+        override_path: String,
+        /// Specific override mismatch or malformed-artifact detail.
+        detail: String,
+    },
     /// Provider-managed credential refresh failed during active source use.
     #[error("credential refresh failed: {0}")]
     CredentialRefresh(String),
@@ -206,6 +218,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
         | AppError::MissingOrIncompatibleV4Materialization { .. }
+        | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::CredentialRefresh(_)
         | AppError::MissingConfigDir
         | AppError::Credentials(CredentialsError::Parse(_) | CredentialsError::Unavailable(_)) => {

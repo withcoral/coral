@@ -53,7 +53,7 @@ pub fn generate_projection_catalog(
     Ok(ProjectionCatalog {
         artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
         source_name: manifest.common.name.clone(),
-        generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+        generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
         projections,
         diagnostics,
     })

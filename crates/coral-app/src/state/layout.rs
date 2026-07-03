@@ -16,6 +16,18 @@ use crate::workspaces::{WorkspaceName, WorkspacePaths};
 pub(crate) const INSTALLED_MANIFEST_FILE_NAME: &str = "manifest.yaml";
 pub(crate) const INSTALLED_SECRETS_FILE_NAME: &str = "secrets.env";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V4ProjectionCatalogOrigin {
+    Materialized,
+    Override,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct V4ProjectionCatalogFile {
+    pub(crate) path: PathBuf,
+    pub(crate) origin: V4ProjectionCatalogOrigin,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AppStateLayout {
     config_dir: PathBuf,
@@ -176,36 +188,27 @@ impl AppStateLayout {
             .join(FINGERPRINT_FILENAME)
     }
 
-    fn v4_overridden_or_materialized(
+    pub(crate) fn v4_projection_catalog_file(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-        path: &str,
-    ) -> PathBuf {
-        let override_file = self.v4_override_dir(workspace_name, source_name).join(path);
+    ) -> V4ProjectionCatalogFile {
+        let override_file = self
+            .v4_override_dir(workspace_name, source_name)
+            .join(PROJECTIONS_FILENAME);
         if override_file.exists() {
-            override_file
+            V4ProjectionCatalogFile {
+                path: override_file,
+                origin: V4ProjectionCatalogOrigin::Override,
+            }
         } else {
-            self.v4_materialized_dir(workspace_name, source_name)
-                .join(path)
+            V4ProjectionCatalogFile {
+                path: self
+                    .v4_materialized_dir(workspace_name, source_name)
+                    .join(PROJECTIONS_FILENAME),
+                origin: V4ProjectionCatalogOrigin::Materialized,
+            }
         }
-    }
-
-    pub(crate) fn v4_projections_file(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> PathBuf {
-        self.v4_overridden_or_materialized(workspace_name, source_name, PROJECTIONS_FILENAME)
-    }
-
-    pub(crate) fn v4_projections_override_file(
-        &self,
-        workspace_name: &WorkspaceName,
-        source_name: &SourceName,
-    ) -> PathBuf {
-        self.v4_override_dir(workspace_name, source_name)
-            .join(PROJECTIONS_FILENAME)
     }
 
     pub(crate) fn v4_diagnostics_file(
@@ -307,16 +310,21 @@ mod tests {
     }
 
     #[test]
-    fn v4_projections_file_returns_override_if_present() {
+    fn v4_projection_catalog_file_returns_override_if_present() {
         let temp = tempdir().expect("tempdir");
         let config_dir = temp.path().join("coral-config");
         let layout = AppStateLayout::discover(Some(config_dir.clone())).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
         let source_name = SourceName::parse("github").expect("source");
 
+        let generated = layout.v4_projection_catalog_file(&workspace_name, &source_name);
         assert_eq!(
-            layout.v4_projections_file(&workspace_name, &source_name),
+            generated.path,
             config_dir.join("workspaces/default/sources/github/materialized/v4/projections.yaml")
+        );
+        assert_eq!(
+            generated.origin,
+            super::V4ProjectionCatalogOrigin::Materialized
         );
 
         let override_dir = config_dir.join("workspaces/default/sources/github/overrides");
@@ -324,13 +332,11 @@ mod tests {
         let override_file = override_dir.join(PROJECTIONS_FILENAME);
         fs::write(&override_file, "{}").expect("write to override file");
 
+        let overridden = layout.v4_projection_catalog_file(&workspace_name, &source_name);
+        assert_eq!(overridden.path, override_file);
         assert_eq!(
-            layout.v4_projections_file(&workspace_name, &source_name),
-            override_file
-        );
-        assert_eq!(
-            layout.v4_projections_override_file(&workspace_name, &source_name),
-            override_file
+            overridden.origin,
+            super::V4ProjectionCatalogOrigin::Override
         );
         assert_eq!(
             layout.v4_parameter_metadata_override_file(&workspace_name, &source_name, "rest"),

@@ -8,7 +8,8 @@ use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunct
 pub struct ProjectionCatalog {
     pub artifact_schema_version: u32,
     pub source_name: String,
-    pub generator_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_version: Option<String>,
     pub projections: Vec<Projection>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -89,7 +90,7 @@ mod tests {
         let catalog = ProjectionCatalog {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
             projections: vec![Projection {
                 name: "search_issues".to_string(),
                 namespace: "demo".to_string(),
@@ -169,6 +170,23 @@ diagnostics: []
             catalog.projections.first().expect("projection").namespace,
             ""
         );
+    }
+
+    #[test]
+    fn projection_catalog_deserializes_without_generator_version() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+projections: []
+diagnostics: []
+"
+        );
+
+        let catalog: ProjectionCatalog =
+            serde_yaml::from_str(&raw).expect("projection override catalog should deserialize");
+
+        assert_eq!(catalog.generator_version, None);
     }
 
     #[test]

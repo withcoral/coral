@@ -314,7 +314,8 @@ impl QueryManager {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
-                    | AppError::MissingOrIncompatibleV4Materialization { .. }),
+                    | AppError::MissingOrIncompatibleV4Materialization { .. }
+                    | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
                     return Err(error);
                 }
@@ -668,6 +669,7 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
+        AppError::InvalidV4ProjectionOverride { .. } => "INVALID_V4_PROJECTION_OVERRIDE",
         AppError::CredentialRefresh(_) => "CREDENTIAL_REFRESH",
         AppError::Unavailable(_) => "UNAVAILABLE",
         AppError::Io(_) => "IO",

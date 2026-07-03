@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
-use crate::state::AppStateLayout;
+use crate::state::{AppStateLayout, V4ProjectionCatalogFile, V4ProjectionCatalogOrigin};
 use crate::storage::fs;
 use crate::workspaces::WorkspaceName;
 
@@ -157,11 +157,9 @@ pub(crate) fn load_v4_materialization(
     manifest: &V4SourceManifest,
 ) -> Result<V4MaterializedSource, AppError> {
     let fingerprint_path = layout.v4_fingerprint_file(workspace_name, source_name);
-    let projections_path = layout.v4_projections_file(workspace_name, source_name);
-    let projections_override_path =
-        layout.v4_projections_override_file(workspace_name, source_name);
+    let projections_file = layout.v4_projection_catalog_file(workspace_name, source_name);
     let diagnostics_path = layout.v4_diagnostics_file(workspace_name, source_name);
-    if !fingerprint_path.exists() || !projections_path.exists() || !diagnostics_path.exists() {
+    if !fingerprint_path.exists() || !projections_file.path.exists() || !diagnostics_path.exists() {
         return Err(incompatible_materialization_error(
             source_name,
             "required artifact is missing",
@@ -177,9 +175,15 @@ pub(crate) fn load_v4_materialization(
         ));
     }
     let fingerprint_surfaces = validate_fingerprint_surfaces(source_name, manifest, &fingerprint)?;
-    let mut projections: ProjectionCatalog =
-        read_artifact_yaml(source_name, "projection catalog", &projections_path)?;
-    validate_projection_catalog_header(source_name, manifest, &projections)?;
+    let mut projections: ProjectionCatalog = match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            read_artifact_yaml(source_name, "projection catalog", &projections_file.path)?
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            read_projection_override_yaml(source_name, &projections_file.path)?
+        }
+    };
+    validate_projection_catalog_header(source_name, manifest, &projections, &projections_file)?;
     let diagnostics: Vec<Diagnostic> =
         read_artifact_yaml(source_name, "diagnostics", &diagnostics_path)?;
     let mut surfaces = Vec::new();
@@ -219,10 +223,13 @@ pub(crate) fn load_v4_materialization(
             raw_source_document_path,
         });
     }
-    let projection_sync_mode = if projections_override_path.exists() {
-        ProjectionPaginationInputSyncMode::PreserveExistingExposure
-    } else {
-        ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
+    let projection_sync_mode = match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            ProjectionPaginationInputSyncMode::RecomputeRestInputExposure
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            ProjectionPaginationInputSyncMode::PreserveExistingExposure
+        }
     };
     sync_projection_pagination_inputs(
         surfaces.iter().map(|surface| &surface.semantic_ir),
@@ -344,26 +351,62 @@ fn validate_projection_catalog_header(
     source_name: &SourceName,
     manifest: &V4SourceManifest,
     projections: &ProjectionCatalog,
+    projections_file: &V4ProjectionCatalogFile,
 ) -> Result<(), AppError> {
     if projections.artifact_schema_version != V4_ARTIFACT_SCHEMA_VERSION {
-        return Err(incompatible_materialization_error(
+        return Err(projection_catalog_error(
             source_name,
+            projections_file,
             "projection catalog artifact schema version mismatch",
         ));
     }
     if projections.source_name != manifest.common.name {
-        return Err(incompatible_materialization_error(
+        return Err(projection_catalog_error(
             source_name,
+            projections_file,
             "projection catalog source name does not match installed manifest",
         ));
     }
-    if projections.generator_version != PROJECTION_GENERATOR_VERSION {
-        return Err(incompatible_materialization_error(
-            source_name,
-            "projection catalog generator version mismatch",
-        ));
+    match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            if projections.generator_version.as_deref() != Some(PROJECTION_GENERATOR_VERSION) {
+                return Err(projection_catalog_error(
+                    source_name,
+                    projections_file,
+                    "projection catalog generator version mismatch",
+                ));
+            }
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            if let Some(generator_version) = projections.generator_version.as_deref()
+                && generator_version != PROJECTION_GENERATOR_VERSION
+            {
+                return Err(projection_catalog_error(
+                    source_name,
+                    projections_file,
+                    format!(
+                        "projection override was copied from generator version '{generator_version}', but this Coral build expects '{PROJECTION_GENERATOR_VERSION}'; remove generator_version after reviewing the override or recreate it from the current generated catalog"
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+fn projection_catalog_error(
+    source_name: &SourceName,
+    projections_file: &V4ProjectionCatalogFile,
+    detail: impl AsRef<str>,
+) -> AppError {
+    match projections_file.origin {
+        V4ProjectionCatalogOrigin::Materialized => {
+            incompatible_materialization_error(source_name, detail)
+        }
+        V4ProjectionCatalogOrigin::Override => {
+            invalid_projection_override_error(source_name, &projections_file.path, detail)
+        }
+    }
 }
 
 fn require_file(source_name: &SourceName, path: &Path) -> Result<(), AppError> {
@@ -1141,6 +1184,31 @@ fn read_artifact_yaml<T: serde::de::DeserializeOwned>(
     })
 }
 
+fn read_projection_override_yaml(
+    source_name: &SourceName,
+    path: &Path,
+) -> Result<ProjectionCatalog, AppError> {
+    read_yaml(path).map_err(|error| {
+        invalid_projection_override_error(
+            source_name,
+            path,
+            format!("failed to read projection override artifact: {error}"),
+        )
+    })
+}
+
+fn invalid_projection_override_error(
+    source_name: &SourceName,
+    path: &Path,
+    detail: impl AsRef<str>,
+) -> AppError {
+    AppError::InvalidV4ProjectionOverride {
+        source_name: source_name.to_string(),
+        override_path: path.display().to_string(),
+        detail: detail.as_ref().to_string(),
+    }
+}
+
 fn write_yaml<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::ensure_private_dir(parent)?;
@@ -1333,6 +1401,47 @@ surfaces:
         replace_v4_materialization(&layout, &workspace_name(), &source_name(), &build.temp_dir)
             .expect("install materialization");
         (state_temp, descriptor_temp, layout, manifest_yaml, manifest)
+    }
+
+    fn installed_projection_catalog_value(layout: &AppStateLayout) -> serde_yaml::Value {
+        let path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        serde_yaml::from_slice(&std::fs::read(path).expect("read generated projections"))
+            .expect("parse generated projections")
+    }
+
+    fn remove_generator_version(catalog: &mut serde_yaml::Value) {
+        let key = serde_yaml::Value::String("generator_version".to_string());
+        catalog
+            .as_mapping_mut()
+            .expect("projection catalog mapping")
+            .remove(&key);
+    }
+
+    fn set_generator_version(catalog: &mut serde_yaml::Value, generator_version: &str) {
+        let key = serde_yaml::Value::String("generator_version".to_string());
+        catalog
+            .as_mapping_mut()
+            .expect("projection catalog mapping")
+            .insert(
+                key,
+                serde_yaml::Value::String(generator_version.to_string()),
+            );
+    }
+
+    fn write_projection_override(layout: &AppStateLayout, catalog: &serde_yaml::Value) -> PathBuf {
+        let path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        std::fs::create_dir_all(path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(
+            &path,
+            serde_yaml::to_string(catalog).expect("encode projection override"),
+        )
+        .expect("write projection override");
+        path
     }
 
     #[tokio::test]
@@ -1561,6 +1670,150 @@ surfaces:
                 .to_string()
                 .contains("manifest fingerprint does not match installed manifest"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_generated_projection_catalog_without_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let projection_path = layout
+            .v4_materialized_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        let mut catalog = installed_projection_catalog_value(&layout);
+        remove_generator_version(&mut catalog);
+        std::fs::write(
+            &projection_path,
+            serde_yaml::to_string(&catalog).expect("encode projections"),
+        )
+        .expect("write generated projections");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("generated projection catalog without generator version should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("projection catalog generator version mismatch"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_projection_override_without_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        remove_generator_version(&mut catalog);
+        write_projection_override(&layout, &catalog);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("projection override without generator version should load");
+
+        assert_eq!(materialized.projections.generator_version, None);
+    }
+
+    #[test]
+    fn load_v4_materialization_accepts_projection_override_with_current_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let catalog = installed_projection_catalog_value(&layout);
+        write_projection_override(&layout, &catalog);
+
+        let materialized = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect("projection override with current generator version should load");
+
+        assert_eq!(
+            materialized.projections.generator_version.as_deref(),
+            Some(PROJECTION_GENERATOR_VERSION)
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_stale_projection_override_generator_version() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let mut catalog = installed_projection_catalog_value(&layout);
+        set_generator_version(&mut catalog, "derive-read-v0");
+        let override_path = write_projection_override(&layout, &catalog);
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("stale projection override generator version should fail");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains(&override_path.display().to_string()),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Edit or remove the override file"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("Re-add the source"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn load_v4_materialization_rejects_corrupted_projection_override_with_override_guidance() {
+        let (_state, _descriptor, layout, manifest_yaml, manifest) = setup_materialization();
+        let override_path = layout
+            .v4_override_dir(&workspace_name(), &source_name())
+            .join(PROJECTIONS_FILENAME);
+        std::fs::create_dir_all(override_path.parent().expect("override parent"))
+            .expect("create override dir");
+        std::fs::write(&override_path, b": not yaml").expect("write corrupt projection override");
+
+        let error = load_v4_materialization(
+            &layout,
+            &workspace_name(),
+            &source_name(),
+            &manifest_yaml,
+            &manifest,
+        )
+        .expect_err("corrupt projection override should fail");
+        let message = error.to_string();
+
+        assert!(
+            matches!(error, AppError::InvalidV4ProjectionOverride { .. }),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            message.contains("failed to read projection override artifact"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("Edit or remove the override file"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !message.contains("Re-add the source"),
+            "unexpected error: {message}"
         );
     }
 

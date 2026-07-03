@@ -891,7 +891,7 @@ operation_overrides:
         ProjectionCatalog {
             artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
             source_name: "demo".to_string(),
-            generator_version: "test".to_string(),
+            generator_version: Some("test".to_string()),
             projections: vec![Projection {
                 name: "widgets".to_string(),
                 namespace: "demo".to_string(),
