@@ -1,13 +1,5 @@
 //! Application-level envelope encryption for DB-backed credential material.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Credential DB runtime wiring lands in a later stack branch; this branch isolates cryptographic primitives for review."
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -45,6 +37,21 @@ enum CredentialEncryptionKeySource {
     File,
     Keychain,
     Vault,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialEncryptionKeyOrigin {
+    Env,
+    File,
+    CreatedFile,
+    Keychain,
+    CreatedKeychain,
+}
+
+impl CredentialEncryptionKeyOrigin {
+    pub(crate) fn requires_postgres_bootstrap_warning(self) -> bool {
+        matches!(self, Self::File | Self::CreatedFile | Self::CreatedKeychain)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -153,24 +160,42 @@ impl LocalFileCredentialKeyProvider {
         configured_key_source(&self.config_file)
     }
 
-    fn auto_key(&self, key_id: Option<&str>) -> Result<CredentialEncryptionKey, CredentialsError> {
+    pub(crate) fn active_key_origin(
+        &self,
+    ) -> Result<CredentialEncryptionKeyOrigin, CredentialsError> {
+        Ok(self.active_key_selection()?.1)
+    }
+
+    fn active_key_selection(
+        &self,
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
+        if let Some(key) = self.load_configured_key()? {
+            return Ok((key, CredentialEncryptionKeyOrigin::Env));
+        }
+        self.explicit_source_key(self.configured_source()?, None)
+    }
+
+    fn auto_key(
+        &self,
+        key_id: Option<&str>,
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         if self.file.exists()? {
             info!(
                 path = %self.file.path().display(),
                 "using existing plaintext credential encryption key; migrate the KEK to keychain before enabling keychain sourcing"
             );
-            return self.file.resolve_key(key_id);
+            return self.file.resolve_key_selection(key_id);
         }
 
         match self.keychain.probe() {
-            Ok(()) => self.keychain.resolve_key(key_id),
+            Ok(()) => self.keychain.resolve_key_selection(key_id),
             Err(error) => {
                 warn!(
                     detail = %error,
                     path = %self.file.path().display(),
                     "keychain unavailable; falling back to plaintext credential encryption key file; configure a keychain or set [credentials].encryption_key_source = \"keychain\" to fail closed"
                 );
-                self.file.resolve_key(key_id)
+                self.file.resolve_key_selection(key_id)
             }
         }
     }
@@ -179,13 +204,13 @@ impl LocalFileCredentialKeyProvider {
         &self,
         source: CredentialEncryptionKeySource,
         key_id: Option<&str>,
-    ) -> Result<CredentialEncryptionKey, CredentialsError> {
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         match source {
             CredentialEncryptionKeySource::Auto => self.auto_key(key_id),
-            CredentialEncryptionKeySource::File => self.file.resolve_key(key_id),
+            CredentialEncryptionKeySource::File => self.file.resolve_key_selection(key_id),
             CredentialEncryptionKeySource::Keychain => self
                 .keychain
-                .resolve_key(key_id)
+                .resolve_key_selection(key_id)
                 .map_err(configured_keychain_key_unavailable),
             CredentialEncryptionKeySource::Vault => Err(CredentialsError::Unavailable(
                 "vault credential encryption key source is not implemented".to_string(),
@@ -196,17 +221,16 @@ impl LocalFileCredentialKeyProvider {
 
 impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = self.load_configured_key()? {
-            return Ok(key);
-        }
-        self.explicit_source_key(self.configured_source()?, None)
+        Ok(self.active_key_selection()?.0)
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
         if let Some(key) = self.load_configured_key()? {
             return verify_key_id(key, key_id);
         }
-        self.explicit_source_key(self.configured_source()?, Some(key_id))
+        Ok(self
+            .explicit_source_key(self.configured_source()?, Some(key_id))?
+            .0)
     }
 }
 
@@ -230,7 +254,9 @@ impl PlaintextFileCredentialKeyProvider {
         self.path.try_exists().map_err(Into::into)
     }
 
-    fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    fn load_or_create_key(
+        &self,
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         let _thread_guard = LOCAL_KEY_FILE_LOCK.lock().map_err(|_error| {
             CredentialsError::Crypto("credential encryption key lock is poisoned".to_string())
         })?;
@@ -241,7 +267,9 @@ impl PlaintextFileCredentialKeyProvider {
         let _process_guard = FileLock::exclusive(&lock_path)?;
 
         match std::fs::read_to_string(&self.path) {
-            Ok(raw) => decode_key_material(&raw),
+            Ok(raw) => {
+                decode_key_material(&raw).map(|key| (key, CredentialEncryptionKeyOrigin::File))
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let bytes = random_array::<KEY_LEN>()?;
                 let encoded = format!(
@@ -253,10 +281,13 @@ impl PlaintextFileCredentialKeyProvider {
                     path = %self.path.display(),
                     "created plaintext credential encryption key; shared-Postgres deployments must provision the same KEK on every server"
                 );
-                Ok(CredentialEncryptionKey {
-                    key_id: key_id_for_bytes(&bytes),
-                    bytes,
-                })
+                Ok((
+                    CredentialEncryptionKey {
+                        key_id: key_id_for_bytes(&bytes),
+                        bytes,
+                    },
+                    CredentialEncryptionKeyOrigin::CreatedFile,
+                ))
             }
             Err(error) => Err(error.into()),
         }
@@ -270,15 +301,16 @@ impl PlaintextFileCredentialKeyProvider {
         }
     }
 
-    fn resolve_key(
+    fn resolve_key_selection(
         &self,
         key_id: Option<&str>,
-    ) -> Result<CredentialEncryptionKey, CredentialsError> {
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         match key_id {
             Some(key_id) => self
                 .load_key()?
                 .ok_or_else(|| key_unavailable(key_id))
-                .and_then(|key| verify_key_id(key, key_id)),
+                .and_then(|key| verify_key_id(key, key_id))
+                .map(|key| (key, CredentialEncryptionKeyOrigin::File)),
             None => self.load_or_create_key(),
         }
     }
@@ -336,36 +368,49 @@ impl KeychainCredentialKeyProvider {
         Ok(None)
     }
 
-    fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+    fn load_or_create_key(
+        &self,
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         if let Some(key) = self.load_key()? {
-            return Ok(key);
+            return Ok((key, CredentialEncryptionKeyOrigin::Keychain));
         }
         if let Some(parent) = self.lock_path.parent() {
             storage_fs::ensure_private_dir(parent)?;
         }
         let _guard = FileLock::exclusive(&self.lock_path)?;
         if let Some(key) = self.load_key()? {
-            return Ok(key);
+            return Ok((key, CredentialEncryptionKeyOrigin::Keychain));
         }
         let bytes = random_array::<KEY_LEN>()?;
         let encoded = encode_key_material(&bytes);
         self.keychain.write_key_material(&encoded)?;
         info!("created keychain credential encryption key");
-        Ok(CredentialEncryptionKey {
-            key_id: key_id_for_bytes(&bytes),
-            bytes,
-        })
+        Ok((
+            CredentialEncryptionKey {
+                key_id: key_id_for_bytes(&bytes),
+                bytes,
+            },
+            CredentialEncryptionKeyOrigin::CreatedKeychain,
+        ))
     }
 
     fn resolve_key(
         &self,
         key_id: Option<&str>,
     ) -> Result<CredentialEncryptionKey, CredentialsError> {
+        Ok(self.resolve_key_selection(key_id)?.0)
+    }
+
+    fn resolve_key_selection(
+        &self,
+        key_id: Option<&str>,
+    ) -> Result<(CredentialEncryptionKey, CredentialEncryptionKeyOrigin), CredentialsError> {
         match key_id {
             Some(key_id) => self
                 .load_key()?
                 .ok_or_else(|| key_unavailable(key_id))
-                .and_then(|key| verify_key_id(key, key_id)),
+                .and_then(|key| verify_key_id(key, key_id))
+                .map(|key| (key, CredentialEncryptionKeyOrigin::Keychain)),
             None => self.load_or_create_key(),
         }
     }

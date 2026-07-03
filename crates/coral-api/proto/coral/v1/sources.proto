@@ -24,6 +24,8 @@ enum SourceCredentialStorage {
   SOURCE_CREDENTIAL_STORAGE_FILE = 1;
   // Credential material is stored in the operating-system credential store.
   SOURCE_CREDENTIAL_STORAGE_KEYCHAIN = 2;
+  // Credential material is stored in encrypted documents in Coral's local database.
+  SOURCE_CREDENTIAL_STORAGE_DATABASE = 3;
 }
 
 // One configured non-secret source variable.

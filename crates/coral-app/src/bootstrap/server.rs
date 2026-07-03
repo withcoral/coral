@@ -35,12 +35,14 @@ use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
 use tower::{Layer, Service};
+use tracing::warn;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
 use crate::EngineExtensionsProvider;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
+use crate::credentials::encryption::LocalFileCredentialKeyProvider;
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::episode::service::EpisodeService;
 use crate::episode::store::EpisodeStore;
@@ -273,10 +275,22 @@ impl ServerBuilder {
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         import_filesystem_feedback_reports(&coral_db, &layout).await?;
         import_filesystem_episodes(&coral_db, &layout).await?;
-        let coral_db = Arc::new(coral_db);
         let credential_config = CredentialStorageConfig::load(&layout)?;
-        let credential_store =
-            CredentialStore::with_preference(layout.clone(), credential_config.storage);
+        let key_provider = Arc::new(LocalFileCredentialKeyProvider::new(&layout));
+        let key_origin = key_provider.active_key_origin()?;
+        if coral_db.is_postgres() && key_origin.requires_postgres_bootstrap_warning() {
+            warn!(
+                ?key_origin,
+                "database-backed credentials are using a locally generated credential encryption key with Postgres; multiple servers can create split key domains and unreadable credential documents; set [credentials].encryption_key_env or pre-seed the OS keychain with the same KEK on every server"
+            );
+        }
+        let coral_db = Arc::new(coral_db);
+        let credential_store = CredentialStore::with_database(
+            layout.clone(),
+            credential_config.storage,
+            Arc::clone(&coral_db),
+            key_provider,
+        );
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::with_db(

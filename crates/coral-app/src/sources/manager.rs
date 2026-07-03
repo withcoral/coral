@@ -618,7 +618,8 @@ impl SourceManager {
             credential_material,
         };
         let source_dir_backup = fs::DirectoryBackup::move_for_delete(&source_dir, source_name)?;
-        if let Some(credential_storage) = credential_storage
+        if let Some(credential_storage) =
+            credential_storage.filter(|storage| *storage != CredentialStorageKind::Database)
             && let Err(error) =
                 credential_guard.remove_material_with_state_lock_held(credential_storage)
         {
@@ -743,51 +744,82 @@ impl SourceManager {
             secrets,
             replaced_oauth_inputs,
         } = request.bindings;
-        let (visible_secret_keys, credential_storage) =
-            if let Some(requested_storage) = credential_storage {
-                let expected_secret_keys = request
-                    .candidate
-                    .inputs
-                    .iter()
-                    .filter(|input| input.kind == ManifestInputKind::Secret)
-                    .map(|input| input.key.clone())
-                    .collect::<BTreeSet<_>>();
-                let credential_write = match credential_guard.update_material_with_state_lock(
-                    requested_storage,
-                    |mut credential_material| {
-                        credential_material.retain(|key, _| {
-                            material_key_belongs_to_source_secret(key, &expected_secret_keys)
-                        });
-                        for input_key in &replaced_oauth_inputs {
-                            credential_material
-                                .retain(|key, _| !material_key_belongs_to_input(key, input_key));
-                        }
-                        credential_material.extend(secrets.clone());
-                        Ok(credential_material)
-                    },
+        let persisted_version = match request.origin {
+            SourceOrigin::Bundled => None,
+            SourceOrigin::Imported => request.candidate.version.clone(),
+        };
+        let (visible_secret_keys, credential_storage) = if let Some(requested_storage) =
+            credential_storage
+        {
+            let expected_secret_keys = request
+                .candidate
+                .inputs
+                .iter()
+                .filter(|input| input.kind == ManifestInputKind::Secret)
+                .map(|input| input.key.clone())
+                .collect::<BTreeSet<_>>();
+            if requested_storage == CredentialStorageKind::Database && self.catalog_db.is_some() {
+                let provisional = InstalledSource {
+                    name: source_name.clone(),
+                    version: persisted_version.clone(),
+                    variables: variables.clone(),
+                    secrets: Vec::new(),
+                    credential_storage: Some(requested_storage),
+                    origin: request.origin,
+                };
+                if let Err(error) = self.upsert_source_with_state_lock_held(
+                    workspace_name,
+                    provisional,
+                    request.manifest_yaml,
+                    request.materialization_tmp.as_deref(),
                 ) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        cleanup_materialization_tmp(request.materialization_tmp.as_deref());
-                        self.restore_source_rollback_state_with_state_lock_held(
-                            workspace_name,
-                            &source_name,
-                            previous,
-                            Some(requested_storage),
-                            &credential_guard,
-                        );
-                        return Err(error);
+                    cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                    self.restore_source_rollback_state_with_state_lock_held(
+                        workspace_name,
+                        &source_name,
+                        previous,
+                        None,
+                        &credential_guard,
+                    );
+                    return Err(error);
+                }
+            }
+            let credential_write = match credential_guard.update_material_with_state_lock(
+                requested_storage,
+                |mut credential_material| {
+                    credential_material.retain(|key, _| {
+                        material_key_belongs_to_source_secret(key, &expected_secret_keys)
+                    });
+                    for input_key in &replaced_oauth_inputs {
+                        credential_material
+                            .retain(|key, _| !material_key_belongs_to_input(key, input_key));
                     }
-                };
-                let credential_storage = if credential_write.visible_keys.is_empty() {
-                    None
-                } else {
-                    Some(credential_write.storage)
-                };
-                (credential_write.visible_keys, credential_storage)
-            } else {
-                (Vec::new(), None)
+                    credential_material.extend(secrets.clone());
+                    Ok(credential_material)
+                },
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    cleanup_materialization_tmp(request.materialization_tmp.as_deref());
+                    self.restore_source_rollback_state_with_state_lock_held(
+                        workspace_name,
+                        &source_name,
+                        previous,
+                        Some(requested_storage),
+                        &credential_guard,
+                    );
+                    return Err(error);
+                }
             };
+            let credential_storage = if credential_write.visible_keys.is_empty() {
+                None
+            } else {
+                Some(credential_write.storage)
+            };
+            (credential_write.visible_keys, credential_storage)
+        } else {
+            (Vec::new(), None)
+        };
 
         let replaced_filesystem_materialization =
             self.catalog_db.is_none() && request.materialization_tmp.is_some();
@@ -819,10 +851,6 @@ impl SourceManager {
             None
         };
 
-        let persisted_version = match request.origin {
-            SourceOrigin::Bundled => None,
-            SourceOrigin::Imported => request.candidate.version.clone(),
-        };
         let stored = InstalledSource {
             name: source_name.clone(),
             version: persisted_version,
