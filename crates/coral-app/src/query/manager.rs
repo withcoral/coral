@@ -993,6 +993,9 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
         AppError::MissingSourceInputs { .. } => "MISSING_SOURCE_INPUTS",
+        AppError::UnsupportedV4IdentityRequirements { .. } => {
+            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
+        }
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
@@ -1814,6 +1817,77 @@ surface:
             execution_to_rows(&execution),
             vec![json!({"id": 1, "title": "Generated runtime package"})]
         );
+    }
+
+    #[tokio::test]
+    async fn load_query_source_preserves_unsupported_v4_identity_requirements_error() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("identity-guard-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            r"
+openapi: 3.0.3
+info: {title: Identity Guard}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+",
+        )
+        .expect("write OpenAPI fixture");
+        let source = source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_identity_guard
+dsl_version: 4
+identity_requirements:
+  accepts:
+    - id: github_api
+      identity_specs: [github_oauth]
+surface:
+  type: openapi
+  file: {}
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import identity-gated v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+
+        let error = fixture
+            .manager
+            .load_query_source(&workspace_name, &source)
+            .expect_err("identity-gated source must fail closed");
+
+        assert!(matches!(
+            &error,
+            AppError::UnsupportedV4IdentityRequirements { source_name }
+                if source_name == "github_v4_identity_guard"
+        ));
+        assert!(!error.to_string().contains("Re-add"));
     }
 
     #[tokio::test]
