@@ -80,13 +80,19 @@ pub(crate) fn optional_u32_argument(
     let value = value.as_i64().ok_or_else(|| {
         ErrorData::invalid_params(format!("argument '{key}' must be an integer"), None)
     })?;
-    if value < i64::from(min) || value > i64::from(max) {
+    let value = u32::try_from(value).map_err(|_conversion_error| {
+        ErrorData::invalid_params(
+            format!("argument '{key}' must be between {min} and {max}"),
+            None,
+        )
+    })?;
+    if value < min || value > max {
         return Err(ErrorData::invalid_params(
             format!("argument '{key}' must be between {min} and {max}"),
             None,
         ));
     }
-    Ok(value as u32)
+    Ok(value)
 }
 
 #[cfg(test)]
