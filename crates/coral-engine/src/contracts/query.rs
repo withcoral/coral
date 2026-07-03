@@ -680,12 +680,17 @@ pub struct QueryExecution {
     arrow_schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
     row_count: usize,
+    provenance: QueryExecutionProvenance,
 }
 
 impl QueryExecution {
     #[must_use]
-    /// Builds a validated fully materialized query result.
-    pub fn new(arrow_schema: Arc<Schema>, batches: Vec<RecordBatch>) -> Self {
+    /// Builds a validated fully materialized query result with successful-execution provenance.
+    pub fn new(
+        arrow_schema: Arc<Schema>,
+        batches: Vec<RecordBatch>,
+        mut provenance: QueryExecutionProvenance,
+    ) -> Self {
         let schema = arrow_schema
             .fields()
             .iter()
@@ -701,11 +706,13 @@ impl QueryExecution {
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();
+        provenance.set_row_count(row_count);
         Self {
             schema,
             arrow_schema,
             batches,
             row_count,
+            provenance,
         }
     }
 
@@ -731,6 +738,162 @@ impl QueryExecution {
     /// Returns the total number of rows across all batches.
     pub fn row_count(&self) -> usize {
         self.row_count
+    }
+
+    #[must_use]
+    /// Returns successful-execution provenance for this query result.
+    pub fn provenance(&self) -> &QueryExecutionProvenance {
+        &self.provenance
+    }
+}
+
+/// Successful-execution provenance for one query result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExecutionProvenance {
+    sql: String,
+    sources: Vec<String>,
+    tables: Vec<QueryTableUsage>,
+    table_functions: Vec<QueryTableFunctionUsage>,
+    row_count: usize,
+}
+
+impl QueryExecutionProvenance {
+    #[must_use]
+    /// Builds one provenance entry for a planned query.
+    ///
+    /// [`QueryExecution::new`] stamps the final row count from the materialized
+    /// result batches.
+    pub fn new(
+        sql: impl Into<String>,
+        sources: Vec<String>,
+        tables: Vec<QueryTableUsage>,
+        table_functions: Vec<QueryTableFunctionUsage>,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            sources,
+            tables,
+            table_functions,
+            row_count: 0,
+        }
+    }
+
+    #[must_use]
+    /// Returns the SQL text that was executed.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns the installed source names used by the query.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    #[must_use]
+    /// Returns source tables used by the query.
+    pub fn tables(&self) -> &[QueryTableUsage] {
+        &self.tables
+    }
+
+    #[must_use]
+    /// Returns source-scoped table functions used by the query.
+    pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
+        &self.table_functions
+    }
+
+    #[must_use]
+    /// Returns the total number of rows across all result batches.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub(crate) fn set_row_count(&mut self, row_count: usize) {
+        self.row_count = row_count;
+    }
+}
+
+/// One source table referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableUsage {
+    source: String,
+    schema: String,
+    table: String,
+}
+
+impl QueryTableUsage {
+    #[must_use]
+    /// Builds one source table usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            table: table_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the table name within the SQL schema.
+    pub fn table_name(&self) -> &str {
+        &self.table
+    }
+}
+
+/// One source-scoped table function referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableFunctionUsage {
+    source: String,
+    schema: String,
+    function: String,
+}
+
+impl QueryTableFunctionUsage {
+    #[must_use]
+    /// Builds one source-scoped table function usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            function: function_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table function.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table function.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the function name within the SQL schema.
+    pub fn function_name(&self) -> &str {
+        &self.function
     }
 }
 

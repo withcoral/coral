@@ -337,18 +337,25 @@ fn post_process_surface_inputs(properties: &mut serde_json::Map<String, Value>) 
 
 #[cfg(test)]
 mod tests {
-    use jsonschema::JSONSchema;
+    use jsonschema::Validator;
     use serde_json::Value as JsonValue;
 
     use super::generated_v4_source_manifest_schema;
     use crate::parse_source_manifest_yaml;
 
-    fn validator() -> JSONSchema {
-        JSONSchema::compile(&generated_v4_source_manifest_schema()).expect("schema compiles")
+    fn validator() -> Validator {
+        jsonschema::validator_for(&generated_v4_source_manifest_schema()).expect("schema compiles")
     }
 
     fn manifest_json(raw: &str) -> JsonValue {
         serde_yaml::from_str(raw).expect("yaml parses as json value")
+    }
+
+    fn validation_errors(validator: &Validator, manifest: &JsonValue) -> Vec<String> {
+        validator
+            .iter_errors(manifest)
+            .map(|error| error.to_string())
+            .collect()
     }
 
     #[test]
@@ -358,10 +365,13 @@ mod tests {
                 .join("../../sources/core-v4/github_v4/manifest.yaml"),
         )
         .expect("core v4 fixture");
-        if let Err(errors) = validator().validate(&manifest_json(&raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept core v4 fixture: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(&raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept core v4 fixture: {errors:?}"
+        );
         parse_source_manifest_yaml(&raw).expect("parser accepts core v4 fixture");
     }
 
@@ -386,10 +396,13 @@ surfaces:
         key: MCP_TOKEN
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept MCP surface: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept MCP surface: {errors:?}"
+        );
         parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
     }
 
@@ -427,10 +440,13 @@ surfaces:
         key: HTTP_TOKEN
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept flattened MCP value sources: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept flattened MCP value sources: {errors:?}"
+        );
         parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
     }
 
@@ -448,14 +464,14 @@ surfaces:
                 "name: demo\ndsl_version: 4\n{field}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
             );
             assert!(
-                validator().validate(&manifest_json(&raw)).is_err(),
+                !validator().is_valid(&manifest_json(&raw)),
                 "field should be rejected: {field}"
             );
         }
 
         let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "surface sha256 should be rejected"
         );
     }
@@ -474,7 +490,7 @@ surfaces:
                 "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n{surface_fields}"
             );
             assert!(
-                validator().validate(&manifest_json(&raw)).is_err(),
+                !validator().is_valid(&manifest_json(&raw)),
                 "explicit null should be rejected: {surface_fields}"
             );
         }
@@ -485,7 +501,7 @@ surfaces:
         let raw = "name: demo\ndsl_version: 4\nsurfaces: []\n";
 
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "empty surfaces should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
@@ -508,10 +524,13 @@ surfaces:
       command: demo-mcp-server
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept one default relation namespace: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept one default relation namespace: {errors:?}"
+        );
         parse_source_manifest_yaml(raw)
             .expect("parser should accept one missing multi-surface namespace");
     }
@@ -532,10 +551,13 @@ surfaces:
       command: demo-mcp-server
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept this parser-owned invariant: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept this parser-owned invariant: {errors:?}"
+        );
         parse_source_manifest_yaml(raw)
             .expect_err("parser should reject multiple missing multi-surface namespaces");
     }
@@ -553,7 +575,7 @@ surfaces:
 ";
 
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "mixed-case namespace_suffix should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw)

@@ -417,6 +417,32 @@
             "key": {
               "type": "string"
             },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
             "separator": {
               "type": "string"
             },
@@ -759,6 +785,32 @@
             "from": {
               "type": "string",
               "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
             }
           },
           "required": [

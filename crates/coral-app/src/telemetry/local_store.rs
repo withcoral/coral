@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use opentelemetry::trace::{SpanId, SpanKind, Status};
@@ -14,17 +14,23 @@ use opentelemetry::{Array as OtelArray, KeyValue, Value as OtelValue};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue, json};
 use tokio::task;
 
 use crate::storage::fs as storage_fs;
+use crate::telemetry::WORKSPACE_SPAN_ATTRIBUTE;
 
 const JSONL_MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const JSONL_MAX_FILE_ROWS: usize = 50_000;
 const JSONL_MAX_FILE_AGE: Duration = Duration::from_hours(24);
 const JSONL_PRUNE_INTERVAL: Duration = Duration::from_hours(1);
 const JSONL_FILE_MTIME_SPAN_END_TOLERANCE: Duration = Duration::from_secs(2);
+type ActiveTraceWriter = Arc<Mutex<RollingJsonlWriter>>;
+type WeakActiveTraceWriter = Weak<Mutex<RollingJsonlWriter>>;
+type ActiveTraceWriterRegistry = Mutex<HashMap<PathBuf, Vec<WeakActiveTraceWriter>>>;
+static ACTIVE_TRACE_WRITERS: OnceLock<ActiveTraceWriterRegistry> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalTraceStoreError {
@@ -77,9 +83,15 @@ pub(crate) struct JsonlSpanExporter {
 }
 
 impl JsonlSpanExporter {
-    pub(crate) fn new(dir: PathBuf, retention: Duration) -> Result<Self, LocalTraceStoreError> {
+    pub(crate) fn new(
+        dir: impl Into<PathBuf>,
+        retention: Duration,
+    ) -> Result<Self, LocalTraceStoreError> {
+        let dir = dir.into();
+        let writer = Arc::new(Mutex::new(RollingJsonlWriter::new(dir.clone(), retention)?));
+        register_active_trace_writer(&dir, &writer);
         Ok(Self {
-            writer: Arc::new(Mutex::new(RollingJsonlWriter::new(dir, retention)?)),
+            writer,
             resource_json: Arc::new(Mutex::new("{}".to_string())),
             shutdown_called: Arc::new(AtomicBool::new(false)),
         })
@@ -378,12 +390,27 @@ pub(crate) enum TraceStoreError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("failed to decode local trace store file {path} line {line}: {source}")]
-    DecodeLine {
+    #[error("failed to rewrite local trace store file {path}: {source}")]
+    WriteFile {
         path: PathBuf,
-        line: usize,
-        source: serde_json::Error,
+        source: std::io::Error,
     },
+    #[error("failed to remove local trace store file {path}: {source}")]
+    RemoveFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to restore local trace store file {path} after cleanup failure: {source}")]
+    RestoreFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("local trace store writer registry mutex poisoned")]
+    WriterRegistryPoisoned,
+    #[error("local trace store writer mutex poisoned")]
+    WriterPoisoned,
+    #[error("failed to close active local trace store writer before cleanup: {source}")]
+    CloseActiveWriter { source: LocalTraceStoreError },
     #[error("failed to prune expired local trace store files: {source}")]
     PruneExpired { source: LocalTraceStoreError },
     #[error("local trace store worker failed before returning a response: {source}")]
@@ -447,6 +474,38 @@ pub(crate) struct TraceDetailRecord {
     pub(crate) spans: Vec<TraceSpanRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TraceQueryHistoryEntry {
+    pub(crate) trace_id: String,
+    pub(crate) span_id: String,
+    pub(crate) sql: String,
+    pub(crate) sources: Vec<String>,
+    pub(crate) tables: Vec<TraceQueryTableUsage>,
+    pub(crate) table_functions: Vec<TraceQueryTableFunctionUsage>,
+    pub(crate) row_count: u64,
+    pub(crate) end_time_unix_nanos: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TraceQueryTableUsage {
+    #[serde(rename = "source_name")]
+    pub(crate) source: String,
+    #[serde(rename = "schema_name")]
+    pub(crate) schema: String,
+    #[serde(rename = "table_name")]
+    pub(crate) table: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct TraceQueryTableFunctionUsage {
+    #[serde(rename = "source_name")]
+    pub(crate) source: String,
+    #[serde(rename = "schema_name")]
+    pub(crate) schema: String,
+    #[serde(rename = "function_name")]
+    pub(crate) function: String,
+}
+
 struct TraceAggregate {
     trace_id: String,
     start_time_unix_nanos: i64,
@@ -494,8 +553,24 @@ struct TraceSpanIdentityRecord {
     trace_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct TraceQueryHistorySpanRecord {
+    trace_id: String,
+    span_id: String,
+    name: String,
+    #[serde(default)]
+    status: StoredTraceStatus,
+    end_time_unix_nanos: i64,
+    attributes_json: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TraceWorkspaceRecord {
+    trace_id: String,
+    attributes_json: String,
+}
+
 impl TraceStore {
-    #[cfg(test)]
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self {
             dir,
@@ -527,6 +602,16 @@ impl TraceStore {
     ) -> Result<TraceDetailRecord, TraceStoreError> {
         let traces = self.clone();
         task::spawn_blocking(move || traces.get_trace_sync(&trace_id))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
+    pub(crate) async fn delete_traces_for_workspace(
+        &self,
+        workspace_name: String,
+    ) -> Result<usize, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || traces.delete_traces_for_workspace_sync(&workspace_name))
             .await
             .map_err(|source| TraceStoreError::Worker { source })?
     }
@@ -625,6 +710,57 @@ impl TraceStore {
         Ok(TraceDetailRecord { summary, spans })
     }
 
+    pub(crate) fn list_query_history_sync(
+        &self,
+    ) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+        self.prune_expired()?;
+        let files = self.jsonl_files_by_modified()?;
+        let mut entries_by_span = HashMap::new();
+
+        for file in files.iter().rev() {
+            for span in read_query_history_spans_file(&file.path)? {
+                let key = (span.trace_id.clone(), span.span_id.clone());
+                if entries_by_span.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = query_history_entry_from_span(&span) {
+                    entries_by_span.insert(key, entry);
+                }
+            }
+        }
+
+        let mut entries = entries_by_span.into_values().collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            right
+                .end_time_unix_nanos
+                .cmp(&left.end_time_unix_nanos)
+                .then_with(|| left.trace_id.cmp(&right.trace_id))
+                .then_with(|| left.span_id.cmp(&right.span_id))
+        });
+        Ok(entries)
+    }
+
+    fn delete_traces_for_workspace_sync(
+        &self,
+        workspace_name: &str,
+    ) -> Result<usize, TraceStoreError> {
+        if !self.dir.exists() {
+            return Ok(0);
+        }
+
+        close_active_trace_writers_for_dir(&self.dir)?;
+
+        self.prune_expired()?;
+        let files = self.jsonl_files_by_modified()?;
+        let trace_ids = read_workspace_trace_ids(&files, workspace_name)?;
+        if trace_ids.is_empty() {
+            return Ok(0);
+        }
+
+        rewrite_trace_files_excluding_trace_ids(&files, &trace_ids)?;
+        Ok(trace_ids.len())
+    }
+
     fn prune_expired(&self) -> Result<(), TraceStoreError> {
         if let Some(retention) = self.retention
             && self.dir.exists()
@@ -689,6 +825,46 @@ fn span_jsonl_file(path: &Path) -> bool {
                 name.strip_prefix("spans")
                     .is_some_and(|suffix| suffix.starts_with('-'))
             })
+}
+
+fn active_trace_writers() -> &'static ActiveTraceWriterRegistry {
+    ACTIVE_TRACE_WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_active_trace_writer(dir: &Path, writer: &ActiveTraceWriter) {
+    if let Ok(mut writers) = active_trace_writers().lock() {
+        writers
+            .entry(dir.to_path_buf())
+            .or_default()
+            .push(Arc::downgrade(writer));
+    }
+}
+
+fn active_trace_writers_for_dir(dir: &Path) -> Result<Vec<ActiveTraceWriter>, TraceStoreError> {
+    let mut writers = active_trace_writers()
+        .lock()
+        .map_err(|_poisoned| TraceStoreError::WriterRegistryPoisoned)?;
+    let registered = writers.entry(dir.to_path_buf()).or_default();
+    let mut active = Vec::new();
+    registered.retain(|writer| match writer.upgrade() {
+        Some(writer) => {
+            active.push(writer);
+            true
+        }
+        None => false,
+    });
+    Ok(active)
+}
+
+fn close_active_trace_writers_for_dir(dir: &Path) -> Result<(), TraceStoreError> {
+    for writer in active_trace_writers_for_dir(dir)? {
+        writer
+            .lock()
+            .map_err(|_poisoned| TraceStoreError::WriterPoisoned)?
+            .close_current()
+            .map_err(|source| TraceStoreError::CloseActiveWriter { source })?;
+    }
+    Ok(())
 }
 
 impl TracePrimaryCandidate {
@@ -923,7 +1099,6 @@ fn read_list_spans_file_filtered(
     let mut reader = BufReader::new(file);
     let mut spans_by_id = HashMap::new();
     let mut line = String::new();
-    let mut line_number = 0;
 
     loop {
         line.clear();
@@ -938,7 +1113,6 @@ fn read_list_spans_file_filtered(
             break;
         }
 
-        line_number += 1;
         let complete_line = line.ends_with('\n');
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.trim().is_empty() {
@@ -956,13 +1130,7 @@ fn read_list_spans_file_filtered(
             }
             Ok(_span) => {}
             Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
+            Err(_source) => {}
         }
     }
 
@@ -980,7 +1148,6 @@ fn read_trace_spans_file(
     let mut reader = BufReader::new(file);
     let mut spans_by_id = HashMap::new();
     let mut line = String::new();
-    let mut line_number = 0;
 
     loop {
         line.clear();
@@ -995,7 +1162,6 @@ fn read_trace_spans_file(
             break;
         }
 
-        line_number += 1;
         let complete_line = line.ends_with('\n');
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.trim().is_empty() {
@@ -1012,28 +1178,237 @@ fn read_trace_spans_file(
                         spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
                     }
                     Err(_) if !complete_line => break,
-                    Err(source) => {
-                        return Err(TraceStoreError::DecodeLine {
-                            path: path.to_path_buf(),
-                            line: line_number,
-                            source,
-                        });
-                    }
+                    Err(_source) => {}
                 }
             }
             Ok(_identity) => {}
             Err(_) if !complete_line => break,
-            Err(source) => {
-                return Err(TraceStoreError::DecodeLine {
-                    path: path.to_path_buf(),
-                    line: line_number,
-                    source,
-                });
-            }
+            Err(_source) => {}
         }
     }
 
     Ok(spans_by_id.into_values().collect())
+}
+
+fn read_query_history_spans_file(
+    path: &Path,
+) -> Result<Vec<TraceQueryHistorySpanRecord>, TraceStoreError> {
+    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut spans_by_id = HashMap::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() || !trimmed.contains(r#""name":"coral.query""#) {
+            continue;
+        }
+
+        match serde_json::from_str::<TraceQueryHistorySpanRecord>(trimmed) {
+            Ok(span) if span.name == "coral.query" => {
+                spans_by_id.insert((span.trace_id.clone(), span.span_id.clone()), span);
+            }
+            Ok(_span) => {}
+            Err(_) if !complete_line => break,
+            Err(_) => {}
+        }
+    }
+
+    Ok(spans_by_id.into_values().collect())
+}
+
+fn read_workspace_trace_ids(
+    files: &[TraceStoreFile],
+    workspace_name: &str,
+) -> Result<HashSet<String>, TraceStoreError> {
+    let mut spans = Vec::new();
+    for file in files {
+        spans.extend(read_workspace_trace_records_file(&file.path)?);
+    }
+    Ok(workspace_trace_ids(spans, workspace_name))
+}
+
+fn read_workspace_trace_records_file(
+    path: &Path,
+) -> Result<Vec<TraceWorkspaceRecord>, TraceStoreError> {
+    let file = File::open(path).map_err(|source| TraceStoreError::OpenFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut spans = Vec::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<TraceWorkspaceRecord>(trimmed) {
+            Ok(record) => spans.push(record),
+            Err(_source) if !complete_line => break,
+            // Workspace trace cleanup is best-effort. A complete malformed line
+            // cannot be attributed to a workspace, so preserve it during rewrite
+            // instead of blocking deletion of config-owned workspace state.
+            Err(_source) => {}
+        }
+    }
+
+    Ok(spans)
+}
+
+fn workspace_trace_ids(spans: Vec<TraceWorkspaceRecord>, workspace_name: &str) -> HashSet<String> {
+    spans
+        .into_iter()
+        .filter(|span| attributes_match_workspace(&span.attributes_json, workspace_name))
+        .map(|span| span.trace_id)
+        .collect()
+}
+
+fn rewrite_trace_files_excluding_trace_ids(
+    files: &[TraceStoreFile],
+    trace_ids: &HashSet<String>,
+) -> Result<(), TraceStoreError> {
+    let mut rewrites = Vec::new();
+    for file in files {
+        if let Some(rewrite) = plan_trace_file_rewrite(&file.path, trace_ids)? {
+            rewrites.push(rewrite);
+        }
+    }
+
+    let mut snapshots = Vec::new();
+    for rewrite in rewrites {
+        let path = rewrite.snapshot.path.clone();
+        let result = if rewrite.kept.is_empty() {
+            fs::remove_file(&path).map_err(|source| TraceStoreError::RemoveFile {
+                path: path.clone(),
+                source,
+            })
+        } else {
+            storage_fs::write_atomic(&path, &rewrite.kept).map_err(|source| {
+                TraceStoreError::WriteFile {
+                    path: path.clone(),
+                    source,
+                }
+            })
+        };
+        if let Err(error) = result {
+            restore_trace_file_snapshots(snapshots)?;
+            return Err(error);
+        }
+        snapshots.push(rewrite.snapshot);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TraceFileSnapshot {
+    path: PathBuf,
+    original: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct TraceFileRewrite {
+    snapshot: TraceFileSnapshot,
+    kept: Vec<u8>,
+}
+
+fn plan_trace_file_rewrite(
+    path: &Path,
+    trace_ids: &HashSet<String>,
+) -> Result<Option<TraceFileRewrite>, TraceStoreError> {
+    let original = fs::read(path).map_err(|source| TraceStoreError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut reader = BufReader::new(original.as_slice());
+    let mut kept = Vec::new();
+    let mut removed = false;
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|source| TraceStoreError::ReadFile {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let complete_line = line.ends_with('\n');
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.trim().is_empty() {
+            kept.extend_from_slice(line.as_bytes());
+            continue;
+        }
+
+        match serde_json::from_str::<TraceSpanIdentityRecord>(trimmed) {
+            Ok(identity) if trace_ids.contains(&identity.trace_id) => {
+                removed = true;
+            }
+            Ok(_identity) => kept.extend_from_slice(line.as_bytes()),
+            Err(_source) if !complete_line => kept.extend_from_slice(line.as_bytes()),
+            // Preserve malformed complete lines. The discovery pass applies the
+            // same best-effort policy, so these lines are never attributed to a
+            // workspace trace ID.
+            Err(_source) => kept.extend_from_slice(line.as_bytes()),
+        }
+    }
+
+    if !removed {
+        return Ok(None);
+    }
+    let snapshot = TraceFileSnapshot {
+        path: path.to_path_buf(),
+        original,
+    };
+    Ok(Some(TraceFileRewrite { snapshot, kept }))
+}
+
+fn restore_trace_file_snapshots(snapshots: Vec<TraceFileSnapshot>) -> Result<(), TraceStoreError> {
+    for snapshot in snapshots.into_iter().rev() {
+        storage_fs::write_atomic(&snapshot.path, &snapshot.original).map_err(|source| {
+            TraceStoreError::RestoreFile {
+                path: snapshot.path,
+                source,
+            }
+        })?;
+    }
+    Ok(())
 }
 
 fn summary_from_spans(trace_id: &str, spans: &[TraceSpanRecord]) -> TraceSummaryRecord {
@@ -1230,6 +1605,16 @@ fn parse_attributes(attributes_json: &str) -> Option<JsonValue> {
     serde_json::from_str(attributes_json).ok()
 }
 
+fn attributes_match_workspace(attributes_json: &str, workspace_name: &str) -> bool {
+    workspace_attribute(attributes_json).is_some_and(|workspace| workspace == workspace_name)
+}
+
+fn workspace_attribute(attributes_json: &str) -> Option<String> {
+    parse_attributes(attributes_json)
+        .as_ref()
+        .and_then(|attributes| attr_string(attributes, WORKSPACE_SPAN_ATTRIBUTE))
+}
+
 fn status_from_attributes(attributes: Option<&JsonValue>) -> Option<StoredTraceStatus> {
     match attr_string(attributes?, "status")?.as_str() {
         "ok" => Some(StoredTraceStatus::Ok),
@@ -1253,6 +1638,64 @@ fn attr_u64(attributes: &JsonValue, key: &str) -> Option<u64> {
             .as_u64()
             .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok())),
         JsonValue::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn query_history_entry_from_span(
+    span: &TraceQueryHistorySpanRecord,
+) -> Option<TraceQueryHistoryEntry> {
+    let attributes = parse_attributes(&span.attributes_json)?;
+    let status = status_from_attributes(Some(&attributes)).unwrap_or(span.status);
+    if status != StoredTraceStatus::Ok {
+        return None;
+    }
+    let sql = attr_string(&attributes, "sql")?;
+    if sql.trim().is_empty() {
+        return None;
+    }
+    let row_count = attr_u64(&attributes, "row_count")?;
+    let sources = attr_string_array(&attributes, super::QUERY_TRACE_SOURCES_ATTR)?;
+    let tables =
+        attr_json_vec::<TraceQueryTableUsage>(&attributes, super::QUERY_TRACE_TABLES_ATTR)?;
+    let table_functions = attr_json_vec::<TraceQueryTableFunctionUsage>(
+        &attributes,
+        super::QUERY_TRACE_TABLE_FUNCTIONS_ATTR,
+    )?;
+
+    Some(TraceQueryHistoryEntry {
+        trace_id: span.trace_id.clone(),
+        span_id: span.span_id.clone(),
+        sql,
+        sources,
+        tables,
+        table_functions,
+        row_count,
+        end_time_unix_nanos: span.end_time_unix_nanos,
+    })
+}
+
+fn attr_string_array(attributes: &JsonValue, key: &str) -> Option<Vec<String>> {
+    match attributes.get(key)? {
+        JsonValue::Array(values) => values.iter().map(attr_array_string_value).collect(),
+        JsonValue::String(value) => serde_json::from_str(value).ok(),
+        _ => None,
+    }
+}
+
+fn attr_array_string_value(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(value) => Some(value.clone()),
+        JsonValue::Number(value) => Some(value.to_string()),
+        JsonValue::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn attr_json_vec<T: DeserializeOwned>(attributes: &JsonValue, key: &str) -> Option<Vec<T>> {
+    match attributes.get(key)? {
+        JsonValue::Array(values) => serde_json::from_value(JsonValue::Array(values.clone())).ok(),
+        JsonValue::String(value) => serde_json::from_str(value).ok(),
         _ => None,
     }
 }
@@ -1572,6 +2015,52 @@ mod tests {
         assert_eq!(summary.status, StoredTraceStatus::Ok);
         assert_eq!(summary.row_count, 1);
         assert!(summary.row_count_recorded);
+    }
+
+    #[test]
+    fn query_history_reads_successful_query_provenance_leniently() {
+        let temp = TempDir::new().expect("temp dir");
+        let dir = temp.path().join("telemetry").join("traces");
+        fs::create_dir_all(&dir).expect("trace dir");
+
+        let mut legacy_record = trace_record("legacy-trace", "legacy-span");
+        legacy_record.attributes_json =
+            r#"{"sql":"SELECT old","status":"ok","row_count":1}"#.to_string();
+
+        let mut malformed_record = trace_record("malformed-trace", "malformed-span");
+        malformed_record.attributes_json =
+            query_history_attributes("SELECT malformed", "not-json", "[]", "[]", 1);
+
+        let mut valid_record = trace_record("valid-trace", "valid-span");
+        valid_record.end_time_unix_nanos = 42;
+        valid_record.attributes_json = query_history_attributes(
+            "SELECT title FROM github.issues",
+            r#"["github"]"#,
+            r#"[{"source_name":"github","schema_name":"github","table_name":"issues"}]"#,
+            r#"[{"source_name":"github","schema_name":"github","function_name":"search_issues"}]"#,
+            15,
+        );
+
+        let path = dir.join(timestamped_jsonl_path(SystemTime::now()));
+        write_record_file_lines(&path, &[legacy_record, malformed_record, valid_record]);
+
+        let history = TraceStore::new(dir)
+            .list_query_history_sync()
+            .expect("query history");
+
+        assert_eq!(history.len(), 1);
+        let entry = history.first().expect("history entry");
+        assert_eq!(entry.sql, "SELECT title FROM github.issues");
+        assert_eq!(entry.sources, ["github"]);
+        assert_eq!(entry.row_count, 15);
+        assert_eq!(entry.tables.len(), 1);
+        let table = entry.tables.first().expect("table usage");
+        assert_eq!(table.source, "github");
+        assert_eq!(table.schema, "github");
+        assert_eq!(table.table, "issues");
+        assert_eq!(entry.table_functions.len(), 1);
+        let table_function = entry.table_functions.first().expect("table function usage");
+        assert_eq!(table_function.function, "search_issues");
     }
 
     #[test]
@@ -2119,5 +2608,31 @@ mod tests {
             trace_state: String::new(),
             is_remote: false,
         }
+    }
+
+    fn query_history_attributes(
+        sql: &str,
+        sources_json: &str,
+        tables_json: &str,
+        table_functions_json: &str,
+        row_count: u64,
+    ) -> String {
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("sql".to_string(), json!(sql));
+        attributes.insert("status".to_string(), json!("ok"));
+        attributes.insert("row_count".to_string(), json!(row_count));
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_SOURCES_ATTR.to_string(),
+            json!(sources_json),
+        );
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_TABLES_ATTR.to_string(),
+            json!(tables_json),
+        );
+        attributes.insert(
+            crate::telemetry::QUERY_TRACE_TABLE_FUNCTIONS_ATTR.to_string(),
+            json!(table_functions_json),
+        );
+        serde_json::Value::Object(attributes).to_string()
     }
 }

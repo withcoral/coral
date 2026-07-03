@@ -2,13 +2,13 @@
 
 use std::sync::OnceLock;
 
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde_json::Value as JsonValue;
 
 use crate::{ManifestError, Result};
 
-static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
-static SOURCE_V4_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
+static SOURCE_SCHEMA: OnceLock<Validator> = OnceLock::new();
+static SOURCE_V4_SCHEMA: OnceLock<Validator> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
     validate_with_schema(manifest_json, source_schema())
@@ -24,34 +24,35 @@ pub(crate) fn validate_manifest_schema_for_dsl_version(
     validate_manifest_schema(manifest_json)
 }
 
-fn source_schema() -> &'static JSONSchema {
+fn source_schema() -> &'static Validator {
     SOURCE_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
                 .expect("embedded source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
+        jsonschema::validator_for(&schema_json).expect("embedded source schema must compile")
     })
 }
 
-fn source_v4_schema() -> &'static JSONSchema {
+fn source_v4_schema() -> &'static Validator {
     SOURCE_V4_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest_v4.schema.json"))
                 .expect("embedded DSL v4 source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded DSL v4 source schema must compile")
+        jsonschema::validator_for(&schema_json).expect("embedded DSL v4 source schema must compile")
     })
 }
 
-fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Result<()> {
-    if let Err(errors) = validator.validate(manifest_json) {
-        let problems: Vec<String> = errors
-            .take(8)
-            .map(|error| {
-                let path = error.instance_path.to_string();
-                let location = if path.is_empty() { "/" } else { &path };
-                format!("  {location}: {error}")
-            })
-            .collect();
+fn validate_with_schema(manifest_json: &JsonValue, validator: &Validator) -> Result<()> {
+    let problems: Vec<String> = validator
+        .iter_errors(manifest_json)
+        .take(8)
+        .map(|error| {
+            let path = error.instance_path().to_string();
+            let location = if path.is_empty() { "/" } else { &path };
+            format!("  {location}: {error}")
+        })
+        .collect();
+    if !problems.is_empty() {
         return Err(ManifestError::validation(format!(
             "source manifest failed schema validation:\n{}",
             problems.join("\n")
@@ -610,6 +611,109 @@ tables:
         assert!(
             message.contains("/server"),
             "expected error location to point at the server subtree, got: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_manifest_schema_accepts_oauth_dynamic_client_registration() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: mcp
+inputs:
+  MCP_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            resource: https://mcp.example.com/mcp
+            redirect_uri: http://127.0.0.1:0/oauth/callback
+            redirect_uri_port_mode: random
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                client_name: Coral MCP
+                token_endpoint_auth_method: none
+                request_refresh_token_grant: true
+server:
+  transport: streamable_http
+  url: https://mcp.example.com/mcp
+  auth:
+    type: bearer
+    from: input
+    key: MCP_TOKEN
+tables:
+  - name: hello
+    tool: hello
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+        validate_manifest_schema(&manifest)
+            .expect("OAuth dynamic client registration should pass schema validation");
+    }
+
+    #[test]
+    fn validate_manifest_schema_rejects_unknown_dynamic_registration_field() {
+        let manifest = manifest_json(
+            r"
+name: demo
+version: 1.0.0
+dsl_version: 3
+backend: http
+inputs:
+  API_TOKEN:
+    kind: secret
+    credential:
+      methods:
+        - type: oauth
+          oauth:
+            flow:
+              type: authorization_code
+              pkce: required
+            redirect_uri: http://127.0.0.1:53682/oauth/callback
+            endpoints:
+              authorization_url: https://provider.example.com/oauth/authorize
+              token_url: https://provider.example.com/oauth/token
+            client:
+              dynamic_registration:
+                registration_url: https://provider.example.com/oauth/register
+                unsupported: true
+base_url: https://api.example.com
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: bearer
+      key: API_TOKEN
+tables:
+  - name: hello
+    description: Hello table
+    request:
+      method: GET
+      path: /hello
+    columns:
+      - name: id
+        type: Utf8
+",
+        );
+        let error = validate_manifest_schema(&manifest)
+            .expect_err("unknown DCR field should fail schema validation");
+        assert!(
+            error
+                .to_string()
+                .contains("is not valid under any of the schemas listed in the 'oneOf' keyword"),
+            "unexpected error: {error}"
         );
     }
 }

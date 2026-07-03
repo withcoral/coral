@@ -7,9 +7,9 @@ install: ui-build
 	cargo install --path crates/coral-cli --locked
 
 ui-build:
-	npm ci --prefix ui
-	npm run build --prefix ui
-	test -s ui/dist/index.html
+	npm ci --prefix apps/ui
+	npm run build --prefix apps/ui
+	test -s apps/ui/dist/index.html
 
 rust-checks:
 	cargo fmt --all -- --check
@@ -101,22 +101,22 @@ fix-sources:
 # via the xtask binary. docs-check intentionally skips the community source
 # catalog so PRs do not fail on aggregate community source catalog drift.
 #
-#   make docs-generate   # write/refresh the generated files in docs/
+#   make docs-generate   # write/refresh the generated files in apps/docs/
 #   make docs-check      # CI freshness check: non-zero exit if stale
 
 docs-generate:
 	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources/core \
-	  --index docs/reference/bundled-sources.mdx \
+	  --index apps/docs/reference/bundled-sources.mdx \
 	  --community-sources-dir sources/community \
-	  --community-index docs/reference/community-sources.mdx \
-	  --docs-json docs/docs.json
+	  --community-index apps/docs/reference/community-sources.mdx \
+	  --docs-json apps/docs/docs.json
 
 docs-check:
 	cargo run --locked -p xtask -- generate-docs \
 	  --sources-dir sources/core \
-	  --index docs/reference/bundled-sources.mdx \
-	  --docs-json docs/docs.json \
+	  --index apps/docs/reference/bundled-sources.mdx \
+	  --docs-json apps/docs/docs.json \
 	  --skip-community-sources \
 	  --check
 

@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Lists configured workspaces.
+message ListWorkspacesRequest {}
+
+// Returns configured workspaces.
+message ListWorkspacesResponse {
+  // Configured workspace resources.
+  repeated Workspace workspaces = 1;
+}
+
+// Creates one workspace.
+message CreateWorkspaceRequest {
+  // Workspace resource to create.
+  Workspace workspace = 1;
+}
+
+// Returns the created workspace.
+message CreateWorkspaceResponse {
+  // Created workspace resource.
+  Workspace workspace = 1;
+}
+
+// Deletes one workspace and its managed artifacts.
+message DeleteWorkspaceRequest {
+  // Workspace resource to delete.
+  Workspace workspace = 1;
+}
+
+// Returns the deleted workspace.
+message DeleteWorkspaceResponse {
+  // Deleted workspace resource.
+  Workspace workspace = 1;
+}
+
+// Workspace management APIs.
+service WorkspaceService {
+  // Lists configured workspaces.
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  // Creates one workspace.
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  // Deletes one workspace and its managed artifacts.
+  rpc DeleteWorkspace(DeleteWorkspaceRequest) returns (DeleteWorkspaceResponse);
+}

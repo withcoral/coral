@@ -10,15 +10,21 @@
 
 mod harness;
 
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::time::Duration;
 use std::{fs, io};
 
-use harness::MockServer;
-use jsonschema::JSONSchema;
+use coral_api::v1::{
+    ExecuteSqlRequest, ImportSourceRequest, ListSourcesResponse, Source, SourceCredentialStorage,
+    SourceOrigin, Workspace, import_source_response,
+};
+use coral_app::{ServerBuilder, shutdown_tracing};
+use coral_client::{AppClient, default_workspace};
+use harness::{MockServer, MockServerConfig};
 use rmcp::{
     RoleClient, ServiceExt,
-    model::{CallToolRequestParams, ReadResourceRequestParams},
+    model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
     service::RunningService,
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
@@ -28,6 +34,7 @@ use tokio::{
     process::{ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use tonic::Request;
 
 const RAW_JSONRPC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -38,6 +45,41 @@ fn json_object(value: &Value) -> Map<String, Value> {
 fn write_config(server: &MockServer, raw: &str) -> Result<(), io::Error> {
     fs::create_dir_all(server.config_dir())?;
     fs::write(server.config_dir().join("config.toml"), raw)
+}
+
+fn write_workspace_scoped_source_config(server: &MockServer) -> Result<(), io::Error> {
+    write_config(
+        server,
+        r#"
+[workspaces.default.sources.github]
+origin = "bundled"
+
+[workspaces.work.sources.jira]
+origin = "bundled"
+"#,
+    )
+}
+
+fn assert_workspace_name(workspace: Option<&Workspace>, expected: &str) {
+    assert_eq!(
+        workspace.map(|workspace| workspace.name.as_str()),
+        Some(expected),
+        "expected workspace {expected:?}, got {workspace:?}"
+    );
+}
+
+fn source_fixture(workspace_name: &str, source_name: &str) -> Source {
+    Source {
+        workspace: Some(Workspace {
+            name: workspace_name.to_string(),
+        }),
+        name: source_name.to_string(),
+        version: "1.0.0".to_string(),
+        secrets: Vec::new(),
+        variables: Vec::new(),
+        origin: SourceOrigin::Imported as i32,
+        credential_storage: SourceCredentialStorage::File as i32,
+    }
 }
 
 fn run_features_command(
@@ -80,6 +122,68 @@ async fn start_mcp_client_with_args(
     Ok(client)
 }
 
+fn write_real_fixture_manifest(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let source_dir = root.join("fixture-source");
+    let data_dir = root.join("fixture-data");
+    fs::create_dir_all(&source_dir)?;
+    fs::create_dir_all(&data_dir)?;
+    fs::write(
+        data_dir.join("messages.jsonl"),
+        r#"{"type":"user","sessionId":"s1","text":"hello"}
+{"type":"assistant","sessionId":"s1","text":"world"}
+"#,
+    )?;
+    Ok(format!(
+        r#"
+name: local_messages
+version: 0.1.0
+dsl_version: 3
+backend: file
+tables:
+  - name: messages
+    description: Fixture messages
+    format: jsonl
+    source:
+      location: file://{}/
+      glob: "**/*.jsonl"
+    columns:
+      - name: type
+        type: Utf8
+      - name: sessionId
+        type: Utf8
+      - name: text
+        type: Utf8
+"#,
+        data_dir.display()
+    ))
+}
+
+async fn import_real_fixture_source(
+    app: &AppClient,
+    manifest_yaml: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut source_client = app.source_client();
+    let mut stream = source_client
+        .import_source(Request::new(ImportSourceRequest {
+            workspace: Some(default_workspace()),
+            manifest_yaml,
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            oauth_credential_retrievals: Vec::new(),
+        }))
+        .await?
+        .into_inner();
+    stream
+        .message()
+        .await?
+        .and_then(|response| match response.event {
+            Some(import_source_response::Event::Source(source)) => Some(source),
+            _ => None,
+        })
+        .expect("import source response");
+    Ok(())
+}
+
 fn text_content(result: &rmcp::model::ReadResourceResult) -> &str {
     match &result.contents[0] {
         rmcp::model::ResourceContents::TextResourceContents { text, .. } => text,
@@ -102,7 +206,20 @@ async fn structured_tool_content(
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let result = client.call_tool(request).await?;
     assert_eq!(result.is_error, Some(false));
+    assert!(
+        result.content.is_empty(),
+        "tool results should not duplicate structured payloads as text content"
+    );
     Ok(result.structured_content.expect("structured content"))
+}
+
+fn tool_error_text(result: &CallToolResult) -> &str {
+    result
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .map(|text| text.text.as_str())
+        .expect("tool error text content")
 }
 
 async fn write_jsonrpc_message(
@@ -166,7 +283,7 @@ fn assert_raw_tools_list_contract(response: &Value) {
             input_schema.is_object(),
             "tool '{name}' inputSchema must be an object: {input_schema}"
         );
-        JSONSchema::compile(input_schema).unwrap_or_else(|error| {
+        jsonschema::validator_for(input_schema).unwrap_or_else(|error| {
             panic!(
                 "tool '{name}' inputSchema must compile as JSON Schema: {error}; schema: {input_schema}"
             )
@@ -183,12 +300,37 @@ fn assert_raw_tools_list_contract(response: &Value) {
             Some("object"),
             "tool '{name}' outputSchema must declare root type object: {output_schema}"
         );
-        JSONSchema::compile(output_schema).unwrap_or_else(|error| {
+        jsonschema::validator_for(output_schema).unwrap_or_else(|error| {
             panic!(
                 "tool '{name}' outputSchema must compile as JSON Schema: {error}; schema: {output_schema}"
             )
         });
     }
+    let sql_tool = tools
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("sql"))
+        .expect("sql tool should be advertised");
+    let sql_properties = sql_tool
+        .pointer("/inputSchema/properties")
+        .and_then(Value::as_object)
+        .expect("sql input properties");
+    assert!(!sql_properties.contains_key("sql"));
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/required/0"),
+        Some(&json!("queries"))
+    );
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/properties/queries/minItems"),
+        Some(&json!(1))
+    );
+    assert_eq!(
+        sql_tool.pointer("/inputSchema/properties/queries/maxItems"),
+        Some(&json!(10))
+    );
+    assert_eq!(
+        sql_tool.pointer("/outputSchema/type"),
+        Some(&json!("object"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -270,6 +412,202 @@ origin = "bundled"
     .await?;
     let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
     assert_raw_tools_list_contract(&tools_list);
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_initialize_includes_trace_backed_query_examples()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::TempDir::new()?;
+    let config_dir = temp.path().join("coral-config");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("config.toml"),
+        r#"
+[credentials]
+storage = "file"
+"#,
+    )?;
+    let server = ServerBuilder::new()
+        .with_config_dir(&config_dir)
+        .with_noop_feedback_uploads()
+        .start()
+        .await?;
+    let app = AppClient::connect(server.endpoint_uri()).await?;
+    import_real_fixture_source(&app, write_real_fixture_manifest(temp.path())?).await?;
+    let sql = "SELECT text FROM local_messages.messages ORDER BY text";
+    app.query_client()
+        .execute_sql(Request::new(ExecuteSqlRequest {
+            workspace: Some(default_workspace()),
+            sql: sql.to_string(),
+        }))
+        .await?;
+    shutdown_tracing();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", &config_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-query-history-init-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Connected Coral sources: local_messages."),
+        "initialize instructions should include connected source names: {instructions}"
+    );
+    assert!(
+        instructions.contains("Recent successful Coral SQL examples"),
+        "initialize instructions should include query examples heading: {instructions}"
+    );
+    assert!(
+        instructions.contains(&format!(
+            "1. sources: local_messages; row_count: 2\n```sql\n{sql}\n```"
+        )),
+        "initialize instructions should include the traced query metadata and SQL: {instructions}"
+    );
+
+    drop(stdin);
+    if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+        child.start_kill()?;
+        child.wait().await?;
+    }
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_workspace_flag_scopes_server_instance() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = MockServer::start_with_config(MockServerConfig::default().with_list_sources(
+        ListSourcesResponse {
+            sources: vec![source_fixture("work", "linear")],
+        },
+    ))
+    .await;
+    write_workspace_scoped_source_config(&server)?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_coral"))
+        .arg("mcp-stdio")
+        .args(["--workspace", "work"])
+        .env("CORAL_ENDPOINT", server.endpoint_uri())
+        .env("CORAL_CONFIG_DIR", server.config_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("mcp stdio stdin");
+    let stdout = child.stdout.take().expect("mcp stdio stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "coral-cli-workspace-stdio-test",
+                    "version": "0.0.0"
+                }
+            }
+        }),
+    )
+    .await?;
+    let initialize = read_jsonrpc_response(&mut stdout, 1).await?;
+    let instructions = initialize
+        .pointer("/result/instructions")
+        .and_then(Value::as_str)
+        .expect("initialize response should include instructions");
+    assert!(
+        instructions.contains("Current Coral workspace: work."),
+        "initialize instructions should include selected workspace: {instructions}"
+    );
+    assert!(
+        instructions.contains("Connected Coral sources: linear."),
+        "initialize instructions should include app-provided source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Connected Coral sources: jira."),
+        "initialize instructions should not use config-store source names: {instructions}"
+    );
+    assert!(
+        !instructions.contains("Recent successful Coral SQL examples"),
+        "non-default workspace initialize instructions should not use default-workspace query history: {instructions}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await?;
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await?;
+    let tools_list = read_jsonrpc_response(&mut stdout, 2).await?;
+    assert_raw_tools_list_contract(&tools_list);
+
+    let catalog_requests = server.list_catalog_requests();
+    let count_request = catalog_requests
+        .last()
+        .expect("tools/list should request catalog counts");
+    assert_workspace_name(count_request.workspace.as_ref(), "work");
+    let list_sources_requests = server.list_sources_requests();
+    assert!(
+        !list_sources_requests.is_empty(),
+        "expected at least one list_sources call"
+    );
+    for request in &list_sources_requests {
+        assert_workspace_name(request.workspace.as_ref(), "work");
+    }
 
     drop(stdin);
     if timeout(Duration::from_secs(5), child.wait()).await.is_err() {
@@ -891,11 +1229,15 @@ async fn assert_sql_tool(
     let sql = structured_tool_content(
         client,
         CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-            "sql": "SELECT text FROM local_messages.messages ORDER BY text"
+            "queries": ["SELECT text FROM local_messages.messages ORDER BY text"]
         }))),
     )
     .await?;
-    assert_eq!(sql["rows"][0]["text"], "hello");
+    assert_eq!(sql["total_count"], 1);
+    assert_eq!(sql["success_count"], 1);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["status"], "success");
+    assert_eq!(sql["results"][0]["rows"][0]["text"], "hello");
     Ok(())
 }
 
@@ -904,26 +1246,153 @@ async fn mcp_stdio_tool_errors_do_not_end_the_session() -> Result<(), Box<dyn st
     let server = MockServer::start().await;
     let client = start_mcp_client(&server).await?;
 
-    let invalid_sql = client
+    let mixed_sql = client
         .call_tool(
             CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
-                "sql": "DELETE FROM local_messages.messages"
+                "queries": [
+                    "SELECT text FROM local_messages.messages ORDER BY text",
+                    "DELETE FROM local_messages.messages"
+                ]
             }))),
         )
         .await?;
-    assert_eq!(invalid_sql.is_error, Some(true));
+    assert_eq!(mixed_sql.is_error, Some(true));
+    let mixed_sql_detail = mixed_sql
+        .structured_content
+        .as_ref()
+        .expect("structured content")["data"]["results"][1]["error"]["detail"]
+        .as_str()
+        .expect("structured query error detail")
+        .to_string();
+    {
+        let mixed_sql_text = tool_error_text(&mixed_sql);
+        assert!(mixed_sql_text.contains("Query [1]: Query request is invalid"));
+        assert!(mixed_sql_text.contains(&mixed_sql_detail));
+    }
+    let mixed_sql = mixed_sql.structured_content.expect("structured content");
+    assert_eq!(mixed_sql["error"]["reason"], "SQL_BATCH_PARTIAL_FAILURE");
+    let mixed_sql_batch = &mixed_sql["data"];
+    assert_eq!(mixed_sql_batch["total_count"], 2);
+    assert_eq!(mixed_sql_batch["success_count"], 1);
+    assert_eq!(mixed_sql_batch["error_count"], 1);
+    assert_eq!(mixed_sql_batch["results"][0]["status"], "success");
+    assert_eq!(mixed_sql_batch["results"][0]["rows"][0]["text"], "hello");
+    assert_eq!(mixed_sql_batch["results"][1]["status"], "error");
     assert_eq!(
-        invalid_sql.structured_content.expect("structured content")["error"]["summary"],
+        mixed_sql_batch["results"][1]["error"]["summary"],
         "Query request is invalid"
     );
+
+    assert_eq!(server.execute_sql_requests().len(), 2);
 
     let catalog = client
         .call_tool(CallToolRequestParams::new("list_catalog"))
         .await?;
     assert_eq!(catalog.is_error, Some(false));
+    assert!(catalog.content.is_empty());
     assert_eq!(
         catalog.structured_content.expect("structured content")["items"][0]["name"],
         "local_messages.events"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_batch_records_each_execute_sql_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [
+                "SELECT 'first' AS label",
+                "SELECT 'second' AS label"
+            ]
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+    assert_eq!(sql["error_count"], 0);
+    assert_eq!(sql["results"][0]["index"], 0);
+    assert_eq!(sql["results"][0]["rows"][0]["label"], "first");
+    assert_eq!(sql["results"][1]["index"], 1);
+    assert_eq!(sql["results"][1]["rows"][0]["label"], "second");
+
+    let requests = server.execute_sql_requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.sql == "SELECT 'first' AS label")
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.sql == "SELECT 'second' AS label")
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_batch_propagates_episode_id_to_each_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client_with_args(&server, &["--enable-episodes"]).await?;
+
+    let sql = structured_tool_content(
+        &client,
+        CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+            "queries": [
+                "SELECT 'first' AS label",
+                "SELECT 'second' AS label"
+            ],
+            "episode_id": "ep_batch"
+        }))),
+    )
+    .await?;
+    assert_eq!(sql["total_count"], 2);
+    assert_eq!(sql["success_count"], 2);
+
+    let episode_ids = server.execute_sql_episode_ids();
+    assert_eq!(episode_ids.len(), 2);
+    assert!(
+        episode_ids
+            .iter()
+            .all(|episode_id| episode_id.as_deref() == Some("ep_batch")),
+        "expected every batch query to carry coral-episode-id, got {episode_ids:?}"
+    );
+
+    client.cancel().await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_stdio_sql_rejects_malformed_queries_before_backend_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    let client = start_mcp_client(&server).await?;
+
+    client
+        .call_tool(
+            CallToolRequestParams::new("sql").with_arguments(json_object(&json!({
+                "queries": []
+            }))),
+        )
+        .await
+        .expect_err("empty queries should fail as invalid params");
+    assert!(
+        server.execute_sql_requests().is_empty(),
+        "malformed queries must not reach backend"
     );
 
     client.cancel().await?;
