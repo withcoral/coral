@@ -160,7 +160,7 @@ impl CatalogServiceApi for CatalogService {
         let span = grpc_span(&request);
         let catalog = self.catalog.clone();
         let attribution = QueryAttribution::from_extensions(request.extensions());
-        instrument_grpc(span, async move {
+        Box::pin(instrument_grpc(span, async move {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let schema_name = required_trimmed(&request.schema_name, "schema_name")?;
@@ -199,7 +199,7 @@ impl CatalogServiceApi for CatalogService {
                     .collect(),
                 pagination: Some(pagination),
             }))
-        })
+        }))
         .await
     }
 }
