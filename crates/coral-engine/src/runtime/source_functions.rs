@@ -42,6 +42,7 @@ use crate::runtime::scoped_table_functions::{
 use coral_spec::ManifestDataType;
 
 pub(crate) const SOURCE_FUNCTION_NODE_NAME: &str = "CoralSourceFunction";
+const SOURCE_FUNCTION_ANALYZER_RULE_NAME: &str = "coral_source_functions";
 
 #[derive(Debug)]
 pub(crate) struct SourceFunctionRegistry {
@@ -92,10 +93,20 @@ impl SourceFunctionRegistry {
 
     /// Installs the analyzer that resolves parked source-function calls.
     ///
-    /// `DataFusion` appends analyzer rules, so callers should install this at
-    /// most once per session.
+    /// `DataFusion` appends analyzer rules, so keep this idempotent for callers
+    /// that share one session across source-function and UDF planning hooks.
     pub(crate) fn install_analyzer(ctx: &SessionContext) {
-        ctx.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
+        let state_ref = ctx.state_ref();
+        let mut state = state_ref.write();
+        if state
+            .analyzer()
+            .rules
+            .iter()
+            .any(|rule| rule.name() == SOURCE_FUNCTION_ANALYZER_RULE_NAME)
+        {
+            return;
+        }
+        state.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
     }
 
     fn find(&self, call: &ScopedTableFunctionCall) -> Option<&SourceFunction> {
@@ -421,6 +432,28 @@ impl AnalyzerRule for SourceFunctionAnalyzerRule {
     }
 
     fn name(&self) -> &'static str {
-        "coral_source_functions"
+        SOURCE_FUNCTION_ANALYZER_RULE_NAME
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_analyzer_is_idempotent() {
+        let ctx = SessionContext::new();
+
+        SourceFunctionRegistry::install_analyzer(&ctx);
+        SourceFunctionRegistry::install_analyzer(&ctx);
+
+        let count = ctx
+            .state()
+            .analyzer()
+            .rules
+            .iter()
+            .filter(|rule| rule.name() == SOURCE_FUNCTION_ANALYZER_RULE_NAME)
+            .count();
+        assert_eq!(count, 1);
     }
 }
