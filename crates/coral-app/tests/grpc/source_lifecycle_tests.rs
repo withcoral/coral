@@ -855,6 +855,7 @@ async fn discover_bundled_sources_returns_catalog_and_marks_installed_sources() 
                 key: "GITHUB_TOKEN".to_string(),
                 value: "fake-token".to_string(),
             }],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect("create bundled github source");
@@ -1046,6 +1047,7 @@ async fn create_source_registers_tables() {
                 key: "GITHUB_TOKEN".to_string(),
                 value: "fake-token".to_string(),
             }],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect("create bundled github source");
@@ -1054,6 +1056,54 @@ async fn create_source_registers_tables() {
     assert!(
         tables.iter().any(|table| table.schema_name == "github"),
         "github tables should register once the template secret dependency is provided"
+    );
+}
+
+#[tokio::test]
+async fn create_source_environment_resolution_reports_missing_inputs() {
+    let harness = GrpcHarness::new().await;
+    let base_key = format!("CORAL_TEST_REQUIRED_API_BASE_{}", std::process::id());
+    let token_key = format!("CORAL_TEST_REQUIRED_API_TOKEN_{}", std::process::id());
+    let manifest_yaml = fixture_manifest_with_required_inputs_yaml()
+        .replace("API_BASE", &base_key)
+        .replace("API_TOKEN", &token_key);
+    harness.register_source_spec(manifest_yaml).await;
+
+    let error = harness
+        .source_client()
+        .create_source(Request::new(CreateSourceRequest {
+            workspace: Some(default_workspace()),
+            name: "required_messages".to_string(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            resolve_inputs_from_environment: true,
+        }))
+        .await
+        .expect_err("missing app-resolved env inputs should fail");
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert!(
+        error
+            .message()
+            .contains("missing required environment variables"),
+        "expected missing env error, got {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains(&base_key),
+        "expected missing base key in {}",
+        error.message()
+    );
+    assert!(
+        error.message().contains(&token_key),
+        "expected missing token key in {}",
+        error.message()
+    );
+    assert!(
+        error
+            .message()
+            .contains("coral source add --interactive required_messages"),
+        "expected interactive recovery command in {}",
+        error.message()
     );
 }
 
@@ -1071,6 +1121,7 @@ async fn create_source_missing_required_secret_returns_invalid_argument() {
                 value: "phoebe".to_string(),
             }],
             secrets: Vec::new(),
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect_err("missing bundled secret should fail");
@@ -1096,6 +1147,7 @@ async fn create_source_missing_required_variable_returns_invalid_argument() {
                 key: "SENTRY_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect_err("missing bundled variable should fail");
@@ -1130,6 +1182,7 @@ async fn create_source_unknown_input_returns_invalid_argument() {
                 key: "SENTRY_TOKEN".to_string(),
                 value: "secret-token".to_string(),
             }],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect_err("unknown bundled input should fail");
@@ -1160,6 +1213,7 @@ async fn create_source_repeated_secret_returns_invalid_argument() {
                     value: "shadow-token".to_string(),
                 },
             ],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect_err("repeated bundled secret should fail");
@@ -1188,6 +1242,7 @@ async fn create_source_does_not_persist_manifest_to_config_dir() {
                 key: "GITHUB_TOKEN".to_string(),
                 value: "fake-token".to_string(),
             }],
+            resolve_inputs_from_environment: false,
         }))
         .await
         .expect("create bundled github source")

@@ -12,11 +12,12 @@ use anyhow::{Context as _, bail};
 use coral_api::CORAL_ERROR_REASON_SOURCE_NOT_FOUND;
 use coral_api::v1::{
     CreateSourceRequest, CreateSourceWithOAuthRequest, CreateSourceWithOAuthResponse,
-    DeleteSourceRequest, DiscoverSourcesRequest, GetSourceInfoRequest, ImportSourceRequest,
-    ImportSourceResponse, ListSourcesRequest, OAuthCredentialInput, OAuthCredentialRetrieval,
-    QueryTestFailure, QueryTestSuccess, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
-    SourceSecret, SourceVariable, ValidateSourceRequest, ValidateSourceResponse, Workspace,
-    create_source_with_o_auth_response, import_source_response, query_test_result,
+    DeleteSourceRequest, DeleteSourceSpecRequest, DiscoverSourcesRequest, GetSourceInfoRequest,
+    ImportSourceRequest, ImportSourceResponse, ListSourceSpecsRequest, ListSourcesRequest,
+    OAuthCredentialInput, OAuthCredentialRetrieval, QueryTestFailure, QueryTestSuccess,
+    RegisterSourceSpecRequest, Source, SourceCredentialStorage, SourceInfo, SourceOrigin,
+    SourceSecret, SourceSpecInfo, SourceVariable, ValidateSourceRequest, ValidateSourceResponse,
+    Workspace, create_source_with_o_auth_response, import_source_response, query_test_result,
     source_input_spec::Input as ProtoSourceInput,
 };
 use coral_client::{AppClient, DecodedStatusError, decode_status_error};
@@ -98,6 +99,47 @@ pub(crate) async fn list_sources(
         .sources)
 }
 
+pub(crate) async fn list_source_specs(
+    app: &AppClient,
+) -> Result<Vec<SourceSpecInfo>, anyhow::Error> {
+    Ok(app
+        .source_client()
+        .list_source_specs(Request::new(ListSourceSpecsRequest {}))
+        .await?
+        .into_inner()
+        .source_specs)
+}
+
+pub(crate) async fn register_source_spec(
+    app: &AppClient,
+    manifest_yaml: String,
+) -> Result<SourceInfo, anyhow::Error> {
+    let response = app
+        .source_client()
+        .register_source_spec(Request::new(RegisterSourceSpecRequest { manifest_yaml }))
+        .await?
+        .into_inner();
+    response
+        .source_spec
+        .ok_or_else(|| anyhow::anyhow!("register source spec response missing source_spec"))
+}
+
+pub(crate) async fn delete_source_spec(
+    app: &AppClient,
+    name: &str,
+) -> Result<SourceInfo, anyhow::Error> {
+    let response = app
+        .source_client()
+        .delete_source_spec(Request::new(DeleteSourceSpecRequest {
+            name: source_name_arg(Some(name))?,
+        }))
+        .await?
+        .into_inner();
+    response
+        .source_spec
+        .ok_or_else(|| anyhow::anyhow!("delete source spec response missing source_spec"))
+}
+
 pub(crate) async fn add_named_source(
     app: &AppClient,
     workspace: &Workspace,
@@ -112,6 +154,28 @@ pub(crate) async fn add_named_source(
             name: name.to_string(),
             variables,
             secrets,
+            resolve_inputs_from_environment: false,
+        }))
+        .await?
+        .into_inner();
+    response
+        .source
+        .ok_or_else(|| anyhow::anyhow!("create source response missing source"))
+}
+
+pub(crate) async fn add_named_source_from_environment(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<Source, anyhow::Error> {
+    let response = app
+        .source_client()
+        .create_source(Request::new(CreateSourceRequest {
+            workspace: Some(workspace.clone()),
+            name: name.to_string(),
+            variables: Vec::new(),
+            secrets: Vec::new(),
+            resolve_inputs_from_environment: true,
         }))
         .await?
         .into_inner();
@@ -522,6 +586,16 @@ pub(crate) async fn print_source_info(
     name: &str,
     verbose: bool,
 ) -> Result<(), anyhow::Error> {
+    let source = get_source_info(app, workspace, name).await?;
+    print_source_info_response(&source, verbose);
+    Ok(())
+}
+
+pub(crate) async fn get_source_info(
+    app: &AppClient,
+    workspace: &Workspace,
+    name: &str,
+) -> Result<SourceInfo, anyhow::Error> {
     let response = app
         .source_client()
         .get_source_info(Request::new(GetSourceInfoRequest {
@@ -533,8 +607,7 @@ pub(crate) async fn print_source_info(
     let source = response
         .source_info
         .ok_or_else(|| anyhow::anyhow!("get source info response missing source_info"))?;
-    print_source_info_response(&source, verbose);
-    Ok(())
+    Ok(source)
 }
 
 fn print_source_info_response(source: &SourceInfo, verbose: bool) {

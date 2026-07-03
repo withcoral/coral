@@ -34,7 +34,7 @@ use coral_spec::{
 };
 use tonic::{Request, Response, Status};
 
-use crate::bootstrap::{AppError, app_status};
+use crate::bootstrap::{AppError, app_status, source_input_env_value};
 use crate::credentials::CredentialStorageKind;
 use crate::query::manager::QueryManager;
 use crate::sources::SourceName;
@@ -165,9 +165,26 @@ impl SourceServiceApi for SourceService {
             let request = request.into_inner();
             let workspace_name = workspace_name_from_proto(request.workspace.as_ref())?;
             let source_name = SourceName::parse(&request.name).map_err(app_status)?;
+            let bindings = if request.resolve_inputs_from_environment {
+                if !request.variables.is_empty() || !request.secrets.is_empty() {
+                    return Err(app_status(AppError::InvalidInput(
+                        "resolve_inputs_from_environment cannot be combined with explicit variables or secrets"
+                            .to_string(),
+                    )));
+                }
+                let source = sources
+                    .get_source_info(&workspace_name, &source_name)
+                    .map_err(app_status)?;
+                let interactive_command =
+                    format!("coral source add --interactive {}", source.name.as_str());
+                source_bindings_from_environment(&source.inputs, &interactive_command)
+                    .map_err(app_status)?
+            } else {
+                source_bindings_from_proto(request.variables, request.secrets)
+            };
             let command = CreateSourceCommand {
                 name: source_name,
-                bindings: source_bindings_from_proto(request.variables, request.secrets),
+                bindings,
             };
             let response_workspace_name = workspace_name.clone();
             let installed = run_blocking_source_operation(move || {
@@ -484,6 +501,51 @@ fn source_bindings_from_proto(
             .collect(),
         secrets: secrets.into_iter().map(source_secret_from_proto).collect(),
     }
+}
+
+fn source_bindings_from_environment(
+    inputs: &[ManifestInputSpec],
+    interactive_command: &str,
+) -> Result<SourceBindings, AppError> {
+    let mut variables = Vec::new();
+    let mut secrets = Vec::new();
+    let mut missing = Vec::new();
+
+    for input in inputs {
+        let raw = source_input_env_value(&input.key).unwrap_or_default();
+        let value = if raw.is_empty() {
+            input.default_value.clone()
+        } else {
+            raw
+        };
+        if value.is_empty() {
+            if input.required {
+                missing.push(input.key.clone());
+            }
+            continue;
+        }
+        match input.kind {
+            ManifestInputKind::Variable => variables.push(SourceBinding {
+                key: input.key.clone(),
+                value,
+            }),
+            ManifestInputKind::Secret => secrets.push(SourceBinding {
+                key: input.key.clone(),
+                value,
+            }),
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "missing required environment variable{}: {}. Set the variable{} or run `{interactive_command}`.",
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", "),
+            if missing.len() == 1 { "" } else { "s" },
+        )));
+    }
+
+    Ok(SourceBindings { variables, secrets })
 }
 
 fn source_variable_from_proto(variable: SourceVariable) -> SourceBinding {

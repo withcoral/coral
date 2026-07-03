@@ -460,10 +460,9 @@ const COMMUNITY_INTRO: &str = concat!(
     "[sources/community](https://github.com/withcoral/coral/tree/main/sources/community).\n",
     "\n",
     "<Note>\n",
-    "  Community sources are not included in `coral source discover`, and `coral\n",
-    "  source add <name>` only installs [bundled sources](/reference/bundled-sources).\n",
-    "  Import community sources\n",
-    "  with `coral source add --file`.\n",
+    "  Community sources are not included in `coral source discover`. Import one directly\n",
+    "  into the current workspace with `coral source add --file`, or register it globally\n",
+    "  with `coral source-spec add --file` and then install it by name with `coral source add <name>`.\n",
     "</Note>\n",
 );
 
