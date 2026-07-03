@@ -46,6 +46,7 @@ tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 coral-api.workspace = true
 coral-auth-aws = { path = "../auth/aws" }
