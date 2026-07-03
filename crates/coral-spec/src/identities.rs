@@ -131,7 +131,7 @@ pub fn parse_identity_manifest_yaml(raw: &str) -> Result<IdentityManifest> {
 /// Parse and validate one identity manifest from a structured value.
 pub fn parse_identity_manifest_value(value: Value) -> Result<IdentityManifest> {
     reject_legacy_identity_fields(&value)?;
-    validate_identity_input_fields(&value)?;
+    crate::schema::validate_identity_manifest_schema(&value)?;
     let inputs = collect_declared_inputs(&value)?;
     let raw: RawIdentityManifest =
         serde_json::from_value(value).map_err(ManifestError::deserialize)?;
@@ -176,29 +176,6 @@ fn reject_legacy_identity_fields(value: &Value) -> Result<()> {
         return Err(ManifestError::validation(format!(
             "identity '{name}' oauth.methods is not supported; use one oauth.method per identity spec"
         )));
-    }
-    Ok(())
-}
-
-fn validate_identity_input_fields(value: &Value) -> Result<()> {
-    let Some(inputs) = value.get("inputs") else {
-        return Ok(());
-    };
-    let inputs = inputs.as_object().ok_or_else(|| {
-        ManifestError::validation("manifest `inputs` must be declared as a mapping")
-    })?;
-    for (key, value) in inputs {
-        let input = value.as_object().ok_or_else(|| {
-            ManifestError::validation(format!(
-                "manifest input '{key}' must be declared as a mapping"
-            ))
-        })?;
-        let allowed = match input.get("kind").and_then(Value::as_str) {
-            Some("variable") => &["kind", "default", "required", "hint"][..],
-            Some("secret") => &["kind", "required", "hint"][..],
-            _ => continue,
-        };
-        validate_known_fields(key, "input", input, allowed)?;
     }
     Ok(())
 }
@@ -559,6 +536,18 @@ oauth:
     }
 
     #[test]
+    fn schema_validation_rejects_fixed_token_oauth_even_when_null() {
+        let error = parse_identity_manifest_yaml(&identity("fixed_token", "oauth: null"))
+            .expect_err("fixed-token identities must not declare oauth");
+        assert!(
+            error
+                .to_string()
+                .starts_with("identity manifest failed schema validation:"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn rejects_minimal_invalid_identity_manifests() {
         let dangling_input = "oauth:\n  method:\n    flow: {type: device_code}\n    endpoints: {device_authorization_url: 'https://provider.example.com/device', token_url: 'https://provider.example.com/token'}\n    client: {id: {input: OAUTH_CLIENT_ID}}";
         for (raw, expected) in [
@@ -573,7 +562,7 @@ oauth:
             ),
             (
                 identity("oauth", &format!("{OAUTH_BODY}\n  unexpected: true")),
-                "oauth has unsupported field 'unexpected'",
+                "unexpected",
             ),
         ] {
             let error = parse_identity_manifest_yaml(&raw).expect_err(&raw);

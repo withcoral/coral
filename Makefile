@@ -177,7 +177,7 @@ docs-check:
 # ----------------------------------------------------------------------------
 # JSON schema generation
 # ----------------------------------------------------------------------------
-# Regenerates source manifest schemas that are generated from Rust types.
+# Regenerates manifest schemas that are generated from Rust types.
 #
 #   make schema-generate   # write/refresh generated schemas
 #   make schema-check      # CI freshness check: non-zero exit if stale
