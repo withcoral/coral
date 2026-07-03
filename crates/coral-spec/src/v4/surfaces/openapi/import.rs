@@ -132,7 +132,7 @@ fn collect_external_ref_documents(
             {
                 let document_uri_string = document_uri.to_string();
                 if seen.insert(document_uri_string.clone()) {
-                    let mut document = retrieve_external_ref_document(&document_uri)?;
+                    let mut document = retrieve_external_ref_document(base_uri, &document_uri)?;
                     annotate_ref_sites(&mut document);
                     collect_external_ref_documents(
                         &document_uri,
@@ -194,11 +194,16 @@ fn file_descriptor_base_uri(file: &Path) -> Result<String> {
 }
 
 fn retrieve_external_ref_document(
+    referring_document_uri: &Url,
     uri: &Url,
 ) -> std::result::Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     match uri.scheme() {
         "https" => retrieve_https_external_ref(uri),
-        "file" => retrieve_file_external_ref(uri),
+        "file" if referring_document_uri.scheme() == "file" => retrieve_file_external_ref(uri),
+        "file" => Err(std::io::Error::other(format!(
+            "OpenAPI file external reference '{uri}' is not allowed from non-file document '{referring_document_uri}'"
+        ))
+        .into()),
         "http" => Err(std::io::Error::other(format!(
             "OpenAPI external reference '{uri}' must use HTTPS"
         ))

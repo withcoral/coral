@@ -873,6 +873,63 @@ paths:
     ));
 }
 
+#[test]
+fn importer_rejects_file_refs_from_https_documents() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let external_file = temp.path().join("local.yaml");
+    std::fs::write(
+        &external_file,
+        r"
+get:
+  operationId: items/list
+  responses:
+    '204': {}
+",
+    )
+    .expect("external file");
+    let external_uri = url::Url::from_file_path(&external_file)
+        .expect("external file uri")
+        .to_string();
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: remote_file_ref
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    url: https://example.com/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let error = import_openapi_surface(
+        v4,
+        surface,
+        format!(
+            r"
+openapi: 3.0.3
+paths:
+  /items:
+    $ref: {external_uri}
+"
+        )
+        .as_bytes(),
+    )
+    .expect_err("remote descriptor must not read local file refs");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("file external reference"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("is not allowed from non-file document"),
+        "unexpected error: {message}"
+    );
+}
+
 fn write_external_ref_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("paths")).expect("paths dir");
     std::fs::create_dir_all(root.join("parameters")).expect("parameters dir");
