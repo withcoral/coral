@@ -148,6 +148,16 @@ struct ExistsRelationshipSqlBinding<'a, 'b> {
     alias: String,
 }
 
+#[derive(Clone, Copy)]
+enum ScalarScope<'a, 'b, 'c> {
+    TopLevel,
+    Scoped {
+        relationships: &'c [ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &'c BTreeMap<&'b str, &'a Node>,
+        local_aliases: &'c BTreeMap<&'b str, String>,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct RelationshipOrientation {
     left_relationship_key: String,

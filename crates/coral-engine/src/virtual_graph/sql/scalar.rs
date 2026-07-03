@@ -31,6 +31,26 @@ impl<'a> SqlRenderer<'a> {
         self.render_structural_scalar_expression(expression)
     }
 
+    fn render_scalar_in_scope<'b, 'c>(
+        &self,
+        expr: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_scalar_expression(expr),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self.render_scoped_scalar_expression(
+                expr,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
+        }
+    }
+
     fn render_structural_scalar_expression(
         &self,
         expression: &ScalarExpression,
@@ -60,31 +80,39 @@ impl<'a> SqlRenderer<'a> {
                 expression,
             } => self.render_presence_gated_scalar_expression(presence_variable, expression),
             ScalarExpression::Coalesce { expressions } => {
-                self.render_coalesce_expression(expressions)
+                self.render_coalesce_expression(expressions, ScalarScope::TopLevel)
             }
-            ScalarExpression::NullIf { expression, value } => Ok(format!(
-                "NULLIF({}, {})",
-                self.render_scalar_expression(expression)?,
-                self.render_scalar_expression(value)?
-            )),
+            ScalarExpression::NullIf { expression, value } => {
+                self.render_null_if(expression, value, ScalarScope::TopLevel)
+            }
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => self.render_replace_expression(expression, search, replacement),
+            } => self.render_replace_expression(
+                expression,
+                search,
+                replacement,
+                ScalarScope::TopLevel,
+            ),
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
-            } => self.render_substring_expression(expression, start, length.as_deref()),
+            } => self.render_substring_expression(
+                expression,
+                start,
+                length.as_deref(),
+                ScalarScope::TopLevel,
+            ),
             ScalarExpression::Round { expression, places } => {
-                self.render_round_expression(expression, places.as_deref())
+                self.render_round_expression(expression, places.as_deref(), ScalarScope::TopLevel)
             }
             ScalarExpression::Arithmetic {
                 operator,
                 left,
                 right,
-            } => self.render_arithmetic_expression(*operator, left, right),
+            } => self.render_arithmetic_expression(*operator, left, right, ScalarScope::TopLevel),
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -93,16 +121,30 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
-    fn render_coalesce_expression(
+    pub(super) fn render_coalesce_expression<'b, 'c>(
         &self,
         expressions: &[ScalarExpression],
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         let rendered = expressions
             .iter()
-            .map(|expression| self.render_scalar_expression(expression))
+            .map(|expression| self.render_scalar_in_scope(expression, scope))
             .collect::<Result<Vec<_>, _>>()?
             .join(", ");
         Ok(format!("COALESCE({rendered})"))
+    }
+
+    pub(super) fn render_null_if<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        value: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "NULLIF({}, {})",
+            self.render_scalar_in_scope(expression, scope)?,
+            self.render_scalar_in_scope(value, scope)?
+        ))
     }
 
     fn render_graph_metadata_scalar_expression(
@@ -347,17 +389,18 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
-    fn render_replace_expression(
+    pub(super) fn render_replace_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
         search: &ScalarExpression,
         replacement: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         Ok(format!(
             "REPLACE({}, {}, {})",
-            self.render_scalar_expression(expression)?,
-            self.render_scalar_expression(search)?,
-            self.render_scalar_expression(replacement)?
+            self.render_scalar_in_scope(expression, scope)?,
+            self.render_scalar_in_scope(search, scope)?,
+            self.render_scalar_in_scope(replacement, scope)?
         ))
     }
 
@@ -389,29 +432,31 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
-    fn render_round_expression(
+    pub(super) fn render_round_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
         places: Option<&ScalarExpression>,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
-        let expression_sql = self.render_scalar_expression(expression)?;
+        let expression_sql = self.render_scalar_in_scope(expression, scope)?;
         let Some(places) = places else {
             return Ok(format!("round({expression_sql})"));
         };
         Ok(format!(
             "round({expression_sql}, {})",
-            self.render_scalar_expression(places)?
+            self.render_scalar_in_scope(places, scope)?
         ))
     }
 
-    fn render_arithmetic_expression(
+    pub(super) fn render_arithmetic_expression<'b, 'c>(
         &self,
         operator: ArithmeticOperator,
         left: &ScalarExpression,
         right: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
-        let left = self.render_scalar_expression(left)?;
-        let right = self.render_scalar_expression(right)?;
+        let left = self.render_scalar_in_scope(left, scope)?;
+        let right = self.render_scalar_in_scope(right, scope)?;
         let op = match operator {
             ArithmeticOperator::Power => return Ok(format!("power({left}, {right})")),
             ArithmeticOperator::Add => InfixArithmeticOperator::Add,
@@ -426,20 +471,25 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
-    fn render_substring_expression(
+    pub(super) fn render_substring_expression<'b, 'c>(
         &self,
         expression: &ScalarExpression,
         start: &ScalarExpression,
         length: Option<&ScalarExpression>,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
         let mut sql = format!(
             "SUBSTRING({} FROM ({} + 1)",
-            self.render_scalar_expression(expression)?,
-            self.render_scalar_expression(start)?
+            self.render_scalar_in_scope(expression, scope)?,
+            self.render_scalar_in_scope(start, scope)?
         );
         if let Some(length) = length {
-            write!(&mut sql, " FOR {}", self.render_scalar_expression(length)?)
-                .map_err(|error| CoreError::internal(error.to_string()))?;
+            write!(
+                &mut sql,
+                " FOR {}",
+                self.render_scalar_in_scope(length, scope)?
+            )
+            .map_err(|error| CoreError::internal(error.to_string()))?;
         }
         sql.push(')');
         Ok(sql)

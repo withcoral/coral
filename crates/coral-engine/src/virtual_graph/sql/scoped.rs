@@ -2026,61 +2026,73 @@ impl<'a> SqlRenderer<'a> {
                 local_nodes,
                 local_aliases,
             ),
-            ScalarExpression::Coalesce { expressions } => self.render_scoped_coalesce(
+            ScalarExpression::Coalesce { expressions } => self.render_coalesce_expression(
                 expressions,
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
-            ScalarExpression::NullIf { expression, value } => self.render_scoped_null_if(
+            ScalarExpression::NullIf { expression, value } => self.render_null_if(
                 expression.as_ref(),
                 value.as_ref(),
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => self.render_scoped_replace(
+            } => self.render_replace_expression(
                 expression.as_ref(),
                 search.as_ref(),
                 replacement.as_ref(),
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
-            } => self.render_scoped_substring(
+            } => self.render_substring_expression(
                 expression.as_ref(),
                 start.as_ref(),
                 length.as_deref(),
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
-            ScalarExpression::Round { expression, places } => self.render_scoped_round(
+            ScalarExpression::Round { expression, places } => self.render_round_expression(
                 expression.as_ref(),
                 places.as_deref(),
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
             ScalarExpression::Arithmetic {
                 operator,
                 left,
                 right,
-            } => self.render_scoped_arithmetic(
-                operator,
+            } => self.render_arithmetic_expression(
+                *operator,
                 left.as_ref(),
                 right.as_ref(),
-                relationships,
-                local_nodes,
-                local_aliases,
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                },
             ),
             ScalarExpression::Case {
                 alternatives,
@@ -2118,175 +2130,6 @@ impl<'a> SqlRenderer<'a> {
         )?;
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE {expression} END"
-        ))
-    }
-
-    fn render_scoped_coalesce<'b>(
-        &self,
-        expressions: &[ScalarExpression],
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        let rendered = expressions
-            .iter()
-            .map(|expression| {
-                self.render_scoped_scalar_expression(
-                    expression,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", ");
-        Ok(format!("COALESCE({rendered})"))
-    }
-
-    fn render_scoped_null_if<'b>(
-        &self,
-        expression: &ScalarExpression,
-        value: &ScalarExpression,
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        Ok(format!(
-            "NULLIF({}, {})",
-            self.render_scoped_scalar_expression(
-                expression,
-                relationships,
-                local_nodes,
-                local_aliases,
-            )?,
-            self.render_scoped_scalar_expression(value, relationships, local_nodes, local_aliases)?
-        ))
-    }
-
-    fn render_scoped_replace<'b>(
-        &self,
-        expression: &ScalarExpression,
-        search: &ScalarExpression,
-        replacement: &ScalarExpression,
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        Ok(format!(
-            "REPLACE({}, {}, {})",
-            self.render_scoped_scalar_expression(
-                expression,
-                relationships,
-                local_nodes,
-                local_aliases,
-            )?,
-            self.render_scoped_scalar_expression(
-                search,
-                relationships,
-                local_nodes,
-                local_aliases
-            )?,
-            self.render_scoped_scalar_expression(
-                replacement,
-                relationships,
-                local_nodes,
-                local_aliases,
-            )?
-        ))
-    }
-
-    fn render_scoped_substring<'b>(
-        &self,
-        expression: &ScalarExpression,
-        start: &ScalarExpression,
-        length: Option<&ScalarExpression>,
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        let mut sql = format!(
-            "SUBSTRING({} FROM ({} + 1)",
-            self.render_scoped_scalar_expression(
-                expression,
-                relationships,
-                local_nodes,
-                local_aliases,
-            )?,
-            self.render_scoped_scalar_expression(start, relationships, local_nodes, local_aliases)?
-        );
-        if let Some(length) = length {
-            write!(
-                &mut sql,
-                " FOR {}",
-                self.render_scoped_scalar_expression(
-                    length,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )?
-            )
-            .map_err(|error| CoreError::internal(error.to_string()))?;
-        }
-        sql.push(')');
-        Ok(sql)
-    }
-
-    fn render_scoped_round<'b>(
-        &self,
-        expression: &ScalarExpression,
-        places: Option<&ScalarExpression>,
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        let expression_sql = self.render_scoped_scalar_expression(
-            expression,
-            relationships,
-            local_nodes,
-            local_aliases,
-        )?;
-        let Some(places) = places else {
-            return Ok(format!("round({expression_sql})"));
-        };
-        Ok(format!(
-            "round({expression_sql}, {})",
-            self.render_scoped_scalar_expression(
-                places,
-                relationships,
-                local_nodes,
-                local_aliases,
-            )?
-        ))
-    }
-
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "Preserves the original borrowed match-arm binding shape for a behavior-preserving extraction"
-    )]
-    fn render_scoped_arithmetic<'b>(
-        &self,
-        operator: &ArithmeticOperator,
-        left: &ScalarExpression,
-        right: &ScalarExpression,
-        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
-        local_nodes: &BTreeMap<&'b str, &'a Node>,
-        local_aliases: &BTreeMap<&'b str, String>,
-    ) -> Result<String, CoreError> {
-        let left =
-            self.render_scoped_scalar_expression(left, relationships, local_nodes, local_aliases)?;
-        let right =
-            self.render_scoped_scalar_expression(right, relationships, local_nodes, local_aliases)?;
-        let op = match *operator {
-            ArithmeticOperator::Power => return Ok(format!("power({left}, {right})")),
-            ArithmeticOperator::Add => InfixArithmeticOperator::Add,
-            ArithmeticOperator::Subtract => InfixArithmeticOperator::Subtract,
-            ArithmeticOperator::Multiply => InfixArithmeticOperator::Multiply,
-            ArithmeticOperator::Divide => InfixArithmeticOperator::Divide,
-            ArithmeticOperator::Modulo => InfixArithmeticOperator::Modulo,
-        };
-        Ok(format!(
-            "({left} {} {right})",
-            render_arithmetic_operator(op)
         ))
     }
 
