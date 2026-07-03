@@ -463,14 +463,9 @@ impl<'a> Lowerer<'a> {
         predicate: &PredicateExpression,
     ) -> Result<String, CoreError> {
         if let PredicateExpression::ExistsPattern(pattern) = predicate
-            && let Some(precomputed) =
-                self.precomputed_scalar_subqueries
-                    .iter()
-                    .find(|precomputed| {
-                        precomputed.candidate == ScalarSubqueryCandidate::Exists(pattern.clone())
-                    })
+            && let Some(rendered) = self.subquery_plan.exists_ref(pattern)
         {
-            return Ok(Self::render_precomputed_exists_ref(precomputed));
+            return Ok(rendered);
         }
         self.render_scalar_predicate_expression(predicate)
     }

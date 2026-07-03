@@ -133,7 +133,11 @@ struct Lowerer<'a> {
     joined_nodes: BTreeSet<&'a str>,
     optional_relationships_joined: bool,
     from_clause: String,
-    precomputed_scalar_subqueries: Vec<PrecomputedScalarSubquery>,
+    subquery_plan: ScalarSubqueryPlan,
+    /// Uniqueness counter for inline exists-count aliases (see `render_scalar_predicate_expression`,
+    /// predicates.rs). Separate from `subquery_plan`: the alias it mints is local to a generated
+    /// COUNT(*) subquery SELECT and is never referenced by the outer query. Kept on the Lowerer
+    /// (keep-and-share) rather than folded into `ScalarSubqueryPlan`.
     next_scalar_subquery_alias: Cell<usize>,
 }
 
@@ -190,6 +194,12 @@ struct PrecomputedScalarSubquery {
     value_alias: String,
 }
 
+#[derive(Debug, Default)]
+struct ScalarSubqueryPlan {
+    subqueries: Vec<PrecomputedScalarSubquery>,
+    from_joins: String,
+}
+
 #[derive(Debug, Clone)]
 struct PrecomputedNodeCorrelation {
     predicate_index: usize,
@@ -236,14 +246,16 @@ impl<'a> Lowerer<'a> {
             joined_nodes: BTreeSet::new(),
             optional_relationships_joined: false,
             from_clause: String::new(),
-            precomputed_scalar_subqueries: Vec::new(),
+            subquery_plan: ScalarSubqueryPlan::default(),
             next_scalar_subquery_alias: Cell::new(0),
         }
     }
 
     fn lower(mut self) -> Result<SqlTranslation, CoreError> {
         self.build_from_clause()?;
-        self.join_precomputed_scalar_subqueries()?;
+        let plan = self.build_scalar_subquery_plan()?;
+        self.from_clause.push_str(&plan.from_joins);
+        self.subquery_plan = plan;
 
         let select = self.render_select()?;
         let where_clause = self.render_where()?;

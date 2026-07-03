@@ -11,6 +11,77 @@
 )]
 use super::*;
 
+impl ScalarSubqueryPlan {
+    fn count_ref(
+        &self,
+        pattern: &CountSubqueryPattern,
+        distinct_target: Option<&ScalarExpression>,
+    ) -> Option<String> {
+        self.subqueries
+            .iter()
+            .find(|precomputed| {
+                precomputed.candidate
+                    == ScalarSubqueryCandidate::Count {
+                        pattern: pattern.clone(),
+                        distinct_target: distinct_target.cloned(),
+                    }
+            })
+            .map(Self::count_precomputed_ref)
+    }
+
+    pub(super) fn exists_ref(&self, predicate: &ExistsPatternPredicate) -> Option<String> {
+        self.subqueries
+            .iter()
+            .find(|precomputed| {
+                precomputed.candidate == ScalarSubqueryCandidate::Exists(predicate.clone())
+            })
+            .map(Self::exists_precomputed_ref)
+    }
+
+    fn collect_ref(
+        &self,
+        pattern: &ExistsPatternPredicate,
+        target: &ScalarExpression,
+        distinct: bool,
+    ) -> Option<String> {
+        self.subqueries
+            .iter()
+            .find(|precomputed| {
+                precomputed.candidate
+                    == ScalarSubqueryCandidate::Collect {
+                        pattern: pattern.clone(),
+                        target: target.clone(),
+                        distinct,
+                    }
+            })
+            .map(Self::collect_precomputed_ref)
+    }
+
+    fn count_precomputed_ref(precomputed: &PrecomputedScalarSubquery) -> String {
+        format!(
+            "COALESCE({}.{}, 0)",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.value_alias)
+        )
+    }
+
+    fn exists_precomputed_ref(precomputed: &PrecomputedScalarSubquery) -> String {
+        format!(
+            "COALESCE({}.{}, FALSE)",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.value_alias)
+        )
+    }
+
+    fn collect_precomputed_ref(precomputed: &PrecomputedScalarSubquery) -> String {
+        format!(
+            "COALESCE({}.{}, make_array())",
+            quote_ident(&precomputed.table_alias),
+            quote_ident(&precomputed.value_alias)
+        )
+    }
+}
+
 impl<'a> Lowerer<'a> {
     pub(super) fn next_scalar_subquery_alias(&self, prefix: &str) -> String {
         let index = self.next_scalar_subquery_alias.get();
@@ -23,28 +94,14 @@ impl<'a> Lowerer<'a> {
         pattern: &CountSubqueryPattern,
         distinct_target: Option<&ScalarExpression>,
     ) -> Option<String> {
-        self.precomputed_scalar_subqueries
-            .iter()
-            .find(|precomputed| {
-                precomputed.candidate
-                    == ScalarSubqueryCandidate::Count {
-                        pattern: pattern.clone(),
-                        distinct_target: distinct_target.cloned(),
-                    }
-            })
-            .map(Self::render_precomputed_count_ref)
+        self.subquery_plan.count_ref(pattern, distinct_target)
     }
 
     pub(super) fn render_precomputed_exists_pattern_ref(
         &self,
         predicate: &ExistsPatternPredicate,
     ) -> Option<String> {
-        self.precomputed_scalar_subqueries
-            .iter()
-            .find(|precomputed| {
-                precomputed.candidate == ScalarSubqueryCandidate::Exists(predicate.clone())
-            })
-            .map(Self::render_precomputed_exists_ref)
+        self.subquery_plan.exists_ref(predicate)
     }
 
     pub(super) fn render_precomputed_collect_subquery_ref(
@@ -53,41 +110,7 @@ impl<'a> Lowerer<'a> {
         target: &ScalarExpression,
         distinct: bool,
     ) -> Option<String> {
-        self.precomputed_scalar_subqueries
-            .iter()
-            .find(|precomputed| {
-                precomputed.candidate
-                    == ScalarSubqueryCandidate::Collect {
-                        pattern: pattern.clone(),
-                        target: target.clone(),
-                        distinct,
-                    }
-            })
-            .map(Self::render_precomputed_collect_ref)
-    }
-
-    fn render_precomputed_count_ref(precomputed: &PrecomputedScalarSubquery) -> String {
-        format!(
-            "COALESCE({}.{}, 0)",
-            quote_ident(&precomputed.table_alias),
-            quote_ident(&precomputed.value_alias)
-        )
-    }
-
-    pub(super) fn render_precomputed_exists_ref(precomputed: &PrecomputedScalarSubquery) -> String {
-        format!(
-            "COALESCE({}.{}, FALSE)",
-            quote_ident(&precomputed.table_alias),
-            quote_ident(&precomputed.value_alias)
-        )
-    }
-
-    fn render_precomputed_collect_ref(precomputed: &PrecomputedScalarSubquery) -> String {
-        format!(
-            "COALESCE({}.{}, make_array())",
-            quote_ident(&precomputed.table_alias),
-            quote_ident(&precomputed.value_alias)
-        )
+        self.subquery_plan.collect_ref(pattern, target, distinct)
     }
 
     pub(super) fn exists_local_node_map<'b>(

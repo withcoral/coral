@@ -2,7 +2,7 @@
 //! scalar-subquery candidates across projections, predicates and scalar expressions, then
 //! renders them as precomputed LEFT JOIN subqueries — correlated and uncorrelated, over node
 //! or relationship patterns, including DISTINCT-count targets — with their correlation
-//! conditions. Populates the Lowerer's `precomputed_scalar_subqueries` set.
+//! conditions. Builds the Lowerer's `ScalarSubqueryPlan`.
 
 #[allow(
     clippy::allow_attributes,
@@ -12,24 +12,25 @@
 use super::*;
 
 impl<'a> Lowerer<'a> {
-    pub(super) fn join_precomputed_scalar_subqueries(&mut self) -> Result<(), CoreError> {
+    pub(super) fn build_scalar_subquery_plan(&self) -> Result<ScalarSubqueryPlan, CoreError> {
         let candidates = self.scalar_subquery_candidates();
         if candidates.is_empty() {
-            return Ok(());
+            return Ok(ScalarSubqueryPlan::default());
         }
 
+        let mut subqueries: Vec<PrecomputedScalarSubquery> = Vec::new();
+        let mut from_joins = String::new();
         let mut unsupported = 0usize;
         for candidate_use in candidates {
             let candidate = candidate_use.candidate;
             let required = candidate_use.required;
-            if self
-                .precomputed_scalar_subqueries
+            if subqueries
                 .iter()
                 .any(|precomputed| precomputed.candidate == candidate)
             {
                 continue;
             }
-            let index = self.precomputed_scalar_subqueries.len();
+            let index = subqueries.len();
             let precomputed = PrecomputedScalarSubquery {
                 candidate,
                 table_alias: format!("__coral_scalar_subquery_{index}"),
@@ -46,9 +47,9 @@ impl<'a> Lowerer<'a> {
                 unsupported += 1;
                 continue;
             };
-            write!(self.from_clause, " {join_sql}")
+            write!(from_joins, " {join_sql}")
                 .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-            self.precomputed_scalar_subqueries.push(precomputed);
+            subqueries.push(precomputed);
         }
 
         if unsupported > 1 {
@@ -57,7 +58,10 @@ impl<'a> Lowerer<'a> {
                     .to_string(),
             ));
         }
-        Ok(())
+        Ok(ScalarSubqueryPlan {
+            subqueries,
+            from_joins,
+        })
     }
 
     fn scalar_subquery_candidates(&self) -> Vec<ScalarSubqueryCandidateUse> {
