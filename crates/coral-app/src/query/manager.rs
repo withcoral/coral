@@ -754,7 +754,7 @@ mod tests {
     use crate::credentials::{CredentialStorageKind, CredentialStoragePreference, CredentialStore};
     use crate::sources::manager::{ImportSourceCommand, SourceBindings, SourceManager};
     use crate::sources::model::SourceOrigin;
-    use crate::sources::source_specs::GlobalSourceSpecStore;
+    use crate::sources::source_specs::FsGlobalSourceSpecStore;
     use crate::workspaces::WorkspaceLifecycleLock;
 
     struct QueryManagerFixture {
@@ -774,7 +774,7 @@ mod tests {
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -1264,7 +1264,7 @@ tables:
         let source_manager = SourceManager::new(
             fixture.manager.config_store.clone(),
             fixture.manager.credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(fixture.manager.layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(fixture.manager.layout.clone())),
             fixture.manager.layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -1421,7 +1421,7 @@ surfaces:
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );

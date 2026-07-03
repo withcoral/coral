@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use crate::bootstrap::AppError;
 use crate::sources::SourceName;
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::sources::source_specs::SourceSpecStore;
+use crate::sources::source_specs::GlobalSourceSpecStore;
 use crate::state::AppStateLayout;
 use crate::workspaces::WorkspaceName;
 
@@ -64,14 +64,14 @@ pub(crate) fn resolve_installed_manifest(
     workspace_name: &WorkspaceName,
     source: &InstalledSource,
     layout: &AppStateLayout,
-    global_source_specs: &dyn SourceSpecStore,
+    global_source_spec_store: &dyn GlobalSourceSpecStore,
 ) -> Result<InstalledSourceManifest, AppError> {
     let manifest_yaml = match source.origin {
         SourceOrigin::Bundled => load_bundled_source(&source.name)?.manifest_yaml,
         SourceOrigin::Imported => {
             std::fs::read_to_string(layout.manifest_file(workspace_name, &source.name))?
         }
-        SourceOrigin::GlobalSpec => global_source_specs.load(&source.name)?.manifest_yaml,
+        SourceOrigin::GlobalSpec => global_source_spec_store.load(&source.name)?.manifest_yaml,
     };
     let source_spec = parse_source_manifest_yaml(&manifest_yaml)
         .map_err(|error| AppError::InvalidInput(error.to_string()))?;

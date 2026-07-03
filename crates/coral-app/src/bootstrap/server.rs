@@ -53,7 +53,7 @@ use crate::query::manager::QueryManager;
 use crate::query::service::QueryService;
 use crate::sources::manager::SourceManager;
 use crate::sources::service::SourceService;
-use crate::sources::source_specs::GlobalSourceSpecStore;
+use crate::sources::source_specs::FsGlobalSourceSpecStore;
 use crate::state::ConfigStore;
 use crate::telemetry::TelemetryConfig;
 use crate::telemetry::service::TraceService;
@@ -274,12 +274,12 @@ impl ServerBuilder {
         let credential_store =
             CredentialStore::with_preference(layout.clone(), credential_config.storage);
         let credential_manager = CredentialManager::new(credential_store);
-        let global_source_specs = Arc::new(GlobalSourceSpecStore::new(layout.clone()));
+        let global_source_spec_store = Arc::new(FsGlobalSourceSpecStore::new(layout.clone()));
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            global_source_specs,
+            global_source_spec_store,
             layout.clone(),
             workspace_lifecycle_lock.clone(),
         );
@@ -707,7 +707,7 @@ mod tests {
     use crate::feedback::manager::FeedbackManager;
     use crate::query::manager::QueryManager;
     use crate::sources::manager::SourceManager;
-    use crate::sources::source_specs::GlobalSourceSpecStore;
+    use crate::sources::source_specs::FsGlobalSourceSpecStore;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::telemetry::service::TraceService;
     use crate::transport::workspace_to_proto;
@@ -752,7 +752,7 @@ enabled = false
         let source_manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             workspace_lifecycle_lock.clone(),
         );

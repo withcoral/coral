@@ -1,4 +1,4 @@
-//! Storage seam for globally registered source-spec manifests.
+//! Filesystem-backed store for source-spec registrations.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,7 @@ pub(crate) struct GlobalSourceSpecManifest {
     pub(crate) manifest_yaml: String,
 }
 
-pub(crate) trait SourceSpecStore: Send + Sync + 'static {
+pub(crate) trait GlobalSourceSpecStore: Send + Sync + 'static {
     fn load(&self, name: &SourceName) -> Result<GlobalSourceSpecManifest, AppError> {
         self.load_optional(name)?
             .ok_or_else(|| AppError::MissingGlobalSourceSpec {
@@ -39,17 +39,17 @@ pub(crate) trait RemovedGlobalSourceSpec {
 }
 
 #[derive(Clone)]
-pub(crate) struct GlobalSourceSpecStore {
+pub(crate) struct FsGlobalSourceSpecStore {
     layout: AppStateLayout,
 }
 
-impl GlobalSourceSpecStore {
+impl FsGlobalSourceSpecStore {
     pub(crate) fn new(layout: AppStateLayout) -> Self {
         Self { layout }
     }
 }
 
-impl SourceSpecStore for GlobalSourceSpecStore {
+impl GlobalSourceSpecStore for FsGlobalSourceSpecStore {
     fn load_optional(
         &self,
         name: &SourceName,
@@ -108,17 +108,17 @@ impl RemovedGlobalSourceSpec for FsRemovedGlobalSourceSpec {
 mod tests {
     use tempfile::TempDir;
 
-    use super::{GlobalSourceSpecStore, SourceSpecStore};
+    use super::{FsGlobalSourceSpecStore, GlobalSourceSpecStore};
     use crate::bootstrap::AppError;
     use crate::sources::SourceName;
     use crate::state::AppStateLayout;
 
-    fn test_store() -> (TempDir, AppStateLayout, GlobalSourceSpecStore) {
+    fn test_store() -> (TempDir, AppStateLayout, FsGlobalSourceSpecStore) {
         let temp = TempDir::new().expect("temp dir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         layout.ensure().expect("ensure layout");
-        let store = GlobalSourceSpecStore::new(layout.clone());
+        let store = FsGlobalSourceSpecStore::new(layout.clone());
         (temp, layout, store)
     }
 

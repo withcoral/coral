@@ -27,7 +27,7 @@ use crate::sources::materialization::{
     new_materialization_suffix, replace_v4_materialization, restore_materialization_backup,
 };
 use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-use crate::sources::source_specs::SourceSpecStore;
+use crate::sources::source_specs::GlobalSourceSpecStore;
 use crate::state::{AppStateLayout, ConfigStore, RegisteredSourceSpec};
 use crate::storage::fs;
 use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
@@ -41,7 +41,7 @@ pub(crate) struct SourceManager {
     config_store: ConfigStore,
     credential_manager: CredentialManager,
     oauth_credential_service: OAuthCredentialService,
-    global_source_specs: Arc<dyn SourceSpecStore>,
+    global_source_spec_store: Arc<dyn GlobalSourceSpecStore>,
     layout: AppStateLayout,
     lifecycle_lock: WorkspaceLifecycleLock,
 }
@@ -180,15 +180,12 @@ fn materialization_inputs_from_bindings(
     }
 }
 
-#[expect(
-    dead_code,
-    reason = "registry methods are wired by the next stack branch"
-)]
+#[expect(dead_code, reason = "store methods are wired by the next stack branch")]
 impl SourceManager {
     pub(crate) fn new(
         config_store: ConfigStore,
         credential_manager: CredentialManager,
-        global_source_specs: Arc<dyn SourceSpecStore>,
+        global_source_spec_store: Arc<dyn GlobalSourceSpecStore>,
         layout: AppStateLayout,
         lifecycle_lock: WorkspaceLifecycleLock,
     ) -> Self {
@@ -196,7 +193,7 @@ impl SourceManager {
             config_store,
             credential_manager,
             oauth_credential_service: OAuthCredentialService::new(),
-            global_source_specs,
+            global_source_spec_store,
             layout,
             lifecycle_lock,
         }
@@ -253,7 +250,7 @@ impl SourceManager {
             workspace_name,
             source,
             &self.layout,
-            self.global_source_specs.as_ref(),
+            self.global_source_spec_store.as_ref(),
         )
     }
 
@@ -289,7 +286,7 @@ impl SourceManager {
             .list_source_specs()?
             .into_iter()
             .map(|source_spec| {
-                let manifest = self.global_source_specs.load(&source_spec.name)?;
+                let manifest = self.global_source_spec_store.load(&source_spec.name)?;
                 describe_manifest(&manifest.manifest_yaml, SourceOrigin::GlobalSpec, false)
             })
             .collect()
@@ -306,7 +303,7 @@ impl SourceManager {
         let candidate = describe_manifest(&manifest_yaml, SourceOrigin::GlobalSpec, false)?;
 
         let previous_manifest = self
-            .global_source_specs
+            .global_source_spec_store
             .load_optional(&candidate.name)?
             .map(|manifest| manifest.manifest_yaml);
         let previous_spec = match self.config_store.get_source_spec(&candidate.name) {
@@ -315,7 +312,7 @@ impl SourceManager {
             Err(error) => return Err(error),
         };
 
-        self.global_source_specs
+        self.global_source_spec_store
             .write_manifest(&candidate.name, &manifest_yaml)?;
 
         let registered = RegisteredSourceSpec {
@@ -340,7 +337,7 @@ impl SourceManager {
         let _lifecycle_guard = self.lifecycle_lock.lock();
         let registered = self.config_store.get_source_spec(source_name)?;
         let manifest = self
-            .global_source_specs
+            .global_source_spec_store
             .load_optional(source_name)?
             .map(|manifest| manifest.manifest_yaml);
         let removed = if let Some(manifest_yaml) = manifest.as_deref() {
@@ -364,7 +361,7 @@ impl SourceManager {
             }
         };
 
-        let removed_manifest_tree = self.global_source_specs.remove(source_name)?;
+        let removed_manifest_tree = self.global_source_spec_store.remove(source_name)?;
 
         if let Err(error) = self.config_store.remove_source_spec(source_name) {
             if let Err(restore_error) = removed_manifest_tree.restore() {
@@ -687,7 +684,7 @@ impl SourceManager {
     ) -> Result<ResolvedNamedSourceSpec, AppError> {
         match self.config_store.get_source_spec(name) {
             Ok(_) => Ok(ResolvedNamedSourceSpec {
-                manifest_yaml: self.global_source_specs.load(name)?.manifest_yaml,
+                manifest_yaml: self.global_source_spec_store.load(name)?.manifest_yaml,
                 source_origin: SourceOrigin::GlobalSpec,
             }),
             Err(AppError::SourceNotFound(_)) => load_bundled_source(name)
@@ -1301,13 +1298,13 @@ impl SourceManager {
     ) {
         if let Some(manifest_yaml) = previous_manifest {
             if let Err(error) = self
-                .global_source_specs
+                .global_source_spec_store
                 .write_manifest(source_name, &manifest_yaml)
             {
                 warn!("rollback: failed to restore source-spec manifest: {error}");
             }
         } else {
-            match self.global_source_specs.remove(source_name) {
+            match self.global_source_spec_store.remove(source_name) {
                 Ok(removed_manifest_tree) => {
                     if let Err(error) = removed_manifest_tree.commit() {
                         warn!("rollback: failed to remove new source-spec directory: {error}");
@@ -1701,7 +1698,7 @@ mod tests {
     use crate::sources::catalog::describe_manifest;
     use crate::sources::materialization::{FINGERPRINT_FILENAME, PROJECTIONS_FILENAME};
     use crate::sources::model::{CandidateSource, InstalledSource, SourceOrigin};
-    use crate::sources::source_specs::GlobalSourceSpecStore;
+    use crate::sources::source_specs::FsGlobalSourceSpecStore;
     use crate::state::{AppStateLayout, ConfigStore};
     use crate::workspaces::{WorkspaceLifecycleLock, WorkspaceName};
     use coral_spec::{ManifestInputKind, ManifestInputSpec};
@@ -1941,7 +1938,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2032,7 +2029,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2102,7 +2099,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             crate::workspaces::WorkspaceLifecycleLock::default(),
         );
@@ -2196,7 +2193,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -2411,7 +2408,7 @@ tables:
         let manager = SourceManager::new(
             config_store.clone(),
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -2470,7 +2467,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2493,13 +2490,13 @@ tables:
         layout.ensure().expect("ensure layout");
         let config_store = ConfigStore::new(layout.clone());
         let source_name = SourceName::parse("github").expect("source");
-        let global_source_specs = Arc::new(GlobalSourceSpecStore::new(layout.clone()));
+        let global_source_spec_store = Arc::new(FsGlobalSourceSpecStore::new(layout.clone()));
         let credential_store = CredentialStore::new(layout.clone());
         let credential_manager = CredentialManager::new(credential_store);
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            global_source_specs,
+            global_source_spec_store,
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2549,7 +2546,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2595,7 +2592,7 @@ tables:
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2659,7 +2656,7 @@ tables:
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2699,7 +2696,7 @@ tables:
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -2734,7 +2731,7 @@ tables:
         let manager = SourceManager::new(
             ConfigStore::new(layout.clone()),
             CredentialManager::new(CredentialStore::new(layout.clone())),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2775,7 +2772,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -2883,7 +2880,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -2925,7 +2922,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3001,7 +2998,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3048,7 +3045,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -3083,7 +3080,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3142,7 +3139,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3196,7 +3193,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -3259,7 +3256,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3300,7 +3297,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -3372,7 +3369,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout.clone(),
             WorkspaceLifecycleLock::default(),
         );
@@ -3474,7 +3471,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -3553,7 +3550,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager.clone(),
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
@@ -3635,7 +3632,7 @@ tables:
         let manager = SourceManager::new(
             config_store,
             credential_manager,
-            Arc::new(GlobalSourceSpecStore::new(layout.clone())),
+            Arc::new(FsGlobalSourceSpecStore::new(layout.clone())),
             layout,
             WorkspaceLifecycleLock::default(),
         );
