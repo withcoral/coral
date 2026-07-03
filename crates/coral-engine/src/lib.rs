@@ -63,8 +63,11 @@ mod types;
 
 pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
-    EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
-    RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
+    BoundRequestIdentityHttpAuthenticator, EngineExtensions, QueryResultObserver,
+    QueryResultObserverError, RequestAuthenticator, RequestAuthenticatorError,
+    RequestIdentityHttpAuthenticatorError, RequestIdentityHttpAuthenticatorFactory,
+    RequestIdentitySelectionContext, RequestIdentitySelectionError, RequestIdentitySelector,
+    SelectedRequestIdentity, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
@@ -72,9 +75,10 @@ pub use contracts::{
     DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
     QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
     QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
-    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeSourceComponent,
-    RuntimeSourcePackage, SourceValidationReport, StatusCode, StructuredQueryError,
-    TableFunctionArgumentInfo, TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
+    QueryTestFailure, QueryTestResult, QueryTestSuccess, RuntimeHttpSourceComponent,
+    RuntimeIdentityRequirements, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.

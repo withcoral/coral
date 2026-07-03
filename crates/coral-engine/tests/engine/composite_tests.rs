@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use coral_engine::{
-    CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage,
-    SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError,
+    CoralQuery, QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent,
+    RuntimeSourcePackage, SourceInputResolutionContext, SourceInputResolver,
+    SourceInputResolverError,
 };
 use coral_spec::backends::http::HttpSourceManifest;
 use coral_spec::parse_source_manifest_yaml;
@@ -95,7 +96,7 @@ async fn multi_component_source_scopes_inputs_to_each_component() {
             declared_inputs,
             test_queries: Vec::new(),
             components: vec![
-                RuntimeSourceComponent::Http(rest),
+                RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(rest)),
                 RuntimeSourceComponent::Mcp(mcp),
             ],
         },
@@ -363,7 +364,7 @@ fn http_component(
     schema_name: &str,
     table_name: &str,
     path: &str,
-) -> HttpSourceManifest {
+) -> RuntimeHttpSourceComponent {
     let manifest = parse_source_manifest_yaml(&format!(
         r"
 name: {schema_name}
@@ -386,7 +387,7 @@ tables:
 "
     ))
     .expect("manifest");
-    manifest.as_http().expect("http manifest").clone()
+    RuntimeHttpSourceComponent::new(manifest.as_http().expect("http manifest").clone())
 }
 
 fn http_component_with_inputs(base_url: &str) -> HttpSourceManifest {

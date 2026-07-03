@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use coral_engine::RuntimeSourceComponent;
+use coral_engine::{RuntimeHttpSourceComponent, RuntimeSourceComponent};
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 use coral_spec::backends::mcp::{
     McpSourceManifest, McpTableFilterBinding, McpTableFunctionSpec, McpTableSpec,
@@ -37,11 +37,13 @@ pub(crate) fn runtime_components_for_v4_source(
         }
         match surface.surface_type {
             SurfaceType::OpenApi => {
-                components.push(RuntimeSourceComponent::Http(http_manifest_for_surface(
-                    manifest,
-                    materialized,
-                    &surface.id,
-                )?));
+                components.push(RuntimeSourceComponent::Http(
+                    RuntimeHttpSourceComponent::new(http_manifest_for_surface(
+                        manifest,
+                        materialized,
+                        &surface.id,
+                    )?),
+                ));
             }
             SurfaceType::Mcp => {
                 components.push(RuntimeSourceComponent::Mcp(mcp_manifest_for_surface(

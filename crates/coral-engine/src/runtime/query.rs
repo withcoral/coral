@@ -99,6 +99,8 @@ async fn build_runtime_inner(
         memory,
         dependent_join,
         mut extensions,
+        request_identity_selector: _,
+        request_identity_http_authenticator_factory: _,
     } = runtime;
     let request_authenticators = extensions.request_authenticators.clone();
     let source_input_resolver = extensions.source_input_resolver.clone();

@@ -119,7 +119,9 @@ fn runtime_components_from_manifest(
     source_spec: &ValidatedSourceManifest,
 ) -> Vec<RuntimeSourceComponent> {
     if let Some(http) = source_spec.as_http() {
-        return vec![RuntimeSourceComponent::Http(http.clone())];
+        return vec![RuntimeSourceComponent::Http(
+            coral_engine::RuntimeHttpSourceComponent::new(http.clone()),
+        )];
     }
     if let Some(file) = source_spec.as_file() {
         return vec![RuntimeSourceComponent::File(file.clone())];
