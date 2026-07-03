@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 13,
+    "Temporal": 14,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10410,6 +10410,76 @@
         "rows": [
           {
             "same": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-compare-lt",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') < date('2021-06-15') AS lt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "lt": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-compare-gt",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') > date('2019-12-31') AS gt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "gt": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-compare-le-eq",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') <= date('2020-01-01') AS le",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "le": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-compare-ge",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-06-01') >= date('2020-06-02') AS ge",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ge": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-compare-neq",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') <> date('2020-01-02') AS ne",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ne": true
           }
         ]
       }
