@@ -9,6 +9,7 @@ use opentelemetry::Context as OtelContext;
 use serde_json::Value;
 
 use crate::backends::BackendRegistrationContext;
+use crate::backends::http::auth::is_credential_safe_auth_transport;
 use crate::backends::http::fetch::{FetchCompleteness, fetch_rows};
 use crate::backends::http::filter_usage::{HttpRequestFilterUsage, http_request_filter_names};
 use crate::backends::http::registration_checks::validate_source_scoped_http_config;
@@ -33,12 +34,9 @@ pub(crate) struct HttpSourceClient {
     pub(super) auth: AuthSpec,
     pub(super) request_headers: Vec<HeaderSpec>,
     pub(super) request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) require_credential_safe_auth_transport: bool,
     source_input_resolution_context: Option<SourceInputResolutionContext>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    #[expect(
-        dead_code,
-        reason = "bound identity authenticators are injected into requests by a later stack unit"
-    )]
     pub(super) request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
@@ -103,20 +101,41 @@ impl std::fmt::Debug for HttpSourceClient {
 pub(super) fn default_http_client(
     registration: &BackendRegistrationContext,
     source_name: &str,
+    credential_safe: bool,
 ) -> Result<reqwest::Client> {
     registration
-        .default_http_client(|| {
-            reqwest::Client::builder()
+        .default_http_client(credential_safe, || {
+            let mut builder = reqwest::Client::builder()
                 .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
-                .user_agent(DEFAULT_HTTP_USER_AGENT)
-                .build()
-                .map_err(|error| error.to_string())
+                .user_agent(DEFAULT_HTTP_USER_AGENT);
+            if credential_safe {
+                builder = builder.redirect(credential_safe_redirect_policy());
+            }
+            builder.build().map_err(|error| error.to_string())
         })
         .map_err(|error| {
             DataFusionError::Execution(format!(
                 "failed to build HTTP client for source '{source_name}': {error}"
             ))
         })
+}
+
+fn credential_safe_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let allowed = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| credential_safe_redirect_target(previous, attempt.url()));
+        if allowed {
+            reqwest::redirect::Policy::default().redirect(attempt)
+        } else {
+            attempt.error("credential-bearing HTTP source redirect rejected")
+        }
+    })
+}
+
+fn credential_safe_redirect_target(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
+    previous.origin() == next.origin() && is_credential_safe_auth_transport(next)
 }
 
 impl HttpSourceClient {
@@ -189,6 +208,7 @@ impl HttpSourceClient {
             auth: manifest.auth.clone(),
             request_headers: manifest.request_headers.clone(),
             request_authenticators: request_authenticators.clone(),
+            require_credential_safe_auth_transport: manifest.common.dsl_version == 4,
             source_input_resolution_context: runtime.source_input_resolution_context,
             source_input_resolver: runtime.source_input_resolver,
             request_identity_http_authenticator: runtime.request_identity_http_authenticator,
@@ -264,4 +284,25 @@ impl HttpSourceClient {
 
 fn source_input_error(error: SourceInputResolverError) -> DataFusionError {
     DataFusionError::External(Box::new(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::credential_safe_redirect_target;
+
+    #[test]
+    fn credential_safe_redirects_stay_on_a_safe_origin() {
+        for (previous, next, allowed) in [
+            ("https://api.test/a", "https://api.test/b", true),
+            ("http://127.0.0.1:8080/a", "http://127.0.0.1:8080/b", true),
+            ("https://api.test/a", "https://other.test/b", false),
+            ("https://api.test/a", "http://api.test/b", false),
+            ("http://127.0.0.1:8080/a", "http://127.0.0.1:8081/b", false),
+            ("http://api.test/a", "http://api.test/b", false),
+        ] {
+            let previous = reqwest::Url::parse(previous).expect("previous URL");
+            let next = reqwest::Url::parse(next).expect("next URL");
+            assert_eq!(credential_safe_redirect_target(&previous, &next), allowed);
+        }
+    }
 }
