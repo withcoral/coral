@@ -1051,6 +1051,7 @@ impl<'a> Lowerer<'a> {
             &relationship_bindings,
             &local_nodes,
             &local_aliases,
+            "precomputed scalar",
         )?;
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -1182,11 +1183,12 @@ impl<'a> Lowerer<'a> {
         Ok(Some(outer_variable.to_string()))
     }
 
-    fn render_precomputed_relationship_from_clause<'b>(
+    pub(super) fn render_precomputed_relationship_from_clause<'b>(
         predicate: &'b ExistsPatternPredicate,
         relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
+        label: &str,
     ) -> Result<String, CoreError> {
         let mut from_clause = relationship_bindings
             .iter()
@@ -1207,10 +1209,10 @@ impl<'a> Lowerer<'a> {
             .join(" ");
         for node in &predicate.nodes {
             let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated precomputed scalar local node mapping was missing")
+                CoreError::internal(format!("validated {label} local node mapping was missing"))
             })?;
             let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated precomputed scalar local node alias was missing")
+                CoreError::internal(format!("validated {label} local node alias was missing"))
             })?;
             write!(
                 from_clause,
@@ -1218,7 +1220,7 @@ impl<'a> Lowerer<'a> {
                 render_table_ref(&node_mapping.table),
                 quote_ident(alias)
             )
-            .map_err(|_| CoreError::internal("failed to render precomputed scalar SQL"))?;
+            .map_err(|_| CoreError::internal(format!("failed to render {label} pattern SQL")))?;
         }
         Ok(from_clause)
     }

@@ -547,38 +547,13 @@ impl<'a> Lowerer<'a> {
                 "EXISTS",
             );
         }
-        let mut from_clause = relationship_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| {
-                let table_ref = format!(
-                    "{} AS {}",
-                    render_table_ref(&binding.relationship.table),
-                    quote_ident(&binding.alias)
-                );
-                if index == 0 {
-                    table_ref
-                } else {
-                    format!("JOIN {table_ref} ON TRUE")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        for node in &predicate.nodes {
-            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated EXISTS local node mapping was missing")
-            })?;
-            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated EXISTS local node alias was missing")
-            })?;
-            write!(
-                from_clause,
-                " JOIN {} AS {} ON TRUE",
-                render_table_ref(&node_mapping.table),
-                quote_ident(alias)
-            )
-            .map_err(|_| CoreError::internal("failed to render EXISTS pattern SQL"))?;
-        }
+        let from_clause = Self::render_precomputed_relationship_from_clause(
+            predicate,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+            "EXISTS",
+        )?;
 
         let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
             relationship_bindings.len(),
@@ -636,38 +611,13 @@ impl<'a> Lowerer<'a> {
             );
         }
 
-        let mut from_clause = relationship_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| {
-                let table_ref = format!(
-                    "{} AS {}",
-                    render_table_ref(&binding.relationship.table),
-                    quote_ident(&binding.alias)
-                );
-                if index == 0 {
-                    table_ref
-                } else {
-                    format!("JOIN {table_ref} ON TRUE")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        for node in &predicate.nodes {
-            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COLLECT local node mapping was missing")
-            })?;
-            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COLLECT local node alias was missing")
-            })?;
-            write!(
-                from_clause,
-                " JOIN {} AS {} ON TRUE",
-                render_table_ref(&node_mapping.table),
-                quote_ident(alias)
-            )
-            .map_err(|_| CoreError::internal("failed to render COLLECT pattern SQL"))?;
-        }
+        let from_clause = Self::render_precomputed_relationship_from_clause(
+            predicate,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+            "COLLECT",
+        )?;
 
         let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
             relationship_bindings.len(),
@@ -727,38 +677,13 @@ impl<'a> Lowerer<'a> {
             return Ok(Self::render_count_distinct_rows_select(&row_select));
         }
 
-        let mut from_clause = relationship_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| {
-                let table_ref = format!(
-                    "{} AS {}",
-                    render_table_ref(&binding.relationship.table),
-                    quote_ident(&binding.alias)
-                );
-                if index == 0 {
-                    table_ref
-                } else {
-                    format!("JOIN {table_ref} ON TRUE")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        for node in &predicate.nodes {
-            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COUNT DISTINCT local node mapping was missing")
-            })?;
-            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated COUNT DISTINCT local node alias was missing")
-            })?;
-            write!(
-                from_clause,
-                " JOIN {} AS {} ON TRUE",
-                render_table_ref(&node_mapping.table),
-                quote_ident(alias)
-            )
-            .map_err(|_| CoreError::internal("failed to render COUNT DISTINCT pattern SQL"))?;
-        }
+        let from_clause = Self::render_precomputed_relationship_from_clause(
+            predicate,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+            "COUNT DISTINCT",
+        )?;
 
         let mut conditions = Vec::with_capacity(Self::scoped_condition_capacity(
             relationship_bindings.len(),
@@ -1181,38 +1106,13 @@ impl<'a> Lowerer<'a> {
             );
         }
 
-        let mut from_clause = relationship_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| {
-                let table_ref = format!(
-                    "{} AS {}",
-                    render_table_ref(&binding.relationship.table),
-                    quote_ident(&binding.alias)
-                );
-                if index == 0 {
-                    table_ref
-                } else {
-                    format!("JOIN {table_ref} ON TRUE")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        for node in &predicate.nodes {
-            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated nested EXISTS local node mapping was missing")
-            })?;
-            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated nested EXISTS local node alias was missing")
-            })?;
-            write!(
-                from_clause,
-                " JOIN {} AS {} ON TRUE",
-                render_table_ref(&node_mapping.table),
-                quote_ident(alias)
-            )
-            .map_err(|_| CoreError::internal("failed to render nested EXISTS pattern SQL"))?;
-        }
+        let from_clause = Self::render_precomputed_relationship_from_clause(
+            predicate,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+            "nested EXISTS",
+        )?;
 
         let mut conditions = Vec::with_capacity(
             relationship_bindings
@@ -1257,10 +1157,6 @@ impl<'a> Lowerer<'a> {
         ))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Nested distinct COUNT rendering mirrors nested scoped pattern rendering while adding parent-scope target projection"
-    )]
     fn render_nested_scoped_count_distinct_pattern_select<'b, 'c>(
         &self,
         predicate: &'c ExistsPatternPredicate,
@@ -1317,42 +1213,13 @@ impl<'a> Lowerer<'a> {
             return Ok(Self::render_count_distinct_rows_select(&row_select));
         }
 
-        let mut from_clause = relationship_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| {
-                let table_ref = format!(
-                    "{} AS {}",
-                    render_table_ref(&binding.relationship.table),
-                    quote_ident(&binding.alias)
-                );
-                if index == 0 {
-                    table_ref
-                } else {
-                    format!("JOIN {table_ref} ON TRUE")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        for node in &predicate.nodes {
-            let node_mapping = local_nodes.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal(
-                    "validated nested COUNT DISTINCT local node mapping was missing",
-                )
-            })?;
-            let alias = local_aliases.get(node.variable.as_str()).ok_or_else(|| {
-                CoreError::internal("validated nested COUNT DISTINCT local node alias was missing")
-            })?;
-            write!(
-                from_clause,
-                " JOIN {} AS {} ON TRUE",
-                render_table_ref(&node_mapping.table),
-                quote_ident(alias)
-            )
-            .map_err(|_| {
-                CoreError::internal("failed to render nested COUNT DISTINCT pattern SQL")
-            })?;
-        }
+        let from_clause = Self::render_precomputed_relationship_from_clause(
+            predicate,
+            &relationship_bindings,
+            &local_nodes,
+            &local_aliases,
+            "nested COUNT DISTINCT",
+        )?;
 
         let mut conditions = Vec::with_capacity(
             relationship_bindings
