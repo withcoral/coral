@@ -570,3 +570,164 @@ surfaces:
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn parses_and_normalizes_v4_identity_requirements() {
+    let manifest = parse_source_manifest_yaml(
+        r#"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/github-openapi.yaml
+    identity_requirements:
+      accepts:
+        - id: " github_rest_read "
+          identity_specs: [" github_oauth ", github_pat]
+          audience: {host: github.com, port: 443}
+"#,
+    )
+    .expect("v4 manifest");
+    let accepted = manifest
+        .as_v4()
+        .and_then(|v4| v4.surfaces.first())
+        .and_then(|surface| surface.identity_requirements.as_ref())
+        .and_then(|requirements| requirements.accepts.first())
+        .expect("accepted identity requirement");
+
+    assert_eq!(accepted.id, "github_rest_read");
+    assert_eq!(accepted.identity_specs, ["github_oauth", "github_pat"]);
+    assert_eq!(
+        accepted.audience.get("host"),
+        Some(&serde_json::json!("github.com"))
+    );
+    assert_eq!(accepted.audience.get("port"), Some(&serde_json::json!(443)));
+}
+
+#[test]
+fn rejects_invalid_v4_identity_requirement_entries() {
+    let invalid = [
+        (
+            "      accepts:
+        - {id: github_rest_read, identity_specs: [github_oauth]}
+        - {id: \" github_rest_read \", identity_specs: [github_pat]}
+",
+            "duplicate identity requirement id 'github_rest_read'",
+        ),
+        (
+            "      accepts:
+        - {id: github_rest_read, identity_specs: [github_oauth, \" github_oauth \"]}
+",
+            "duplicate identity spec id 'github_oauth'",
+        ),
+    ];
+
+    for (requirements, expected) in invalid {
+        let raw = format!(
+            "name: github\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    file: /tmp/github-openapi.yaml\n    identity_requirements:\n{requirements}"
+        );
+        let error = parse_source_manifest_yaml(&raw).expect_err("duplicates should fail");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_secret_inputs_only_on_identity_gated_openapi_surfaces() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/github-openapi.yaml
+    inputs:
+      TOKEN: {kind: secret}
+    identity_requirements:
+      accepts:
+        - {id: github_rest_read, identity_specs: [github_oauth]}
+",
+    )
+    .expect_err("gated surface should reject legacy secrets");
+
+    assert!(
+        error.to_string().contains(
+            "input 'TOKEN' must not use kind: secret in DSL v4; use identity_requirements and identity specs for credentials"
+        ),
+        "unexpected error: {error}"
+    );
+
+    for (fixture, secret_input) in [
+        ("github_v4", "GITHUB_TOKEN"),
+        ("stripe_v4", "STRIPE_API_KEY"),
+    ] {
+        let raw = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../sources/core-v4")
+                .join(fixture)
+                .join("manifest.yaml"),
+        )
+        .expect("core v4 fixture");
+        let manifest = parse_source_manifest_yaml(&raw).expect("ungated fixture remains valid");
+        assert!(
+            manifest
+                .declared_inputs()
+                .iter()
+                .any(|input| input.key == secret_input),
+            "{fixture} should retain {secret_input}"
+        );
+    }
+
+    parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: legacy
+    namespace_suffix: legacy
+    type: openapi
+    file: /tmp/legacy-openapi.yaml
+    inputs:
+      TOKEN: {kind: secret}
+  - id: gated
+    namespace_suffix: gated
+    type: openapi
+    file: /tmp/gated-openapi.yaml
+    identity_requirements:
+      accepts:
+        - {id: demo_read, identity_specs: [demo_oauth]}
+",
+    )
+    .expect("a secret on an ungated surface must not invalidate another gated surface");
+}
+
+#[test]
+fn rejects_identity_requirements_on_mcp_surfaces() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    identity_requirements:
+      accepts:
+        - {id: demo, identity_specs: [demo_oauth]}
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("identity requirements are OpenAPI-only");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source manifest failed schema validation:"),
+        "unexpected error: {error}"
+    );
+}

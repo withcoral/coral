@@ -436,6 +436,7 @@ mod tests {
                 file: PathBuf::from("/tmp/openapi.yaml"),
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
                 base_url: coral_spec::ParsedTemplate::parse(base_url).expect("base_url template"),
                 auth: AuthSpec::default(),
@@ -536,6 +537,7 @@ mod tests {
                 location: "demo-mcp-server".to_string(),
             },
             inputs: Vec::new(),
+            identity_requirements: None,
             runtime: SurfaceRuntimeConfig::Mcp(McpRuntimeConfig {
                 server: McpServerSpec::Stdio {
                     command: "demo-mcp-server".to_string(),
