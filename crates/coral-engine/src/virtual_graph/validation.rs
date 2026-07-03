@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
@@ -170,7 +171,7 @@ impl<'a> ValidatedGraphPlan<'a> {
     pub(crate) fn binding(&self, variable: &str) -> Result<&ValidatedBinding<'a>, CoreError> {
         self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 "variable",
                 format!("unknown graph variable '{variable}'"),
             )
@@ -182,7 +183,7 @@ impl<'a> ValidatedGraphPlan<'a> {
         let binding = self.binding(variable)?;
         let ValidatedBindingKind::Node(node) = binding.kind() else {
             return Err(Diagnostic::new(
-                "INVALID_ENDPOINT_VARIABLE",
+                diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 "variable",
                 format!("relationship endpoint '{variable}' is not a node variable"),
             )
@@ -287,7 +288,7 @@ impl<'a> GraphPlanValidator<'a> {
     fn bind_nodes(&mut self) -> Result<(), CoreError> {
         if self.plan.nodes.is_empty() {
             return Err(Diagnostic::new(
-                "EMPTY_PLAN",
+                diagnostic_codes::EMPTY_PLAN,
                 "nodes",
                 "at least one node pattern is required",
             )
@@ -298,7 +299,7 @@ impl<'a> GraphPlanValidator<'a> {
             validate_variable(format!("nodes[{index}].variable"), &pattern.variable)?;
             if self.bindings.contains_key(pattern.variable.as_str()) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_VARIABLE",
+                    diagnostic_codes::DUPLICATE_VARIABLE,
                     format!("nodes[{index}].variable"),
                     format!("variable '{}' is bound more than once", pattern.variable),
                 )
@@ -306,7 +307,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             let node = self.graph.node(&pattern.label).ok_or_else(|| {
                 Diagnostic::new(
-                    "UNKNOWN_NODE_LABEL",
+                    diagnostic_codes::UNKNOWN_NODE_LABEL,
                     format!("nodes[{index}].label"),
                     format!("unknown node label '{}'", pattern.label),
                 )
@@ -330,7 +331,7 @@ impl<'a> GraphPlanValidator<'a> {
                 validate_variable(format!("relationships[{index}].variable"), variable)?;
                 if self.bindings.contains_key(variable.as_str()) {
                     return Err(Diagnostic::new(
-                        "DUPLICATE_VARIABLE",
+                        diagnostic_codes::DUPLICATE_VARIABLE,
                         format!("relationships[{index}].variable"),
                         format!("variable '{variable}' is bound more than once"),
                     )
@@ -364,7 +365,7 @@ impl<'a> GraphPlanValidator<'a> {
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             return Err(Diagnostic::new(
-                "UNKNOWN_RELATIONSHIP_TYPE",
+                diagnostic_codes::UNKNOWN_RELATIONSHIP_TYPE,
                 format!("relationships[{index}].type"),
                 format!("unknown relationship type '{}'", pattern.relationship_type),
             )
@@ -397,7 +398,7 @@ impl<'a> GraphPlanValidator<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 Err(Diagnostic::new(
-                    "RELATIONSHIP_ENDPOINT_MISMATCH",
+                    diagnostic_codes::RELATIONSHIP_ENDPOINT_MISMATCH,
                     format!("relationships[{index}]"),
                     format!(
                         "relationship type '{}' has no mapping for {} -> {}; available endpoint mappings: {}",
@@ -407,7 +408,7 @@ impl<'a> GraphPlanValidator<'a> {
                 .into_core_error())
             }
             _ => Err(Diagnostic::new(
-                "AMBIGUOUS_RELATIONSHIP_MAPPING",
+                diagnostic_codes::AMBIGUOUS_RELATIONSHIP_MAPPING,
                 format!("relationships[{index}]"),
                 format!(
                     "relationship type '{}' with endpoints {} -> {} matches {} mappings; add direction or use distinct relationship types",
@@ -548,7 +549,7 @@ impl<'a> GraphPlanValidator<'a> {
                 || !mandatory_nodes.contains(relationship.right.as_str())
             {
                 return Err(Diagnostic::new(
-                    "MANDATORY_RELATIONSHIP_DEPENDS_ON_OPTIONAL_BINDING",
+                    diagnostic_codes::MANDATORY_RELATIONSHIP_DEPENDS_ON_OPTIONAL_BINDING,
                     format!("relationships[{index}]"),
                     "mandatory relationships cannot depend on bindings introduced only by OPTIONAL MATCH",
                 )
@@ -560,7 +561,7 @@ impl<'a> GraphPlanValidator<'a> {
         for node in &self.plan.nodes {
             if !all_joined_nodes.contains(node.variable.as_str()) {
                 return Err(Diagnostic::new(
-                    "DISCONNECTED_PATTERN",
+                    diagnostic_codes::DISCONNECTED_PATTERN,
                     "nodes",
                     format!(
                         "node variable '{}' is not connected to the first node pattern",
@@ -576,7 +577,7 @@ impl<'a> GraphPlanValidator<'a> {
     fn mandatory_reachable_nodes(&self) -> Result<BTreeSet<&'a str>, CoreError> {
         let first_node = self.plan.nodes.first().ok_or_else(|| {
             Diagnostic::new(
-                "EMPTY_PLAN",
+                diagnostic_codes::EMPTY_PLAN,
                 "nodes",
                 "at least one node pattern is required",
             )
@@ -693,13 +694,13 @@ impl<'a> GraphPlanValidator<'a> {
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
             Some(ValidatedBindingKind::Node(node)) => Ok(node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
-                "INVALID_ENDPOINT_VARIABLE",
+                diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,
                 format!("relationship endpoint '{variable}' is not a node variable"),
             )
             .into_core_error()),
             None => Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path,
                 format!("relationship references unknown node variable '{variable}'"),
             )
@@ -711,9 +712,12 @@ impl<'a> GraphPlanValidator<'a> {
 fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), CoreError> {
     let path = path.into();
     if variable.trim().is_empty() {
-        return Err(
-            Diagnostic::new("EMPTY_VARIABLE", path, "variable must not be empty").into_core_error(),
-        );
+        return Err(Diagnostic::new(
+            diagnostic_codes::EMPTY_VARIABLE,
+            path,
+            "variable must not be empty",
+        )
+        .into_core_error());
     }
     Ok(())
 }
@@ -728,7 +732,7 @@ fn validate_union_projection_names(
     }
 
     Err(Diagnostic::new(
-        "UNION_SCHEMA_MISMATCH",
+        diagnostic_codes::UNION_SCHEMA_MISMATCH,
         format!("union.branches[{branch_index}].projections"),
         format!(
             "UNION branch projections must match the first branch; expected [{}], got [{}]",
@@ -746,7 +750,7 @@ fn validate_union_projection_types(
 ) -> Result<(), CoreError> {
     if merged_types.len() != branch_types.len() {
         return Err(Diagnostic::new(
-            "UNION_SCHEMA_MISMATCH",
+            diagnostic_codes::UNION_SCHEMA_MISMATCH,
             format!("union.branches[{branch_index}].projections"),
             format!(
                 "UNION branch projection count must match the first branch; expected {}, got {}",
@@ -831,7 +835,7 @@ fn validate_union_outer_projection_source(
         .position(|name| name == source)
         .ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_PROJECTION",
+                diagnostic_codes::UNKNOWN_PROJECTION,
                 path.clone(),
                 format!("outer union projection references unknown branch column '{source}'"),
             )

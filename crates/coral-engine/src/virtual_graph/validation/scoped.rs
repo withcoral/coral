@@ -28,7 +28,7 @@ impl<'a> GraphPlanValidator<'a> {
             validate_variable(format!("{path}.nodes[{index}].variable"), &pattern.variable)?;
             if self.bindings.contains_key(pattern.variable.as_str()) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_VARIABLE",
+                    diagnostic_codes::DUPLICATE_VARIABLE,
                     format!("{path}.nodes[{index}].variable"),
                     format!(
                         "{scope_name} node variable '{}' shadows an outer graph variable",
@@ -39,7 +39,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             if local_nodes.contains_key(pattern.variable.as_str()) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_VARIABLE",
+                    diagnostic_codes::DUPLICATE_VARIABLE,
                     format!("{path}.nodes[{index}].variable"),
                     format!(
                         "{scope_name} node variable '{}' is bound more than once",
@@ -50,7 +50,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             let node = self.graph.node(&pattern.label).ok_or_else(|| {
                 Diagnostic::new(
-                    "UNKNOWN_NODE_LABEL",
+                    diagnostic_codes::UNKNOWN_NODE_LABEL,
                     format!("{path}.nodes[{index}].label"),
                     format!("unknown node label '{}'", pattern.label),
                 )
@@ -78,13 +78,13 @@ impl<'a> GraphPlanValidator<'a> {
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
             Some(ValidatedBindingKind::Node(node)) => Ok(*node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
-                "INVALID_ENDPOINT_VARIABLE",
+                diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,
                 format!("relationship endpoint '{variable}' is not a node variable"),
             )
             .into_core_error()),
             None => Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path,
                 format!("relationship references unknown node variable '{variable}'"),
             )
@@ -172,7 +172,7 @@ impl<'a> GraphPlanValidator<'a> {
         match predicate.operator {
             ComparisonOperator::Equal | ComparisonOperator::NotEqual => Ok(()),
             _ => Err(Diagnostic::new(
-                "INVALID_NULL_COMPARISON",
+                diagnostic_codes::INVALID_NULL_COMPARISON,
                 path,
                 "presence predicates only support equality and inequality",
             )
@@ -260,7 +260,7 @@ impl<'a> GraphPlanValidator<'a> {
             } => {
                 if nodes.is_empty() {
                     return Err(Diagnostic::new(
-                        "UNSUPPORTED_COUNT_SUBQUERY",
+                        diagnostic_codes::UNSUPPORTED_COUNT_SUBQUERY,
                         format!("{path}.nodes"),
                         "COUNT subqueries without relationship patterns must bind at least one local node",
                     )
@@ -399,7 +399,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarPredicateRhs::Expression(expression) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -420,7 +420,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarPredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
@@ -523,7 +523,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::Integer)
             }
             ScalarExpression::CollectSubquery { .. } => Err(Diagnostic::new(
-                "UNSUPPORTED_COLLECT_SUBQUERY",
+                diagnostic_codes::UNSUPPORTED_COLLECT_SUBQUERY,
                 path,
                 "nested COLLECT subqueries require scoped list-value planning and are not supported yet",
             )
@@ -715,7 +715,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         if expressions.len() < 2 {
             return Err(Diagnostic::new(
-                "INVALID_SCALAR_EXPRESSION",
+                diagnostic_codes::INVALID_SCALAR_EXPRESSION,
                 path,
                 "coalesce expressions require at least two arguments",
             )
@@ -770,7 +770,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         if alternatives.is_empty() {
             return Err(Diagnostic::new(
-                "INVALID_SCALAR_EXPRESSION",
+                diagnostic_codes::INVALID_SCALAR_EXPRESSION,
                 path,
                 "CASE expressions require at least one WHEN/THEN alternative",
             )
@@ -1282,7 +1282,7 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
         Err(Diagnostic::new(
-            "UNKNOWN_VARIABLE",
+            diagnostic_codes::UNKNOWN_VARIABLE,
             path,
             format!("unknown graph variable '{variable}'"),
         )
@@ -1299,7 +1299,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         if Self::exists_relationship_for_variable(scope.relationships, variable).is_some() {
             return Err(Diagnostic::new(
-                "INVALID_LABELS_PROJECTION",
+                diagnostic_codes::INVALID_LABELS_PROJECTION,
                 path,
                 format!("labels({variable}) requires a node variable"),
             )
@@ -1310,7 +1310,7 @@ impl<'a> GraphPlanValidator<'a> {
                 return Ok(());
             }
             return Err(Diagnostic::new(
-                "INVALID_LABELS_PROJECTION",
+                diagnostic_codes::INVALID_LABELS_PROJECTION,
                 path,
                 format!(
                     "labels({variable}) expected node label '{}', got '{label}'",
@@ -1337,7 +1337,7 @@ impl<'a> GraphPlanValidator<'a> {
                 return Ok(());
             }
             return Err(Diagnostic::new(
-                "INVALID_TYPE_PROJECTION",
+                diagnostic_codes::INVALID_TYPE_PROJECTION,
                 path,
                 format!(
                     "type({variable}) expected relationship type '{}', got '{relationship_type}'",
@@ -1348,7 +1348,7 @@ impl<'a> GraphPlanValidator<'a> {
         }
         if scope.local_nodes.contains_key(variable) {
             return Err(Diagnostic::new(
-                "INVALID_TYPE_PROJECTION",
+                diagnostic_codes::INVALID_TYPE_PROJECTION,
                 path,
                 format!("type({variable}) requires a relationship variable"),
             )
@@ -1430,13 +1430,13 @@ impl<'a> GraphPlanValidator<'a> {
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
             Some(ValidatedBindingKind::Node(node)) => Ok(*node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
-                "INVALID_ENDPOINT_VARIABLE",
+                diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,
                 format!("relationship endpoint '{variable}' is not a node variable"),
             )
             .into_core_error()),
             None => Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path,
                 format!("relationship references unknown node variable '{variable}'"),
             )
@@ -1463,7 +1463,7 @@ impl<'a> GraphPlanValidator<'a> {
                 UndirectedRelationshipEndpoint::End => "endNode",
             };
             return Err(Diagnostic::new(
-                "UNKNOWN_PROPERTY",
+                diagnostic_codes::UNKNOWN_PROPERTY,
                 path,
                 format!(
                     "{function}({relationship_variable}) does not expose property '{property}'"

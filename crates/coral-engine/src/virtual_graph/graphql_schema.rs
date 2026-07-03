@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 
 use super::declaration::{Declaration, Node, Relationship};
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use super::graphql_aggregate::{
     GRAPHQL_PROPERTY_AGGREGATE_FIELDS, GraphqlAggregateArgumentSpec, GraphqlAggregateReturnType,
     is_reserved_graphql_node_property_name,
@@ -474,7 +475,7 @@ fn validate_query_root_field_shapes(graph: &Declaration) -> Result<(), CoreError
         for field_name in root_field_names_for_label(&node.label) {
             if let Some(existing) = fields.insert(field_name.clone(), node.label.clone()) {
                 return Err(Diagnostic::new(
-                    "UNSUPPORTED_GRAPHQL_SCHEMA",
+                    diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
                     format!("nodes.{}", node.label),
                     format!(
                         "GraphQL query root field '{field_name}' would be generated more than once for node labels '{existing}' and '{}'",
@@ -561,7 +562,7 @@ fn insert_generated_type_name(
         return Ok(());
     }
     Err(Diagnostic::new(
-        "UNSUPPORTED_GRAPHQL_SCHEMA",
+        diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
         owner,
         format!("generated GraphQL type name '{name}' is not unique"),
     )
@@ -590,7 +591,7 @@ fn insert_graphql_field_name(
         return Ok(());
     }
     Err(Diagnostic::new(
-        "UNSUPPORTED_GRAPHQL_SCHEMA",
+        diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
         owner,
         format!("GraphQL field '{name}' would be generated more than once"),
     )
@@ -611,7 +612,7 @@ fn collect_relationship_schema_shapes(
             Some(existing) if existing == &shape => {}
             Some(_) => {
                 return Err(Diagnostic::new(
-                    "UNSUPPORTED_GRAPHQL_SCHEMA",
+                    diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
                     format!("relationships.{}", relationship.relationship_type),
                     format!(
                         "relationship type '{}' has multiple mappings with different GraphQL _edge shapes",
@@ -852,7 +853,7 @@ fn validate_graphql_node_property_name(
     let path = path.into();
     if is_reserved_graphql_node_property_name(name) {
         return Err(Diagnostic::new(
-            "UNSUPPORTED_GRAPHQL_SCHEMA",
+            diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
             path,
             format!("graph property '{name}' collides with a reserved GraphQL virtual field"),
         )
@@ -886,7 +887,7 @@ fn validate_graphql_property_name(name: &str, path: impl Into<String>) -> Result
     match name {
         "_id" | "_elementId" | "__typename" => {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_GRAPHQL_SCHEMA",
+                diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
                 path,
                 format!("graph property '{name}' collides with a reserved GraphQL virtual field"),
             )
@@ -902,7 +903,7 @@ fn validate_graphql_name(name: &str, path: impl Into<String>) -> Result<(), Core
         return Ok(());
     }
     Err(Diagnostic::new(
-        "UNSUPPORTED_GRAPHQL_SCHEMA",
+        diagnostic_codes::UNSUPPORTED_GRAPHQL_SCHEMA,
         path,
         format!("'{name}' is not a valid GraphQL name"),
     )

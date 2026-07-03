@@ -7,6 +7,7 @@
 mod cypher;
 mod declaration;
 mod diagnostic;
+mod diagnostic_codes;
 mod execution;
 mod graphql;
 mod graphql_aggregate;

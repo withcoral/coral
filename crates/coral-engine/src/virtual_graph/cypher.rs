@@ -29,6 +29,7 @@ use regex::Regex;
 
 use super::declaration::{Declaration, Relationship as DeclaredRelationship};
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
@@ -577,7 +578,7 @@ impl CypherCompileContext {
         let name = parameter.name.name.as_str();
         self.parameters.get(name).ok_or_else(|| {
             Diagnostic::new(
-                "MISSING_PARAMETER",
+                diagnostic_codes::MISSING_PARAMETER,
                 path,
                 format!("Cypher parameter '${name}' was not provided"),
             )
@@ -839,7 +840,12 @@ fn compile_cypher_query_with_optional_graph(
         normalize_order_null_placements(string_predicate_function_normalized.as_ref());
     let cypher = null_normalized.cypher.as_ref();
     let query = decypher::parse(cypher).map_err(|error| {
-        Diagnostic::new("CYPHER_PARSE_ERROR", "query", error.to_string()).into_core_error()
+        Diagnostic::new(
+            diagnostic_codes::CYPHER_PARSE_ERROR,
+            "query",
+            error.to_string(),
+        )
+        .into_core_error()
     })?;
     let order_null_placements =
         collect_order_null_placements_for_query(&query, &null_normalized.placements)?;
@@ -22053,7 +22059,7 @@ fn compile_compact_exists_pattern_query(
     let path = path.into();
     let query = decypher::parse(source).map_err(|error| {
         Diagnostic::new(
-            "CYPHER_PARSE_ERROR",
+            diagnostic_codes::CYPHER_PARSE_ERROR,
             path.clone(),
             format!("could not parse compact EXISTS pattern recovery: {error}"),
         )
@@ -22193,7 +22199,7 @@ fn compile_pattern_comprehension_scalar_expression(
     };
     let query = decypher::parse(&source.collect_query_source).map_err(|error| {
         Diagnostic::new(
-            "CYPHER_PARSE_ERROR",
+            diagnostic_codes::CYPHER_PARSE_ERROR,
             path.clone(),
             format!("could not parse pattern comprehension recovery: {error}"),
         )
@@ -22236,7 +22242,7 @@ fn compile_pattern_comprehension_count_scalar_expression(
     };
     let query = decypher::parse(&source.count_query_source).map_err(|error| {
         Diagnostic::new(
-            "CYPHER_PARSE_ERROR",
+            diagnostic_codes::CYPHER_PARSE_ERROR,
             path.clone(),
             format!("could not parse pattern comprehension count recovery: {error}"),
         )
@@ -24918,7 +24924,7 @@ fn parse_cypher_expression_fragment(
     let fragment = format!("RETURN {source} AS __coral_expr");
     let query = decypher::parse(&fragment).map_err(|error| {
         Diagnostic::new(
-            "CYPHER_PARSE_ERROR",
+            diagnostic_codes::CYPHER_PARSE_ERROR,
             path.clone(),
             format!("could not parse Cypher expression fragment: {error}"),
         )
@@ -30564,7 +30570,7 @@ fn variable_name(variable: &Variable) -> String {
 }
 
 fn unsupported(path: impl Into<String>, message: impl Into<String>) -> CoreError {
-    Diagnostic::new("UNSUPPORTED_CYPHER", path, message).into_core_error()
+    Diagnostic::new(diagnostic_codes::UNSUPPORTED_CYPHER, path, message).into_core_error()
 }
 
 #[path = "cypher_tests.rs"]

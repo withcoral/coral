@@ -11,6 +11,7 @@ use super::{
     GraphUnionOuterProjectionItem, Literal, LiteralListElementType, NullOrder, OrderDirection,
     OrderExpression, Projection, ScalarExpression, TableRef,
 };
+use crate::virtual_graph::diagnostic_codes;
 
 pub(super) fn scalar_expression_unary_operand(
     expression: &ScalarExpression,
@@ -174,7 +175,7 @@ fn render_union_outer_order_expression(
     match expression {
         OrderExpression::ProjectionAlias(alias) => Ok(quote_ident(alias)),
         _ => Err(Diagnostic::new(
-            "UNSUPPORTED_GRAPH_QUERY",
+            diagnostic_codes::UNSUPPORTED_GRAPH_QUERY,
             format!("union.order_by[{index}].expression"),
             "graph union outer ORDER BY only supports projection aliases",
         )
@@ -191,7 +192,7 @@ pub(super) fn validate_union_branch_output_names(
         return Ok(());
     }
     Err(Diagnostic::new(
-        "UNION_SCHEMA_MISMATCH",
+        diagnostic_codes::UNION_SCHEMA_MISMATCH,
         format!("union.branches[{branch_index}].projections"),
         format!(
             "UNION branch projections must match the first branch; expected [{}], got [{}]",

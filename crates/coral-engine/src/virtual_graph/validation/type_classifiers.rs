@@ -6,7 +6,7 @@
 
 use super::{
     AggregateFunction, CoreError, Diagnostic, Literal, LiteralListElementType, Projection,
-    ScalarType,
+    ScalarType, diagnostic_codes,
 };
 
 pub(super) fn projection_alias_name(projection: &Projection) -> Option<&str> {
@@ -149,7 +149,7 @@ pub(super) fn aggregate_function_requires_numeric_target(function: AggregateFunc
 
 pub(super) fn unsupported_distinct_percentile_cont_error(path: impl Into<String>) -> CoreError {
     Diagnostic::new(
-        "INVALID_AGGREGATE_TARGET",
+        diagnostic_codes::INVALID_AGGREGATE_TARGET,
         path,
         "percentileCont(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_cont aggregates",
     )

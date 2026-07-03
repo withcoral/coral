@@ -17,7 +17,7 @@ impl<'a> GraphPlanValidator<'a> {
     pub(super) fn key_scalar_type(&self, variable: &str) -> Result<ScalarType, CoreError> {
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 "variable",
                 format!("unknown graph variable '{variable}'"),
             )
@@ -88,7 +88,7 @@ impl<'a> GraphPlanValidator<'a> {
         ) {
             if matches!(rhs_type, ScalarType::Null) {
                 return Err(Diagnostic::new(
-                    "INVALID_NULL_COMPARISON",
+                    diagnostic_codes::INVALID_NULL_COMPARISON,
                     path,
                     "null can only be compared with equality or inequality",
                 )
@@ -263,7 +263,7 @@ impl<'a> GraphPlanValidator<'a> {
         right: ScalarType,
     ) -> CoreError {
         Diagnostic::new(
-            "INVALID_SCALAR_TYPE",
+            diagnostic_codes::INVALID_SCALAR_TYPE,
             path,
             format!(
                 "{context} require compatible scalar types, got {} and {}",
@@ -281,7 +281,7 @@ impl<'a> GraphPlanValidator<'a> {
         actual: ScalarType,
     ) -> CoreError {
         Diagnostic::new(
-            "INVALID_SCALAR_TYPE",
+            diagnostic_codes::INVALID_SCALAR_TYPE,
             path,
             format!(
                 "{context} requires a {expected} scalar expression, got {}",
@@ -302,7 +302,7 @@ impl<'a> GraphPlanValidator<'a> {
             .get(property.variable.as_str())
             .ok_or_else(|| {
                 Diagnostic::new(
-                    "UNKNOWN_VARIABLE",
+                    diagnostic_codes::UNKNOWN_VARIABLE,
                     path.clone(),
                     format!("unknown graph variable '{}'", property.variable),
                 )
@@ -310,7 +310,7 @@ impl<'a> GraphPlanValidator<'a> {
             })?;
         if binding.column_for_property(&property.property).is_none() {
             return Err(Diagnostic::new(
-                "UNKNOWN_PROPERTY",
+                diagnostic_codes::UNKNOWN_PROPERTY,
                 path,
                 format!(
                     "variable '{}' does not expose property '{}'",

@@ -28,7 +28,7 @@ impl<'a> GraphPlanValidator<'a> {
                 &projected_properties,
             ) {
                 return Err(Diagnostic::new(
-                    "UNSUPPORTED_AGGREGATION",
+                    diagnostic_codes::UNSUPPORTED_AGGREGATION,
                     format!("order_by[{index}]"),
                     "ORDER BY with aggregate projections must use a projected property or projection alias",
                 )
@@ -123,7 +123,7 @@ impl<'a> GraphPlanValidator<'a> {
         };
         if relationship.key.is_none() {
             return Err(Diagnostic::new(
-                "INVALID_AGGREGATE_TARGET",
+                diagnostic_codes::INVALID_AGGREGATE_TARGET,
                 path,
                 format!(
                     "count(DISTINCT {variable}) requires relationship mapping '{}' to declare a key",
@@ -157,7 +157,7 @@ impl<'a> GraphPlanValidator<'a> {
                     .get(presence_variable.as_str())
                     .ok_or_else(|| {
                         Diagnostic::new(
-                            "UNKNOWN_VARIABLE",
+                            diagnostic_codes::UNKNOWN_VARIABLE,
                             format!("{path}.presence_variable"),
                             format!("unknown graph variable '{presence_variable}'"),
                         )
@@ -181,7 +181,7 @@ impl<'a> GraphPlanValidator<'a> {
                     .get(presence_variable.as_str())
                     .ok_or_else(|| {
                         Diagnostic::new(
-                            "UNKNOWN_VARIABLE",
+                            diagnostic_codes::UNKNOWN_VARIABLE,
                             format!("{path}.presence_variable"),
                             format!("unknown graph variable '{presence_variable}'"),
                         )
@@ -205,7 +205,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         if !aggregate_function_accepts_graph_variable_key(function) {
             return Err(Diagnostic::new(
-                "INVALID_AGGREGATE_TARGET",
+                diagnostic_codes::INVALID_AGGREGATE_TARGET,
                 path.clone(),
                 format!(
                     "{}({variable}) requires a graph property argument; only count(variable) and collect(variable) can aggregate a graph variable key",
@@ -217,7 +217,7 @@ impl<'a> GraphPlanValidator<'a> {
         validate_variable(path.clone(), variable)?;
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -297,7 +297,7 @@ fn validate_collect_graph_variable_aggregate_binding(
     };
     if function == AggregateFunction::Collect && relationship.key.is_none() {
         return Err(Diagnostic::new(
-            "INVALID_AGGREGATE_TARGET",
+            diagnostic_codes::INVALID_AGGREGATE_TARGET,
             path,
             format!(
                 "collect({variable}) requires relationship mapping '{}' to declare a key",
@@ -321,7 +321,7 @@ pub(super) fn validate_aggregate_scalar_type(
         return Ok(());
     }
     Err(Diagnostic::new(
-        "INVALID_AGGREGATE_TARGET",
+        diagnostic_codes::INVALID_AGGREGATE_TARGET,
         path,
         format!(
             "{}(property) requires a numeric property, got {}",

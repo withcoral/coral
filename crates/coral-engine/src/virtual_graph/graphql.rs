@@ -10,6 +10,7 @@ use regex::Regex;
 
 use super::declaration::Declaration;
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use super::graphql_aggregate::{
     GRAPHQL_PROPERTY_AGGREGATE_FIELDS, GraphqlAggregateArgumentSpec, GraphqlAggregateFieldSpec,
     GraphqlAggregateFunctionSpec, graphql_property_aggregate_field,
@@ -82,7 +83,7 @@ impl<'variables, 'query> GraphqlCompileContext<'variables, 'query> {
             .or_else(|| self.variable_defaults.get(variable))
             .ok_or_else(|| {
                 Diagnostic::new(
-                    "MISSING_GRAPHQL_VARIABLE",
+                    diagnostic_codes::MISSING_GRAPHQL_VARIABLE,
                     path,
                     format!("GraphQL variable '${variable}' was not provided"),
                 )
@@ -173,7 +174,12 @@ fn compile_graphql_document(
     operation_name: Option<&str>,
 ) -> Result<GraphPlan, CoreError> {
     let document = parse_query::<String>(graphql).map_err(|error| {
-        Diagnostic::new("GRAPHQL_PARSE_ERROR", "query", error.to_string()).into_core_error()
+        Diagnostic::new(
+            diagnostic_codes::GRAPHQL_PARSE_ERROR,
+            "query",
+            error.to_string(),
+        )
+        .into_core_error()
     })?;
     let plan = compile_document(&document, graph, variables, operation_name)?;
     if let Some(graph) = graph {
@@ -4330,7 +4336,7 @@ fn nested_variable_for_field(field: &Field<'_, String>, label: &str, index: usiz
 }
 
 fn unsupported(path: impl Into<String>, message: impl Into<String>) -> CoreError {
-    Diagnostic::new("UNSUPPORTED_GRAPHQL", path, message).into_core_error()
+    Diagnostic::new(diagnostic_codes::UNSUPPORTED_GRAPHQL, path, message).into_core_error()
 }
 
 /// GraphQL read capability denominator grouped by the schema coverage report.

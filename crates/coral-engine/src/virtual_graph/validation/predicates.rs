@@ -94,7 +94,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Literal(literal) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -106,7 +106,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -121,7 +121,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Key { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -136,7 +136,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::ElementId { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -151,7 +151,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
@@ -179,7 +179,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarPredicateRhs::Expression(expression) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -197,7 +197,7 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarPredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
@@ -218,7 +218,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Literal(literal) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -230,7 +230,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -244,7 +244,7 @@ impl<'a> GraphPlanValidator<'a> {
                         | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
@@ -255,7 +255,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Key { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -269,7 +269,7 @@ impl<'a> GraphPlanValidator<'a> {
                         | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
@@ -278,7 +278,7 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_key_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::ElementId { .. } => Err(Diagnostic::new(
-                "INVALID_PREDICATE_OPERAND",
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
                 path.clone(),
                 "id() predicates cannot compare against elementId(); compare id() to mapped keys or elementId() to string values",
             )
@@ -286,7 +286,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
@@ -314,7 +314,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Literal(literal) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -327,7 +327,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::ElementId { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -341,7 +341,7 @@ impl<'a> GraphPlanValidator<'a> {
                         | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
@@ -352,7 +352,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "literal lists are only supported with IN predicates",
                     )
@@ -366,7 +366,7 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "IN predicates require a literal list right-hand side",
                     )
@@ -380,7 +380,7 @@ impl<'a> GraphPlanValidator<'a> {
                         | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path.clone(),
                         "string predicates require a string literal right-hand side",
                     )
@@ -389,7 +389,7 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_property_ref(property, format!("{path}.rhs"))
             }
             PredicateRhs::Key { .. } => Err(Diagnostic::new(
-                "INVALID_PREDICATE_OPERAND",
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
                 path.clone(),
                 "elementId() predicates cannot compare against id(); compare elementId() to string values or id() to mapped keys",
             )
@@ -409,7 +409,7 @@ impl<'a> GraphPlanValidator<'a> {
         match literal {
             Literal::String(_) | Literal::Null => Ok(()),
             Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_) => Err(Diagnostic::new(
-                "INVALID_PREDICATE_OPERAND",
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
                 path,
                 "elementId() predicates require string or null literal operands",
             )
@@ -425,7 +425,7 @@ impl<'a> GraphPlanValidator<'a> {
         validate_variable(format!("{path}.variable"), &predicate.variable)?;
         if !self.bindings.contains_key(predicate.variable.as_str()) {
             return Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 format!("{path}.variable"),
                 format!("unknown graph variable '{}'", predicate.variable),
             )
@@ -442,7 +442,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ComparisonOperator::EndsWith
             | ComparisonOperator::Contains
             | ComparisonOperator::RegexMatch => Err(Diagnostic::new(
-                "INVALID_PRESENCE_PREDICATE",
+                diagnostic_codes::INVALID_PRESENCE_PREDICATE,
                 path,
                 "graph variable presence predicates only support IS NULL and IS NOT NULL",
             )
@@ -457,7 +457,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         if !self.bindings.contains_key(predicate.variable.as_str()) {
             return Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 format!("{path}.variable"),
                 format!("unknown graph variable '{}'", predicate.variable),
             )
@@ -467,7 +467,7 @@ impl<'a> GraphPlanValidator<'a> {
             && !self.bindings.contains_key(presence_variable.as_str())
         {
             return Err(Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 format!("{path}.presence_variable"),
                 format!("unknown graph variable '{presence_variable}'"),
             )
@@ -487,7 +487,7 @@ impl<'a> GraphPlanValidator<'a> {
             ProjectionPredicateRhs::Literal(literal) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path,
                         "IN predicates require a literal list right-hand side",
                     )
@@ -505,7 +505,7 @@ impl<'a> GraphPlanValidator<'a> {
             ProjectionPredicateRhs::Alias(alias) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path,
                         "IN predicates require a literal list right-hand side",
                     )
@@ -519,7 +519,7 @@ impl<'a> GraphPlanValidator<'a> {
                         | ComparisonOperator::RegexMatch
                 ) {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path,
                         "string predicates require a string literal right-hand side",
                     )
@@ -536,7 +536,7 @@ impl<'a> GraphPlanValidator<'a> {
             ProjectionPredicateRhs::List(literals) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
-                        "INVALID_PREDICATE_OPERAND",
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
                         path,
                         "literal lists are only supported with IN predicates",
                     )
@@ -562,7 +562,7 @@ impl<'a> GraphPlanValidator<'a> {
         }
         if !matches!(literal, Literal::String(_)) {
             return Err(Diagnostic::new(
-                "INVALID_PREDICATE_OPERAND",
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
                 path,
                 "string predicates require a string literal right-hand side",
             )
@@ -584,7 +584,7 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(());
         }
         Err(Diagnostic::new(
-            "INVALID_PREDICATE_OPERAND",
+            diagnostic_codes::INVALID_PREDICATE_OPERAND,
             path,
             "string predicates require a string literal right-hand side",
         )
@@ -604,7 +604,7 @@ impl<'a> GraphPlanValidator<'a> {
                 | ComparisonOperator::LessThanOrEqual,
                 Literal::Null,
             ) => Err(Diagnostic::new(
-                "INVALID_NULL_COMPARISON",
+                diagnostic_codes::INVALID_NULL_COMPARISON,
                 path,
                 "null can only be compared with equality or inequality",
             )

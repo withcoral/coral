@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use crate::{CatalogInfo, CoreError, TableInfo};
 
 /// Versioned virtual graph declaration.
@@ -104,7 +105,7 @@ impl Declaration {
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.version != 1 {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_VERSION",
+                diagnostic_codes::UNSUPPORTED_VERSION,
                 "version",
                 "only virtual graph declaration version 1 is supported",
             )
@@ -113,7 +114,7 @@ impl Declaration {
         require_non_empty("name", &self.name)?;
         if self.nodes.is_empty() {
             return Err(Diagnostic::new(
-                "EMPTY_NODES",
+                diagnostic_codes::EMPTY_NODES,
                 "nodes",
                 "at least one node mapping is required",
             )
@@ -126,7 +127,7 @@ impl Declaration {
             node.validate(&path)?;
             if !labels.insert(node.label.as_str()) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_NODE_LABEL",
+                    diagnostic_codes::DUPLICATE_NODE_LABEL,
                     format!("{path}.label"),
                     format!("node label '{}' is declared more than once", node.label),
                 )
@@ -144,7 +145,7 @@ impl Declaration {
                 relationship.to.label.as_str(),
             )) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_RELATIONSHIP_MAPPING",
+                    diagnostic_codes::DUPLICATE_RELATIONSHIP_MAPPING,
                     path,
                     format!(
                         "relationship mapping '{}: {} -> {}' is declared more than once",
@@ -173,7 +174,7 @@ impl Declaration {
             let path = format!("nodes[{index}]");
             let table = find_table(catalog, &node.table).ok_or_else(|| {
                 Diagnostic::new(
-                    "MAPPED_TABLE_NOT_FOUND",
+                    diagnostic_codes::MAPPED_TABLE_NOT_FOUND,
                     format!("{path}.table"),
                     format!(
                         "node label '{}' maps to missing table {}.{}",
@@ -193,7 +194,7 @@ impl Declaration {
             let path = format!("relationships[{index}]");
             let table = find_table(catalog, &relationship.table).ok_or_else(|| {
                 Diagnostic::new(
-                    "MAPPED_TABLE_NOT_FOUND",
+                    diagnostic_codes::MAPPED_TABLE_NOT_FOUND,
                     format!("{path}.table"),
                     format!(
                         "relationship type '{}' maps to missing table {}.{}",
@@ -284,7 +285,7 @@ impl Endpoint {
         require_non_empty(format!("{path}.key"), &self.key)?;
         if !labels.contains(self.label.as_str()) {
             return Err(Diagnostic::new(
-                "UNKNOWN_ENDPOINT_LABEL",
+                diagnostic_codes::UNKNOWN_ENDPOINT_LABEL,
                 format!("{path}.label"),
                 format!(
                     "relationship endpoint references unknown node label '{}'",
@@ -308,9 +309,12 @@ fn validate_properties(path: &str, properties: &BTreeMap<String, String>) -> Res
 fn require_non_empty(path: impl Into<String>, value: &str) -> Result<(), CoreError> {
     let path = path.into();
     if value.trim().is_empty() {
-        return Err(
-            Diagnostic::new("EMPTY_FIELD", path, "field must not be empty").into_core_error(),
-        );
+        return Err(Diagnostic::new(
+            diagnostic_codes::EMPTY_FIELD,
+            path,
+            "field must not be empty",
+        )
+        .into_core_error());
     }
     Ok(())
 }
@@ -325,7 +329,7 @@ fn find_table<'a>(catalog: &'a CatalogInfo, table_ref: &TableRef) -> Option<&'a 
 fn validate_table_scan_supported(table: &TableInfo, path: &str) -> Result<(), CoreError> {
     if !table.required_filters.is_empty() {
         return Err(Diagnostic::new(
-            "MAPPED_TABLE_REQUIRES_FILTERS",
+            diagnostic_codes::MAPPED_TABLE_REQUIRES_FILTERS,
             path,
             format!(
                 "table {}.{} requires filters [{}], which virtual graph scans do not support yet",
@@ -348,7 +352,7 @@ fn validate_column(table: &TableInfo, column: &str, path: &str) -> Result<(), Co
         return Ok(());
     }
     Err(Diagnostic::new(
-        "MAPPED_COLUMN_NOT_FOUND",
+        diagnostic_codes::MAPPED_COLUMN_NOT_FOUND,
         path,
         format!(
             "mapped column '{}' was not found on table {}.{}",

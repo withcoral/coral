@@ -378,7 +378,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         if alternatives.is_empty() {
             return Err(Diagnostic::new(
-                "INVALID_SCALAR_EXPRESSION",
+                diagnostic_codes::INVALID_SCALAR_EXPRESSION,
                 path,
                 "CASE expressions require at least one WHEN/THEN alternative",
             )
@@ -421,7 +421,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         if expressions.len() < 2 {
             return Err(Diagnostic::new(
-                "INVALID_SCALAR_EXPRESSION",
+                diagnostic_codes::INVALID_SCALAR_EXPRESSION,
                 path,
                 "coalesce expressions require at least two arguments",
             )
@@ -685,7 +685,7 @@ impl<'a> GraphPlanValidator<'a> {
             .get(property.variable.as_str())
             .ok_or_else(|| {
                 Diagnostic::new(
-                    "UNKNOWN_VARIABLE",
+                    diagnostic_codes::UNKNOWN_VARIABLE,
                     "property.variable",
                     format!("unknown graph variable '{}'", property.variable),
                 )
@@ -716,7 +716,7 @@ impl<'a> GraphPlanValidator<'a> {
             })
             .ok_or_else(|| {
                 Diagnostic::new(
-                    "UNKNOWN_VARIABLE",
+                    diagnostic_codes::UNKNOWN_VARIABLE,
                     path,
                     format!("unknown relationship variable '{relationship_variable}'"),
                 )
@@ -786,7 +786,7 @@ impl<'a> GraphPlanValidator<'a> {
                 UndirectedRelationshipEndpoint::End => "endNode",
             };
             return Err(Diagnostic::new(
-                "UNKNOWN_PROPERTY",
+                diagnostic_codes::UNKNOWN_PROPERTY,
                 path,
                 format!(
                     "{function}({relationship_variable}) does not expose property '{property}'"

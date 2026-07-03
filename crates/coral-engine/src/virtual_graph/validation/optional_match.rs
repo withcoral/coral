@@ -25,7 +25,7 @@ impl<'a> GraphPlanValidator<'a> {
         for (position, index) in self.plan.optional_relationships.iter().copied().enumerate() {
             if index >= self.plan.relationships.len() {
                 return Err(Diagnostic::new(
-                    "INVALID_OPTIONAL_RELATIONSHIP",
+                    diagnostic_codes::INVALID_OPTIONAL_RELATIONSHIP,
                     format!("optional_relationships[{position}]"),
                     format!(
                         "optional relationship index {index} is out of bounds for {} relationships",
@@ -36,7 +36,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             if !seen.insert(index) {
                 return Err(Diagnostic::new(
-                    "DUPLICATE_OPTIONAL_RELATIONSHIP",
+                    diagnostic_codes::DUPLICATE_OPTIONAL_RELATIONSHIP,
                     format!("optional_relationships[{position}]"),
                     format!("optional relationship index {index} is listed more than once"),
                 )
@@ -50,7 +50,7 @@ impl<'a> GraphPlanValidator<'a> {
             .any(|pair| matches!(pair, [left, right] if left > right))
         {
             return Err(Diagnostic::new(
-                "UNSORTED_OPTIONAL_RELATIONSHIPS",
+                diagnostic_codes::UNSORTED_OPTIONAL_RELATIONSHIPS,
                 "optional_relationships",
                 "optional relationship indices must be sorted in ascending order",
             )
@@ -65,7 +65,7 @@ impl<'a> GraphPlanValidator<'a> {
         }
         if self.plan.post_projection_predicate.is_some() {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                diagnostic_codes::UNSUPPORTED_OPTIONAL_PREDICATE,
                 "post_projection_predicate",
                 "post-projection predicates with optional matches require explicit projection-boundary planning",
             )
@@ -101,7 +101,7 @@ impl<'a> GraphPlanValidator<'a> {
             .find(|variable| !allowed_variables.contains(**variable))
         {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_PREDICATE",
+                diagnostic_codes::UNSUPPORTED_OPTIONAL_PREDICATE,
                 format!("optional_matches[{index}].predicate"),
                 format!(
                     "optional predicate references '{variable}', which is outside the optional relationship scope"
@@ -145,7 +145,7 @@ impl<'a> GraphPlanValidator<'a> {
             .any(|pair| matches!(pair, [left, right] if left >= right))
         {
             return Err(Diagnostic::new(
-                "INVALID_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].node_indices"),
                 "optional match node indices must be unique and sorted in ascending order",
             )
@@ -161,7 +161,7 @@ impl<'a> GraphPlanValidator<'a> {
         for (position, node_index) in optional_match.node_indices.iter().copied().enumerate() {
             let Some(node) = self.plan.nodes.get(node_index) else {
                 return Err(Diagnostic::new(
-                    "INVALID_OPTIONAL_MATCH_SCOPE",
+                    diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                     format!("optional_matches[{index}].node_indices[{position}]"),
                     format!(
                         "optional match scope references node index {node_index}, but only {} nodes exist",
@@ -172,7 +172,7 @@ impl<'a> GraphPlanValidator<'a> {
             };
             if !scoped_node_variables.contains(node.variable.as_str()) {
                 return Err(Diagnostic::new(
-                    "INVALID_OPTIONAL_MATCH_SCOPE",
+                    diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                     format!("optional_matches[{index}].node_indices[{position}]"),
                     format!(
                         "optional match scope marks node '{}' as nullable, but that node is not part of the optional relationship scope",
@@ -192,7 +192,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         if optional_match.relationship_indices.is_empty() {
             return Err(Diagnostic::new(
-                "INVALID_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices"),
                 "optional match scopes must contain at least one relationship index",
             )
@@ -204,7 +204,7 @@ impl<'a> GraphPlanValidator<'a> {
             .any(|pair| matches!(pair, [left, right] if left >= right))
         {
             return Err(Diagnostic::new(
-                "INVALID_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices"),
                 "optional match relationship indices must be unique and sorted in ascending order",
             )
@@ -229,7 +229,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         if self.plan.relationships.get(relationship_index).is_none() {
             return Err(Diagnostic::new(
-                "INVALID_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices[{position}]"),
                 format!(
                     "optional match scope references relationship index {relationship_index}, but only {} relationships exist",
@@ -245,7 +245,7 @@ impl<'a> GraphPlanValidator<'a> {
             .is_err()
         {
             return Err(Diagnostic::new(
-                "INVALID_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices[{position}]"),
                 "optional match scopes must reference optional relationships",
             )
@@ -281,7 +281,7 @@ impl<'a> GraphPlanValidator<'a> {
         }
         if optional_match.node_indices.is_empty() {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::UNSUPPORTED_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].node_indices"),
                 "multi-hop optional match scopes must introduce at least one nullable node",
             )
@@ -331,7 +331,7 @@ impl<'a> GraphPlanValidator<'a> {
 
         if !(1..=2).contains(&boundary_relationships) {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::UNSUPPORTED_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices"),
                 "multi-hop optional match scopes require one connected chain with one or two previously-bound boundary relationships",
             )
@@ -340,7 +340,7 @@ impl<'a> GraphPlanValidator<'a> {
 
         if degree_by_node.values().any(|degree| *degree > 2) {
             return Err(Diagnostic::new(
-                "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                diagnostic_codes::UNSUPPORTED_OPTIONAL_MATCH_SCOPE,
                 format!("optional_matches[{index}].relationship_indices"),
                 "multi-hop optional match scopes currently require one connected chain, not a branching pattern",
             )
@@ -366,7 +366,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             if !progressed {
                 return Err(Diagnostic::new(
-                    "UNSUPPORTED_OPTIONAL_MATCH_SCOPE",
+                    diagnostic_codes::UNSUPPORTED_OPTIONAL_MATCH_SCOPE,
                     format!("optional_matches[{index}].relationship_indices"),
                     "multi-hop optional match scopes must be one connected chain",
                 )

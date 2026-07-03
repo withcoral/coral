@@ -19,7 +19,7 @@ impl<'a> GraphPlanValidator<'a> {
     pub(super) fn validate_projection_shape(&self) -> Result<(), CoreError> {
         if self.plan.projections.is_empty() {
             return Err(Diagnostic::new(
-                "EMPTY_PROJECTION",
+                diagnostic_codes::EMPTY_PROJECTION,
                 "projections",
                 "at least one projection is required",
             )
@@ -103,7 +103,7 @@ impl<'a> GraphPlanValidator<'a> {
                 &projected_properties,
             ) {
                 return Err(Diagnostic::new(
-                    "UNSUPPORTED_DISTINCT_ORDERING",
+                    diagnostic_codes::UNSUPPORTED_DISTINCT_ORDERING,
                     format!("order_by[{index}]"),
                     "ORDER BY with DISTINCT must use a projected property or projection alias",
                 )
@@ -177,7 +177,7 @@ impl<'a> GraphPlanValidator<'a> {
                     Ok(())
                 } else {
                     Err(Diagnostic::new(
-                        "UNKNOWN_PROJECTION_ALIAS",
+                        diagnostic_codes::UNKNOWN_PROJECTION_ALIAS,
                         path,
                         format!("unknown projection alias '{alias}'"),
                     )
@@ -292,7 +292,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let Some((index, projection)) = self.find_projection_alias(alias) else {
             return Err(Diagnostic::new(
-                "UNKNOWN_PROJECTION_ALIAS",
+                diagnostic_codes::UNKNOWN_PROJECTION_ALIAS,
                 path,
                 format!("unknown projection alias '{alias}'"),
             )
@@ -310,7 +310,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -318,7 +318,7 @@ impl<'a> GraphPlanValidator<'a> {
         })?;
         let ValidatedBindingKind::Node(node) = binding.kind() else {
             return Err(Diagnostic::new(
-                "INVALID_LABELS_PROJECTION",
+                diagnostic_codes::INVALID_LABELS_PROJECTION,
                 path,
                 format!("labels({variable}) requires a node variable"),
             )
@@ -326,7 +326,7 @@ impl<'a> GraphPlanValidator<'a> {
         };
         if node.label != label {
             return Err(Diagnostic::new(
-                "INVALID_LABELS_PROJECTION",
+                diagnostic_codes::INVALID_LABELS_PROJECTION,
                 path,
                 format!(
                     "labels({variable}) expected node label '{}', got '{label}'",
@@ -347,7 +347,7 @@ impl<'a> GraphPlanValidator<'a> {
         validate_variable(path.clone(), variable)?;
         self.bindings.get(variable).map(|_| ()).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path,
                 format!("unknown graph variable '{variable}'"),
             )
@@ -363,7 +363,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -376,7 +376,7 @@ impl<'a> GraphPlanValidator<'a> {
                     Ok(())
                 } else {
                     Err(Diagnostic::new(
-                        "INVALID_KEY_PROJECTION",
+                        diagnostic_codes::INVALID_KEY_PROJECTION,
                         path,
                         format!(
                             "id({variable}) requires relationship type '{}' to declare a key column",
@@ -397,7 +397,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -410,7 +410,7 @@ impl<'a> GraphPlanValidator<'a> {
                     Ok(())
                 } else {
                     Err(Diagnostic::new(
-                        "INVALID_ELEMENT_ID_PROJECTION",
+                        diagnostic_codes::INVALID_ELEMENT_ID_PROJECTION,
                         path,
                         format!(
                             "elementId({variable}) requires relationship type '{}' to declare a key column",
@@ -431,7 +431,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -444,7 +444,7 @@ impl<'a> GraphPlanValidator<'a> {
                     Ok(())
                 } else {
                     Err(Diagnostic::new(
-                        "INVALID_GRAPH_IDENTITY_PROJECTION",
+                        diagnostic_codes::INVALID_GRAPH_IDENTITY_PROJECTION,
                         path,
                         format!(
                             "graph identity for relationship variable '{variable}' requires relationship type '{}' to declare a key column",
@@ -466,7 +466,7 @@ impl<'a> GraphPlanValidator<'a> {
         validate_variable(path.clone(), variable)?;
         self.bindings.get(variable).map(|_| ()).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path,
                 format!("unknown graph variable '{variable}'"),
             )
@@ -483,7 +483,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         let binding = self.bindings.get(variable).ok_or_else(|| {
             Diagnostic::new(
-                "UNKNOWN_VARIABLE",
+                diagnostic_codes::UNKNOWN_VARIABLE,
                 path.clone(),
                 format!("unknown graph variable '{variable}'"),
             )
@@ -491,7 +491,7 @@ impl<'a> GraphPlanValidator<'a> {
         })?;
         let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
             return Err(Diagnostic::new(
-                "INVALID_TYPE_PROJECTION",
+                diagnostic_codes::INVALID_TYPE_PROJECTION,
                 path,
                 format!("type({variable}) requires a relationship variable"),
             )
@@ -499,7 +499,7 @@ impl<'a> GraphPlanValidator<'a> {
         };
         if relationship.relationship_type != relationship_type {
             return Err(Diagnostic::new(
-                "INVALID_TYPE_PROJECTION",
+                diagnostic_codes::INVALID_TYPE_PROJECTION,
                 path,
                 format!(
                     "type({variable}) expected relationship type '{}', got '{relationship_type}'",
@@ -518,7 +518,7 @@ impl<'a> GraphPlanValidator<'a> {
         let path = path.into();
         if literals.is_empty() {
             return Err(Diagnostic::new(
-                "INVALID_LITERAL_LIST_PROJECTION",
+                diagnostic_codes::INVALID_LITERAL_LIST_PROJECTION,
                 path,
                 "literal list projections require at least one element",
             )
@@ -533,7 +533,7 @@ impl<'a> GraphPlanValidator<'a> {
             match expected {
                 Some(expected) if expected != kind => {
                     return Err(Diagnostic::new(
-                        "INVALID_LITERAL_LIST_PROJECTION",
+                        diagnostic_codes::INVALID_LITERAL_LIST_PROJECTION,
                         path,
                         "literal list projections require all non-null elements to have the same type",
                     )
@@ -546,7 +546,7 @@ impl<'a> GraphPlanValidator<'a> {
 
         if expected.is_none() {
             return Err(Diagnostic::new(
-                "INVALID_LITERAL_LIST_PROJECTION",
+                diagnostic_codes::INVALID_LITERAL_LIST_PROJECTION,
                 path,
                 "literal list projections require at least one non-null element",
             )
@@ -568,7 +568,7 @@ impl<'a> GraphPlanValidator<'a> {
             };
             if kind != element_type {
                 return Err(Diagnostic::new(
-                    "INVALID_TYPED_LITERAL_LIST",
+                    diagnostic_codes::INVALID_TYPED_LITERAL_LIST,
                     path,
                     "typed literal lists require all non-null elements to match the declared element type",
                 )
