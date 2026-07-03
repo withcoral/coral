@@ -930,6 +930,108 @@ paths:
     );
 }
 
+#[test]
+fn importer_ignores_unused_external_refs_in_root_components() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let openapi_file = temp.path().join("openapi.yaml");
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: unused_root_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '204': {}
+components:
+  schemas:
+    Unused:
+      $ref: missing.yaml#/Nope
+"
+        .as_bytes(),
+    )
+    .expect("unused external component refs should not fail import");
+
+    assert_eq!(ir.operations.len(), 1);
+    assert_eq!(ir.operations.first().expect("operation").id, "items_list");
+}
+
+#[test]
+fn importer_ignores_unused_external_refs_in_referenced_documents() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let openapi_file = temp.path().join("openapi.yaml");
+    std::fs::create_dir_all(temp.path().join("schemas")).expect("schemas dir");
+    std::fs::write(
+        temp.path().join("schemas/items.yaml"),
+        r"
+Item:
+  type: object
+  properties:
+    id: {type: string}
+Unused:
+  $ref: missing.yaml#/Nope
+",
+    )
+    .expect("external schema");
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: unused_external_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: schemas/items.yaml#/Item
+"
+        .as_bytes(),
+    )
+    .expect("unused refs in external documents should not fail import");
+
+    assert_eq!(ir.operations.len(), 1);
+    assert_eq!(
+        ir.operations.first().expect("operation").output.type_ref,
+        "item"
+    );
+}
+
 fn write_external_ref_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("paths")).expect("paths dir");
     std::fs::create_dir_all(root.join("parameters")).expect("parameters dir");

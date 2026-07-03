@@ -3,7 +3,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use url::Url;
 
 use crate::v4::diagnostics::Diagnostic;
@@ -73,11 +73,13 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
             surface.id
         ))
     })?;
+    let reachable_document = reachable_openapi_document(document);
     let mut seen = BTreeSet::new();
     let mut external_documents = BTreeMap::new();
     collect_external_ref_documents(
         &parsed_descriptor_url,
-        document,
+        &reachable_document,
+        &reachable_document,
         &mut seen,
         &mut external_documents,
     )
@@ -110,7 +112,7 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
     jsonschema::options()
         .with_base_uri(base_uri)
         .with_registry(&registry)
-        .dereference(document)
+        .dereference(&reachable_document)
         .map_err(|error| {
             ManifestError::validation(format!(
                 "failed to dereference OpenAPI document for surface '{}': {error}",
@@ -121,35 +123,35 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
 
 fn collect_external_ref_documents(
     base_uri: &Url,
+    document: &Value,
     value: &Value,
     seen: &mut BTreeSet<String>,
     external_documents: &mut BTreeMap<String, Value>,
 ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match value {
         Value::Object(object) => {
-            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
-                && let Some(document_uri) = external_ref_document_uri(base_uri, reference)?
-            {
-                let document_uri_string = document_uri.to_string();
-                if seen.insert(document_uri_string.clone()) {
-                    let mut document = retrieve_external_ref_document(base_uri, &document_uri)?;
-                    annotate_ref_sites(&mut document);
-                    collect_external_ref_documents(
-                        &document_uri,
-                        &document,
-                        seen,
-                        external_documents,
-                    )?;
-                    external_documents.insert(document_uri_string, document);
-                }
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                collect_ref_documents(base_uri, document, reference, seen, external_documents)?;
             }
             for value in object.values() {
-                collect_external_ref_documents(base_uri, value, seen, external_documents)?;
+                collect_external_ref_documents(
+                    base_uri,
+                    document,
+                    value,
+                    seen,
+                    external_documents,
+                )?;
             }
         }
         Value::Array(values) => {
             for value in values {
-                collect_external_ref_documents(base_uri, value, seen, external_documents)?;
+                collect_external_ref_documents(
+                    base_uri,
+                    document,
+                    value,
+                    seen,
+                    external_documents,
+                )?;
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
@@ -157,18 +159,172 @@ fn collect_external_ref_documents(
     Ok(())
 }
 
-fn external_ref_document_uri(
+fn collect_ref_documents(
     base_uri: &Url,
+    document: &Value,
     reference: &str,
-) -> std::result::Result<Option<Url>, Box<dyn std::error::Error + Send + Sync>> {
-    if reference.starts_with('#') {
-        return Ok(None);
+    seen: &mut BTreeSet<String>,
+    external_documents: &mut BTreeMap<String, Value>,
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let resolved_ref_uri = base_uri.join(reference)?;
+    let resolved_ref_uri_string = resolved_ref_uri.to_string();
+    if !seen.insert(resolved_ref_uri_string) {
+        return Ok(());
     }
-    let mut resolved = base_uri.join(reference)?;
-    resolved.set_fragment(None);
     let mut base_document_uri = base_uri.clone();
     base_document_uri.set_fragment(None);
-    Ok((resolved != base_document_uri).then_some(resolved))
+    let mut document_uri = resolved_ref_uri.clone();
+    document_uri.set_fragment(None);
+
+    if document_uri == base_document_uri {
+        let Ok(target) = ref_target(document, &resolved_ref_uri) else {
+            return Ok(());
+        };
+        let target = target.clone();
+        return collect_external_ref_documents(
+            base_uri,
+            document,
+            &target,
+            seen,
+            external_documents,
+        );
+    }
+
+    let document_uri_string = document_uri.to_string();
+    if !external_documents.contains_key(&document_uri_string) {
+        let mut document = retrieve_external_ref_document(base_uri, &document_uri)?;
+        annotate_ref_sites(&mut document);
+        external_documents.insert(document_uri_string.clone(), document);
+    }
+    let external_document = external_documents
+        .get(&document_uri_string)
+        .expect("external document was inserted")
+        .clone();
+    let target = ref_target(&external_document, &resolved_ref_uri)?.clone();
+    collect_external_ref_documents(
+        &document_uri,
+        &external_document,
+        &target,
+        seen,
+        external_documents,
+    )
+}
+
+fn ref_target<'a>(
+    document: &'a Value,
+    resolved_ref_uri: &Url,
+) -> std::result::Result<&'a Value, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(fragment) = resolved_ref_uri.fragment() else {
+        return Ok(document);
+    };
+    if fragment.is_empty() {
+        return Ok(document);
+    }
+    if !fragment.starts_with('/') {
+        return Err(std::io::Error::other(format!(
+            "OpenAPI reference '{resolved_ref_uri}' uses unsupported fragment '{fragment}'"
+        ))
+        .into());
+    }
+    document.pointer(fragment).ok_or_else(|| {
+        std::io::Error::other(format!(
+            "OpenAPI reference target '{resolved_ref_uri}' was not found"
+        ))
+        .into()
+    })
+}
+
+fn reachable_openapi_document(document: &Value) -> Value {
+    let mut reachable = Value::Object(Map::new());
+    for key in ["openapi", "paths"] {
+        if let Some(value) = document.get(key) {
+            reachable
+                .as_object_mut()
+                .expect("reachable document is an object")
+                .insert(key.to_string(), value.clone());
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut pointers = BTreeSet::new();
+    if let Some(paths) = document.get("paths") {
+        collect_reachable_local_ref_pointers(document, paths, &mut seen, &mut pointers);
+    }
+    for pointer in pointers {
+        if let Some(value) = document.pointer(&pointer) {
+            insert_json_pointer(&mut reachable, &pointer, value.clone());
+        }
+    }
+
+    reachable
+}
+
+fn collect_reachable_local_ref_pointers(
+    document: &Value,
+    value: &Value,
+    seen: &mut BTreeSet<String>,
+    pointers: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+                && let Some(pointer) = reference.strip_prefix('#')
+                && pointer.starts_with('/')
+                && seen.insert(pointer.to_string())
+            {
+                pointers.insert(pointer.to_string());
+                if let Some(target) = document.pointer(pointer) {
+                    collect_reachable_local_ref_pointers(document, target, seen, pointers);
+                }
+            }
+            for value in object.values() {
+                collect_reachable_local_ref_pointers(document, value, seen, pointers);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_reachable_local_ref_pointers(document, value, seen, pointers);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn insert_json_pointer(document: &mut Value, pointer: &str, value: Value) {
+    let Some(pointer) = pointer.strip_prefix('/') else {
+        *document = value;
+        return;
+    };
+    let segments = pointer
+        .split('/')
+        .map(decode_json_pointer_segment)
+        .collect::<Vec<_>>();
+    insert_json_pointer_segments(document, &segments, value);
+}
+
+fn insert_json_pointer_segments(document: &mut Value, segments: &[String], value: Value) {
+    let Some((segment, rest)) = segments.split_first() else {
+        *document = value;
+        return;
+    };
+    if !document.is_object() {
+        *document = Value::Object(Map::new());
+    }
+    let object = document
+        .as_object_mut()
+        .expect("JSON pointer destination is an object");
+    if rest.is_empty() {
+        object.insert(segment.clone(), value);
+        return;
+    }
+    let child = object
+        .entry(segment.clone())
+        .or_insert_with(|| Value::Object(Map::new()));
+    insert_json_pointer_segments(child, rest, value);
+}
+
+fn decode_json_pointer_segment(segment: &str) -> String {
+    segment.replace("~1", "/").replace("~0", "~")
 }
 
 fn openapi_document_base_uri(surface: &V4Surface) -> Result<String> {
