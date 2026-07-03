@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
 
 use crate::{
-    QueryRuntimeContext, QuerySource, RequestAuthenticator, SourceInputResolver,
-    SourceObservationPublisher,
+    BoundRequestIdentityHttpAuthenticator, QueryRuntimeContext, QuerySource, RequestAuthenticator,
+    SourceInputResolver, SourceObservationPublisher,
 };
 use async_trait::async_trait;
 use coral_spec::{
@@ -132,6 +132,8 @@ pub(crate) struct BackendCompileRequest<'a> {
     pub(crate) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
     pub(crate) source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     pub(crate) source_observation_publishers: &'a [Arc<dyn SourceObservationPublisher>],
+    pub(crate) request_identity_http_authenticators:
+        &'a HashMap<String, BoundRequestIdentityHttpAuthenticator>,
 }
 
 /// Shared resources available while registering one batch of compiled sources.

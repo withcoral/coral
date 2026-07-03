@@ -29,10 +29,15 @@ pub(crate) async fn infer_runtime_functions(
         .iter()
         .map(runtime_sql_definition)
         .collect();
-    let signatures =
-        CoralQuery::infer_udf_signatures(selected_sources, runtime_config, sql_definitions)
-            .await
-            .map_err(|error| runtime_validation_error(&error))?;
+    // Runtime construction is state-heavy; box the engine future so it does
+    // not inflate every caller's future.
+    let signatures = Box::pin(CoralQuery::infer_udf_signatures(
+        selected_sources,
+        runtime_config,
+        sql_definitions,
+    ))
+    .await
+    .map_err(|error| runtime_validation_error(&error))?;
 
     Ok(apply_signatures(runtime_functions, signatures))
 }

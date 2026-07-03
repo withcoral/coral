@@ -44,11 +44,14 @@ use crate::runtime::udf_calls::{
 };
 use crate::runtime::udfs::published_table_functions;
 use crate::{
-    CatalogInfo, CoreError, DependentJoinConfig, DescribeTableInfo, MemorySize, QueryExecution,
-    QueryExecutionProvenance, QueryMemoryConfig, QueryParameterValue, QueryParameters, QueryPlan,
-    QueryResultObserver, QueryResultObserverError, QueryRuntimeConfig, QueryRuntimeContext,
-    QuerySource, QueryTableFunctionUsage, QueryTableUsage, RequestAuthenticator, SourceDecorator,
-    SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
+    BoundRequestIdentityHttpAuthenticator, CatalogInfo, CoreError, DependentJoinConfig,
+    DescribeTableInfo, MemorySize, QueryExecution, QueryExecutionProvenance, QueryMemoryConfig,
+    QueryParameterValue, QueryParameters, QueryPlan, QueryResultObserver, QueryResultObserverError,
+    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage,
+    RequestAuthenticator, RequestIdentityHttpAuthenticatorError,
+    RequestIdentityHttpAuthenticatorFactory, RequestIdentitySelectionContext,
+    RequestIdentitySelectionError, RequestIdentitySelector, SelectedRequestIdentity,
+    SourceDecorator, SourceInputResolver, SourceObservationPublisher, TableFunctionInfo, TableInfo,
     UdfRuntimeDefinition,
 };
 
@@ -72,6 +75,9 @@ pub(crate) struct InferredSqlSignature {
     pub(crate) planned_schema: Arc<arrow::datatypes::Schema>,
 }
 
+type BoundRequestIdentityHttpAuthenticators =
+    HashMap<String, BoundRequestIdentityHttpAuthenticator>;
+
 struct FallbackRuntime {
     config: FallbackRuntimeConfig,
     runtime: OnceCell<RegisteredRuntime>,
@@ -92,6 +98,7 @@ struct FallbackRuntimeConfig {
     memory: QueryMemoryConfig,
     udfs: Vec<UdfRuntimeDefinition>,
     extension_hooks: RuntimeExtensionHooks,
+    request_identity_http_authenticators: BoundRequestIdentityHttpAuthenticators,
 }
 
 struct RegisteredRuntime {
@@ -107,6 +114,7 @@ struct RuntimeBuildInputs<'a> {
     sources: &'a [QuerySource],
     runtime_context: &'a QueryRuntimeContext,
     extension_hooks: &'a RuntimeExtensionHooks,
+    request_identity_http_authenticators: &'a BoundRequestIdentityHttpAuthenticators,
     source_decorators: &'a mut [Box<dyn SourceDecorator>],
     dependent_join: &'a DependentJoinConfig,
     memory: &'a QueryMemoryConfig,
@@ -137,8 +145,8 @@ async fn build_runtime_inner(
         dependent_join,
         mut extensions,
         udfs,
-        request_identity_selector: _,
-        request_identity_http_authenticator_factory: _,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
     } = runtime;
     let extension_hooks = RuntimeExtensionHooks {
         request_authenticators: extensions.request_authenticators.clone(),
@@ -146,6 +154,12 @@ async fn build_runtime_inner(
         source_observation_publishers: extensions.source_observation_publishers.clone(),
     };
     let udfs_installed = !udfs.is_empty();
+    let request_identity_http_authenticators = bind_request_identity_http_authenticators(
+        sources,
+        request_identity_selector,
+        request_identity_http_authenticator_factory,
+    )
+    .await?;
     // Resolver-row overflow can retry without the dependent-join optimizer only
     // when runtime registration is replayable. Source decorators are mutable
     // one-shot registration hooks today, so decorated runtimes keep resolver-row
@@ -161,6 +175,7 @@ async fn build_runtime_inner(
             memory: memory.clone(),
             udfs: udfs.clone(),
             extension_hooks: extension_hooks.clone(),
+            request_identity_http_authenticators: request_identity_http_authenticators.clone(),
         })
     });
 
@@ -168,6 +183,7 @@ async fn build_runtime_inner(
         sources,
         runtime_context: &runtime_context,
         extension_hooks: &extension_hooks,
+        request_identity_http_authenticators: &request_identity_http_authenticators,
         source_decorators: extensions.source_decorators.as_mut_slice(),
         dependent_join: &dependent_join,
         memory: &memory,
@@ -190,6 +206,104 @@ async fn build_runtime_inner(
     })
 }
 
+async fn bind_request_identity_http_authenticators(
+    sources: &[QuerySource],
+    request_identity_selector: Option<Arc<dyn RequestIdentitySelector>>,
+    request_identity_http_authenticator_factory: Option<RequestIdentityHttpAuthenticatorFactory>,
+) -> Result<BoundRequestIdentityHttpAuthenticators, CoreError> {
+    let mut identity_contexts = Vec::new();
+    let mut seen_source_names = HashSet::new();
+    for source in sources {
+        let Some(context) = source.identity_selection_context() else {
+            continue;
+        };
+        let source_name = context.source_name().to_string();
+        if !seen_source_names.insert(source_name.clone()) {
+            return Err(CoreError::FailedPrecondition(format!(
+                "source '{source_name}' appears more than once with identity_requirements"
+            )));
+        }
+        identity_contexts.push((source_name, context));
+    }
+
+    let mut authenticators = HashMap::with_capacity(identity_contexts.len());
+    for (source_name, context) in identity_contexts {
+        let selector = request_identity_selector.as_ref().ok_or_else(|| {
+            CoreError::FailedPrecondition(format!(
+                "source '{}' declares identity_requirements but no request identity selector is installed",
+                context.source_name()
+            ))
+        })?;
+        let factory = request_identity_http_authenticator_factory
+            .as_ref()
+            .ok_or_else(|| {
+                CoreError::FailedPrecondition(format!(
+                    "source '{}' declares identity_requirements but no request identity HTTP authenticator factory is installed",
+                    context.source_name()
+                ))
+            })?;
+        let selected = selector
+            .select_identity(&context)
+            .await
+            .map_err(|error| request_identity_selection_error(&context, &error))?;
+        validate_selected_identity(&context, &selected)?;
+        let authenticator = factory(selected.clone()).map_err(|error| {
+            request_identity_http_authenticator_factory_error(&context, &selected, &error)
+        })?;
+        authenticators.insert(source_name, authenticator);
+    }
+    Ok(authenticators)
+}
+
+fn validate_selected_identity(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+) -> Result<(), CoreError> {
+    if context.accepts_identity(selected.identity_spec_id(), selected.audience()) {
+        return Ok(());
+    }
+    Err(CoreError::FailedPrecondition(format!(
+        "request identity selector selected identity '{}' with spec '{}' that does not satisfy identity_requirements for source '{}'",
+        selected.identity_id(),
+        selected.identity_spec_id(),
+        context.source_name()
+    )))
+}
+
+fn request_identity_selection_error(
+    context: &RequestIdentitySelectionContext,
+    error: &RequestIdentitySelectionError,
+) -> CoreError {
+    let detail = format!(
+        "request identity selector failed for source '{}': {error}",
+        context.source_name()
+    );
+    match error {
+        RequestIdentitySelectionError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentitySelectionError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
+fn request_identity_http_authenticator_factory_error(
+    context: &RequestIdentitySelectionContext,
+    selected: &SelectedRequestIdentity,
+    error: &RequestIdentityHttpAuthenticatorError,
+) -> CoreError {
+    let detail = format!(
+        "request identity HTTP authenticator factory failed for selected identity '{}' on source '{}': {error}",
+        selected.identity_id(),
+        context.source_name()
+    );
+    match error {
+        RequestIdentityHttpAuthenticatorError::InvalidInput(_) => CoreError::InvalidInput(detail),
+        RequestIdentityHttpAuthenticatorError::FailedPrecondition(_) => {
+            CoreError::FailedPrecondition(detail)
+        }
+    }
+}
+
 async fn build_registered_runtime(
     config: RuntimeBuildInputs<'_>,
 ) -> Result<RegisteredRuntime, CoreError> {
@@ -199,6 +313,7 @@ async fn build_registered_runtime(
         config.sources,
         config.runtime_context,
         config.extension_hooks,
+        config.request_identity_http_authenticators,
         config.source_decorators,
     )
     .await?;
@@ -340,6 +455,7 @@ async fn register_runtime_sources(
     sources: &[QuerySource],
     runtime_context: &QueryRuntimeContext,
     extension_hooks: &RuntimeExtensionHooks,
+    request_identity_http_authenticators: &BoundRequestIdentityHttpAuthenticators,
     source_decorators: &mut [Box<dyn SourceDecorator>],
 ) -> Result<crate::runtime::registry::SourceRegistrationResult, CoreError> {
     let mut source_candidates = Vec::new();
@@ -350,6 +466,7 @@ async fn register_runtime_sources(
             &extension_hooks.request_authenticators,
             extension_hooks.source_input_resolver.clone(),
             &extension_hooks.source_observation_publishers,
+            request_identity_http_authenticators,
         ) {
             Ok(compiled) => {
                 source_candidates.push(SourceRegistrationCandidate::Compiled(
@@ -1123,6 +1240,7 @@ impl FallbackRuntimeConfig {
             sources: &self.sources,
             runtime_context: &self.runtime_context,
             extension_hooks: &self.extension_hooks,
+            request_identity_http_authenticators: &self.request_identity_http_authenticators,
             source_decorators: source_decorators.as_mut_slice(),
             dependent_join: &dependent_join,
             memory: &self.memory,
@@ -1201,9 +1319,10 @@ fn query_result_observer_error(name: &str, error: &QueryResultObserverError) -> 
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::str::FromStr as _;
 
+    use coral_spec::v4::IdentityRequirements;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
     use super::*;
@@ -1268,6 +1387,48 @@ mod tests {
     }
 
     #[test]
+    fn request_identity_extension_errors_preserve_status_class() {
+        let context = RequestIdentitySelectionContext::new(
+            "github_v4",
+            IdentityRequirements {
+                accepts: Vec::new(),
+            },
+        );
+        let selected = SelectedRequestIdentity::new("identity-1", "github_oauth", BTreeMap::new());
+
+        assert!(matches!(
+            request_identity_selection_error(
+                &context,
+                &RequestIdentitySelectionError::invalid_input("selector failure")
+            ),
+            CoreError::InvalidInput(detail) if detail.contains("source 'github_v4': selector failure")
+        ));
+        assert!(matches!(
+            request_identity_selection_error(
+                &context,
+                &RequestIdentitySelectionError::failed_precondition("selector failure")
+            ),
+            CoreError::FailedPrecondition(detail) if detail.contains("source 'github_v4': selector failure")
+        ));
+        assert!(matches!(
+            request_identity_http_authenticator_factory_error(
+                &context,
+                &selected,
+                &RequestIdentityHttpAuthenticatorError::invalid_input("factory failure")
+            ),
+            CoreError::InvalidInput(detail) if detail.contains("selected identity 'identity-1'")
+        ));
+        assert!(matches!(
+            request_identity_http_authenticator_factory_error(
+                &context,
+                &selected,
+                &RequestIdentityHttpAuthenticatorError::failed_precondition("factory failure")
+            ),
+            CoreError::FailedPrecondition(detail) if detail.contains("selected identity 'identity-1'")
+        ));
+    }
+
+    #[test]
     fn build_session_context_applies_memory_limit() {
         let ctx = build_session_context(
             &DependentJoinConfig::default(),
@@ -1307,6 +1468,7 @@ mod tests {
                 source_input_resolver: None,
                 source_observation_publishers: Vec::new(),
             },
+            request_identity_http_authenticators: HashMap::new(),
         };
 
         let runtime = fallback

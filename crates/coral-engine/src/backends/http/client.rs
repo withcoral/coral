@@ -15,8 +15,8 @@ use crate::backends::http::registration_checks::validate_source_scoped_http_conf
 use crate::backends::http::target::HttpFetchTarget;
 use crate::backends::http::trace::HttpBodyCapture;
 use crate::{
-    RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
-    SourceInputResolverError,
+    BoundRequestIdentityHttpAuthenticator, RequestAuthenticator, SourceInputResolutionContext,
+    SourceInputResolver, SourceInputResolverError,
 };
 use coral_spec::backends::http::{HttpSourceManifest, RateLimitSpec};
 use coral_spec::{AuthSpec, HeaderSpec, ParsedTemplate, RequestSpec as ManifestRequestSpec};
@@ -35,6 +35,11 @@ pub(crate) struct HttpSourceClient {
     pub(super) request_authenticators: HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolution_context: Option<SourceInputResolutionContext>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    #[expect(
+        dead_code,
+        reason = "bound identity authenticators are injected into requests by a later stack unit"
+    )]
+    pub(super) request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
     pub(super) rate_limit: RateLimitSpec,
     pub(super) resolved_inputs: Arc<BTreeMap<String, String>>,
     pub(super) body_capture: HttpBodyCapture,
@@ -44,6 +49,7 @@ pub(crate) struct HttpSourceClient {
 pub(crate) struct HttpSourceClientRuntime {
     source_input_resolution_context: Option<SourceInputResolutionContext>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+    request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<OtelContext>,
     http: reqwest::Client,
@@ -53,6 +59,7 @@ impl HttpSourceClientRuntime {
     pub(crate) fn new(
         source_input_resolution_context: SourceInputResolutionContext,
         source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
+        request_identity_http_authenticator: Option<BoundRequestIdentityHttpAuthenticator>,
         body_capture_max_bytes: Option<usize>,
         trace_context: Option<OtelContext>,
         http: reqwest::Client,
@@ -60,6 +67,7 @@ impl HttpSourceClientRuntime {
         Self {
             source_input_resolution_context: Some(source_input_resolution_context),
             source_input_resolver,
+            request_identity_http_authenticator,
             body_capture_max_bytes,
             trace_context,
             http,
@@ -71,6 +79,7 @@ impl HttpSourceClientRuntime {
         Self {
             source_input_resolution_context: None,
             source_input_resolver: None,
+            request_identity_http_authenticator: None,
             body_capture_max_bytes,
             trace_context: None,
             http,
@@ -182,6 +191,7 @@ impl HttpSourceClient {
             request_authenticators: request_authenticators.clone(),
             source_input_resolution_context: runtime.source_input_resolution_context,
             source_input_resolver: runtime.source_input_resolver,
+            request_identity_http_authenticator: runtime.request_identity_http_authenticator,
             rate_limit: manifest.rate_limit.clone(),
             resolved_inputs: Arc::new(resolved_inputs),
             body_capture: HttpBodyCapture::new(runtime.body_capture_max_bytes),

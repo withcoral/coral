@@ -71,8 +71,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    CoreError, QuerySource, RequestAuthenticator, RuntimeSourceComponent, SourceInputResolver,
-    SourceObservationPublisher,
+    BoundRequestIdentityHttpAuthenticator, CoreError, QuerySource, RequestAuthenticator,
+    RuntimeSourceComponent, SourceInputResolver, SourceObservationPublisher,
 };
 #[cfg(test)]
 use coral_spec::ValidatedSourceManifest;
@@ -99,6 +99,7 @@ pub(crate) fn compile_query_source(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
     source_observation_publishers: &[Arc<dyn SourceObservationPublisher>],
+    request_identity_http_authenticators: &HashMap<String, BoundRequestIdentityHttpAuthenticator>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if source.components().is_empty() {
         return Err(CoreError::FailedPrecondition(format!(
@@ -114,12 +115,13 @@ pub(crate) fn compile_query_source(
         request_authenticators,
         source_input_resolver,
         source_observation_publishers,
+        request_identity_http_authenticators,
     };
     let compiled_components = source
         .components()
         .iter()
         .map(|component| compile_component(component, &request))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(composite::compile_source(
         source.source_name().to_string(),
         compiled_components,
@@ -129,11 +131,33 @@ pub(crate) fn compile_query_source(
 fn compile_component(
     component: &RuntimeSourceComponent,
     request: &BackendCompileRequest<'_>,
-) -> Box<dyn CompiledBackendSource> {
+) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     match component {
-        RuntimeSourceComponent::Http(manifest) => http::compile_manifest(manifest, request),
-        RuntimeSourceComponent::File(manifest) => file::compile_manifest(manifest, request),
-        RuntimeSourceComponent::Mcp(manifest) => mcp::compile_manifest(manifest, request),
+        RuntimeSourceComponent::Http(manifest) => {
+            let request_identity_http_authenticator = request
+                .source
+                .identity_requirements()
+                .map(|_| {
+                    request
+                        .request_identity_http_authenticators
+                        .get(request.source.source_name())
+                        .cloned()
+                        .ok_or_else(|| {
+                            CoreError::FailedPrecondition(format!(
+                                "source '{}' declares identity_requirements but no bound request identity HTTP authenticator is installed",
+                                request.source.source_name()
+                            ))
+                        })
+                })
+                .transpose()?;
+            Ok(http::compile_manifest(
+                manifest,
+                request,
+                request_identity_http_authenticator,
+            ))
+        }
+        RuntimeSourceComponent::File(manifest) => Ok(file::compile_manifest(manifest, request)),
+        RuntimeSourceComponent::Mcp(manifest) => Ok(mcp::compile_manifest(manifest, request)),
     }
 }
 
@@ -160,6 +184,7 @@ pub(crate) fn compile_source_manifest(
             request_authenticators: &request_authenticators,
             source_input_resolver: None,
             source_observation_publishers: &[],
+            request_identity_http_authenticators: &HashMap::new(),
         },
     )
 }
@@ -170,7 +195,7 @@ pub(crate) fn compile_validated_manifest(
     request: &BackendCompileRequest<'_>,
 ) -> Result<Box<dyn CompiledBackendSource>, CoreError> {
     if let Some(http_manifest) = manifest.as_http() {
-        return Ok(http::compile_manifest(http_manifest, request));
+        return Ok(http::compile_manifest(http_manifest, request, None));
     }
     if let Some(file_manifest) = manifest.as_file() {
         return Ok(file::compile_manifest(file_manifest, request));
