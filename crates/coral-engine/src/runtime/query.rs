@@ -204,14 +204,12 @@ async fn build_registered_runtime(
         }
     }
     if has_udfs {
-        let udf_calls = UdfCallRegistry::new(&ctx, config.udfs)
+        let udf_calls = Box::pin(UdfCallRegistry::new(&ctx, config.udfs))
             .await
             .map_err(|err| datafusion_to_core(&err, &tables))?;
-        if !udf_calls.is_empty() {
-            udf_calls
-                .install(&ctx)
-                .map_err(|err| datafusion_to_core(&err, &tables))?;
-        }
+        udf_calls
+            .install(&ctx)
+            .map_err(|err| datafusion_to_core(&err, &tables))?;
     }
     if has_source_functions && has_udfs {
         SourceFunctionRegistry::install_analyzer(&ctx);
