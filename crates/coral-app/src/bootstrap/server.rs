@@ -28,6 +28,8 @@ use tokio::task::{self, JoinHandle};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::service::Routes;
 use tonic::transport::Server;
+use tracing::warn;
+use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -38,6 +40,9 @@ use crate::auth::CoralAuthorizationServer;
 use crate::catalog::discovery::CatalogDiscovery;
 use crate::catalog::service::CatalogService;
 use crate::credentials::config::CredentialStorageConfig;
+use crate::credentials::encryption::{
+    CredentialEncryptionKey, CredentialEncryptionKeyOrigin, LocalFileCredentialKeyProvider,
+};
 use crate::credentials::{CredentialManager, CredentialStore};
 use crate::features::service::FeatureService;
 use crate::features::{Feature, FeatureOverrides, FeatureStore, Features};
@@ -390,9 +395,7 @@ impl ServerBuilder {
         apply_local_principal_policy(&coral_db, local_principal).await?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
         import_filesystem_feedback_reports(&coral_db, &layout).await?;
-        let credential_config = CredentialStorageConfig::load(&layout)?;
-        let credential_store =
-            CredentialStore::with_preference(layout.clone(), credential_config.storage);
+        let credential_store = init_credential_store(&layout, &coral_db)?;
         let credential_manager = CredentialManager::new(credential_store);
         let workspace_lifecycle_lock = WorkspaceLifecycleLock::default();
         let workspace_pool_registry = Arc::new(WorkspacePoolRegistry::default());
@@ -653,6 +656,61 @@ async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
     let coral_db = CoralDb::open(database_config).await?;
     coral_db.migrate().await?;
     Ok(coral_db)
+}
+
+fn init_credential_store(
+    layout: &AppStateLayout,
+    coral_db: &Arc<CoralDb>,
+) -> Result<CredentialStore, AppError> {
+    let credential_config = CredentialStorageConfig::load(layout)?;
+    let provided_key = resolve_configured_credential_encryption_key(
+        credential_config.encryption_key_env.as_deref(),
+    )?;
+    let key_provider = Arc::new(LocalFileCredentialKeyProvider::with_source(
+        layout,
+        provided_key,
+        credential_config.encryption_key_source,
+    ));
+    let key_origin = key_provider.active_key_origin()?;
+    if coral_db.is_postgres() && key_origin != CredentialEncryptionKeyOrigin::Provided {
+        warn!(
+            ?key_origin,
+            "database-backed credentials are using a host-local encryption key with Postgres; multiple servers can create split key domains and unreadable credential documents; set [credentials].encryption_key_env to the same KEK on every server"
+        );
+    }
+    Ok(CredentialStore::with_database(
+        layout.clone(),
+        credential_config.storage,
+        Arc::clone(coral_db),
+        key_provider,
+    ))
+}
+
+fn resolve_configured_credential_encryption_key(
+    env_name: Option<&str>,
+) -> Result<Option<CredentialEncryptionKey>, AppError> {
+    let Some(env_name) = env_name else {
+        return Ok(None);
+    };
+    let raw = AppEnvironment::env_var(env_name)
+        .map_err(|_error| {
+            AppError::FailedPrecondition(format!(
+                "credential encryption key environment variable `{env_name}` must contain valid UTF-8"
+            ))
+        })?
+        .ok_or_else(|| {
+            AppError::FailedPrecondition(format!(
+                "credential encryption key environment variable `{env_name}` is not set"
+            ))
+        })?;
+    let raw = Zeroizing::new(raw);
+    CredentialEncryptionKey::from_encoded_material(raw.as_str())
+        .map(Some)
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "credential encryption key environment variable `{env_name}` is invalid: {error}"
+            ))
+        })
 }
 
 fn resolve_database_config(layout: &AppStateLayout) -> Result<ResolvedDatabaseConfig, AppError> {
@@ -1014,10 +1072,12 @@ mod tests {
     use std::future::Future as _;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::path::Path;
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
     use std::task::Poll;
     use std::time::Duration;
 
+    use base64::Engine as _;
     use coral_api::v1::gui_onboarding_service_client::GuiOnboardingServiceClient;
     use coral_api::v1::query_service_client::QueryServiceClient;
     use coral_api::v1::source_service_client::SourceServiceClient;
@@ -1037,7 +1097,8 @@ mod tests {
 
     use super::{
         RunningServer, ServerBuilder, ServerDependencies, ServerMode, SessionAuthSettings,
-        TraceServerComponents, inaccessible_workspaces_warning, start_server,
+        TraceServerComponents, inaccessible_workspaces_warning,
+        resolve_configured_credential_encryption_key, start_server,
     };
     use crate::auth::session::test_signing_key;
     use crate::bootstrap::AppError;
@@ -1130,6 +1191,88 @@ enabled = false
             .lock()
             .expect("search observation mutex")
             .is_some()
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "This subprocess test controls environment values consumed by the app-owned accessor."
+    )]
+    fn configured_credential_encryption_key_resolution() {
+        const RUN_MODE: &str = "CORAL_RUN_CREDENTIAL_KEY_RESOLUTION_TEST";
+        const KEY_ENV: &str = "CORAL_CREDENTIAL_KEY_RESOLUTION_TEST";
+        const TEST_NAME: &str =
+            "bootstrap::server::tests::configured_credential_encryption_key_resolution";
+
+        if let Some(mode) = std::env::var_os(RUN_MODE) {
+            match mode.to_str().expect("UTF-8 test mode") {
+                "valid" => {
+                    let key = resolve_configured_credential_encryption_key(Some(KEY_ENV))
+                        .expect("valid key")
+                        .expect("configured key");
+                    assert!(!key.key_id().is_empty());
+                }
+                "missing" => {
+                    let error = resolve_configured_credential_encryption_key(Some(KEY_ENV))
+                        .expect_err("missing key should fail");
+                    assert!(error.to_string().contains(KEY_ENV));
+                    assert!(error.to_string().contains("is not set"));
+                }
+                "malformed" => {
+                    let error = resolve_configured_credential_encryption_key(Some(KEY_ENV))
+                        .expect_err("malformed key should fail");
+                    assert!(error.to_string().contains(KEY_ENV));
+                    assert!(error.to_string().contains("is invalid"));
+                }
+                #[cfg(unix)]
+                "non_utf8" => {
+                    let error = resolve_configured_credential_encryption_key(Some(KEY_ENV))
+                        .expect_err("non-UTF-8 key should fail");
+                    assert!(error.to_string().contains(KEY_ENV));
+                    assert!(error.to_string().contains("valid UTF-8"));
+                }
+                mode => panic!("unexpected mode {mode}"),
+            }
+            return;
+        }
+
+        let valid = format!(
+            "v1:{}",
+            base64::engine::general_purpose::STANDARD.encode([7_u8; 32])
+        );
+        let cases = [
+            ("valid", Some(valid.as_str())),
+            ("missing", None),
+            ("malformed", Some("bad")),
+        ];
+        for (mode, value) in cases {
+            let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+            command.env(RUN_MODE, mode).arg("--exact").arg(TEST_NAME);
+            match value {
+                Some(value) => {
+                    command.env(KEY_ENV, value);
+                }
+                None => {
+                    command.env_remove(KEY_ENV);
+                }
+            }
+            assert!(command.status().expect("run subprocess").success());
+        }
+
+        #[cfg(unix)]
+        {
+            use std::ffi::OsString;
+            use std::os::unix::ffi::OsStringExt as _;
+
+            let status = Command::new(std::env::current_exe().expect("current test binary"))
+                .env(RUN_MODE, "non_utf8")
+                .env(KEY_ENV, OsString::from_vec(vec![0xFF]))
+                .arg("--exact")
+                .arg(TEST_NAME)
+                .status()
+                .expect("run non-UTF-8 subprocess");
+            assert!(status.success());
+        }
     }
 
     async fn test_db(layout: &AppStateLayout, config_store: &ConfigStore) -> Arc<CoralDb> {

@@ -189,10 +189,6 @@ impl CredentialStore {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "database credential store construction is wired by the next stacked branch"
-    )]
     pub(crate) fn with_database(
         layout: AppStateLayout,
         preference: CredentialStoragePreference,
@@ -1640,12 +1636,15 @@ mod tests {
 
     use super::{CredentialMaterialBackend, CredentialSetRef, EncodedCredentialMaterial};
     use super::{CredentialStore, decode_env_value, encode_env_value, load_file, save_file};
+    use crate::credentials::encryption::{CredentialEncryptionKey, CredentialKeyProvider};
     use crate::credentials::{
         CredentialMaterialSnapshot, CredentialSetId, CredentialStorageKind,
         CredentialStoragePreference,
     };
     use crate::sources::SourceName;
+    use crate::sources::model::{InstalledSource, SourceOrigin};
     use crate::state::AppStateLayout;
+    use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
     use tempfile::TempDir;
 
@@ -1735,6 +1734,26 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RotatingKeyProvider {
+        active: CredentialEncryptionKey,
+        keys: Vec<CredentialEncryptionKey>,
+    }
+
+    impl CredentialKeyProvider for RotatingKeyProvider {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, super::CredentialsError> {
+            Ok(self.active.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, super::CredentialsError> {
+            self.keys
+                .iter()
+                .find(|key| key.key_id() == key_id)
+                .cloned()
+                .ok_or_else(|| super::CredentialsError::Crypto("missing test key".to_string()))
+        }
+    }
+
     #[test]
     fn keychain_address_namespaces_by_config_workspace_and_credential_set() {
         let config_namespace = super::CredentialConfigNamespace("test".to_string());
@@ -1810,6 +1829,104 @@ mod tests {
             super::CredentialConfigNamespace::from_config_dir(&first_dir),
             super::CredentialConfigNamespace::from_config_dir(&second_dir)
         );
+    }
+
+    #[tokio::test]
+    async fn database_update_retries_cas_loser_from_winner_material() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let store = CredentialStore::with_database(
+            layout,
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            static_key_provider(13),
+        );
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source = SourceName::parse("github").expect("source");
+        let credential_set_id = CredentialSetId::for_source(&source);
+        ensure_source(&db, &workspace, &source).await;
+        store
+            .replace_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                &BTreeMap::from([("TOKEN".to_string(), "initial".to_string())]),
+            )
+            .expect("seed material");
+
+        let mut raced = false;
+        let result = store
+            .update_material(
+                &workspace,
+                &credential_set_id,
+                CredentialStorageKind::Database,
+                |mut current| {
+                    if !raced {
+                        raced = true;
+                        store
+                            .replace_material(
+                                &workspace,
+                                &credential_set_id,
+                                CredentialStorageKind::Database,
+                                &BTreeMap::from([("TOKEN".to_string(), "winner".to_string())]),
+                            )
+                            .expect("competing winner");
+                    }
+                    current.insert("EXTRA".to_string(), "loser".to_string());
+                    Ok((current.clone(), current))
+                },
+            )
+            .expect("cas retry update");
+
+        assert_eq!(result.get("TOKEN").map(String::as_str), Some("winner"));
+        assert_eq!(result.get("EXTRA").map(String::as_str), Some("loser"));
+    }
+
+    fn static_key_provider(byte: u8) -> Arc<dyn CredentialKeyProvider> {
+        let key = CredentialEncryptionKey::from_static_bytes_for_test([byte; 32]);
+        Arc::new(RotatingKeyProvider {
+            active: key.clone(),
+            keys: vec![key],
+        })
+    }
+
+    async fn ensure_source(db: &CoralDb, workspace: &WorkspaceName, source: &SourceName) {
+        let mut tx = db.begin().await.expect("begin source tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 1)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(
+                workspace,
+                &InstalledSource {
+                    name: source.clone(),
+                    version: None,
+                    variables: BTreeMap::new(),
+                    secrets: vec!["GITHUB_TOKEN".to_string()],
+                    credential_storage: Some(CredentialStorageKind::Database),
+                    credential_revision: uuid::Uuid::default(),
+                    origin: SourceOrigin::Bundled,
+                },
+                1,
+            )
+            .await
+            .expect("ensure source");
+        tx.commit().await.expect("commit source tx");
+    }
+
+    async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
+        let config = DatabaseConfig::load(layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+        db
     }
 
     #[test]
