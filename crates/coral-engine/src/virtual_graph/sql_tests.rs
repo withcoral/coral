@@ -5,6 +5,7 @@ use crate::virtual_graph::ir::{
     OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
     PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalExpr,
 };
 
 const GRAPH: &str = r"
@@ -39,6 +40,14 @@ relationships:
     properties:
       criticality: criticality
 ";
+
+fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDate {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+    })
+}
 
 #[test]
 fn lower_graph_plan_renders_forward_relationship_sql() {
@@ -1885,6 +1894,61 @@ fn lower_graph_plan_renders_character_length_and_substring_expressions() {
         translation
             .sql()
             .contains("ORDER BY SUBSTRING(\"n1\".\"service_name\" FROM (0 + 1)) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_temporal_date_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: date_expression(1984, 10, 11),
+            alias: "d".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(date_expression(1984, 10, 11)),
+            },
+            alias: "text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: date_expression(1984, 10, 11),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(date_expression(1985, 1, 1)),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(date_expression(1984, 10, 11)),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("date scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT make_date(1984, 10, 11) AS \"d\", CAST(make_date(1984, 10, 11) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("WHERE make_date(1984, 10, 11) < make_date(1985, 1, 1)"),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY make_date(1984, 10, 11) ASC"),
         "{}",
         translation.sql()
     );

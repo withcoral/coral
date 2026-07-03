@@ -20,7 +20,7 @@ use super::ir::{
     OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
     UndirectedRelationshipEndpoint,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};

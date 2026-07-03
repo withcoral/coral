@@ -6,7 +6,7 @@
 
 use super::{
     AggregateFunction, CoreError, Diagnostic, Literal, LiteralListElementType, Projection,
-    ScalarType, diagnostic_codes,
+    ScalarType, TemporalKind, diagnostic_codes,
 };
 
 pub(super) fn projection_alias_name(projection: &Projection) -> Option<&str> {
@@ -51,22 +51,51 @@ pub(super) fn literal_list_scalar_type(literals: &[Literal]) -> Result<ScalarTyp
     Ok(result_type)
 }
 
-pub(super) fn numeric_result_type(scalar_type: ScalarType) -> ScalarType {
+pub(super) fn numeric_result_type(
+    scalar_type: ScalarType,
+    path: impl Into<String>,
+    context: &str,
+) -> Result<ScalarType, CoreError> {
     match scalar_type {
-        ScalarType::Integer => ScalarType::Integer,
-        ScalarType::Float => ScalarType::Float,
-        ScalarType::Unknown | ScalarType::Null => ScalarType::Unknown,
-        ScalarType::String | ScalarType::Boolean | ScalarType::Other => {
-            unreachable!("numeric result requested for non-numeric type")
+        ScalarType::Integer => Ok(ScalarType::Integer),
+        ScalarType::Float => Ok(ScalarType::Float),
+        ScalarType::Unknown | ScalarType::Null => Ok(ScalarType::Unknown),
+        ScalarType::String | ScalarType::Boolean | ScalarType::Temporal(_) | ScalarType::Other => {
+            Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                path,
+                format!(
+                    "{context} requires a numeric scalar expression, got {}",
+                    scalar_type.name()
+                ),
+            )
+            .into_core_error())
         }
     }
 }
 
-pub(super) fn numeric_binary_result_type(left: ScalarType, right: ScalarType) -> ScalarType {
+pub(super) fn numeric_binary_result_type(
+    left: ScalarType,
+    right: ScalarType,
+    path: impl Into<String>,
+    context: &str,
+) -> Result<ScalarType, CoreError> {
     match (left, right) {
-        (ScalarType::Float, _) | (_, ScalarType::Float) => ScalarType::Float,
-        (ScalarType::Integer, ScalarType::Integer) => ScalarType::Integer,
-        _ => ScalarType::Unknown,
+        (ScalarType::Float, ScalarType::Integer | ScalarType::Float)
+        | (ScalarType::Integer, ScalarType::Float) => Ok(ScalarType::Float),
+        (ScalarType::Integer, ScalarType::Integer) => Ok(ScalarType::Integer),
+        (ScalarType::Unknown | ScalarType::Null, _)
+        | (_, ScalarType::Unknown | ScalarType::Null) => Ok(ScalarType::Unknown),
+        _ => Err(Diagnostic::new(
+            diagnostic_codes::INVALID_SCALAR_TYPE,
+            path,
+            format!(
+                "{context} requires numeric scalar expressions, got {} and {}",
+                left.name(),
+                right.name()
+            ),
+        )
+        .into_core_error()),
     }
 }
 
@@ -87,6 +116,9 @@ pub(super) fn scalar_type_for_data_type(data_type: &str) -> ScalarType {
     if data_type == "Boolean" {
         return ScalarType::Boolean;
     }
+    if data_type.starts_with("Date") {
+        return ScalarType::Temporal(TemporalKind::Date);
+    }
     if data_type.starts_with("Dictionary") {
         return scalar_type_for_dictionary_data_type(data_type);
     }
@@ -105,6 +137,8 @@ fn scalar_type_for_dictionary_data_type(data_type: &str) -> ScalarType {
         ScalarType::Integer
     } else if data_type.contains("Boolean") {
         ScalarType::Boolean
+    } else if data_type.contains("Date") {
+        ScalarType::Temporal(TemporalKind::Date)
     } else {
         ScalarType::Other
     }

@@ -243,6 +243,12 @@ impl<'a> SqlRenderer<'a> {
             self.collect_scalar_expression_subquery_candidates(right, required, candidates);
             return;
         }
+        if let Some((first, second, third)) = Self::structural_scalar_ternary_operands(expression) {
+            self.collect_scalar_expression_subquery_candidates(first, required, candidates);
+            self.collect_scalar_expression_subquery_candidates(second, required, candidates);
+            self.collect_scalar_expression_subquery_candidates(third, required, candidates);
+            return;
+        }
 
         match expression {
             ScalarExpression::PresenceGated { expression, .. } => {
@@ -378,6 +384,9 @@ impl<'a> SqlRenderer<'a> {
                 search,
                 replacement,
             } => Some((expression, search, replacement)),
+            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
+                Some((year, month, day))
+            }
             _ => None,
         }
     }

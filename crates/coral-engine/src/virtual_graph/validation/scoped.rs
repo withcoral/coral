@@ -540,6 +540,9 @@ impl<'a> GraphPlanValidator<'a> {
                 scope,
                 &path,
             ),
+            ScalarExpression::Temporal(temporal) => {
+                self.infer_scoped_temporal_scalar_type(temporal, scope, &path)
+            }
             _ => self.infer_scoped_scalar_function_type(expression, scope, &path),
         }
     }
@@ -909,6 +912,31 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn infer_scoped_temporal_scalar_type<'b>(
+        &self,
+        expression: &TemporalExpr,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        match expression {
+            TemporalExpr::MakeDate { year, month, day } => {
+                for (name, expression) in [("year", year), ("month", month), ("day", day)] {
+                    let expression_type = self.infer_scoped_scalar_expression_type(
+                        expression,
+                        scope,
+                        format!("{path}.{name}"),
+                    )?;
+                    Self::require_integer_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "date constructor field",
+                    )?;
+                }
+                Ok(ScalarType::Temporal(TemporalKind::Date))
+            }
+        }
+    }
+
     fn infer_scoped_string_scalar_function_type<'b>(
         &self,
         expression: &ScalarExpression,
@@ -1205,7 +1233,7 @@ impl<'a> GraphPlanValidator<'a> {
             format!("{path}.expression"),
             "numeric function",
         )?;
-        Ok(numeric_result_type(expression_type))
+        numeric_result_type(expression_type, path, "numeric function")
     }
 
     fn infer_scoped_round_scalar_type<'b>(
@@ -1234,7 +1262,7 @@ impl<'a> GraphPlanValidator<'a> {
                 "round precision",
             )?;
         }
-        Ok(numeric_result_type(expression_type))
+        numeric_result_type(expression_type, path, "round")
     }
 
     fn infer_scoped_arithmetic_scalar_type<'b>(
@@ -1250,7 +1278,7 @@ impl<'a> GraphPlanValidator<'a> {
             self.infer_scoped_scalar_expression_type(right, scope, format!("{path}.right"))?;
         Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
         Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
-        Ok(numeric_binary_result_type(left_type, right_type))
+        numeric_binary_result_type(left_type, right_type, path, "arithmetic")
     }
 
     fn infer_scoped_atan2_scalar_type<'b>(

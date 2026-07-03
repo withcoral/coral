@@ -19,8 +19,8 @@ use super::ir::{
     OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
     Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    UndirectedRelationshipEndpoint,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
+    TemporalKind, UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -855,6 +855,7 @@ enum ScalarType {
     Integer,
     Float,
     Boolean,
+    Temporal(TemporalKind),
     Other,
 }
 
@@ -871,6 +872,7 @@ impl ScalarType {
             Self::Integer => "integer",
             Self::Float => "float",
             Self::Boolean => "boolean",
+            Self::Temporal(TemporalKind::Date) => "date",
             Self::Other => "non-scalar",
         }
     }

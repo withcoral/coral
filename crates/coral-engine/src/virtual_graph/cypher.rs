@@ -62,7 +62,7 @@ use super::ir::{
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, UndirectedRelationshipEndpoint,
+    ScalarPredicate, ScalarPredicateRhs, TemporalExpr, UndirectedRelationshipEndpoint,
 };
 use crate::CoreError;
 
@@ -3352,6 +3352,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_type_function(function)
         || is_coalesce_function(function)
         || is_null_if_function(function)
+        || is_date_function(function)
         || is_to_string_function(function)
         || is_to_integer_function(function)
         || is_to_float_function(function)
@@ -7145,6 +7146,9 @@ fn path_variable_scalar_triple_operands(
             ("search", search),
             ("replacement", replacement),
         )),
+        ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
+            Some((("year", year), ("month", month), ("day", day)))
+        }
         _ => None,
     }
 }
@@ -10207,6 +10211,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Round { .. }
+        | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => None,
@@ -10330,6 +10335,11 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         ScalarExpression::Atan2 { y, x } => {
             hidden_subquery_order_expression_can_be_precomputed(y)
                 && hidden_subquery_order_expression_can_be_precomputed(x)
+        }
+        ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
+            hidden_subquery_order_expression_can_be_precomputed(year)
+                && hidden_subquery_order_expression_can_be_precomputed(month)
+                && hidden_subquery_order_expression_can_be_precomputed(day)
         }
         ScalarExpression::Case {
             alternatives,
@@ -10500,6 +10510,11 @@ fn compound_scalar_expression_correlated_subquery_count(
             scalar_expression_correlated_subquery_count(y)
                 + scalar_expression_correlated_subquery_count(x),
         ),
+        ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => Some(
+            scalar_expression_correlated_subquery_count(year)
+                + scalar_expression_correlated_subquery_count(month)
+                + scalar_expression_correlated_subquery_count(day),
+        ),
         _ => None,
     }
 }
@@ -10558,6 +10573,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::StringStartsWith { .. }
         | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Round { .. }
+        | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::ToString { .. }
@@ -18211,6 +18227,8 @@ fn compile_scalar_function_expression_in_mode(
     } else if let Some(target) = path_list_size_target(function) {
         compile_path_element_id_list_scalar_expression(function, target, path, mode, context)
             .map(Some)
+    } else if let Some(expression) = compile_temporal_scalar_function_expression(function, &path)? {
+        Ok(Some(expression))
     } else if let Some(expression) =
         compile_core_scalar_function_expression(function, &path, mode, context)?
     {
@@ -18218,6 +18236,112 @@ fn compile_scalar_function_expression_in_mode(
     } else {
         compile_numeric_scalar_function_expression(function, &path, mode, context)
     }
+}
+
+fn compile_temporal_scalar_function_expression(
+    function: &FunctionInvocation,
+    path: &str,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    if is_date_function(function) {
+        compile_date_scalar_expression(function, path).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn compile_date_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "date() requires exactly one argument",
+        ));
+    };
+    compile_date_argument_scalar_expression(argument, format!("{path}.arguments[0]"))
+}
+
+fn compile_date_argument_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match argument {
+        Expression::Parenthesized(inner) => compile_date_argument_scalar_expression(inner, path),
+        Expression::Literal(CypherLiteral::Map(map)) => {
+            compile_date_map_scalar_expression(map, path)
+        }
+        Expression::Literal(CypherLiteral::String(_)) => Err(unsupported(
+            path,
+            "date() string constructor is not supported yet",
+        )),
+        _ => Err(unsupported(path, "date() requires a literal map argument")),
+    }
+}
+
+fn compile_date_map_scalar_expression(
+    map: &MapLiteral,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut year = None;
+    let mut month = None;
+    let mut day = None;
+    for (key, value) in &map.entries {
+        let field = key.name.name.as_str();
+        let field_path = format!("{path}.{field}");
+        match field {
+            "year" => {
+                year = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "month" => {
+                month = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "day" => {
+                day = Some(compile_date_integer_field(value, field_path)?);
+            }
+            _ => {
+                return Err(unsupported(
+                    field_path,
+                    format!("date() temporal field '{field}' is not supported yet"),
+                ));
+            }
+        }
+    }
+    let Some(year) = year else {
+        return Err(unsupported(
+            format!("{path}.year"),
+            "date() map constructor requires a literal integer year",
+        ));
+    };
+    Ok(make_date_scalar_expression(
+        year,
+        month.unwrap_or_else(default_date_component),
+        day.unwrap_or_else(default_date_component),
+    ))
+}
+
+fn compile_date_integer_field(
+    value: &Expression,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match value {
+        Expression::Parenthesized(inner) => compile_date_integer_field(inner, path),
+        Expression::Literal(CypherLiteral::Number(NumberLiteral::Integer(value))) => {
+            Ok(ScalarExpression::Literal(Literal::Integer(*value)))
+        }
+        _ => Err(unsupported(
+            path,
+            "dynamic temporal fields not supported yet",
+        )),
+    }
+}
+
+fn default_date_component() -> ScalarExpression {
+    ScalarExpression::Literal(Literal::Integer(1))
 }
 
 fn compile_core_scalar_function_expression(
@@ -18686,7 +18810,7 @@ fn compile_scalar_expression_in_predicate_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), date(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }

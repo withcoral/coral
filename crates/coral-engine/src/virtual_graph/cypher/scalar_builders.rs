@@ -110,6 +110,18 @@ pub(super) fn presence_gate_scalar_expression(
     }
 }
 
+pub(super) fn make_date_scalar_expression(
+    year: ScalarExpression,
+    month: ScalarExpression,
+    day: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDate {
+        year: Box::new(year),
+        month: Box::new(month),
+        day: Box::new(day),
+    })
+}
+
 pub(super) fn static_list_case_result_scalar_expression(
     result: StaticListCaseResult,
     element_type: LiteralListElementType,

@@ -83,6 +83,9 @@ impl<'a> GraphPlanValidator<'a> {
                 alternatives,
                 else_expression,
             } => self.infer_case_scalar_type(alternatives, else_expression.as_deref(), &path),
+            ScalarExpression::Temporal(temporal) => {
+                self.infer_temporal_scalar_type(temporal, &path)
+            }
             _ => self.infer_scalar_function_type(expression, &path),
         }
     }
@@ -292,6 +295,27 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    fn infer_temporal_scalar_type(
+        &self,
+        expression: &TemporalExpr,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        match expression {
+            TemporalExpr::MakeDate { year, month, day } => {
+                for (name, expression) in [("year", year), ("month", month), ("day", day)] {
+                    let expression_type =
+                        self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+                    Self::require_integer_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "date constructor field",
+                    )?;
+                }
+                Ok(ScalarType::Temporal(TemporalKind::Date))
+            }
+        }
+    }
+
     fn infer_string_scalar_function_type(
         &self,
         expression: &ScalarExpression,
@@ -469,7 +493,7 @@ impl<'a> GraphPlanValidator<'a> {
             format!("{path}.expression"),
             "numeric function",
         )?;
-        Ok(numeric_result_type(expression_type))
+        numeric_result_type(expression_type, path, "numeric function")
     }
 
     fn infer_is_nan_scalar_type(
@@ -509,7 +533,7 @@ impl<'a> GraphPlanValidator<'a> {
                 "round precision",
             )?;
         }
-        Ok(numeric_result_type(expression_type))
+        numeric_result_type(expression_type, path, "round")
     }
 
     fn infer_sized_string_scalar_type(
@@ -673,7 +697,7 @@ impl<'a> GraphPlanValidator<'a> {
         let right_type = self.infer_scalar_expression_type(right, format!("{path}.right"))?;
         Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
         Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
-        Ok(numeric_binary_result_type(left_type, right_type))
+        numeric_binary_result_type(left_type, right_type, path, "arithmetic")
     }
 
     pub(super) fn property_ref_scalar_type(

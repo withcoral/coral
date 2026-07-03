@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 8,
+    "Temporal": 11,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10378,7 +10378,7 @@
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') AS d",
       "expected": {
         "kind": "error",
-        "contains": "RETURN function 'date' is not supported yet"
+        "contains": "date() string constructor is not supported yet"
       }
     },
     {
@@ -10409,12 +10409,59 @@
       }
     },
     {
-      "id": "temporal-date-map-constructor-rejected",
+      "id": "temporal-date-map-constructor",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date({year: 2020, month: 1, day: 1}) AS d",
       "expected": {
-        "kind": "error",
-        "contains": "RETURN function 'date' is not supported yet"
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-01"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-map-full",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date({year: 1984, month: 10, day: 11}) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "1984-10-11"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-map-default-day",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date({year: 1984, month: 10}) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "1984-10-01"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-map-default-monthday",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date({year: 1984}) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "1984-01-01"
+          }
+        ]
       }
     },
     {
@@ -10432,7 +10479,7 @@
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') AS shifted",
       "expected": {
         "kind": "error",
-        "contains": "scalar function 'date' is not supported here"
+        "contains": "date() string constructor is not supported yet"
       }
     },
     {

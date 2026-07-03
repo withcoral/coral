@@ -1,9 +1,9 @@
 use super::*;
 use crate::virtual_graph::ir::{
-    AggregateFunction, AggregateTarget, Direction, KeyPredicate, NodePattern, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, Direction, KeyPredicate, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
 };
 use crate::{ColumnInfo, TableInfo};
 
@@ -30,6 +30,14 @@ relationships:
     properties:
       since: since
 ";
+
+fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDate {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+    })
+}
 
 #[test]
 fn validate_graph_plan_resolves_bindings_and_relationships() {
@@ -689,6 +697,82 @@ fn validate_graph_plan_accepts_identity_scalar_expression_projections() {
     graph
         .validate_graph_plan(&plan)
         .expect("identity scalar expression projections should validate");
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_date_scalar_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: date_expression(1984, 10, 11),
+            alias: "date_value".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(date_expression(1984, 10, 11)),
+            },
+            alias: "date_text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: date_expression(1984, 10, 11),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(date_expression(1985, 1, 1)),
+    }));
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("date scalar expressions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_date_as_numeric() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Add,
+            left: Box::new(date_expression(1984, 10, 11)),
+            right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        },
+        alias: "shifted".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("date arithmetic should fail validation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("arithmetic requires a numeric scalar expression, got date"),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_date_string_comparison() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: date_expression(1984, 10, 11),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+            "1985-01-01".to_string(),
+        ))),
+    }));
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("date/string comparison should fail validation");
+
+    assert!(
+        error.to_string().contains(
+            "scalar predicate operands require compatible scalar types, got date and string"
+        ),
+        "{error}"
+    );
 }
 
 #[test]

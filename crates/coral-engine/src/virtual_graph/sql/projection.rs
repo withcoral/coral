@@ -232,6 +232,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::StringEndsWith { .. }
             | ScalarExpression::Replace { .. }
             | ScalarExpression::Substring { .. }
+            | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => {

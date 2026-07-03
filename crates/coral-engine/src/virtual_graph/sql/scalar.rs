@@ -105,6 +105,9 @@ impl<'a> SqlRenderer<'a> {
                 length.as_deref(),
                 ScalarScope::TopLevel,
             ),
+            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
+                self.render_make_date_expression(year, month, day, ScalarScope::TopLevel)
+            }
             ScalarExpression::Round { expression, places } => {
                 self.render_round_expression(expression, places.as_deref(), ScalarScope::TopLevel)
             }
@@ -414,6 +417,21 @@ impl<'a> SqlRenderer<'a> {
             "{function_name}({}, {})",
             self.render_scalar_expression(left)?,
             self.render_scalar_expression(right)?
+        ))
+    }
+
+    pub(super) fn render_make_date_expression<'b, 'c>(
+        &self,
+        year: &ScalarExpression,
+        month: &ScalarExpression,
+        day: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "make_date({}, {}, {})",
+            self.render_scalar_in_scope(year, scope)?,
+            self.render_scalar_in_scope(month, scope)?,
+            self.render_scalar_in_scope(day, scope)?
         ))
     }
 

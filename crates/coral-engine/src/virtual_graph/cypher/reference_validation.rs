@@ -529,6 +529,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::StringEndsWith { .. }
         | ScalarExpression::Replace { .. }
         | ScalarExpression::Substring { .. }
+        | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => {

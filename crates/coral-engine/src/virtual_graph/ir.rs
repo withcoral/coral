@@ -249,6 +249,8 @@ pub enum ScalarExpression {
     },
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
+    /// Temporal value expression.
+    Temporal(TemporalExpr),
     /// Count rows produced by a read-only graph subquery.
     CountSubquery {
         /// Scoped graph pattern counted by the subquery.
@@ -609,6 +611,27 @@ pub enum ScalarExpression {
         /// Optional ELSE fallback.
         else_expression: Option<Box<ScalarExpression>>,
     },
+}
+
+/// Temporal scalar expressions in the shared graph IR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemporalExpr {
+    /// Construct a native DATE value from year, month, and day components.
+    MakeDate {
+        /// Year component.
+        year: Box<ScalarExpression>,
+        /// Month component.
+        month: Box<ScalarExpression>,
+        /// Day component.
+        day: Box<ScalarExpression>,
+    },
+}
+
+/// Supported temporal scalar kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TemporalKind {
+    /// Native DATE value.
+    Date,
 }
 
 /// Read-only scoped graph pattern counted by `COUNT { ... }`.
@@ -1086,16 +1109,10 @@ fn scalar_expression_references_outside_scope(
     expression: &ScalarExpression,
     scope: &BTreeSet<String>,
 ) -> bool {
-    if let ScalarExpression::GraphKeyList { variables } = expression {
-        return variables
-            .iter()
-            .any(|variable| variable_references_outside_scope(variable, scope));
-    }
-    if let Some(variable) = scalar_expression_variable_reference(expression) {
-        return variable_references_outside_scope(variable, scope);
-    }
-    if let Some(operand) = scalar_expression_unary_operand(expression) {
-        return scalar_expression_references_outside_scope(operand, scope);
+    if let Some(references_outside_scope) =
+        direct_scalar_expression_references_outside_scope(expression, scope)
+    {
+        return references_outside_scope;
     }
     match expression {
         ScalarExpression::Literal(_)
@@ -1107,9 +1124,10 @@ fn scalar_expression_references_outside_scope(
         ScalarExpression::CountSubquery {
             pattern,
             distinct_target,
-        } => distinct_target.as_deref().map_or_else(
-            || count_subquery_pattern_references_outside_scope(pattern, scope),
-            |target| collect_subquery_references_outside_scope(pattern, target, scope),
+        } => count_subquery_scalar_expression_references_outside_scope(
+            pattern,
+            distinct_target.as_deref(),
+            scope,
         ),
         ScalarExpression::CollectSubquery {
             pattern, target, ..
@@ -1180,10 +1198,47 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Degrees { .. }
         | ScalarExpression::Radians { .. }
         | ScalarExpression::IsNaN { .. }
+        | ScalarExpression::Temporal(_)
         | ScalarExpression::Negate { .. } => unreachable!(
             "direct variable and unary scalar expressions handled before scope recursion"
         ),
     }
+}
+
+fn direct_scalar_expression_references_outside_scope(
+    expression: &ScalarExpression,
+    scope: &BTreeSet<String>,
+) -> Option<bool> {
+    if let ScalarExpression::GraphKeyList { variables } = expression {
+        return Some(
+            variables
+                .iter()
+                .any(|variable| variable_references_outside_scope(variable, scope)),
+        );
+    }
+    if let Some(variable) = scalar_expression_variable_reference(expression) {
+        return Some(variable_references_outside_scope(variable, scope));
+    }
+    if let Some(operand) = scalar_expression_unary_operand(expression) {
+        return Some(scalar_expression_references_outside_scope(operand, scope));
+    }
+    if let ScalarExpression::Temporal(temporal) = expression {
+        return Some(temporal_expression_references_outside_scope(
+            temporal, scope,
+        ));
+    }
+    None
+}
+
+fn count_subquery_scalar_expression_references_outside_scope(
+    pattern: &CountSubqueryPattern,
+    distinct_target: Option<&ScalarExpression>,
+    scope: &BTreeSet<String>,
+) -> bool {
+    distinct_target.map_or_else(
+        || count_subquery_pattern_references_outside_scope(pattern, scope),
+        |target| collect_subquery_references_outside_scope(pattern, target, scope),
+    )
 }
 
 fn scalar_expression_variable_reference(expression: &ScalarExpression) -> Option<&str> {
@@ -1350,6 +1405,19 @@ fn structural_scalar_expression_references_outside_scope(
             })
         }
         _ => unreachable!("non-structural scalar expressions handled before scope recursion"),
+    }
+}
+
+fn temporal_expression_references_outside_scope(
+    expression: &TemporalExpr,
+    scope: &BTreeSet<String>,
+) -> bool {
+    match expression {
+        TemporalExpr::MakeDate { year, month, day } => {
+            scalar_expression_references_outside_scope(year, scope)
+                || scalar_expression_references_outside_scope(month, scope)
+                || scalar_expression_references_outside_scope(day, scope)
+        }
     }
 }
 

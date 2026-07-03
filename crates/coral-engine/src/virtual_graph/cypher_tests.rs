@@ -56,6 +56,14 @@ fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
     }
 }
 
+fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDate {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+    })
+}
+
 fn route_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -1973,6 +1981,78 @@ fn compiles_path_metadata_inside_scalar_functions_and_case() {
             nulls: None,
         }]
     );
+}
+
+#[test]
+fn compiles_date_map_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN date({year: 1984, month: 10, day: 11}) AS full, \
+                date({year: 1984, month: 10}) AS default_day, \
+                date({year: 1984}) AS default_month_day, \
+                toString(date({year: 1984, month: 10, day: 11})) AS text",
+    )
+    .expect("literal date map constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: date_expression(1984, 10, 11),
+                alias: "full".to_string(),
+            },
+            Projection::Expression {
+                expression: date_expression(1984, 10, 1),
+                alias: "default_day".to_string(),
+            },
+            Projection::Expression {
+                expression: date_expression(1984, 1, 1),
+                alias: "default_month_day".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(date_expression(1984, 10, 11)),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_date_constructor_forms() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN date('2020-01-01') AS d",
+            "date() string constructor is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date({year: person.age}) AS d",
+            "dynamic temporal fields not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date({year: 2020, week: 1}) AS d",
+            "date() temporal field 'week' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date({year: 2020, quarter: 1}) AS d",
+            "date() temporal field 'quarter' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date({year: 2020, ordinalDay: 1}) AS d",
+            "date() temporal field 'ordinalDay' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date({date: date({year: 2020})}) AS d",
+            "date() temporal field 'date' is not supported yet",
+        ),
+    ] {
+        let error = compile_cypher(cypher).expect_err("unsupported date form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
 }
 
 #[test]

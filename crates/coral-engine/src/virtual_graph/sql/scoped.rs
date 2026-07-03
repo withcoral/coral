@@ -204,6 +204,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::StringEndsWith { .. }
             | ScalarExpression::Replace { .. }
             | ScalarExpression::Substring { .. }
+            | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => Self::scoped_structural_scalar_expression_is_inner(
@@ -2071,6 +2072,17 @@ impl<'a> SqlRenderer<'a> {
                     local_aliases,
                 },
             ),
+            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => self
+                .render_make_date_expression(
+                    year,
+                    month,
+                    day,
+                    ScalarScope::Scoped {
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    },
+                ),
             ScalarExpression::Round { expression, places } => self.render_round_expression(
                 expression.as_ref(),
                 places.as_deref(),

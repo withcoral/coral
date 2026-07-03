@@ -261,6 +261,13 @@ pub(super) fn is_to_string_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+pub(super) fn is_date_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("date")
+    )
+}
+
 pub(super) fn is_to_integer_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
