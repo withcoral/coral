@@ -366,6 +366,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_scan_observation_includes_local_filter_values() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/people"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "people": [
+                    { "id": "1", "name": "Ada" },
+                    { "id": "2", "name": "Grace" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "people_api",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": server.uri(),
+            "tables": [{
+                "name": "people",
+                "description": "People",
+                "filters": [{ "name": "tenant" }],
+                "request": { "path": "/people" },
+                "response": { "rows_path": ["people"] },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "name", "type": "Utf8" },
+                    {
+                        "name": "tenant",
+                        "type": "Utf8",
+                        "virtual": true,
+                        "expr": { "kind": "from_filter", "key": "tenant" }
+                    }
+                ]
+            }]
+        }))
+        .expect("manifest should deserialize");
+        let source = QuerySource::new(manifest, BTreeMap::new(), BTreeMap::new());
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let mut extensions = EngineExtensions::default();
+        extensions
+            .source_observation_publishers
+            .push(publisher.clone() as Arc<dyn SourceObservationPublisher>);
+
+        let execution = CoralQuery::execute_sql(
+            &[source],
+            QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
+            "SELECT name FROM people_api.people WHERE tenant = 'acme'",
+        )
+        .await
+        .expect("query should execute");
+
+        let rendered = pretty_format_batches(execution.batches())
+            .expect("batches should render")
+            .to_string();
+        assert!(rendered.contains("| Ada"));
+        assert!(rendered.contains("| Grace"));
+
+        let observations = publisher.observations();
+        let people_scan = observations
+            .iter()
+            .find(|observation| {
+                observation.source_name == "people_api" && observation.surface_name == "people"
+            })
+            .expect("people scan should be observed");
+
+        let observed_tenants = people_scan
+            .batch
+            .column_by_name("tenant")
+            .expect("tenant column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("tenant string array")
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(observed_tenants, [Some("acme"), Some("acme")]);
+    }
+
+    #[tokio::test]
     async fn source_scan_observation_covers_dependent_join_fetches() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))

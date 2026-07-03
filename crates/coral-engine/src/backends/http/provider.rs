@@ -142,6 +142,18 @@ impl RowFetcher for HttpFetchPlan {
     }
 }
 
+fn merge_filter_values(
+    mut values: HashMap<String, String>,
+    extra_values: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    values.extend(
+        extra_values
+            .iter()
+            .map(|(filter, value)| (filter.clone(), value.clone())),
+    );
+    values
+}
+
 pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn ExecutionPlan>> {
     let HttpJsonExecRequest {
         backend,
@@ -159,13 +171,12 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         source_observation_publishers,
     } = request;
     let target = Arc::new(target);
-    let mut conversion_filter_values = request_filter_values.clone();
-    let observation_filter_values = Arc::new(request_filter_values.clone());
-    conversion_filter_values.extend(
-        local_filter_values
-            .iter()
-            .map(|(filter, value)| (filter.clone(), value.clone())),
-    );
+    let conversion_filter_values =
+        merge_filter_values(request_filter_values.clone(), &local_filter_values);
+    let observation_filter_values = Arc::new(merge_filter_values(
+        request_filter_values.clone(),
+        &local_filter_values,
+    ));
     let request_filter_values = Arc::new(request_filter_values);
     let local_filter_values = Arc::new(local_filter_values);
     let active_filter_values = Arc::new(active_filter_values);

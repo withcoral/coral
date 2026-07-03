@@ -32,6 +32,11 @@ pub(crate) fn source_observation_publishers(
     Arc::from(publishers.to_vec())
 }
 
+/// Publishes through the engine's non-blocking observation contract.
+///
+/// This helper intentionally does not spawn detached tasks. Queueing,
+/// backpressure, dropping, and shutdown drainage belong in the app-side
+/// publisher implementation that owns the corresponding lifecycle.
 pub(crate) fn publish_source_scan_batch(
     source_name: &str,
     surface_name: &str,
