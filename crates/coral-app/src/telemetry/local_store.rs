@@ -599,6 +599,15 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn list_all_traces_tolerant(
+        &self,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || traces.list_all_traces_tolerant_sync())
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
     pub(crate) async fn get_trace(
         &self,
         trace_id: String,
@@ -673,7 +682,42 @@ impl TraceStore {
         Ok(summaries.into_iter().take(limit).collect())
     }
 
-    fn get_trace_sync(&self, trace_id: &str) -> Result<TraceDetailRecord, TraceStoreError> {
+    fn list_all_traces_tolerant_sync(&self) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        if let Err(error) = self.prune_expired() {
+            tracing::warn!("skipping local trace retention prune before summary backfill: {error}");
+        }
+        let files = self.jsonl_files_by_modified()?;
+        let mut spans_by_id = HashMap::new();
+        let mut traces: HashMap<String, TraceListAggregate> = HashMap::new();
+
+        for file in files {
+            match read_list_spans_file(&file.path) {
+                Ok(spans) => {
+                    for span in spans {
+                        record_list_span(span, &mut spans_by_id, &mut traces);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %file.path.display(),
+                        "skipping unreadable local trace file during summary backfill: {error}"
+                    );
+                }
+            }
+        }
+
+        let mut summaries = traces
+            .into_values()
+            .map(TraceListAggregate::into_summary)
+            .collect::<Vec<_>>();
+        sort_summaries(&mut summaries);
+        Ok(summaries)
+    }
+
+    pub(crate) fn get_trace_sync(
+        &self,
+        trace_id: &str,
+    ) -> Result<TraceDetailRecord, TraceStoreError> {
         let mut spans_by_id = HashMap::new();
         self.prune_expired()?;
         let files = self.jsonl_files_by_modified()?;

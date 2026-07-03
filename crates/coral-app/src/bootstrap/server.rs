@@ -263,7 +263,7 @@ impl ServerBuilder {
         let layout = env.app_state_layout(self.config.config_dir)?;
         layout.ensure()?;
         let config_store = ConfigStore::new(layout.clone());
-        let coral_db = super::open_initialized_database(&layout, &config_store).await?;
+        let coral_db = Arc::new(super::open_initialized_database(&layout, &config_store).await?);
         let telemetry_config = TelemetryConfig::load(&layout)?;
         let internal_trace_store_dir = telemetry_config
             .trace_history
@@ -273,19 +273,18 @@ impl ServerBuilder {
             &telemetry_config,
             self.config.enable_stderr_logs,
             internal_trace_store_dir.clone(),
+            Some(Arc::clone(&coral_db)),
         )?;
         let active_trace_store = telemetry_config
             .trace_history
             .enabled
             .then(|| installed_trace_store.clone())
             .flatten();
-        let sync_trace_store = active_trace_store.clone();
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        import_filesystem_feedback_reports(&coral_db, &layout).await?;
-        import_filesystem_episodes(&coral_db, &layout).await?;
-        let coral_db = Arc::new(coral_db);
-        if let Some(store) = sync_trace_store.as_ref() {
-            TraceService::sync_summaries(store.dir.clone(), store.retention, &coral_db)
+        import_filesystem_feedback_reports(coral_db.as_ref(), &layout).await?;
+        import_filesystem_episodes(coral_db.as_ref(), &layout).await?;
+        if let Some(store) = active_trace_store.as_ref() {
+            TraceService::backfill_summaries(store.dir.clone(), store.retention, coral_db.as_ref())
                 .await
                 .map_err(|error| {
                     AppError::Database(format!("trace summary import failed: {error}"))

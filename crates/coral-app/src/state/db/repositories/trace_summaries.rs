@@ -1,4 +1,4 @@
-use sea_query::{Expr, ExprTrait, OnConflict, Order, Query};
+use sea_query::{Alias, Expr, ExprTrait, OnConflict, Order, Query};
 
 use crate::state::db::schema::TraceSummaries;
 use crate::state::db::{DbError, DbSession, DbWriteSession};
@@ -167,10 +167,28 @@ where
                         TraceSummaries::SpanCount,
                         TraceSummaries::RowCount,
                     ])
+                    .action_and_where(
+                        Expr::col((TraceSummaries::Table, TraceSummaries::EndTimeUnixNanos)).lte(
+                            Expr::col((Alias::new("excluded"), TraceSummaries::EndTimeUnixNanos)),
+                        ),
+                    )
                     .to_owned(),
             )
             .to_owned();
         self.session.execute(statement).await
+    }
+
+    pub(crate) async fn delete(
+        &mut self,
+        workspace_id: &str,
+        trace_id: &str,
+    ) -> Result<(), DbError> {
+        let statement = Query::delete()
+            .from_table(TraceSummaries::Table)
+            .and_where(Expr::col(TraceSummaries::WorkspaceId).eq(workspace_id))
+            .and_where(Expr::col(TraceSummaries::TraceId).eq(trace_id))
+            .to_owned();
+        self.session.execute_delete(statement).await
     }
 }
 

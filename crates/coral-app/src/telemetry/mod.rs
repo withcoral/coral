@@ -1,9 +1,9 @@
 //! Tracing and OpenTelemetry initialization for the local Coral process.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use opentelemetry::Value as OtelValue;
@@ -17,7 +17,8 @@ use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLoggerProvider};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{
-    BatchSpanProcessor, SdkTracerProvider, SpanData, SpanExporter, TracerProviderBuilder,
+    BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider, SpanData, SpanExporter,
+    TracerProviderBuilder,
 };
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::Layer as _;
@@ -32,6 +33,7 @@ pub mod metrics;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
+use crate::state::db::{CoralDb, DbError, DbRepos};
 use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
@@ -46,6 +48,8 @@ static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
+const LOCAL_TRACE_BATCH_DELAY: Duration = Duration::from_millis(50);
+const LOCAL_TRACE_MAX_EXPORT_BATCH_SIZE: usize = 64;
 const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
 pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
@@ -76,6 +80,13 @@ struct TargetFilteringSpanExporter<E> {
     targets: Targets,
     denied_targets: &'static [&'static str],
     excluded_rpc_services: &'static [&'static str],
+}
+
+#[derive(Debug)]
+struct LocalTraceSpanExporter {
+    inner: local_store::JsonlSpanExporter,
+    trace_store: local_store::TraceStore,
+    db: Option<Arc<CoralDb>>,
 }
 
 impl<E> TargetFilteringSpanExporter<E> {
@@ -129,6 +140,92 @@ where
     fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
         self.inner.set_resource(resource);
     }
+}
+
+impl LocalTraceSpanExporter {
+    fn new(
+        store: &InstalledLocalTraceStore,
+        db: Option<Arc<CoralDb>>,
+    ) -> Result<Self, local_store::LocalTraceStoreError> {
+        Ok(Self {
+            inner: local_store::JsonlSpanExporter::new(store.dir.clone(), store.retention)?,
+            trace_store: local_store::TraceStore::with_retention(
+                store.dir.clone(),
+                store.retention,
+            ),
+            db,
+        })
+    }
+}
+
+impl SpanExporter for LocalTraceSpanExporter {
+    async fn export(&self, batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+        let trace_ids = batch
+            .iter()
+            .map(|span| span.span_context.trace_id().to_string())
+            .collect::<BTreeSet<_>>();
+        let result = self.inner.export(batch).await;
+        if result.is_ok()
+            && let Some(db) = self.db.as_deref()
+        {
+            for trace_id in trace_ids {
+                match self.trace_store.get_trace_sync(&trace_id) {
+                    Ok(trace) => {
+                        if let Err(error) = upsert_trace_summary_blocking(db, &trace.summary) {
+                            tracing::warn!(
+                                %trace_id,
+                                detail = %error,
+                                "failed to update database trace summary after span export"
+                            );
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        %trace_id,
+                        "failed to read local trace summary after span export: {error}"
+                    ),
+                }
+            }
+        }
+        result
+    }
+
+    fn shutdown_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
+    }
+
+    fn force_flush(&mut self) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.inner.force_flush()
+    }
+
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.inner.set_resource(resource);
+    }
+}
+
+async fn upsert_trace_summary(
+    db: &CoralDb,
+    summary: &local_store::TraceSummaryRecord,
+) -> Result<(), DbError> {
+    let mut tx = db.begin().await?;
+    tx.trace_summaries().upsert(summary).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn upsert_trace_summary_blocking(
+    db: &CoralDb,
+    summary: &local_store::TraceSummaryRecord,
+) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to create trace summary export runtime: {error}"))?;
+    runtime
+        .block_on(upsert_trace_summary(db, summary))
+        .map_err(|error| error.to_string())
 }
 
 fn span_matches_targets(span: &SpanData, targets: &Targets) -> bool {
@@ -319,14 +416,23 @@ fn add_otlp_trace_exporter(
 fn add_local_trace_exporter(
     builder: TracerProviderBuilder,
     store: &InstalledLocalTraceStore,
+    db: Option<Arc<CoralDb>>,
 ) -> Result<TracerProviderBuilder, AppError> {
-    let exporter = local_store::JsonlSpanExporter::new(store.dir.clone(), store.retention)
+    let exporter = LocalTraceSpanExporter::new(store, db)
         .map_err(|e| AppError::InvalidInput(e.to_string()))?;
     let (internal_trace_targets, _) =
         build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
     let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
         .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
-    Ok(builder.with_simple_exporter(exporter))
+    let batch_config = BatchConfigBuilder::default()
+        .with_scheduled_delay(LOCAL_TRACE_BATCH_DELAY)
+        .with_max_export_batch_size(LOCAL_TRACE_MAX_EXPORT_BATCH_SIZE)
+        .build();
+    Ok(builder.with_span_processor(
+        BatchSpanProcessor::builder(exporter)
+            .with_batch_config(batch_config)
+            .build(),
+    ))
 }
 
 pub(crate) fn list_local_query_history(
@@ -471,10 +577,11 @@ pub(crate) fn init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
     internal_trace_store_dir: Option<PathBuf>,
+    db: Option<Arc<CoralDb>>,
 ) -> Result<Option<InstalledLocalTraceStore>, AppError> {
     let state = INIT
         .get_or_init(|| {
-            try_init_tracing(config, enable_stderr_logs, internal_trace_store_dir)
+            try_init_tracing(config, enable_stderr_logs, internal_trace_store_dir, db)
                 .map_err(|e| e.to_string())
         })
         .as_ref()
@@ -486,6 +593,7 @@ fn try_init_tracing(
     config: &TelemetryConfig,
     enable_stderr_logs: bool,
     internal_trace_store_dir: Option<PathBuf>,
+    db: Option<Arc<CoralDb>>,
 ) -> Result<TracingInitState, AppError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = configured_otlp_endpoint(config);
@@ -526,7 +634,7 @@ fn try_init_tracing(
         }
 
         if let Some(store) = local_trace_store.as_ref() {
-            builder = add_local_trace_exporter(builder, store)?;
+            builder = add_local_trace_exporter(builder, store, db)?;
         }
 
         let provider = builder.build();

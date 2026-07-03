@@ -11,24 +11,16 @@ use coral_api::v1::{
 };
 use tonic::{Code, Request, Response, Status};
 
-use crate::state::db::{CoralDb, DbError, DbRepos};
+use super::upsert_trace_summary;
+use crate::state::db::{CoralDb, DbError, DbRepos, TraceSummaryRecord};
 use crate::telemetry::local_store::{
     StoredTraceStatus, TraceDetailRecord, TraceSpanRecord, TraceStore, TraceStoreError,
-    TraceSummaryRecord,
 };
 use crate::transport::{grpc_span, instrument_grpc};
 
 const DEFAULT_TRACE_PAGE_SIZE: usize = 50;
 const MAX_TRACE_PAGE_SIZE: usize = 200;
 const TRACE_SUMMARY_INDEX_PAGE_SIZE: usize = 200;
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TraceSummaryIndexError {
-    #[error(transparent)]
-    Store(#[from] TraceStoreError),
-    #[error(transparent)]
-    Database(#[from] DbError),
-}
 
 #[derive(Clone)]
 pub(crate) struct TraceService {
@@ -56,13 +48,13 @@ impl TraceService {
         }
     }
 
-    pub(crate) async fn sync_summaries(
+    pub(crate) async fn backfill_summaries(
         trace_store_file: PathBuf,
         retention: Duration,
         db: &CoralDb,
-    ) -> Result<usize, TraceSummaryIndexError> {
+    ) -> Result<usize, DbError> {
         let traces = TraceStore::with_retention(trace_store_file, retention);
-        sync_trace_summaries(db, &traces).await
+        backfill_trace_summaries(db, &traces).await
     }
 }
 
@@ -80,12 +72,8 @@ impl TraceServiceApi for TraceService {
             let page_size = normalize_page_size(request.page_size);
             let offset = parse_page_token(&request.page_token)?;
             let mut summaries = if let Some(db) = db {
-                let mut session = db.as_ref();
-                session
-                    .trace_summaries()
-                    .list(page_size.saturating_add(1), offset)
-                    .await
-                    .map_err(trace_database_status)?
+                list_database_traces(&traces, db.as_ref(), page_size.saturating_add(1), offset)
+                    .await?
             } else {
                 traces
                     .list_traces(page_size.saturating_add(1), offset)
@@ -130,33 +118,80 @@ impl TraceServiceApi for TraceService {
     }
 }
 
-async fn sync_trace_summaries(
-    db: &CoralDb,
-    traces: &TraceStore,
-) -> Result<usize, TraceSummaryIndexError> {
-    let summaries = current_trace_summaries(traces).await?;
-    let imported = summaries.len();
-    let mut tx = db.begin().await?;
-    tx.trace_summaries().replace_all(&summaries).await?;
-    tx.commit().await?;
+async fn backfill_trace_summaries(db: &CoralDb, traces: &TraceStore) -> Result<usize, DbError> {
+    let summaries = traces.list_all_traces_tolerant().await;
+    let summaries = match summaries {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            tracing::warn!("skipping local trace summary backfill: {error}");
+            return Ok(0);
+        }
+    };
+    let mut imported = 0;
+    for summary in summaries {
+        if summary.workspace_id.is_none() {
+            tracing::warn!(
+                trace_id = %summary.trace_id,
+                "skipping local trace summary backfill without workspace"
+            );
+            continue;
+        }
+        upsert_trace_summary(db, &summary).await?;
+        imported += 1;
+    }
     Ok(imported)
 }
 
-async fn current_trace_summaries(
+async fn list_database_traces(
     traces: &TraceStore,
-) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+    db: &CoralDb,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<TraceSummaryRecord>, Status> {
     let mut summaries = Vec::new();
-    loop {
-        let page = traces
-            .list_traces(TRACE_SUMMARY_INDEX_PAGE_SIZE, summaries.len())
-            .await?;
-        let page_len = page.len();
-        summaries.extend(page);
-        if page_len < TRACE_SUMMARY_INDEX_PAGE_SIZE {
+    let mut db_offset = offset;
+    while summaries.len() < limit {
+        let mut session = db;
+        let page = session
+            .trace_summaries()
+            .list(TRACE_SUMMARY_INDEX_PAGE_SIZE, db_offset)
+            .await
+            .map_err(trace_database_status)?;
+        if page.is_empty() {
             break;
+        }
+        db_offset = db_offset.saturating_add(page.len());
+        for summary in page {
+            match traces.get_trace(summary.trace_id.clone()).await {
+                Ok(_trace) => summaries.push(summary),
+                Err(TraceStoreError::NotFound(_)) => {
+                    if let Err(error) = delete_trace_summary(db, &summary).await {
+                        tracing::warn!(
+                            trace_id = %summary.trace_id,
+                            "failed to prune stale database trace summary: {error}"
+                        );
+                    }
+                }
+                Err(error) => return Err(trace_store_status(error)),
+            }
+            if summaries.len() == limit {
+                break;
+            }
         }
     }
     Ok(summaries)
+}
+
+async fn delete_trace_summary(db: &CoralDb, summary: &TraceSummaryRecord) -> Result<(), DbError> {
+    let Some(workspace_id) = summary.workspace_id.as_deref() else {
+        return Ok(());
+    };
+    let mut tx = db.begin().await?;
+    tx.trace_summaries()
+        .delete(workspace_id, &summary.trace_id)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 fn normalize_page_size(page_size: i32) -> usize {
@@ -270,14 +305,21 @@ fn trace_status_to_proto(status: StoredTraceStatus) -> TraceStatus {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use coral_api::v1::ListTracesRequest;
+    use coral_api::v1::trace_service_server::TraceService as _;
     use serde_json::json;
     use tempfile::tempdir;
+    use tonic::Request;
 
-    use super::{TraceStore, normalize_page_size, parse_page_token, sync_trace_summaries};
+    use super::{
+        TraceService, TraceStore, backfill_trace_summaries, normalize_page_size, parse_page_token,
+    };
     use crate::state::AppStateLayout;
     use crate::state::db::{CoralDb, DatabaseConfig, DbRepos, ResolvedDatabaseConfig};
+    use crate::telemetry::{StoredTraceStatus, TraceSummaryRecord};
 
     #[test]
     fn page_size_defaults_and_caps() {
@@ -295,18 +337,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_summaries_rebuilds_database_index_from_jsonl() {
+    async fn backfill_summaries_adds_local_rows_without_replacing_database_rows() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
         let db = open_sqlite(&layout).await;
         let trace_dir = temp.path().join("traces");
-        write_trace(&trace_dir, "trace-1", 1, 2);
+        write_trace(&trace_dir, "trace-1", "work", 1, 2);
+        ensure_workspace(&db, "work").await;
+        let remote = summary("remote-trace", "remote", 10);
+        insert_summary(&db, &remote).await;
 
         let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
         assert_eq!(
-            sync_trace_summaries(&db, &traces)
+            backfill_trace_summaries(&db, &traces)
                 .await
-                .expect("sync trace summaries"),
+                .expect("backfill trace summaries"),
             1
         );
         let mut session = &db;
@@ -315,28 +360,135 @@ mod tests {
             .list(10, 0)
             .await
             .expect("list trace summaries");
-        assert_eq!(summaries.len(), 1);
-        let summary = summaries.first().expect("trace summary");
-        assert_eq!(summary.trace_id, "trace-1");
-        assert_eq!(summary.query, "SELECT 1");
-        assert_eq!(summary.row_count, 1);
-        assert!(summary.row_count_recorded);
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.trace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["remote-trace", "trace-1"]
+        );
 
         fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
         assert_eq!(
-            sync_trace_summaries(&db, &traces)
+            backfill_trace_summaries(&db, &traces)
                 .await
-                .expect("resync empty trace store"),
+                .expect("backfill empty trace store"),
             0
         );
+        assert_eq!(
+            session
+                .trace_summaries()
+                .list(10, 0)
+                .await
+                .expect("list preserved trace summaries")
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn exported_summary_is_visible_and_pruned_without_retained_details() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = Arc::new(open_sqlite(&layout).await);
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, "trace-1", "work", 1, 2);
+        ensure_workspace(db.as_ref(), "work").await;
+        let traces = TraceStore::with_retention(trace_dir.clone(), Duration::from_mins(1));
+        let trace = traces
+            .get_trace("trace-1".to_string())
+            .await
+            .expect("trace detail");
+        super::super::upsert_trace_summary(db.as_ref(), &trace.summary)
+            .await
+            .expect("upsert exported summary");
+
+        let service =
+            TraceService::with_db(trace_dir.clone(), Duration::from_mins(1), Arc::clone(&db));
+        let response = service
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("list traces")
+            .into_inner();
+
+        assert_eq!(response.traces.len(), 1);
+        let trace = response.traces.into_iter().next().expect("trace summary");
+        assert_eq!(trace.trace_id, "trace-1");
+
+        fs::remove_dir_all(&trace_dir).expect("remove raw trace store");
+        let response = service
+            .list_traces(Request::new(ListTracesRequest {
+                page_size: 10,
+                page_token: String::new(),
+            }))
+            .await
+            .expect("list traces")
+            .into_inner();
+
+        assert!(response.traces.is_empty());
+        let mut session = db.as_ref();
         assert!(
             session
                 .trace_summaries()
                 .list(10, 0)
                 .await
-                .expect("list empty trace summaries")
+                .expect("list trace summaries")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the trace summary backfill harness against Postgres"]
+    async fn backfill_summaries_preserves_existing_postgres_rows() {
+        let Some(url) = crate::bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let local_workspace = format!("trace_local_{suffix}");
+        let remote_workspace = format!("trace_remote_{suffix}");
+        let local_trace = format!("local_trace_{suffix}");
+        let remote_trace = format!("remote_trace_{suffix}");
+        let temp = tempdir().expect("temp dir");
+        let trace_dir = temp.path().join("traces");
+        write_trace(&trace_dir, &local_trace, &local_workspace, 1, 2);
+        ensure_workspace(&db, &local_workspace).await;
+        insert_summary(&db, &summary(&remote_trace, &remote_workspace, 10)).await;
+
+        let traces = TraceStore::with_retention(trace_dir, Duration::from_mins(1));
+        assert_eq!(
+            backfill_trace_summaries(&db, &traces)
+                .await
+                .expect("backfill trace summaries"),
+            1
+        );
+
+        let mut session = &db;
+        assert!(
+            session
+                .trace_summaries()
+                .get(&local_trace)
+                .await
+                .expect("get local trace")
+                .is_some()
+        );
+        assert!(
+            session
+                .trace_summaries()
+                .get(&remote_trace)
+                .await
+                .expect("get remote trace")
+                .is_some()
+        );
+
+        cleanup_workspace(&db, &local_workspace).await;
+        cleanup_workspace(&db, &remote_workspace).await;
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -351,18 +503,81 @@ mod tests {
         db
     }
 
-    fn write_trace(dir: &std::path::Path, trace_id: &str, start: i64, end: i64) {
+    async fn insert_summary(db: &CoralDb, summary: &TraceSummaryRecord) {
+        let mut tx = db.begin().await.expect("begin tx");
+        ensure_workspace_in_session(&mut tx, summary.workspace_id.as_deref().expect("workspace"))
+            .await;
+        tx.trace_summaries()
+            .upsert(summary)
+            .await
+            .expect("upsert trace summary");
+        tx.commit().await.expect("commit trace summary");
+    }
+
+    async fn ensure_workspace(db: &CoralDb, workspace_id: &str) {
+        let mut tx = db.begin().await.expect("begin tx");
+        ensure_workspace_in_session(&mut tx, workspace_id).await;
+        tx.commit().await.expect("commit workspace");
+    }
+
+    async fn cleanup_workspace(db: &CoralDb, workspace_id: &str) {
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .remove(workspace_id)
+            .await
+            .expect("remove workspace");
+        tx.commit().await.expect("commit cleanup");
+    }
+
+    async fn ensure_workspace_in_session<S>(session: &mut S, workspace_id: &str)
+    where
+        S: crate::state::db::DbSession,
+    {
+        session
+            .workspaces()
+            .ensure(workspace_id, 1)
+            .await
+            .expect("ensure workspace");
+    }
+
+    fn summary(trace_id: &str, workspace_id: &str, end_time_unix_nanos: i64) -> TraceSummaryRecord {
+        TraceSummaryRecord {
+            trace_id: trace_id.to_string(),
+            workspace_id: Some(workspace_id.to_string()),
+            root_span_id: "span-1".to_string(),
+            name: "coral.query".to_string(),
+            query: "SELECT 1".to_string(),
+            status: StoredTraceStatus::Ok,
+            start_time_unix_nanos: end_time_unix_nanos - 1,
+            end_time_unix_nanos,
+            duration_nanos: 1,
+            span_count: 1,
+            row_count: 1,
+            row_count_recorded: true,
+        }
+    }
+
+    fn write_trace(
+        dir: &std::path::Path,
+        trace_id: &str,
+        workspace_id: &str,
+        start: i64,
+        end: i64,
+    ) {
         fs::create_dir_all(dir).expect("create trace dir");
-        let record = json!({
-            "trace_id": trace_id,
-            "span_id": "span-1",
-            "parent_span_id": null,
-            "name": "coral.query",
-            "status": "ok",
-            "start_time_unix_nanos": start,
-            "end_time_unix_nanos": end,
-            "attributes_json": r#"{"sql":"SELECT 1","row_count":1}"#,
-        });
+        let attributes_json = serde_json::to_string(
+            &json!({
+                "sql": "SELECT 1",
+                "row_count": 1,
+                "workspace": workspace_id,
+            })
+            .to_string(),
+        )
+        .expect("encode attributes");
+        let duration = end - start;
+        let record = format!(
+            r#"{{"trace_id":"{trace_id}","span_id":"span-1","parent_span_id":null,"parent_span_is_remote":false,"name":"coral.query","kind":"internal","status":"ok","status_message":null,"start_time_unix_nanos":{start},"end_time_unix_nanos":{end},"duration_nanos":{duration},"attributes_json":{attributes_json},"events_json":"[]","links_json":"[]","resource_json":"{{}}","scope_name":"test","scope_version":null,"scope_schema_url":null,"scope_attributes_json":"{{}}","trace_flags":0,"trace_state":"","is_remote":false}}"#
+        );
         fs::write(
             dir.join(format!("spans-{start:020}-test-{trace_id}.jsonl")),
             format!("{record}\n"),
