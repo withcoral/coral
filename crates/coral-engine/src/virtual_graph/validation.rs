@@ -1,3 +1,12 @@
+//! Graph-plan validation hub: the stateful `GraphPlanValidator` core that drives
+//! the read-only `validation/*` analysis submodules. Owns plan-validation
+//! orchestration (`validate`, `validate_and_infer_projection_scalar_types`,
+//! `validate_plan`) and the `Declaration` query/union entry points, the mutable
+//! bind phase that resolves node and relationship variables into
+//! `ValidatedBinding`s (the only `&mut self` surface, over `bindings` and
+//! `relationship_mappings`), the plan-wide property-reference walker, and
+//! connectivity/reachability across mandatory and OPTIONAL MATCH components.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::declaration::{Declaration, Node, Relationship, TableRef};
@@ -13,45 +22,6 @@ use super::ir::{
     UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
-
-macro_rules! unary_scalar_expression_pattern {
-    () => {
-        ScalarExpression::ToString { .. }
-            | ScalarExpression::ToInteger { .. }
-            | ScalarExpression::ToFloat { .. }
-            | ScalarExpression::ToBoolean { .. }
-            | ScalarExpression::ToStringOrNull { .. }
-            | ScalarExpression::ToIntegerOrNull { .. }
-            | ScalarExpression::ToFloatOrNull { .. }
-            | ScalarExpression::ToBooleanOrNull { .. }
-            | ScalarExpression::ToLower { .. }
-            | ScalarExpression::ToUpper { .. }
-            | ScalarExpression::Trim { .. }
-            | ScalarExpression::LTrim { .. }
-            | ScalarExpression::RTrim { .. }
-            | ScalarExpression::CharacterLength { .. }
-            | ScalarExpression::Reverse { .. }
-            | ScalarExpression::Abs { .. }
-            | ScalarExpression::Ceil { .. }
-            | ScalarExpression::Floor { .. }
-            | ScalarExpression::Sqrt { .. }
-            | ScalarExpression::Sign { .. }
-            | ScalarExpression::Exp { .. }
-            | ScalarExpression::Log { .. }
-            | ScalarExpression::Log10 { .. }
-            | ScalarExpression::Sin { .. }
-            | ScalarExpression::Cos { .. }
-            | ScalarExpression::Tan { .. }
-            | ScalarExpression::Cot { .. }
-            | ScalarExpression::Asin { .. }
-            | ScalarExpression::Acos { .. }
-            | ScalarExpression::Atan { .. }
-            | ScalarExpression::Degrees { .. }
-            | ScalarExpression::Radians { .. }
-            | ScalarExpression::IsNaN { .. }
-            | ScalarExpression::Negate { .. }
-    };
-}
 
 mod aggregation;
 mod exists_subqueries;
@@ -272,18 +242,6 @@ struct GraphPlanValidator<'a> {
     catalog: Option<&'a CatalogInfo>,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     relationship_mappings: Vec<&'a Relationship>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ExistsPredicateValidationContext<'a, 'b> {
-    relationships: &'b [ExistsRelationshipValidation<'a, 'b>],
-    local_nodes: &'b BTreeMap<&'b str, &'a Node>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ExistsRelationshipValidation<'a, 'b> {
-    pattern: &'b RelationshipPattern,
-    relationship: &'a Relationship,
 }
 
 impl<'a> GraphPlanValidator<'a> {

@@ -3,6 +3,7 @@
 //! relationship bindings (with nested-scope shadowing) over `ExistsPredicateValidationContext`.
 //! Read-only; the primary caller is the `exists_subqueries` sibling.
 
+use super::exists_subqueries::{ExistsPredicateValidationContext, ExistsRelationshipValidation};
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

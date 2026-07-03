@@ -3,6 +3,45 @@
 //! Pure AST traversal helpers (no `GraphPlanValidator` state) used by the validation
 //! passes to determine which bound variables each expression depends on.
 
+macro_rules! unary_scalar_expression_pattern {
+    () => {
+        ScalarExpression::ToString { .. }
+            | ScalarExpression::ToInteger { .. }
+            | ScalarExpression::ToFloat { .. }
+            | ScalarExpression::ToBoolean { .. }
+            | ScalarExpression::ToStringOrNull { .. }
+            | ScalarExpression::ToIntegerOrNull { .. }
+            | ScalarExpression::ToFloatOrNull { .. }
+            | ScalarExpression::ToBooleanOrNull { .. }
+            | ScalarExpression::ToLower { .. }
+            | ScalarExpression::ToUpper { .. }
+            | ScalarExpression::Trim { .. }
+            | ScalarExpression::LTrim { .. }
+            | ScalarExpression::RTrim { .. }
+            | ScalarExpression::CharacterLength { .. }
+            | ScalarExpression::Reverse { .. }
+            | ScalarExpression::Abs { .. }
+            | ScalarExpression::Ceil { .. }
+            | ScalarExpression::Floor { .. }
+            | ScalarExpression::Sqrt { .. }
+            | ScalarExpression::Sign { .. }
+            | ScalarExpression::Exp { .. }
+            | ScalarExpression::Log { .. }
+            | ScalarExpression::Log10 { .. }
+            | ScalarExpression::Sin { .. }
+            | ScalarExpression::Cos { .. }
+            | ScalarExpression::Tan { .. }
+            | ScalarExpression::Cot { .. }
+            | ScalarExpression::Asin { .. }
+            | ScalarExpression::Acos { .. }
+            | ScalarExpression::Atan { .. }
+            | ScalarExpression::Degrees { .. }
+            | ScalarExpression::Radians { .. }
+            | ScalarExpression::IsNaN { .. }
+            | ScalarExpression::Negate { .. }
+    };
+}
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

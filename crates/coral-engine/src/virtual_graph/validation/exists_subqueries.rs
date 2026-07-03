@@ -9,6 +9,18 @@
 )]
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ExistsPredicateValidationContext<'a, 'b> {
+    pub(super) relationships: &'b [ExistsRelationshipValidation<'a, 'b>],
+    pub(super) local_nodes: &'b BTreeMap<&'b str, &'a Node>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ExistsRelationshipValidation<'a, 'b> {
+    pub(super) pattern: &'b RelationshipPattern,
+    pub(super) relationship: &'a Relationship,
+}
+
 #[allow(
     clippy::allow_attributes,
     clippy::elidable_lifetime_names,
