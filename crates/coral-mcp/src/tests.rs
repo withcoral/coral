@@ -15,7 +15,7 @@ use coral_client::{
     AppClient, SourceClient, default_workspace,
     local::{RunningServer, ServerBuilder},
 };
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams, Tool},
@@ -313,20 +313,18 @@ fn assert_tool_advertises_episode_id(tool: &Tool) {
 }
 
 fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
-    let compiled = JSONSchema::compile(schema)
+    let compiled = jsonschema::validator_for(schema)
         .unwrap_or_else(|error| panic!("{label} episode id schema should compile: {error}"));
     for valid in [
         json!(null),
         json!("episode-1"),
         json!("x".repeat(CORAL_EPISODE_ID_MAX_LEN)),
     ] {
-        if let Err(errors) = compiled.validate(&valid) {
-            let details = errors
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
-            panic!("{label} episode id schema rejected valid value {valid}: {details}");
-        }
+        let details = validation_error_details(&compiled, &valid);
+        assert!(
+            details.is_empty(),
+            "{label} episode id schema rejected valid value {valid}: {details}"
+        );
     }
     for invalid in [
         json!(""),
@@ -335,7 +333,7 @@ fn assert_nullable_episode_id_schema(schema: &Value, label: &str) {
         json!("episode-é"),
     ] {
         assert!(
-            compiled.validate(&invalid).is_err(),
+            !compiled.is_valid(&invalid),
             "{label} episode id schema accepted invalid value {invalid}"
         );
     }
@@ -357,17 +355,21 @@ fn assert_matches_output_schema(tool: &Tool, value: &Value) {
             .as_ref()
             .clone(),
     );
-    let compiled = JSONSchema::compile(&schema).expect("tool output schema should compile");
-    if let Err(errors) = compiled.validate(value) {
-        let details = errors
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>()
-            .join("; ");
-        panic!(
-            "tool '{}' structured content did not match output schema: {details}",
-            tool.name
-        );
-    }
+    let compiled = jsonschema::validator_for(&schema).expect("tool output schema should compile");
+    let details = validation_error_details(&compiled, value);
+    assert!(
+        details.is_empty(),
+        "tool '{}' structured content did not match output schema: {details}",
+        tool.name
+    );
+}
+
+fn validation_error_details(compiled: &Validator, value: &Value) -> String {
+    compiled
+        .iter_errors(value)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn assert_structured_content_only(result: &CallToolResult) {

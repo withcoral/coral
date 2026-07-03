@@ -22,7 +22,6 @@ use coral_api::v1::{
 use coral_app::{ServerBuilder, shutdown_tracing};
 use coral_client::{AppClient, default_workspace};
 use harness::{MockServer, MockServerConfig};
-use jsonschema::JSONSchema;
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ReadResourceRequestParams},
@@ -284,7 +283,7 @@ fn assert_raw_tools_list_contract(response: &Value) {
             input_schema.is_object(),
             "tool '{name}' inputSchema must be an object: {input_schema}"
         );
-        JSONSchema::compile(input_schema).unwrap_or_else(|error| {
+        jsonschema::validator_for(input_schema).unwrap_or_else(|error| {
             panic!(
                 "tool '{name}' inputSchema must compile as JSON Schema: {error}; schema: {input_schema}"
             )
@@ -301,7 +300,7 @@ fn assert_raw_tools_list_contract(response: &Value) {
             Some("object"),
             "tool '{name}' outputSchema must declare root type object: {output_schema}"
         );
-        JSONSchema::compile(output_schema).unwrap_or_else(|error| {
+        jsonschema::validator_for(output_schema).unwrap_or_else(|error| {
             panic!(
                 "tool '{name}' outputSchema must compile as JSON Schema: {error}; schema: {output_schema}"
             )

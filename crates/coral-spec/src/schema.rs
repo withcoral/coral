@@ -2,13 +2,13 @@
 
 use std::sync::OnceLock;
 
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde_json::Value as JsonValue;
 
 use crate::{ManifestError, Result};
 
-static SOURCE_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
-static SOURCE_V4_SCHEMA: OnceLock<JSONSchema> = OnceLock::new();
+static SOURCE_SCHEMA: OnceLock<Validator> = OnceLock::new();
+static SOURCE_V4_SCHEMA: OnceLock<Validator> = OnceLock::new();
 
 pub(crate) fn validate_manifest_schema(manifest_json: &JsonValue) -> Result<()> {
     validate_with_schema(manifest_json, source_schema())
@@ -24,34 +24,35 @@ pub(crate) fn validate_manifest_schema_for_dsl_version(
     validate_manifest_schema(manifest_json)
 }
 
-fn source_schema() -> &'static JSONSchema {
+fn source_schema() -> &'static Validator {
     SOURCE_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest.schema.json"))
                 .expect("embedded source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded source schema must compile")
+        jsonschema::validator_for(&schema_json).expect("embedded source schema must compile")
     })
 }
 
-fn source_v4_schema() -> &'static JSONSchema {
+fn source_v4_schema() -> &'static Validator {
     SOURCE_V4_SCHEMA.get_or_init(|| {
         let schema_json: JsonValue =
             serde_json::from_str(include_str!("schema/source_manifest_v4.schema.json"))
                 .expect("embedded DSL v4 source schema must be valid JSON");
-        JSONSchema::compile(&schema_json).expect("embedded DSL v4 source schema must compile")
+        jsonschema::validator_for(&schema_json).expect("embedded DSL v4 source schema must compile")
     })
 }
 
-fn validate_with_schema(manifest_json: &JsonValue, validator: &JSONSchema) -> Result<()> {
-    if let Err(errors) = validator.validate(manifest_json) {
-        let problems: Vec<String> = errors
-            .take(8)
-            .map(|error| {
-                let path = error.instance_path.to_string();
-                let location = if path.is_empty() { "/" } else { &path };
-                format!("  {location}: {error}")
-            })
-            .collect();
+fn validate_with_schema(manifest_json: &JsonValue, validator: &Validator) -> Result<()> {
+    let problems: Vec<String> = validator
+        .iter_errors(manifest_json)
+        .take(8)
+        .map(|error| {
+            let path = error.instance_path().to_string();
+            let location = if path.is_empty() { "/" } else { &path };
+            format!("  {location}: {error}")
+        })
+        .collect();
+    if !problems.is_empty() {
         return Err(ManifestError::validation(format!(
             "source manifest failed schema validation:\n{}",
             problems.join("\n")
