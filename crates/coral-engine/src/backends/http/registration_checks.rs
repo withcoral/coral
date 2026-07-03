@@ -16,7 +16,9 @@ use crate::backends::shared::template::{
     validate_input_dependencies, validate_value_source_inputs,
 };
 use coral_spec::backends::http::HttpSourceManifest;
-use coral_spec::{BodySpec, HeaderSpec, RequestRouteSpec, RequestSpec as ManifestRequestSpec};
+use coral_spec::{
+    AuthSpec, BodySpec, HeaderSpec, RequestRouteSpec, RequestSpec as ManifestRequestSpec,
+};
 
 struct HttpRequestSite<'a> {
     label: String,
@@ -113,6 +115,12 @@ fn check_auth_inputs(
     request_authenticators: &HashMap<String, Arc<dyn RequestAuthenticator>>,
     resolved_inputs: &BTreeMap<String, String>,
 ) -> Result<()> {
+    if manifest.common.dsl_version == 4 && matches!(manifest.auth, AuthSpec::CustomAuth(_)) {
+        return Err(DataFusionError::Execution(format!(
+            "source '{}' auth must not use CustomAuth in DSL v4; use identity_requirements instead",
+            manifest.common.name
+        )));
+    }
     validate_auth_inputs(&manifest.auth, request_authenticators, resolved_inputs)
         .map_err(|error| registration_error(&manifest.common.name, "auth", &error))
 }
@@ -190,17 +198,39 @@ fn validate_header_inputs(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::sync::OnceLock;
+    use std::sync::{Arc, OnceLock};
 
     use serde_json::json;
 
     use crate::backends::http::client::HttpSourceClient;
     use crate::backends::http::test_support::parse_http_manifest;
+    use crate::{RequestAuthenticator, RequestAuthenticatorError};
 
     static TEST_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
     fn test_http_client() -> reqwest::Client {
         TEST_HTTP_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    #[derive(Debug)]
+    struct TestRequestAuthenticator;
+
+    impl RequestAuthenticator for TestRequestAuthenticator {
+        fn name(&self) -> &'static str {
+            "test_signer"
+        }
+
+        fn authenticate(
+            &self,
+            _auth: &coral_spec::CustomAuthSpec,
+            _request: &reqwest::Request,
+            _resolved_inputs: &BTreeMap<String, String>,
+        ) -> std::result::Result<
+            Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+            RequestAuthenticatorError,
+        > {
+            Ok(Vec::new())
+        }
     }
 
     #[test]
@@ -248,6 +278,52 @@ mod tests {
             error
                 .to_string()
                 .contains("missing source input 'API_KEY' for template token")
+        );
+    }
+
+    #[test]
+    fn backend_client_rejects_v4_custom_auth_registry() {
+        let mut manifest = parse_http_manifest(json!({
+            "dsl_version": 3,
+            "name": "alpha",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": "https://api.example.com",
+            "auth": {
+                "type": "CustomAuth",
+                "authenticator": "test_signer"
+            },
+            "tables": [{
+                "name": "items",
+                "description": "items",
+                "request": { "path": "/items" },
+                "columns": [{
+                    "name": "id",
+                    "type": "Utf8"
+                }]
+            }]
+        }));
+        manifest.common.dsl_version = 4;
+        let request_authenticators = HashMap::from([(
+            "test_signer".to_string(),
+            Arc::new(TestRequestAuthenticator) as Arc<dyn RequestAuthenticator>,
+        )]);
+
+        let error = HttpSourceClient::from_manifest(
+            &manifest,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &request_authenticators,
+            None,
+            test_http_client(),
+        )
+        .expect_err("v4 CustomAuth should fail even when the registry is populated");
+
+        assert!(
+            error
+                .to_string()
+                .contains("auth must not use CustomAuth in DSL v4"),
+            "{error}"
         );
     }
 
