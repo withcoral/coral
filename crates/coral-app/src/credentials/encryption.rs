@@ -11,16 +11,17 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
-use tracing::warn;
+use tracing::{info, warn};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use super::CredentialsError;
+use super::store::{CredentialConfigNamespace, KeychainCredentialBackend};
 use crate::bootstrap;
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
@@ -37,6 +38,14 @@ const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
 static LOCAL_KEY_FILE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialEncryptionKeySource {
+    Auto,
+    File,
+    Keychain,
+    Vault,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CredentialEncryptionKey {
@@ -78,20 +87,49 @@ pub(crate) trait CredentialKeyProvider: Send + Sync {
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError>;
 }
 
-/// Local credential encryption key provider.
-/// Shared-Postgres deployments MUST provision the same KEK on every server via
-/// `[credentials].encryption_key_env`; the local file key is single-config-dir only.
-#[derive(Debug, Clone)]
+/// Resolves credential encryption keys for DB-backed credential documents.
+///
+/// The historical type name is kept for the upstack runtime wiring. In auto
+/// mode this provider prefers the OS keychain and uses the plaintext key file
+/// only when keychain storage is unavailable or an existing file key would
+/// otherwise strand encrypted rows. Shared-Postgres deployments MUST provision
+/// the same KEK on every server via `[credentials].encryption_key_env` or by
+/// pre-seeding each host's keychain with the same key material.
+#[derive(Clone)]
 pub(crate) struct LocalFileCredentialKeyProvider {
-    path: PathBuf,
     config_file: PathBuf,
+    file: PlaintextFileCredentialKeyProvider,
+    keychain: KeychainCredentialKeyProvider,
+}
+
+impl fmt::Debug for LocalFileCredentialKeyProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LocalFileCredentialKeyProvider")
+            .field("config_file", &self.config_file)
+            .field("file", &self.file)
+            .field("keychain", &self.keychain)
+            .finish()
+    }
 }
 
 impl LocalFileCredentialKeyProvider {
     pub(crate) fn new(layout: &AppStateLayout) -> Self {
         Self {
-            path: layout.credential_encryption_key_file(),
             config_file: layout.config_file().to_path_buf(),
+            file: PlaintextFileCredentialKeyProvider::new(layout),
+            keychain: KeychainCredentialKeyProvider::new(layout),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_keychain_for_test(
+        layout: &AppStateLayout,
+        keychain: KeychainCredentialKeyProvider,
+    ) -> Self {
+        Self {
+            config_file: layout.config_file().to_path_buf(),
+            file: PlaintextFileCredentialKeyProvider::new(layout),
+            keychain,
         }
     }
 
@@ -109,6 +147,87 @@ impl LocalFileCredentialKeyProvider {
                 "invalid credential encryption key from environment variable `{env_name}`: {error}"
             ))
         })
+    }
+
+    fn configured_source(&self) -> Result<CredentialEncryptionKeySource, CredentialsError> {
+        configured_key_source(&self.config_file)
+    }
+
+    fn auto_key(&self, key_id: Option<&str>) -> Result<CredentialEncryptionKey, CredentialsError> {
+        if self.file.exists()? {
+            info!(
+                path = %self.file.path().display(),
+                "using existing plaintext credential encryption key; migrate the KEK to keychain before enabling keychain sourcing"
+            );
+            return self.file.resolve_key(key_id);
+        }
+
+        match self.keychain.probe() {
+            Ok(()) => self.keychain.resolve_key(key_id),
+            Err(error) => {
+                warn!(
+                    detail = %error,
+                    path = %self.file.path().display(),
+                    "keychain unavailable; falling back to plaintext credential encryption key file; configure a keychain or set [credentials].encryption_key_source = \"keychain\" to fail closed"
+                );
+                self.file.resolve_key(key_id)
+            }
+        }
+    }
+
+    fn explicit_source_key(
+        &self,
+        source: CredentialEncryptionKeySource,
+        key_id: Option<&str>,
+    ) -> Result<CredentialEncryptionKey, CredentialsError> {
+        match source {
+            CredentialEncryptionKeySource::Auto => self.auto_key(key_id),
+            CredentialEncryptionKeySource::File => self.file.resolve_key(key_id),
+            CredentialEncryptionKeySource::Keychain => self
+                .keychain
+                .resolve_key(key_id)
+                .map_err(configured_keychain_key_unavailable),
+            CredentialEncryptionKeySource::Vault => Err(CredentialsError::Unavailable(
+                "vault credential encryption key source is not implemented".to_string(),
+            )),
+        }
+    }
+}
+
+impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        if let Some(key) = self.load_configured_key()? {
+            return Ok(key);
+        }
+        self.explicit_source_key(self.configured_source()?, None)
+    }
+
+    fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+        if let Some(key) = self.load_configured_key()? {
+            return verify_key_id(key, key_id);
+        }
+        self.explicit_source_key(self.configured_source()?, Some(key_id))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PlaintextFileCredentialKeyProvider {
+    path: PathBuf,
+}
+
+impl PlaintextFileCredentialKeyProvider {
+    fn new(layout: &AppStateLayout) -> Self {
+        Self {
+            path: layout.credential_encryption_key_file(),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+
+    fn exists(&self) -> Result<bool, CredentialsError> {
+        self.path.try_exists().map_err(Into::into)
     }
 
     fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -132,7 +251,7 @@ impl LocalFileCredentialKeyProvider {
                 storage_fs::write_atomic(&self.path, encoded.as_bytes())?;
                 warn!(
                     path = %self.path.display(),
-                    "created local credential encryption key; shared-Postgres deployments must provision the same KEK on every server"
+                    "created plaintext credential encryption key; shared-Postgres deployments must provision the same KEK on every server"
                 );
                 Ok(CredentialEncryptionKey {
                     key_id: key_id_for_bytes(&bytes),
@@ -142,26 +261,187 @@ impl LocalFileCredentialKeyProvider {
             Err(error) => Err(error.into()),
         }
     }
+
+    fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(raw) => decode_key_material(&raw).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn resolve_key(
+        &self,
+        key_id: Option<&str>,
+    ) -> Result<CredentialEncryptionKey, CredentialsError> {
+        match key_id {
+            Some(key_id) => self
+                .load_key()?
+                .ok_or_else(|| key_unavailable(key_id))
+                .and_then(|key| verify_key_id(key, key_id)),
+            None => self.load_or_create_key(),
+        }
+    }
 }
 
-impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
-    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
-        if let Some(key) = self.load_configured_key()? {
+#[derive(Clone)]
+pub(crate) struct KeychainCredentialKeyProvider {
+    keychain: Arc<dyn CredentialEncryptionKeychain>,
+    lock_path: PathBuf,
+}
+
+impl fmt::Debug for KeychainCredentialKeyProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeychainCredentialKeyProvider")
+            .finish_non_exhaustive()
+    }
+}
+
+impl KeychainCredentialKeyProvider {
+    pub(crate) fn new(layout: &AppStateLayout) -> Self {
+        let namespace = CredentialConfigNamespace::from_layout(layout);
+        let backend = KeychainCredentialBackend::new(namespace.clone());
+        Self {
+            keychain: Arc::new(NativeCredentialEncryptionKeychain {
+                backend,
+                entry: CredentialEncryptionKeychainEntry::from_namespace(&namespace),
+            }),
+            lock_path: layout
+                .credential_encryption_key_file()
+                .with_extension("keychain.lock"),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_keychain_for_test(
+        layout: &AppStateLayout,
+        keychain: Arc<dyn CredentialEncryptionKeychain>,
+    ) -> Self {
+        Self {
+            keychain,
+            lock_path: layout
+                .credential_encryption_key_file()
+                .with_extension("keychain.lock"),
+        }
+    }
+
+    fn probe(&self) -> Result<(), CredentialsError> {
+        self.keychain.probe()
+    }
+
+    fn load_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
+        if let Some(raw) = self.keychain.read_key_material()? {
+            return decode_key_material(&raw).map(Some);
+        }
+        Ok(None)
+    }
+
+    fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        if let Some(key) = self.load_key()? {
             return Ok(key);
         }
-        self.load_or_create_key()
+        if let Some(parent) = self.lock_path.parent() {
+            storage_fs::ensure_private_dir(parent)?;
+        }
+        let _guard = FileLock::exclusive(&self.lock_path)?;
+        if let Some(key) = self.load_key()? {
+            return Ok(key);
+        }
+        let bytes = random_array::<KEY_LEN>()?;
+        let encoded = encode_key_material(&bytes);
+        self.keychain.write_key_material(&encoded)?;
+        info!("created keychain credential encryption key");
+        Ok(CredentialEncryptionKey {
+            key_id: key_id_for_bytes(&bytes),
+            bytes,
+        })
+    }
+
+    fn resolve_key(
+        &self,
+        key_id: Option<&str>,
+    ) -> Result<CredentialEncryptionKey, CredentialsError> {
+        match key_id {
+            Some(key_id) => self
+                .load_key()?
+                .ok_or_else(|| key_unavailable(key_id))
+                .and_then(|key| verify_key_id(key, key_id)),
+            None => self.load_or_create_key(),
+        }
+    }
+}
+
+impl CredentialKeyProvider for KeychainCredentialKeyProvider {
+    fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        self.resolve_key(None)
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        let key = self
-            .load_configured_key()?
-            .map_or_else(|| self.load_or_create_key(), Ok)?;
-        if key.key_id == key_id {
-            Ok(key)
-        } else {
-            Err(CredentialsError::Crypto(format!(
-                "credential encryption key '{key_id}' is unavailable"
-            )))
+        self.resolve_key(Some(key_id))
+    }
+}
+
+trait CredentialEncryptionKeychain: Send + Sync {
+    fn probe(&self) -> Result<(), CredentialsError>;
+
+    fn read_key_material(&self) -> Result<Option<String>, CredentialsError>;
+
+    fn write_key_material(&self, material: &str) -> Result<(), CredentialsError>;
+}
+
+#[derive(Clone)]
+struct NativeCredentialEncryptionKeychain {
+    backend: KeychainCredentialBackend,
+    entry: CredentialEncryptionKeychainEntry,
+}
+
+impl CredentialEncryptionKeychain for NativeCredentialEncryptionKeychain {
+    fn probe(&self) -> Result<(), CredentialsError> {
+        self.backend.run_native(|backend| backend.probe_native())
+    }
+
+    fn read_key_material(&self) -> Result<Option<String>, CredentialsError> {
+        let entry = self.entry.clone();
+        self.backend.run_native(move |backend| {
+            backend.probe_native()?;
+            match backend
+                .entry_for(&entry.service, &entry.account)?
+                .get_password()
+            {
+                Ok(value) => Ok(Some(value)),
+                Err(keyring_core::Error::NoEntry) => Ok(None),
+                Err(error) => Err(CredentialsError::Unavailable(error.to_string())),
+            }
+        })
+    }
+
+    fn write_key_material(&self, material: &str) -> Result<(), CredentialsError> {
+        let entry = self.entry.clone();
+        let material = material.to_string();
+        self.backend.run_native(move |backend| {
+            backend.probe_native()?;
+            backend
+                .entry_for(&entry.service, &entry.account)?
+                .set_password(&material)
+                .map_err(|error| CredentialsError::Unavailable(error.to_string()))
+        })
+    }
+}
+
+#[derive(Clone)]
+struct CredentialEncryptionKeychainEntry {
+    service: String,
+    account: String,
+}
+
+impl CredentialEncryptionKeychainEntry {
+    fn from_namespace(config_namespace: &CredentialConfigNamespace) -> Self {
+        Self {
+            service: format!(
+                "com.withcoral.coral/{}/credential-encryption-key",
+                config_namespace.as_str()
+            ),
+            account: "active".to_string(),
         }
     }
 }
@@ -506,6 +786,68 @@ fn configured_key_env(config_file: &Path) -> Result<Option<String>, CredentialsE
         })
 }
 
+fn configured_key_source(
+    config_file: &Path,
+) -> Result<CredentialEncryptionKeySource, CredentialsError> {
+    if !config_file.exists() {
+        return Ok(CredentialEncryptionKeySource::Auto);
+    }
+    let raw = std::fs::read_to_string(config_file)?;
+    let config: toml::Value =
+        toml::from_str(&raw).map_err(|error| CredentialsError::Parse(error.to_string()))?;
+    let Some(value) = config
+        .get("credentials")
+        .and_then(|credentials| credentials.get("encryption_key_source"))
+    else {
+        return Ok(CredentialEncryptionKeySource::Auto);
+    };
+    match value.as_str() {
+        Some("auto") => Ok(CredentialEncryptionKeySource::Auto),
+        Some("file") => Ok(CredentialEncryptionKeySource::File),
+        Some("keychain") => Ok(CredentialEncryptionKeySource::Keychain),
+        Some("vault") => Ok(CredentialEncryptionKeySource::Vault),
+        Some(source) => Err(CredentialsError::Parse(format!(
+            "unsupported [credentials].encryption_key_source '{source}'"
+        ))),
+        None => Err(CredentialsError::Parse(
+            "[credentials].encryption_key_source must be a string".to_string(),
+        )),
+    }
+}
+
+fn verify_key_id(
+    key: CredentialEncryptionKey,
+    key_id: &str,
+) -> Result<CredentialEncryptionKey, CredentialsError> {
+    if key.key_id == key_id {
+        Ok(key)
+    } else {
+        Err(key_unavailable(key_id))
+    }
+}
+
+fn key_unavailable(key_id: &str) -> CredentialsError {
+    CredentialsError::Crypto(format!(
+        "credential encryption key '{key_id}' is unavailable"
+    ))
+}
+
+fn configured_keychain_key_unavailable(error: CredentialsError) -> CredentialsError {
+    match error {
+        CredentialsError::Unavailable(detail) => CredentialsError::Unavailable(format!(
+            "credential encryption key source is configured for keychain, but keychain is unavailable: {detail}"
+        )),
+        error => error,
+    }
+}
+
+fn encode_key_material(bytes: &[u8; KEY_LEN]) -> String {
+    format!(
+        "{KEY_FILE_VERSION}:{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
 fn decode_key_material(raw: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
     let trimmed = raw.trim();
     let Some(encoded) = trimmed.strip_prefix(&format!("{KEY_FILE_VERSION}:")) else {
@@ -537,6 +879,10 @@ fn key_id_for_bytes(bytes: &[u8; KEY_LEN]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::{Arc, Mutex};
+
+    use tempfile::TempDir;
 
     impl CredentialKeyProvider for CredentialEncryptionKey {
         fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -590,5 +936,210 @@ mod tests {
         assert!(debug.contains(provider.key_id()));
         assert!(!debug.contains("bytes"));
         assert!(!debug.contains("[7, 7"));
+    }
+
+    #[test]
+    fn keychain_key_provider_stores_and_reuses_versioned_key() {
+        let (_temp, layout) = temp_layout();
+        let keychain = FakeKeychain::available();
+        let provider =
+            KeychainCredentialKeyProvider::with_keychain_for_test(&layout, keychain.clone());
+
+        let first = provider.active_key().expect("first key");
+        let second = provider.active_key().expect("second key");
+
+        assert_eq!(first, second);
+        assert!(
+            keychain
+                .material()
+                .expect("stored key")
+                .starts_with(&format!("{KEY_FILE_VERSION}:")),
+            "keychain key material should use the shared versioned encoding"
+        );
+    }
+
+    #[test]
+    fn key_lookup_does_not_create_missing_key_material() {
+        let (_temp, layout) = temp_layout();
+        let keychain = FakeKeychain::available();
+        let keychain_provider =
+            KeychainCredentialKeyProvider::with_keychain_for_test(&layout, keychain.clone());
+
+        keychain_provider
+            .key("missing-key")
+            .expect_err("missing keychain key should fail");
+
+        assert!(keychain.material().is_none(), "lookup must not create KEK");
+        write_key_source_config(&layout, "file");
+        LocalFileCredentialKeyProvider::new(&layout)
+            .key("missing-key")
+            .expect_err("missing file key should fail");
+        assert!(
+            !layout.credential_encryption_key_file().exists(),
+            "file lookup must not create KEK"
+        );
+    }
+
+    #[test]
+    #[ignore = "uses the native OS keychain; run manually on hosts with keychain access"]
+    fn native_keychain_key_provider_round_trips_key_material() {
+        let (_temp, layout) = temp_layout();
+        let first = KeychainCredentialKeyProvider::new(&layout)
+            .active_key()
+            .expect("native keychain should create KEK");
+        let second = KeychainCredentialKeyProvider::new(&layout)
+            .key(first.key_id())
+            .expect("native keychain should read KEK by id");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn auto_prefers_keychain_without_creating_file_key() {
+        let (_temp, layout) = temp_layout();
+        let keychain = FakeKeychain::available();
+        let provider = LocalFileCredentialKeyProvider::with_keychain_for_test(
+            &layout,
+            KeychainCredentialKeyProvider::with_keychain_for_test(&layout, keychain.clone()),
+        );
+
+        provider.active_key().expect("keychain key");
+
+        assert!(keychain.material().is_some(), "auto should write keychain");
+        assert!(
+            !layout.credential_encryption_key_file().exists(),
+            "auto keychain success should not create plaintext key material"
+        );
+    }
+
+    #[test]
+    fn auto_falls_back_to_file_with_loud_warning_when_keychain_unavailable() {
+        let (_temp, layout) = temp_layout();
+        let keychain = FakeKeychain::unavailable();
+        let provider = LocalFileCredentialKeyProvider::with_keychain_for_test(
+            &layout,
+            KeychainCredentialKeyProvider::with_keychain_for_test(&layout, keychain),
+        );
+
+        provider.active_key().expect("fallback file key");
+
+        assert!(
+            layout.credential_encryption_key_file().exists(),
+            "unavailable keychain should fall back to the plaintext key file"
+        );
+    }
+
+    #[test]
+    fn auto_keeps_existing_file_key_even_when_keychain_available() {
+        let (_temp, layout) = temp_layout();
+        write_key_source_config(&layout, "file");
+        let file_key = LocalFileCredentialKeyProvider::new(&layout)
+            .active_key()
+            .expect("file key");
+        std::fs::remove_file(layout.config_file()).expect("remove explicit file config");
+        let keychain = FakeKeychain::available();
+        let provider = LocalFileCredentialKeyProvider::with_keychain_for_test(
+            &layout,
+            KeychainCredentialKeyProvider::with_keychain_for_test(&layout, keychain.clone()),
+        );
+
+        let selected = provider.active_key().expect("auto key");
+
+        assert_eq!(selected, file_key);
+        assert!(
+            keychain.material().is_none(),
+            "existing file key should keep auto mode from silently switching to keychain"
+        );
+    }
+
+    #[test]
+    fn explicit_keychain_source_fails_closed_when_unavailable() {
+        let (_temp, layout) = temp_layout();
+        write_key_source_config(&layout, "keychain");
+        let provider = LocalFileCredentialKeyProvider::with_keychain_for_test(
+            &layout,
+            KeychainCredentialKeyProvider::with_keychain_for_test(
+                &layout,
+                FakeKeychain::unavailable(),
+            ),
+        );
+
+        let error = provider
+            .active_key()
+            .expect_err("explicit keychain should not fall back");
+
+        assert!(
+            matches!(error, CredentialsError::Unavailable(_)),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !layout.credential_encryption_key_file().exists(),
+            "explicit keychain failure must not create a plaintext key"
+        );
+    }
+
+    fn temp_layout() -> (TempDir, AppStateLayout) {
+        let temp = TempDir::new().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        (temp, layout)
+    }
+
+    fn write_key_source_config(layout: &AppStateLayout, source: &str) {
+        std::fs::write(
+            layout.config_file(),
+            format!("version = 1\n\n[credentials]\nencryption_key_source = \"{source}\"\n"),
+        )
+        .expect("write config");
+    }
+
+    struct FakeKeychain {
+        available: bool,
+        material: Mutex<Option<String>>,
+    }
+
+    impl FakeKeychain {
+        fn available() -> Arc<Self> {
+            Arc::new(Self {
+                available: true,
+                material: Mutex::new(None),
+            })
+        }
+
+        fn unavailable() -> Arc<Self> {
+            Arc::new(Self {
+                available: false,
+                material: Mutex::new(None),
+            })
+        }
+
+        fn material(&self) -> Option<String> {
+            self.material.lock().expect("material lock").clone()
+        }
+    }
+
+    impl CredentialEncryptionKeychain for FakeKeychain {
+        fn probe(&self) -> Result<(), CredentialsError> {
+            if self.available {
+                Ok(())
+            } else {
+                Err(CredentialsError::Unavailable(
+                    "fake keychain unavailable".to_string(),
+                ))
+            }
+        }
+
+        fn read_key_material(&self) -> Result<Option<String>, CredentialsError> {
+            self.probe()?;
+            Ok(self.material())
+        }
+
+        fn write_key_material(&self, material: &str) -> Result<(), CredentialsError> {
+            self.probe()?;
+            *self.material.lock().map_err(|error| {
+                CredentialsError::Unavailable(format!("fake keychain lock poisoned: {error}"))
+            })? = Some(material.to_string());
+            Ok(())
+        }
     }
 }

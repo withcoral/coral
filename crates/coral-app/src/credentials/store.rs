@@ -51,10 +51,10 @@ struct CredentialSetRef<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CredentialConfigNamespace(String);
+pub(super) struct CredentialConfigNamespace(String);
 
 impl CredentialConfigNamespace {
-    fn from_layout(layout: &AppStateLayout) -> Self {
+    pub(super) fn from_layout(layout: &AppStateLayout) -> Self {
         Self::from_config_dir(layout.config_dir())
     }
 
@@ -70,7 +70,7 @@ impl CredentialConfigNamespace {
         Self(short.to_string())
     }
 
-    fn as_str(&self) -> &str {
+    pub(super) fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }
@@ -738,14 +738,14 @@ impl CredentialMaterialBackend for FileCredentialBackend {
 }
 
 #[derive(Clone)]
-struct KeychainCredentialBackend {
+pub(super) struct KeychainCredentialBackend {
     config_namespace: CredentialConfigNamespace,
     native: Arc<OnceLock<Result<Arc<keyring_core::CredentialStore>, String>>>,
     probe: Arc<OnceLock<Result<(), String>>>,
 }
 
 impl KeychainCredentialBackend {
-    fn new(config_namespace: CredentialConfigNamespace) -> Self {
+    pub(super) fn new(config_namespace: CredentialConfigNamespace) -> Self {
         Self {
             config_namespace,
             native: Arc::new(OnceLock::new()),
@@ -760,7 +760,7 @@ impl KeychainCredentialBackend {
         }
     }
 
-    fn entry_for(
+    pub(super) fn entry_for(
         &self,
         service: &str,
         account: &str,
@@ -781,7 +781,7 @@ impl KeychainCredentialBackend {
             .map_err(|error| keychain_error(&error))
     }
 
-    fn run_native<T, F>(&self, operation: F) -> Result<T, CredentialsError>
+    pub(super) fn run_native<T, F>(&self, operation: F) -> Result<T, CredentialsError>
     where
         T: Send + 'static,
         F: FnOnce(Self) -> Result<T, CredentialsError> + Send + 'static,
@@ -789,7 +789,7 @@ impl KeychainCredentialBackend {
         run_native_keychain(self.clone(), operation)
     }
 
-    fn probe_native(&self) -> Result<(), CredentialsError> {
+    pub(super) fn probe_native(&self) -> Result<(), CredentialsError> {
         match self.probe.get_or_init(|| {
             catch_native_keychain_panic(|| self.run_probe()).map_err(|error| error.to_string())
         }) {

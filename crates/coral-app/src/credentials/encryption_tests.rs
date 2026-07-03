@@ -267,6 +267,7 @@ fn local_file_key_provider_creates_and_reuses_private_key_file() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
+    use_file_encryption_key_source(&layout);
     let provider = LocalFileCredentialKeyProvider::new(&layout);
 
     let first = provider.active_key().expect("first key");
@@ -284,6 +285,7 @@ fn local_file_key_provider_serializes_concurrent_first_use_creation() {
     let temp = tempdir().expect("temp dir");
     let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
     layout.ensure().expect("ensure layout");
+    use_file_encryption_key_source(&layout);
     let provider = LocalFileCredentialKeyProvider::new(&layout);
     let thread_count = 32;
     let barrier = Arc::new(Barrier::new(thread_count));
@@ -343,6 +345,14 @@ fn decrypt_rejects_unknown_key_id() {
         .expect_err("missing KEK should fail");
 
     assert!(error.to_string().contains("missing test key"));
+}
+
+fn use_file_encryption_key_source(layout: &AppStateLayout) {
+    std::fs::write(
+        layout.config_file(),
+        "version = 1\n\n[credentials]\nencryption_key_source = \"file\"\n",
+    )
+    .expect("write config");
 }
 
 fn assert_open_failed(error: &CredentialsError) {
