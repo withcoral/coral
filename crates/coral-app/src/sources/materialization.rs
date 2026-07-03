@@ -937,7 +937,7 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<DescriptorRead, A
             response.status()
         )));
     }
-    let effective_base_uri = response.url().to_string();
+    let effective_base_uri = effective_descriptor_base_uri(response.url());
     if let Some(length) = response.content_length()
         && length > MAX_DESCRIPTOR_BYTES
     {
@@ -961,6 +961,13 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<DescriptorRead, A
         bytes,
         effective_base_uri: Some(effective_base_uri),
     })
+}
+
+fn effective_descriptor_base_uri(url: &reqwest::Url) -> String {
+    let mut url = url.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {
@@ -1689,6 +1696,17 @@ surfaces:
         assert!(
             error.to_string().contains("must use HTTPS"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn effective_descriptor_base_uri_strips_query_and_fragment() {
+        let url = reqwest::Url::parse("https://example.com/specs/openapi.yaml?download=1#ignored")
+            .expect("url");
+
+        assert_eq!(
+            effective_descriptor_base_uri(&url),
+            "https://example.com/specs/openapi.yaml"
         );
     }
 }

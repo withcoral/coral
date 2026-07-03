@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::{IrField, IrType, IrTypeShape};
-use crate::v4::naming::normalize_identifier;
+use crate::v4::naming::{normalize_identifier, stable_suffix};
 use crate::v4::surfaces::json_schema::{
     JsonSchemaComparisonError, direct_json_object_shape, json_schema_required_fields,
     json_schema_scalar_type, merge_json_schema_properties_exact,
@@ -209,5 +209,16 @@ fn enum_value(value: &Value) -> String {
 }
 
 fn type_id_from_ref(reference: &str) -> String {
+    if !reference.starts_with('#') {
+        return format!(
+            "{}_{}",
+            local_type_id_from_ref(reference),
+            stable_suffix(reference)
+        );
+    }
+    local_type_id_from_ref(reference)
+}
+
+fn local_type_id_from_ref(reference: &str) -> String {
     normalize_identifier(reference.rsplit('/').next().unwrap_or(reference), "type")
 }

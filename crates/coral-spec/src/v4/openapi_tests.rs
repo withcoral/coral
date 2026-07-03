@@ -845,7 +845,6 @@ paths:
     assert_eq!(page.name, "page");
     assert_eq!(page.data_type, IrScalarType::Integer);
     assert_eq!(operation.output.cardinality, OutputCardinality::List);
-    assert_eq!(operation.output.type_ref, "item");
     assert!(
         operation.diagnostics.is_empty(),
         "{:?}",
@@ -855,7 +854,7 @@ paths:
     let item = ir
         .types
         .iter()
-        .find(|ty| ty.id == "item")
+        .find(|ty| ty.id == operation.output.type_ref)
         .expect("item type");
     let IrTypeShape::Object { fields } = &item.shape else {
         panic!("item should import as object: {:?}", item.shape);
@@ -871,6 +870,103 @@ paths:
             .shape,
         IrTypeShape::Scalar(IrScalarType::String)
     ));
+}
+
+#[test]
+fn importer_keeps_external_ref_type_ids_distinct_by_document() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let openapi_file = temp.path().join("openapi.yaml");
+    std::fs::create_dir_all(temp.path().join("schemas")).expect("schemas dir");
+    std::fs::write(
+        temp.path().join("schemas/a.yaml"),
+        r"
+Item:
+  type: object
+  properties:
+    a_id: {type: string}
+",
+    )
+    .expect("a schema");
+    std::fs::write(
+        temp.path().join("schemas/b.yaml"),
+        r"
+Item:
+  type: object
+  properties:
+    b_id: {type: integer}
+",
+    )
+    .expect("b schema");
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: external_ref_type_collisions
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /a:
+    get:
+      operationId: a/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: schemas/a.yaml#/Item
+  /b:
+    get:
+      operationId: b/get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: schemas/b.yaml#/Item
+"
+        .as_bytes(),
+    )
+    .expect("external refs import");
+    let a = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "a_get")
+        .expect("a operation");
+    let b = ir
+        .operations
+        .iter()
+        .find(|operation| operation.id == "b_get")
+        .expect("b operation");
+
+    assert_ne!(a.output.type_ref, b.output.type_ref);
+    assert!(a.output.type_ref.starts_with("item_"));
+    assert!(b.output.type_ref.starts_with("item_"));
+    assert_type_has_field(&ir.types, &a.output.type_ref, "a_id");
+    assert_type_has_field(&ir.types, &b.output.type_ref, "b_id");
+}
+
+fn assert_type_has_field(types: &[IrType], type_ref: &str, field_name: &str) {
+    let ty = types.iter().find(|ty| ty.id == type_ref).expect("type");
+    let IrTypeShape::Object { fields } = &ty.shape else {
+        panic!("type should import as object: {:?}", ty.shape);
+    };
+    assert!(
+        fields.iter().any(|field| field.name == field_name),
+        "type {type_ref} should have field {field_name}: {fields:?}"
+    );
 }
 
 #[test]
@@ -1026,9 +1122,10 @@ paths:
     .expect("unused refs in external documents should not fail import");
 
     assert_eq!(ir.operations.len(), 1);
-    assert_eq!(
-        ir.operations.first().expect("operation").output.type_ref,
-        "item"
+    assert_type_has_field(
+        &ir.types,
+        &ir.operations.first().expect("operation").output.type_ref,
+        "id",
     );
 }
 
@@ -1090,6 +1187,65 @@ components:
         "{:?}",
         operation.diagnostics
     );
+}
+
+#[test]
+fn importer_ignores_descriptor_uri_query_for_same_document_refs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let openapi_file = temp.path().join("openapi.yaml");
+    let mut descriptor_uri = url::Url::from_file_path(&openapi_file).expect("descriptor uri");
+    descriptor_uri.set_query(Some("download=1"));
+    descriptor_uri.set_fragment(Some("ignored"));
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: descriptor_query_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface_with_base_uri(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          $ref: openapi.yaml#/components/responses/Items
+components:
+  responses:
+    Items:
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: openapi.yaml#/components/schemas/Item
+  schemas:
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+        descriptor_uri.as_str(),
+    )
+    .expect("descriptor query should not affect same-document URI refs");
+
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert_eq!(operation.output.type_ref, "item");
 }
 
 #[test]

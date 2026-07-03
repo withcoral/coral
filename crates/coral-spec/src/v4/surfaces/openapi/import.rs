@@ -80,12 +80,8 @@ fn dereference_openapi_document(
     descriptor_base_uri: &str,
     document: &Value,
 ) -> Result<Value> {
-    let parsed_descriptor_url = Url::parse(descriptor_base_uri).map_err(|error| {
-        ManifestError::validation(format!(
-            "OpenAPI descriptor base URI '{descriptor_base_uri}' for surface '{}' is invalid: {error}",
-            surface.id
-        ))
-    })?;
+    let parsed_descriptor_url = normalized_descriptor_base_uri(surface, descriptor_base_uri)?;
+    let descriptor_base_uri = parsed_descriptor_url.to_string();
     let mut document = document.clone();
     normalize_same_document_refs(&parsed_descriptor_url, &mut document);
     let reachable_document = reachable_openapi_document(&document);
@@ -125,7 +121,7 @@ fn dereference_openapi_document(
     })?;
 
     jsonschema::options()
-        .with_base_uri(descriptor_base_uri)
+        .with_base_uri(&descriptor_base_uri)
         .with_registry(&registry)
         .dereference(&reachable_document)
         .map_err(|error| {
@@ -134,6 +130,18 @@ fn dereference_openapi_document(
                 surface.id
             ))
         })
+}
+
+fn normalized_descriptor_base_uri(surface: &V4Surface, descriptor_base_uri: &str) -> Result<Url> {
+    let mut url = Url::parse(descriptor_base_uri).map_err(|error| {
+        ManifestError::validation(format!(
+            "OpenAPI descriptor base URI '{descriptor_base_uri}' for surface '{}' is invalid: {error}",
+            surface.id
+        ))
+    })?;
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
 }
 
 fn collect_external_ref_documents(
