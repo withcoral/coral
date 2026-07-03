@@ -61,10 +61,6 @@ impl UdfCallRegistry {
         Ok(registry)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.functions.is_empty()
-    }
-
     /// Installs this relation planner together with the analyzer rule that
     /// expands the nodes it parks. The two are a pair: any session that can
     /// plan UDF calls must also be able to expand them.

@@ -35,9 +35,11 @@ use crate::backends::{
     RegisteredTableFunction, RegisteredTableFunctionArgument, SourceFunctionProviderFactory,
 };
 use crate::runtime::scoped_table_functions::{
-    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature, call_parts,
-    find_placeholder, lower_named_args_to_positional_exprs, original_relation, qualified_name,
-    reject_settings, reject_unsupported_modifiers,
+    ScopedTableFunctionCall, ScopedTableFunctionName, ScopedTableFunctionSignature,
+    available_functions_hint, call_parts, find_placeholder, lower_named_args_to_positional_exprs,
+    original_relation, qualified_name, reject_settings,
+    reject_unbound_parameters as reject_unbound_table_function_parameters,
+    reject_unsupported_modifiers,
 };
 use coral_spec::ManifestDataType;
 
@@ -118,20 +120,12 @@ impl SourceFunctionRegistry {
     }
 
     fn available_functions_hint(&self, schema: &str) -> String {
-        let mut names: Vec<&str> = self
-            .functions
-            .iter()
-            .filter_map(|(key, function)| {
-                (key.schema == schema).then_some(function.display_name.as_str())
-            })
-            .collect();
-        names.sort_unstable();
-
-        if names.is_empty() {
-            String::new()
-        } else {
-            format!("; available functions: {}", names.join(", "))
-        }
+        available_functions_hint(
+            schema,
+            self.functions
+                .iter()
+                .map(|(key, function)| (key, function.display_name.as_str())),
+        )
     }
 }
 
@@ -302,16 +296,11 @@ impl SourceFunctionNode {
     }
 
     fn reject_unbound_parameters(&self) -> Result<()> {
-        for (declared_arg, call_expr) in self.declared_args_with_call_exprs() {
-            if let Some(placeholder) = find_placeholder(call_expr) {
-                return Err(DataFusionError::Plan(format!(
-                    "{} argument '{}' is bound to parameter {placeholder}, \
-                     but no value was provided for it",
-                    self.display_name, declared_arg.name
-                )));
-            }
-        }
-        Ok(())
+        reject_unbound_table_function_parameters(
+            &self.display_name,
+            self.declared_args_with_call_exprs()
+                .map(|(argument, arg)| (argument.name.as_str(), arg)),
+        )
     }
 
     fn to_provider_scan(&self) -> Result<LogicalPlan> {
