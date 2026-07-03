@@ -133,13 +133,13 @@ fn literal_query_parameter_value(
     }
 
     match value {
-        ScalarValue::Utf8(Some(value)) if is_string_shaped_type(data_type) => {
+        ScalarValue::Utf8(Some(value)) if data_type.binds_as_string() => {
             Some(QueryParameterValue::string(value.clone()))
         }
-        ScalarValue::LargeUtf8(Some(value)) if is_string_shaped_type(data_type) => {
+        ScalarValue::LargeUtf8(Some(value)) if data_type.binds_as_string() => {
             Some(QueryParameterValue::string(value.clone()))
         }
-        ScalarValue::Utf8View(Some(value)) if is_string_shaped_type(data_type) => {
+        ScalarValue::Utf8View(Some(value)) if data_type.binds_as_string() => {
             Some(QueryParameterValue::string((*value).clone()))
         }
         ScalarValue::Int64(Some(value)) if data_type == ManifestDataType::Int64 => {
@@ -273,7 +273,7 @@ fn query_parameter_value_name(value: &QueryParameterValue) -> &'static str {
 }
 
 fn typed_null_value(data_type: ManifestDataType) -> QueryParameterValue {
-    if is_string_shaped_type(data_type) {
+    if data_type.binds_as_string() {
         return QueryParameterValue::null_string();
     }
 
@@ -287,19 +287,12 @@ fn typed_null_value(data_type: ManifestDataType) -> QueryParameterValue {
 
 fn argument_accepts_value(data_type: ManifestDataType, value: &QueryParameterValue) -> bool {
     match (data_type, value) {
-        (data_type, QueryParameterValue::String(_)) if is_string_shaped_type(data_type) => true,
+        (data_type, QueryParameterValue::String(_)) if data_type.binds_as_string() => true,
         (ManifestDataType::Int64, QueryParameterValue::Integer(_))
         | (ManifestDataType::Float64, QueryParameterValue::Float(_))
         | (ManifestDataType::Boolean, QueryParameterValue::Boolean(_)) => true,
         _ => false,
     }
-}
-
-fn is_string_shaped_type(data_type: ManifestDataType) -> bool {
-    matches!(
-        data_type,
-        ManifestDataType::Utf8 | ManifestDataType::Json | ManifestDataType::Timestamp
-    )
 }
 
 fn scalar_value_name(value: &ScalarValue) -> &'static str {
@@ -397,14 +390,16 @@ mod tests {
     #[test]
     fn udf_argument_values_binds_supported_literals() {
         let udf = udf();
-        let exprs = vec![Expr::Literal(
-            ScalarValue::Utf8(Some("Bradley-Butcher".into())),
-            None,
-        )];
+        let exprs = [
+            Expr::Literal(ScalarValue::Utf8(Some("Bradley-Butcher".into())), None),
+            Expr::Literal(ScalarValue::Utf8View(Some("Bradley-Butcher".into())), None),
+        ];
 
-        assert_eq!(
-            udf_argument_values(&udf, &exprs).unwrap(),
-            params([("author", QueryParameterValue::string("Bradley-Butcher"))])
-        );
+        for expr in exprs {
+            assert_eq!(
+                udf_argument_values(&udf, &[expr]).unwrap(),
+                params([("author", QueryParameterValue::string("Bradley-Butcher"))])
+            );
+        }
     }
 }
