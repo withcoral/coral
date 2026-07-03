@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
-use coral_engine::{CoralQuery, QuerySource, RuntimeSourceComponent, RuntimeSourcePackage};
-use coral_spec::backends::http::HttpSourceManifest;
+use coral_engine::{
+    CoralQuery, QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent,
+    RuntimeSourcePackage,
+};
 use coral_spec::parse_source_manifest_yaml;
 use coral_spec::{FilterMode, FilterSpec, ManifestDataType};
 use serde_json::json;
@@ -246,7 +248,7 @@ fn http_component(
     schema_name: &str,
     table_name: &str,
     path: &str,
-) -> HttpSourceManifest {
+) -> RuntimeHttpSourceComponent {
     let manifest = parse_source_manifest_yaml(&format!(
         r"
 name: {schema_name}
@@ -269,7 +271,7 @@ tables:
 "
     ))
     .expect("manifest");
-    manifest.as_http().expect("http manifest").clone()
+    RuntimeHttpSourceComponent::new(manifest.as_http().expect("http manifest").clone())
 }
 
 fn file_component_with_lookup_key_filter() -> coral_spec::backends::file::FileSourceManifest {

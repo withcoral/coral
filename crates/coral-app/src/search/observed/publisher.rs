@@ -279,8 +279,8 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use coral_engine::{
-        QuerySource, RuntimeSourceComponent, RuntimeSourcePackage, SourceObservationSurfaceKind,
-        SourceScanObservation,
+        QuerySource, RuntimeHttpSourceComponent, RuntimeSourceComponent, RuntimeSourcePackage,
+        SourceObservationSurfaceKind, SourceScanObservation,
     };
     use coral_spec::{DO_NOT_INDEX_COLUMN_METADATA_KEY, parse_source_manifest_yaml};
     use serde_json::json;
@@ -668,7 +668,9 @@ tables:
 "
         );
         let manifest = parse_source_manifest_yaml(&yaml).expect("component manifest");
-        RuntimeSourceComponent::Http(manifest.as_http().expect("HTTP component").clone())
+        RuntimeSourceComponent::Http(RuntimeHttpSourceComponent::new(
+            manifest.as_http().expect("HTTP component").clone(),
+        ))
     }
 
     fn wait_for_payloads(layout: &AppStateLayout, workspace: &WorkspaceName) -> Vec<String> {

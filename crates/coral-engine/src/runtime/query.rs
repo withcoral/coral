@@ -137,6 +137,8 @@ async fn build_runtime_inner(
         dependent_join,
         mut extensions,
         udfs,
+        request_identity_selector: _,
+        request_identity_http_authenticator_factory: _,
     } = runtime;
     let extension_hooks = RuntimeExtensionHooks {
         request_authenticators: extensions.request_authenticators.clone(),
