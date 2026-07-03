@@ -12,6 +12,7 @@ import {
   registerAppSchemePrivileges,
 } from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
+import { checkForDesktopUpdates, installAutoUpdater } from './auto-update'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
 
@@ -280,6 +281,16 @@ function installMenu() {
           label: 'Configure MCP',
           submenu: mcpSubmenu,
         },
+        ...(app.isPackaged
+          ? ([
+              {
+                label: 'Check for Updates...',
+                click: () => {
+                  void checkForDesktopUpdates({ interactive: true })
+                },
+              },
+            ] satisfies Electron.MenuItemConstructorOptions[])
+          : []),
         { type: 'separator' },
         { role: 'quit' },
       ],
@@ -334,6 +345,7 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', updatePlatformIcon)
   registerIpcHandlers()
   installMenu()
+  installAutoUpdater()
   registerAppProtocol(() => ensureSidecar().then((started) => started.url))
   void ensureSidecar().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)

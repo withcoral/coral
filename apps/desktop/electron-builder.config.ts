@@ -1,9 +1,18 @@
 import type { Configuration } from 'electron-builder'
 
+const releaseBuild = process.env.CORAL_DESKTOP_RELEASE === '1'
+
 const config: Configuration = {
   appId: 'com.withcoral.desktop',
   productName: 'Coral',
-  artifactName: 'coral-desktop-${os}-${arch}.${ext}',
+  forceCodeSigning: releaseBuild,
+  publish: [
+    {
+      provider: 'github',
+      owner: 'withcoral',
+      repo: 'coral',
+    },
+  ],
   directories: {
     output: 'dist',
     buildResources: 'resources',
@@ -37,9 +46,14 @@ const config: Configuration = {
     },
   ],
   mac: {
+    artifactName: 'coral-desktop-mac-${arch}.${ext}',
     category: 'public.app-category.developer-tools',
+    entitlements: 'resources/entitlements.mac.plist',
+    entitlementsInherit: 'resources/entitlements.mac.inherit.plist',
+    hardenedRuntime: true,
     icon: 'resources/icons/icon.icns',
-    target: ['dmg'],
+    notarize: releaseBuild,
+    target: ['dmg', 'zip'],
   },
 }
 
