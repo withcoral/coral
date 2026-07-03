@@ -278,15 +278,30 @@ fn record_columns() -> [CredentialDocuments; 10] {
 
 #[cfg(test)]
 mod tests {
+    use sea_query::{Expr, Query};
     use tempfile::tempdir;
 
     use super::{CredentialDocumentRecord, CredentialDocumentWrite};
     use crate::bootstrap;
     use crate::sources::SourceName;
     use crate::sources::model::{InstalledSource, SourceOrigin};
+    use crate::state::db::DbError;
+    use crate::state::db::schema::CredentialDocuments;
     use crate::state::db::session::DbRepos;
     use crate::state::db::{CoralDb, CoralTx, ResolvedDatabaseConfig};
     use crate::workspaces::WorkspaceName;
+
+    struct CorruptDocumentRow {
+        label: &'static str,
+        document_version: i64,
+        ciphertext: &'static [u8],
+        nonce: &'static [u8],
+        wrapped_dek: &'static [u8],
+        wrapped_dek_nonce: &'static [u8],
+        created_at_unix_nanos: i64,
+        updated_at_unix_nanos: i64,
+        expected_error: &'static str,
+    }
 
     #[tokio::test]
     async fn credential_document_repository_round_trips_against_sqlite() {
@@ -299,6 +314,19 @@ mod tests {
         db.migrate().await.expect("migrate sqlite");
 
         assert_credential_document_repository_round_trip(&db).await;
+    }
+
+    #[tokio::test]
+    async fn credential_document_repository_rejects_corrupt_rows_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite {
+            path: temp.path().join("coral.sqlite"),
+        })
+        .await
+        .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+
+        assert_credential_document_repository_rejects_corrupt_rows(&db).await;
     }
 
     #[tokio::test]
@@ -375,6 +403,52 @@ mod tests {
 
         assert_eq!(removed, Some(current));
         assert_eq!(get_document(db, &workspace, &source_name).await, None);
+    }
+
+    async fn assert_credential_document_repository_rejects_corrupt_rows(db: &CoralDb) {
+        for row in [
+            CorruptDocumentRow {
+                label: "negative",
+                document_version: -1,
+                ciphertext: b"ciphertext",
+                nonce: b"nonce",
+                wrapped_dek: b"wrapped",
+                wrapped_dek_nonce: b"wrapped-nonce",
+                created_at_unix_nanos: -1,
+                updated_at_unix_nanos: -1,
+                expected_error: "negative version or timestamp",
+            },
+            CorruptDocumentRow {
+                label: "emptybytes",
+                document_version: 1,
+                ciphertext: b"",
+                nonce: b"",
+                wrapped_dek: b"",
+                wrapped_dek_nonce: b"",
+                created_at_unix_nanos: 10,
+                updated_at_unix_nanos: 10,
+                expected_error: "empty encrypted byte field",
+            },
+        ] {
+            let workspace = unique_workspace(row.label);
+            let source_name = SourceName::parse("github").expect("source name");
+            insert_credential_document_row(db, &workspace, &source_name, &row).await;
+
+            let mut session = db;
+            let error = session
+                .credential_documents()
+                .get(&workspace, &source_name)
+                .await
+                .expect_err("invalid persisted credential document should fail");
+            let DbError::InvalidData(message) = error else {
+                panic!("unexpected error: {error}");
+            };
+            assert!(
+                message.contains(row.expected_error),
+                "expected {:?} in error: {message}",
+                row.expected_error
+            );
+        }
     }
 
     fn unique_workspace(prefix: &str) -> WorkspaceName {
@@ -456,6 +530,57 @@ mod tests {
             .upsert_source(workspace, &source, 2)
             .await
             .expect("upsert source");
+    }
+
+    async fn insert_credential_document_row(
+        db: &CoralDb,
+        workspace: &WorkspaceName,
+        source_name: &SourceName,
+        row: &CorruptDocumentRow,
+    ) {
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin corrupt credential document tx");
+        seed_source(&mut tx, workspace, source_name).await;
+        tx.execute(
+            Query::insert()
+                .into_table(CredentialDocuments::Table)
+                .columns([
+                    CredentialDocuments::WorkspaceId,
+                    CredentialDocuments::SourceName,
+                    CredentialDocuments::DocumentVersion,
+                    CredentialDocuments::Ciphertext,
+                    CredentialDocuments::Nonce,
+                    CredentialDocuments::WrappedDek,
+                    CredentialDocuments::WrappedDekNonce,
+                    CredentialDocuments::KeyId,
+                    CredentialDocuments::Algorithm,
+                    CredentialDocuments::AadVersion,
+                    CredentialDocuments::CreatedAtUnixNanos,
+                    CredentialDocuments::UpdatedAtUnixNanos,
+                ])
+                .values_panic([
+                    Expr::val(workspace.as_str().to_string()),
+                    Expr::val(source_name.as_str().to_string()),
+                    Expr::val(row.document_version),
+                    Expr::val(row.ciphertext.to_vec()),
+                    Expr::val(row.nonce.to_vec()),
+                    Expr::val(row.wrapped_dek.to_vec()),
+                    Expr::val(row.wrapped_dek_nonce.to_vec()),
+                    Expr::val("key"),
+                    Expr::val("AES-256-GCM"),
+                    Expr::val(1),
+                    Expr::val(row.created_at_unix_nanos),
+                    Expr::val(row.updated_at_unix_nanos),
+                ])
+                .to_owned(),
+        )
+        .await
+        .expect("insert corrupt credential document row");
+        tx.commit()
+            .await
+            .expect("commit corrupt credential document row");
     }
 
     fn assert_document(
