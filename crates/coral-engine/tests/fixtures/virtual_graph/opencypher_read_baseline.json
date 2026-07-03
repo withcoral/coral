@@ -24,13 +24,13 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 14,
+    "Temporal": 18,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 31
+    "With": 32
   },
   "scenarios": [
     {
@@ -10706,6 +10706,29 @@
           {
             "a": "Bob",
             "b": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-before-match",
+      "feature": "With",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WITH a, count(b) AS deg MATCH (a)-[:KNOWS]->(c:Person) RETURN a.name AS name, deg",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice",
+            "deg": 2
+          },
+          {
+            "name": "Alice",
+            "deg": 2
+          },
+          {
+            "name": "Bob",
+            "deg": 1
           }
         ]
       }

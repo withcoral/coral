@@ -56,6 +56,14 @@ impl<'a> SqlRenderer<'a> {
         expression: &ScalarExpression,
     ) -> Result<String, CoreError> {
         match expression {
+            ScalarExpression::StageValue { alias } => {
+                let (stage_alias, value_column) = self.validated.stage_scalar_column_ref(alias)?;
+                Ok(format!(
+                    "{}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(value_column)
+                ))
+            }
             ScalarExpression::Property(property) => self.render_property_ref(property),
             ScalarExpression::Literal(literal) => Ok(render_literal(literal)),
             ScalarExpression::LiteralList { literals } => Ok(render_literal_list(literals)),

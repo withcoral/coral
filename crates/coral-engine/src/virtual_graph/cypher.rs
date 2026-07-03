@@ -5857,6 +5857,16 @@ fn compile_staged_multi_part(
     query: &MultiPartQuery,
     context: &CypherCompileContext,
 ) -> Result<Option<GraphQuery>, CoreError> {
+    if let Some(query) = compile_staged_order_limit_multi_part(query, context)? {
+        return Ok(Some(query));
+    }
+    compile_staged_aggregation_multi_part(query, context)
+}
+
+fn compile_staged_order_limit_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
     let Some((part, return_clause, carried_variable)) = staged_multi_part_shape(query, context)?
     else {
         return Ok(None);
@@ -5923,13 +5933,476 @@ fn compile_staged_multi_part(
     Ok(Some(GraphQuery::Staged(GraphStagedQuery {
         stages: vec![GraphStage {
             plan: stage_plan,
-            exports: vec![GraphStageExport {
+            exports: vec![GraphStageExport::NodeKey {
                 variable: carried_variable,
                 column: export_column,
             }],
         }],
         final_plan,
     })))
+}
+
+struct StagedAggregationShape<'a> {
+    part: &'a MultiPartQueryPart,
+    return_clause: &'a Return,
+    group_variables: Vec<String>,
+    aggregate_item_index: usize,
+    aggregate_alias: String,
+}
+
+struct StagedFinalMatchShape {
+    target_variable: String,
+}
+
+fn compile_staged_aggregation_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some(shape) = staged_aggregation_multi_part_shape(query, context)? else {
+        return Ok(None);
+    };
+    let Some((stage_plan, exports)) = compile_staged_aggregation_stage(query, &shape, context)?
+    else {
+        return Ok(None);
+    };
+    let final_plan = compile_staged_aggregation_final_plan(query, &shape, &stage_plan, context)?;
+
+    Ok(Some(GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: stage_plan,
+            exports,
+        }],
+        final_plan,
+    })))
+}
+
+fn compile_staged_aggregation_stage(
+    query: &MultiPartQuery,
+    shape: &StagedAggregationShape<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<(GraphPlan, Vec<GraphStageExport>)>, CoreError> {
+    let mut stage_plan = GraphPlan::default();
+    let mut stage_state = compile_state_for_multi_part(query, context);
+    compile_reading_clauses_into(
+        &shape.part.reading_clauses,
+        "parts[0].match",
+        &mut stage_plan,
+        &mut stage_state,
+        context,
+    )?;
+    if !stage_state.path_variables.is_empty()
+        || !stage_state.relationship_element_path_variables.is_empty()
+        || !stage_state.scalar_aliases.is_empty()
+    {
+        return Ok(None);
+    }
+    let visible = visible_graph_variables(&stage_plan, &stage_state);
+    if !shape
+        .group_variables
+        .iter()
+        .all(|variable| visible.contains(variable))
+    {
+        return Ok(None);
+    }
+
+    let mut exports = Vec::with_capacity(shape.group_variables.len() + 1);
+    for variable in &shape.group_variables {
+        let export_column = stage_export_column(variable);
+        stage_plan.projections.push(Projection::Key {
+            variable: variable.clone(),
+            alias: export_column.clone(),
+        });
+        exports.push(GraphStageExport::NodeKey {
+            variable: variable.clone(),
+            column: export_column,
+        });
+    }
+    let aggregate_item = shape
+        .part
+        .with
+        .items
+        .get(shape.aggregate_item_index)
+        .ok_or_else(|| CoreError::internal("staged aggregate item index was out of bounds"))?;
+    let aggregate_projection = compile_projection(
+        aggregate_item,
+        format!("parts[0].with.items[{}]", shape.aggregate_item_index),
+        context,
+        &stage_plan,
+        &stage_state,
+    )?;
+    if !aggregate_projection.is_aggregate() {
+        return Ok(None);
+    }
+    let aggregate_column = aggregate_projection.output_name();
+    stage_plan.projections.push(aggregate_projection);
+    exports.push(GraphStageExport::AggregateValue {
+        alias: shape.aggregate_alias.clone(),
+        column: aggregate_column,
+    });
+    apply_staged_aggregation_with_modifiers(&shape.part.with, &mut stage_plan, context)?;
+    Ok(Some((stage_plan, exports)))
+}
+
+fn compile_staged_aggregation_final_plan(
+    query: &MultiPartQuery,
+    shape: &StagedAggregationShape<'_>,
+    stage_plan: &GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
+    let final_nodes = shape
+        .group_variables
+        .iter()
+        .map(|variable| {
+            stage_plan
+                .nodes
+                .iter()
+                .find(|node| node.variable == *variable)
+                .cloned()
+                .ok_or_else(|| {
+                    CoreError::internal("staged aggregate group variable was not a node")
+                })
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    let mut final_plan = GraphPlan {
+        nodes: final_nodes,
+        ..GraphPlan::default()
+    };
+    let mut final_state = CypherCompileState::default();
+    final_state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue {
+            alias: shape.aggregate_alias.clone(),
+        },
+        alias: shape.aggregate_alias.clone(),
+    });
+    compile_reading_clauses_into(
+        &query.final_part.reading_clauses,
+        "final_part.match",
+        &mut final_plan,
+        &mut final_state,
+        context,
+    )?;
+    compile_return(shape.return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+    Ok(final_plan)
+}
+
+fn staged_aggregation_multi_part_shape<'a>(
+    query: &'a MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<StagedAggregationShape<'a>>, CoreError> {
+    let [part] = query.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.skip.is_some()
+    {
+        return Ok(None);
+    }
+    let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if return_clause.distinct
+        || return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Ok(None);
+    }
+
+    let Some((group_variables, aggregate_item_index, aggregate_alias)) =
+        staged_aggregation_with_items(&part.with, context)?
+    else {
+        return Ok(None);
+    };
+    let group_variable_set = group_variables.iter().cloned().collect::<BTreeSet<_>>();
+    let aggregate_aliases = BTreeSet::from([aggregate_alias.clone()]);
+    let Some(final_match) = staged_aggregation_final_match_shape(match_clause, &group_variable_set)
+    else {
+        return Ok(None);
+    };
+    if !staged_aggregation_initial_match_shape(part) {
+        return Ok(None);
+    }
+    if !staged_aggregation_with_order_shape(&part.with, &aggregate_alias) {
+        return Ok(None);
+    }
+    if !staged_aggregation_final_where_shape(match_clause, &aggregate_aliases) {
+        return Ok(None);
+    }
+    if !staged_aggregation_return_shape(
+        return_clause,
+        &group_variable_set,
+        &final_match.target_variable,
+        &aggregate_aliases,
+    ) {
+        return Ok(None);
+    }
+
+    Ok(Some(StagedAggregationShape {
+        part,
+        return_clause,
+        group_variables,
+        aggregate_item_index,
+        aggregate_alias,
+    }))
+}
+
+fn apply_staged_aggregation_with_modifiers(
+    with: &With,
+    plan: &mut GraphPlan,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    if let Some(order) = &with.order {
+        for (index, item) in order.items.iter().enumerate() {
+            plan.order_by.push(OrderKey {
+                expression: compile_terminal_alias_order_expression(
+                    &item.expression,
+                    &plan.projections,
+                    format!("with.order.items[{index}].expression"),
+                )?,
+                direction: match item.direction {
+                    Some(SortDirection::Descending) => OrderDirection::Descending,
+                    Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+                },
+                nulls: context.order_null_placement(item),
+            });
+        }
+    }
+    if let Some(limit) = &with.limit {
+        plan.limit = Some(compile_limit(limit, "with.limit", context)?);
+    }
+    Ok(())
+}
+
+fn staged_aggregation_with_items(
+    with: &With,
+    context: &CypherCompileContext,
+) -> Result<Option<(Vec<String>, usize, String)>, CoreError> {
+    if with.items.len() < 2 {
+        return Ok(None);
+    }
+    let mut group_variables = Vec::new();
+    let mut aggregate = None;
+    for (index, item) in with.items.iter().enumerate() {
+        if item.alias.is_none()
+            && let Expression::Variable(variable) = &item.expression
+        {
+            group_variables.push(variable_name(variable));
+            continue;
+        }
+        let Some(alias) = item.alias.as_ref().map(variable_name) else {
+            return Ok(None);
+        };
+        if !staged_aggregation_expression_is_aggregate(
+            &item.expression,
+            format!("parts[0].with.items[{index}].expression"),
+            context,
+        )? {
+            return Ok(None);
+        }
+        if aggregate.replace((index, alias)).is_some() {
+            return Ok(None);
+        }
+    }
+    let Some((aggregate_item_index, aggregate_alias)) = aggregate else {
+        return Ok(None);
+    };
+    if group_variables.is_empty() {
+        return Ok(None);
+    }
+    let mut unique = BTreeSet::new();
+    if !group_variables
+        .iter()
+        .all(|variable| unique.insert(variable.clone()))
+    {
+        return Ok(None);
+    }
+    if unique.contains(&aggregate_alias) {
+        return Ok(None);
+    }
+    Ok(Some((
+        group_variables,
+        aggregate_item_index,
+        aggregate_alias,
+    )))
+}
+
+fn staged_aggregation_expression_is_aggregate(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            staged_aggregation_expression_is_aggregate(inner, path, context)
+        }
+        Expression::CountStar { .. } => Ok(true),
+        Expression::FunctionCall(function) => {
+            compile_aggregate_function(function, &path, context).map(|function| function.is_some())
+        }
+        _ => Ok(false),
+    }
+}
+
+fn staged_aggregation_initial_match_shape(part: &MultiPartQueryPart) -> bool {
+    let [ReadingClause::Match(match_clause)] = part.reading_clauses.as_slice() else {
+        return false;
+    };
+    if match_clause.where_clause.is_some() {
+        return false;
+    }
+    staged_initial_match_nodes_are_labeled(match_clause)
+        && staged_single_outgoing_match_shape(match_clause, None).is_some()
+}
+
+fn staged_aggregation_with_order_shape(with: &With, aggregate_alias: &str) -> bool {
+    let Some(order) = &with.order else {
+        return true;
+    };
+    let [item] = order.items.as_slice() else {
+        return false;
+    };
+    expression_variable_name(&item.expression).as_deref() == Some(aggregate_alias)
+}
+
+fn staged_aggregation_final_match_shape(
+    match_clause: &Match,
+    group_variables: &BTreeSet<String>,
+) -> Option<StagedFinalMatchShape> {
+    let shape = staged_single_outgoing_match_shape(match_clause, Some(group_variables))?;
+    if !group_variables.contains(&shape.anchor_variable) {
+        return None;
+    }
+    if !shape.target_labeled && !group_variables.contains(&shape.target_variable) {
+        return None;
+    }
+    Some(StagedFinalMatchShape {
+        target_variable: shape.target_variable,
+    })
+}
+
+fn staged_aggregation_final_where_shape(
+    match_clause: &Match,
+    aggregate_aliases: &BTreeSet<String>,
+) -> bool {
+    let Some(where_clause) = &match_clause.where_clause else {
+        return true;
+    };
+    expression_variables_subset(where_clause, aggregate_aliases)
+}
+
+fn staged_aggregation_return_shape(
+    return_clause: &Return,
+    group_variables: &BTreeSet<String>,
+    target_variable: &str,
+    aggregate_aliases: &BTreeSet<String>,
+) -> bool {
+    let mut graph_variables = group_variables.clone();
+    graph_variables.insert(target_variable.to_string());
+    !return_clause.star
+        && return_clause.items.iter().all(|item| {
+            staged_property_lookup(&item.expression)
+                .is_some_and(|(variable, _)| graph_variables.contains(&variable))
+                || expression_variable_name(&item.expression)
+                    .is_some_and(|alias| aggregate_aliases.contains(&alias))
+        })
+}
+
+struct StagedSingleOutgoingMatchShape {
+    anchor_variable: String,
+    target_variable: String,
+    target_labeled: bool,
+}
+
+fn staged_single_outgoing_match_shape(
+    match_clause: &Match,
+    allowed_start_variables: Option<&BTreeSet<String>>,
+) -> Option<StagedSingleOutgoingMatchShape> {
+    if match_clause.optional {
+        return None;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return None;
+    };
+    if pattern_part.variable.is_some() {
+        return None;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return None;
+    };
+    let [chain] = chains.as_slice() else {
+        return None;
+    };
+    if chain.relationship.direction != CypherRelationshipDirection::Right
+        || chain.relationship.quantifier.is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.range.as_ref())
+            .is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.variable.as_ref())
+            .is_some()
+        || !chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.types.as_ref())
+            .is_some_and(staged_static_label)
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.properties.as_ref())
+            .is_some()
+    {
+        return None;
+    }
+    let anchor_variable = path_node_variable(start)?;
+    if allowed_start_variables.is_some_and(|variables| !variables.contains(&anchor_variable)) {
+        return None;
+    }
+    if start.properties.is_some()
+        || chain.node.properties.is_some()
+        || !(start.labels.is_empty() || staged_single_static_label(&start.labels))
+        || !(chain.node.labels.is_empty() || staged_single_static_label(&chain.node.labels))
+    {
+        return None;
+    }
+    let target_variable = path_node_variable(&chain.node)?;
+    (target_variable != anchor_variable).then_some(StagedSingleOutgoingMatchShape {
+        anchor_variable,
+        target_variable,
+        target_labeled: !chain.node.labels.is_empty(),
+    })
+}
+
+fn staged_initial_match_nodes_are_labeled(match_clause: &Match) -> bool {
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return false;
+    };
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return false;
+    };
+    let [chain] = chains.as_slice() else {
+        return false;
+    };
+    staged_single_static_label(&start.labels) && staged_single_static_label(&chain.node.labels)
+}
+
+fn expression_variables_subset(expression: &Expression, allowed: &BTreeSet<String>) -> bool {
+    let mut variables = BTreeSet::new();
+    expression_variables(expression, &mut variables);
+    variables.iter().all(|variable| allowed.contains(variable))
 }
 
 fn staged_multi_part_shape<'a>(
@@ -10490,6 +10963,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         }),
         ScalarExpression::CollectSubquery { .. } => Some(false),
         ScalarExpression::Property(_)
+        | ScalarExpression::StageValue { .. }
         | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::UndirectedEndpointKey { .. }
         | ScalarExpression::UndirectedEndpointElementId { .. }
@@ -10852,6 +11326,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
             else_expression.as_deref(),
         ),
         ScalarExpression::Property(_)
+        | ScalarExpression::StageValue { .. }
         | ScalarExpression::UndirectedEndpointProperty { .. }
         | ScalarExpression::UndirectedEndpointKey { .. }
         | ScalarExpression::UndirectedEndpointElementId { .. }

@@ -239,6 +239,7 @@ impl<'a> SqlRenderer<'a> {
                 self.reject_unprecomputed_projection_structural_subqueries(expression)?;
             }
             ScalarExpression::Property(_)
+            | ScalarExpression::StageValue { .. }
             | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::UndirectedEndpointKey { .. }
             | ScalarExpression::UndirectedEndpointElementId { .. }

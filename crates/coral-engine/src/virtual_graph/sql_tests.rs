@@ -117,7 +117,7 @@ fn lower_graph_query_renders_staged_with_order_limit_cte() {
                 skip: None,
                 limit: Some(2),
             },
-            exports: vec![GraphStageExport {
+            exports: vec![GraphStageExport::NodeKey {
                 variable: "a".to_string(),
                 column: "a_id".to_string(),
             }],
@@ -182,6 +182,140 @@ fn lower_graph_query_renders_staged_with_order_limit_cte() {
              JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
              JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
     );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_aggregate_cte() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_aggregate_query();
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged aggregate graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\", COUNT(\"n1\".\"id\") AS \"deg\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" \
+             GROUP BY \"n0\".\"id\") \
+             SELECT \"n0\".\"full_name\" AS \"name\", \"stage0\".\"deg\" AS \"deg\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
+    );
+}
+
+fn staged_aggregate_query() -> GraphQuery {
+    GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: staged_aggregate_stage_plan(),
+            exports: vec![
+                GraphStageExport::NodeKey {
+                    variable: "a".to_string(),
+                    column: "a_id".to_string(),
+                },
+                GraphStageExport::AggregateValue {
+                    alias: "deg".to_string(),
+                    column: "deg".to_string(),
+                },
+            ],
+        }],
+        final_plan: staged_aggregate_final_plan(),
+    })
+}
+
+fn staged_aggregate_stage_plan() -> GraphPlan {
+    GraphPlan {
+        nodes: vec![
+            NodePattern {
+                variable: "a".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "b".to_string(),
+                label: "Person".to_string(),
+            },
+        ],
+        relationships: vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }],
+        optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
+        distinct: false,
+        projections: vec![
+            Projection::Key {
+                variable: "a".to_string(),
+                alias: "a_id".to_string(),
+            },
+            Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey {
+                    variable: "b".to_string(),
+                },
+                distinct: false,
+                alias: "deg".to_string(),
+            },
+        ],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    }
+}
+
+fn staged_aggregate_final_plan() -> GraphPlan {
+    GraphPlan {
+        nodes: vec![
+            NodePattern {
+                variable: "a".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "c".to_string(),
+                label: "Person".to_string(),
+            },
+        ],
+        relationships: vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "c".to_string(),
+        }],
+        optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
+        distinct: false,
+        projections: vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("name".to_string()),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::StageValue {
+                    alias: "deg".to_string(),
+                },
+                alias: "deg".to_string(),
+            },
+        ],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    }
 }
 
 #[test]

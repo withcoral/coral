@@ -486,7 +486,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::RelationshipType { .. } => {
             unreachable!("simple scalar expressions handled before structural path checks")
         }
-        ScalarExpression::GraphKeyList { .. } => {}
+        ScalarExpression::GraphKeyList { .. } | ScalarExpression::StageValue { .. } => {}
         ScalarExpression::ToString { .. }
         | ScalarExpression::ToInteger { .. }
         | ScalarExpression::ToFloat { .. }

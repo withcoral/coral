@@ -181,6 +181,11 @@ pub enum UndirectedRelationshipEndpoint {
 /// Scalar value expression in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExpression {
+    /// Scalar value exported by a non-terminal graph stage.
+    StageValue {
+        /// Export alias visible to later stages.
+        alias: String,
+    },
     /// A mapped graph property.
     Property(PropertyRef),
     /// A mapped node property chosen from either side of a same-label
@@ -1122,7 +1127,8 @@ fn scalar_expression_references_outside_scope(
     match expression {
         ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
-        | ScalarExpression::TypedLiteralList { .. } => false,
+        | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::StageValue { .. } => false,
         ScalarExpression::Predicate(predicate) => {
             predicate_expression_references_outside_scope(predicate, scope)
         }
@@ -1686,13 +1692,33 @@ pub struct GraphStage {
     pub exports: Vec<GraphStageExport>,
 }
 
-/// Key column exported by a graph stage.
+/// Column exported by a graph stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphStageExport {
-    /// Graph variable carried across the stage boundary.
-    pub variable: String,
-    /// Output column name containing the variable's key.
-    pub column: String,
+pub enum GraphStageExport {
+    /// Graph variable key carried across the stage boundary.
+    NodeKey {
+        /// Graph variable carried across the stage boundary.
+        variable: String,
+        /// Output column name containing the variable's key.
+        column: String,
+    },
+    /// Aggregate scalar value carried across the stage boundary.
+    AggregateValue {
+        /// Aggregate alias visible to later stages.
+        alias: String,
+        /// Output column name containing the aggregate value.
+        column: String,
+    },
+}
+
+impl GraphStageExport {
+    /// Output column name exported by the stage.
+    #[must_use]
+    pub fn column(&self) -> &str {
+        match self {
+            Self::NodeKey { column, .. } | Self::AggregateValue { column, .. } => column,
+        }
+    }
 }
 
 /// Top-level `UNION` / `UNION ALL` over graph plans.

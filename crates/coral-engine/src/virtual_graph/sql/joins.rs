@@ -193,6 +193,30 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
+    fn stage_column_node_rehydration_condition(
+        validated: &ValidatedGraphPlan<'a>,
+        variable: &str,
+    ) -> Result<Option<String>, CoreError> {
+        let binding = validated.binding(variable)?;
+        match binding.kind() {
+            ValidatedBindingKind::StageColumn {
+                node,
+                stage_alias,
+                key_column,
+            } => Ok(Some(format!(
+                "{}.{} = {}.{}",
+                quote_ident(binding.alias()),
+                quote_ident(&node.key),
+                quote_ident(stage_alias),
+                quote_ident(key_column)
+            ))),
+            ValidatedBindingKind::Node(_) => Ok(None),
+            ValidatedBindingKind::Relationship(_) => Err(CoreError::internal(
+                "validated relationship endpoint was not a node binding",
+            )),
+        }
+    }
+
     fn relationship_orientations(
         validated: &ValidatedGraphPlan<'a>,
         relationship: &Relationship,
@@ -1119,7 +1143,7 @@ impl<'a> SqlRenderer<'a> {
         if options.optional
             && let Some(optional_predicate) = options.optional_predicate
         {
-            let unknown_join = Self::relationship_known_node_condition(
+            let mut unknown_join = Self::relationship_known_node_condition(
                 validated,
                 relationship,
                 pattern,
@@ -1127,6 +1151,11 @@ impl<'a> SqlRenderer<'a> {
                 unknown_variable,
                 !known_is_left,
             )?;
+            if let Some(rehydration) =
+                Self::stage_column_node_rehydration_condition(validated, unknown_variable)?
+            {
+                unknown_join = format!("({unknown_join}) AND ({rehydration})");
+            }
             let relationship_condition = if pattern.direction == Direction::Undirected
                 && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
             {
@@ -1167,7 +1196,36 @@ impl<'a> SqlRenderer<'a> {
             relationship_join
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-        let unknown_join = if pattern.direction == Direction::Undirected
+        let unknown_join = Self::unknown_node_join_condition(
+            validated,
+            relationship,
+            pattern,
+            relationship_alias,
+            unknown_variable,
+            known_is_left,
+        )?;
+        write!(
+            from_clause,
+            "{}{} AS {} ON {}",
+            join_operator,
+            unknown_table_ref,
+            quote_ident(&unknown_alias),
+            unknown_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        joined_nodes.insert(unknown_variable);
+        Ok(())
+    }
+
+    fn unknown_node_join_condition(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        pattern: &'a RelationshipPattern,
+        relationship_alias: &str,
+        unknown_variable: &str,
+        known_is_left: bool,
+    ) -> Result<String, CoreError> {
+        let mut condition = if pattern.direction == Direction::Undirected
             && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
         {
             Self::relationship_pair_condition(validated, relationship, relationship_alias, pattern)?
@@ -1181,16 +1239,11 @@ impl<'a> SqlRenderer<'a> {
                 !known_is_left,
             )?
         };
-        write!(
-            from_clause,
-            "{}{} AS {} ON {}",
-            join_operator,
-            unknown_table_ref,
-            quote_ident(&unknown_alias),
-            unknown_join
-        )
-        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-        joined_nodes.insert(unknown_variable);
-        Ok(())
+        if let Some(rehydration) =
+            Self::stage_column_node_rehydration_condition(validated, unknown_variable)?
+        {
+            condition = format!("({condition}) AND ({rehydration})");
+        }
+        Ok(condition)
     }
 }

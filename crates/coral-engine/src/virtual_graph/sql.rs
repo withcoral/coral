@@ -118,7 +118,7 @@ impl Declaration {
             ));
         }
 
-        let stage_columns = stage_column_bindings(staged)?;
+        let stage_columns = stage_column_bindings(self, staged)?;
         let final_validated =
             self.validate_graph_plan_with_stage_columns(&staged.final_plan, stage_columns)?;
         let final_translation = SqlRenderer::new(final_validated).lower()?;

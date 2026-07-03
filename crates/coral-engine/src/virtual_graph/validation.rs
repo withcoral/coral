@@ -14,13 +14,14 @@ use super::diagnostic::Diagnostic;
 use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
-    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
-    TemporalKind, UndirectedRelationshipEndpoint,
+    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStageExport,
+    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, OptionalMatchScope, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs, TemporalExpr, TemporalKind,
+    UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -48,6 +49,7 @@ pub(crate) struct ValidatedGraphPlan<'a> {
     graph: &'a Declaration,
     plan: &'a GraphPlan,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
+    stage_columns: StageColumnBindings,
     relationship_mappings: Vec<&'a Relationship>,
 }
 
@@ -70,10 +72,23 @@ pub(crate) enum ValidatedBindingKind<'a> {
     Relationship(&'a Relationship),
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StageColumnBindings {
+    node_keys: BTreeMap<String, StageNodeColumnBinding>,
+    scalar_values: BTreeMap<String, StageScalarColumnBinding>,
+}
+
 #[derive(Debug, Clone)]
-pub(crate) struct StageColumnBinding {
-    pub(crate) stage_alias: String,
-    pub(crate) key_column: String,
+struct StageNodeColumnBinding {
+    stage_alias: String,
+    key_column: String,
+}
+
+#[derive(Debug, Clone)]
+struct StageScalarColumnBinding {
+    stage_alias: String,
+    value_column: String,
+    scalar_type: ScalarType,
 }
 
 impl Declaration {
@@ -94,7 +109,7 @@ impl Declaration {
     pub(crate) fn validate_graph_plan_with_stage_columns<'a>(
         &'a self,
         plan: &'a GraphPlan,
-        stage_columns: BTreeMap<&'a str, StageColumnBinding>,
+        stage_columns: StageColumnBindings,
     ) -> Result<ValidatedGraphPlan<'a>, CoreError> {
         GraphPlanValidator::new_with_stage_columns(self, plan, None, stage_columns).validate()
     }
@@ -188,26 +203,7 @@ impl Declaration {
             return Err(CoreError::internal("staged graph query had no stages"));
         }
 
-        for stage in &staged.stages {
-            GraphPlanValidator::new(self, &stage.plan, catalog)
-                .validate()
-                .map(|_| ())?;
-            for export in &stage.exports {
-                if !stage
-                    .plan
-                    .projections
-                    .iter()
-                    .any(|projection| projection.output_name() == export.column)
-                {
-                    return Err(CoreError::internal(format!(
-                        "staged graph query exported missing column '{}'",
-                        export.column
-                    )));
-                }
-            }
-        }
-
-        let stage_columns = stage_column_bindings(staged)?;
+        let stage_columns = stage_column_bindings_with_catalog(self, staged, catalog)?;
         GraphPlanValidator::new_with_stage_columns(self, &staged.final_plan, catalog, stage_columns)
             .validate()
             .map(|_| ())
@@ -257,6 +253,21 @@ impl<'a> ValidatedGraphPlan<'a> {
             .ok_or_else(|| CoreError::internal("validated relationship mapping missing"))
     }
 
+    pub(crate) fn stage_scalar_column_ref(&self, alias: &str) -> Result<(&str, &str), CoreError> {
+        self.stage_columns
+            .scalar_values
+            .get(alias)
+            .map(|binding| (binding.stage_alias.as_str(), binding.value_column.as_str()))
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    diagnostic_codes::UNKNOWN_VARIABLE,
+                    "stage_column",
+                    format!("unknown staged scalar value '{alias}'"),
+                )
+                .into_core_error()
+            })
+    }
+
     pub(crate) fn relationship_is_optional(&self, index: usize) -> bool {
         self.plan
             .optional_relationships
@@ -301,7 +312,7 @@ struct GraphPlanValidator<'a> {
     graph: &'a Declaration,
     plan: &'a GraphPlan,
     catalog: Option<&'a CatalogInfo>,
-    stage_columns: BTreeMap<&'a str, StageColumnBinding>,
+    stage_columns: StageColumnBindings,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     relationship_mappings: Vec<&'a Relationship>,
 }
@@ -312,7 +323,7 @@ impl<'a> GraphPlanValidator<'a> {
             graph,
             plan,
             catalog,
-            stage_columns: BTreeMap::new(),
+            stage_columns: StageColumnBindings::default(),
             bindings: BTreeMap::new(),
             relationship_mappings: Vec::with_capacity(plan.relationships.len()),
         }
@@ -322,7 +333,7 @@ impl<'a> GraphPlanValidator<'a> {
         graph: &'a Declaration,
         plan: &'a GraphPlan,
         catalog: Option<&'a CatalogInfo>,
-        stage_columns: BTreeMap<&'a str, StageColumnBinding>,
+        stage_columns: StageColumnBindings,
     ) -> Self {
         Self {
             graph,
@@ -341,6 +352,7 @@ impl<'a> GraphPlanValidator<'a> {
             graph: self.graph,
             plan: self.plan,
             bindings: self.bindings,
+            stage_columns: self.stage_columns,
             relationship_mappings: self.relationship_mappings,
         })
     }
@@ -348,6 +360,26 @@ impl<'a> GraphPlanValidator<'a> {
     fn validate_and_infer_projection_scalar_types(mut self) -> Result<Vec<ScalarType>, CoreError> {
         self.validate_plan()?;
         self.projection_scalar_types()
+    }
+
+    fn stage_scalar_column_type(
+        &self,
+        alias: &str,
+        path: impl Into<String>,
+    ) -> Result<ScalarType, CoreError> {
+        let path = path.into();
+        self.stage_columns
+            .scalar_values
+            .get(alias)
+            .map(|binding| binding.scalar_type)
+            .ok_or_else(|| {
+                Diagnostic::new(
+                    diagnostic_codes::UNKNOWN_VARIABLE,
+                    path,
+                    format!("unknown staged scalar value '{alias}'"),
+                )
+                .into_core_error()
+            })
     }
 
     fn validate_plan(&mut self) -> Result<(), CoreError> {
@@ -396,7 +428,7 @@ impl<'a> GraphPlanValidator<'a> {
                 ValidatedBinding {
                     alias: format!("n{index}"),
                     kind: if let Some(stage_column) =
-                        self.stage_columns.get(pattern.variable.as_str())
+                        self.stage_columns.node_keys.get(pattern.variable.as_str())
                     {
                         ValidatedBindingKind::StageColumn {
                             node,
@@ -800,26 +832,85 @@ impl<'a> GraphPlanValidator<'a> {
 }
 
 pub(crate) fn stage_column_bindings(
+    graph: &Declaration,
     staged: &super::ir::GraphStagedQuery,
-) -> Result<BTreeMap<&str, StageColumnBinding>, CoreError> {
-    let mut bindings = BTreeMap::new();
+) -> Result<StageColumnBindings, CoreError> {
+    stage_column_bindings_with_catalog(graph, staged, None)
+}
+
+fn stage_column_bindings_with_catalog(
+    graph: &Declaration,
+    staged: &super::ir::GraphStagedQuery,
+    catalog: Option<&CatalogInfo>,
+) -> Result<StageColumnBindings, CoreError> {
+    let mut bindings = StageColumnBindings::default();
     for (index, stage) in staged.stages.iter().enumerate() {
         let stage_alias = format!("stage{index}");
+        let projection_types = GraphPlanValidator::new(graph, &stage.plan, catalog)
+            .validate_and_infer_projection_scalar_types()?;
         for export in &stage.exports {
-            if bindings
-                .insert(
-                    export.variable.as_str(),
-                    StageColumnBinding {
-                        stage_alias: stage_alias.clone(),
-                        key_column: export.column.clone(),
-                    },
-                )
-                .is_some()
-            {
+            let column = export.column();
+            let Some((projection_index, projection)) = stage
+                .plan
+                .projections
+                .iter()
+                .enumerate()
+                .find(|(_, projection)| projection.output_name() == column)
+            else {
                 return Err(CoreError::internal(format!(
-                    "staged graph query exported variable '{}' more than once",
-                    export.variable
+                    "staged graph query exported missing column '{column}'",
                 )));
+            };
+            match export {
+                GraphStageExport::NodeKey { variable, column } => {
+                    if bindings
+                        .node_keys
+                        .insert(
+                            variable.clone(),
+                            StageNodeColumnBinding {
+                                stage_alias: stage_alias.clone(),
+                                key_column: column.clone(),
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(CoreError::internal(format!(
+                            "staged graph query exported variable '{variable}' more than once",
+                        )));
+                    }
+                }
+                GraphStageExport::AggregateValue { alias, column } => {
+                    if !projection.is_aggregate() {
+                        return Err(CoreError::internal(format!(
+                            "staged graph query exported non-aggregate column '{column}' as aggregate value",
+                        )));
+                    }
+                    let scalar_type =
+                        projection_types
+                            .get(projection_index)
+                            .copied()
+                            .ok_or_else(|| {
+                                CoreError::internal(
+                                    "staged graph query projection type index was out of bounds",
+                                )
+                            })?;
+                    if bindings
+                        .scalar_values
+                        .insert(
+                            alias.clone(),
+                            StageScalarColumnBinding {
+                                stage_alias: stage_alias.clone(),
+                                value_column: column.clone(),
+                                scalar_type,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(CoreError::internal(format!(
+                            "staged graph query exported scalar value '{alias}' more than once",
+                        )));
+                    }
+                }
             }
         }
     }

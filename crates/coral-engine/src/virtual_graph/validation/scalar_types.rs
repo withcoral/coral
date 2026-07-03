@@ -32,7 +32,8 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         let path = path.into();
         match expression {
-            ScalarExpression::Property(_)
+            ScalarExpression::StageValue { .. }
+            | ScalarExpression::Property(_)
             | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::UndirectedEndpointKey { .. }
             | ScalarExpression::UndirectedEndpointElementId { .. }
@@ -96,6 +97,7 @@ impl<'a> GraphPlanValidator<'a> {
         path: &str,
     ) -> Result<ScalarType, CoreError> {
         match expression {
+            ScalarExpression::StageValue { alias } => self.stage_scalar_column_type(alias, path),
             ScalarExpression::Property(property) => {
                 self.validate_property_ref(property, path)?;
                 self.property_ref_scalar_type(property)

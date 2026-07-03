@@ -215,9 +215,9 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. } => true,
-            ScalarExpression::CountSubquery { .. } | ScalarExpression::CollectSubquery { .. } => {
-                false
-            }
+            ScalarExpression::StageValue { .. }
+            | ScalarExpression::CountSubquery { .. }
+            | ScalarExpression::CollectSubquery { .. } => false,
             ScalarExpression::ToString { .. }
             | ScalarExpression::ToInteger { .. }
             | ScalarExpression::ToFloat { .. }
@@ -1979,6 +1979,14 @@ impl<'a> SqlRenderer<'a> {
         }
 
         match expression {
+            ScalarExpression::StageValue { alias } => {
+                let (stage_alias, value_column) = self.validated.stage_scalar_column_ref(alias)?;
+                Ok(format!(
+                    "{}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(value_column)
+                ))
+            }
             ScalarExpression::Property(property) => {
                 self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
             }

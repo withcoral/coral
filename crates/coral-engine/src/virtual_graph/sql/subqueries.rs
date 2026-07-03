@@ -130,6 +130,7 @@ impl<'a> SqlRenderer<'a> {
                 );
             }
             ScalarExpression::Property(_)
+            | ScalarExpression::StageValue { .. }
             | ScalarExpression::UndirectedEndpointProperty { .. }
             | ScalarExpression::UndirectedEndpointKey { .. }
             | ScalarExpression::UndirectedEndpointElementId { .. }

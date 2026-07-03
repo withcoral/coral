@@ -205,6 +205,139 @@ async fn cypher_staged_with_order_limit_rehydrates_multiple_carried_properties()
 }
 
 #[tokio::test]
+async fn cypher_staged_count_aggregation_before_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, deg",
+    )
+    .await
+    .expect("staged count aggregate Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains("WITH \"stage0\" AS"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("GROUP BY"),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Alice", "deg": 2}),
+            json!({"name": "Alice", "deg": 2}),
+            json!({"name": "Bob", "deg": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_sum_aggregation_before_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, sum(b.age) AS total_age \
+         MATCH (a)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, total_age",
+    )
+    .await
+    .expect("staged sum aggregate Cypher query should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Alice", "total_age": 60}),
+            json!({"name": "Alice", "total_age": 60}),
+            json!({"name": "Bob", "total_age": 35}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_two_group_key_aggregation_before_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, b, count(*) AS c \
+         MATCH (a)-[:KNOWS]->(b) \
+         RETURN a.name AS a, b.name AS b, c",
+    )
+    .await
+    .expect("staged two-key aggregate Cypher query should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"a": "Alice", "b": "Bob", "c": 1}),
+            json!({"a": "Alice", "b": "Carol", "c": 1}),
+            json!({"a": "Bob", "b": "Carol", "c": 1}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_aggregate_alias_filters_in_final_match() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(c:Person) WHERE deg > 1 \
+         RETURN a.name AS name, deg",
+    )
+    .await
+    .expect("staged aggregate alias final WHERE should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"name": "Alice", "deg": 2}),
+            json!({"name": "Alice", "deg": 2}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_date_map_constructor_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -4183,7 +4183,7 @@ fn compiles_staged_with_order_limit_before_match() {
         .expect("staged query should have stage 0");
     assert_eq!(
         stage.exports,
-        vec![GraphStageExport {
+        vec![GraphStageExport::NodeKey {
             variable: "a".to_string(),
             column: "a_id".to_string(),
         }]
@@ -4309,6 +4309,283 @@ fn compiles_staged_with_multiple_carried_property_returns() {
 }
 
 #[test]
+fn compiles_staged_with_count_aggregation_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, deg",
+    )
+    .expect("staged aggregate WITH before MATCH should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("aggregate stage should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::NodeKey {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            },
+            GraphStageExport::AggregateValue {
+                alias: "deg".to_string(),
+                column: "deg".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        stage.plan.projections,
+        vec![
+            Projection::Key {
+                variable: "a".to_string(),
+                alias: "a_id".to_string(),
+            },
+            Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey {
+                    variable: "b".to_string(),
+                },
+                distinct: false,
+                alias: "deg".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.projections,
+        vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("name".to_string()),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::StageValue {
+                    alias: "deg".to_string(),
+                },
+                alias: "deg".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_staged_with_sum_aggregation_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, sum(b.age) AS total_age \
+         MATCH (a)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, total_age",
+    )
+    .expect("staged sum aggregate WITH before MATCH should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("sum aggregate stage should compile to a staged graph query");
+    };
+    assert!(matches!(
+        staged
+            .stages
+            .first()
+            .and_then(|stage| stage.plan.projections.get(1)),
+        Some(Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            target: AggregateTarget::Property(PropertyRef { variable, property }),
+            alias,
+            ..
+        }) if variable == "b" && property == "age" && alias == "total_age"
+    ));
+}
+
+#[test]
+fn compiles_staged_with_two_group_keys_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, b, count(*) AS c \
+         MATCH (a)-[:KNOWS]->(b) \
+         RETURN a.name AS a, b.name AS b, c",
+    )
+    .expect("staged aggregate WITH with two group keys should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("two-key aggregate stage should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::NodeKey {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            },
+            GraphStageExport::NodeKey {
+                variable: "b".to_string(),
+                column: "b_id".to_string(),
+            },
+            GraphStageExport::AggregateValue {
+                alias: "c".to_string(),
+                column: "c".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_staged_aggregate_alias_in_final_where() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(c:Person) WHERE deg > 1 \
+         RETURN a.name AS name, deg",
+    )
+    .expect("staged aggregate alias should be usable in final WHERE");
+
+    assert!(matches!(query, GraphQuery::Staged(_)));
+}
+
+#[test]
+fn compiles_staged_aggregate_order_limit_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg ORDER BY deg DESC LIMIT 1 \
+         MATCH (a)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, deg",
+    )
+    .expect("staged aggregate WITH ORDER BY/LIMIT should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("ordered aggregate stage should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("deg".to_string()),
+            direction: OrderDirection::Descending,
+            nulls: None,
+        }]
+    );
+    assert_eq!(stage.plan.limit, Some(1));
+}
+
+#[test]
+fn rejects_adjacent_staged_aggregation_shapes() {
+    let cases = [
+        (
+            "distinct aggregate stage",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH DISTINCT a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "scalar alias carry",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a.name AS name, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN name, deg",
+        ),
+        (
+            "incoming final match",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (c:Person)-[:KNOWS]->(a) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "undirected final match",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]-(c:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "multi-hop final match",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "initial WHERE before aggregate WITH",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE b.age > 30 \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "post-aggregate WITH WHERE",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg WHERE deg > 1 \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "graph-object return",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a, deg",
+        ),
+        (
+            "unlabeled final target",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "two aggregate aliases",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg, sum(b.age) AS total_age \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS name, deg",
+        ),
+        (
+            "subquery alias stage",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, COUNT { MATCH (b)-[:KNOWS]->(:Person) } AS downstream \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS name, downstream",
+        ),
+        (
+            "multi-stage aggregate pipeline",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c:Person) \
+             WITH a, deg \
+             MATCH (a)-[:KNOWS]->(d:Person) \
+             RETURN a.name AS name, deg",
+        ),
+    ];
+
+    for (name, cypher) in cases {
+        assert_staged_aggregation_reject(name, cypher);
+    }
+}
+
+#[test]
 fn rejects_adjacent_staged_with_order_limit_shapes() {
     let cases = [
         (
@@ -4413,6 +4690,18 @@ fn assert_staged_planning_reject(name: &str, cypher: &str) {
         error
             .to_string()
             .contains("WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"),
+        "{name}: {error}"
+    );
+}
+
+fn assert_staged_aggregation_reject(name: &str, cypher: &str) {
+    let graph = staged_planning_test_graph();
+    let Err(error) = compile_cypher_query_for_graph(&graph, cypher) else {
+        panic!("{name} should require broader staged aggregation planning");
+    };
+
+    assert!(
+        error.to_string().contains("staged query planning"),
         "{name}: {error}"
     );
 }
