@@ -585,6 +585,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         }
@@ -781,6 +782,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -845,6 +847,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -892,6 +895,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
@@ -947,6 +951,7 @@ mod tests {
                 description: String::new(),
                 test_queries: Vec::new(),
             },
+            identity_requirements: None,
             declared_inputs: Vec::new(),
             surface,
         };
