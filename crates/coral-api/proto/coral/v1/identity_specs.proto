@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// An identity spec installed in either the global scope or one workspace scope.
+message IdentitySpec {
+  // Stable identity spec name.
+  string name = 1;
+  // Authored identity spec version string.
+  string version = 2;
+  // Human-readable description.
+  string description = 3;
+  // Provider or issuer name, such as `github`.
+  string issuer = 4;
+  // Identity type, such as `oauth` or `fixed_token`.
+  string identity_type = 5;
+  // Canonical identity spec manifest YAML.
+  string manifest_yaml = 6;
+  // Scope where this identity spec is installed. If absent, the spec is global.
+  Workspace workspace = 7;
+}
+
+// Installs one identity spec in the requested scope, or replaces an unused
+// existing spec in that same scope. Existing specs referenced by stored
+// identities may only be re-added with an equivalent manifest.
+message AddIdentitySpecRequest {
+  // Raw identity spec manifest YAML to validate and install.
+  string manifest_yaml = 1;
+  // Setup input values owned by the installed identity spec. The server parses
+  // `manifest_yaml`, matches values by key to declared identity spec inputs,
+  // and uses the manifest-declared input kind to decide whether each value is
+  // secret material.
+  repeated IdentitySpecInputValue input_values = 2;
+  // Target scope. If absent, installs globally; if present, installs in that
+  // workspace's identity-spec scope.
+  Workspace workspace = 3;
+}
+
+// One setup input value for an installed identity spec.
+message IdentitySpecInputValue {
+  // Declared identity spec input key from AddIdentitySpecRequest.manifest_yaml.
+  string key = 1;
+  // Input value. Callers do not classify values here; the identity spec
+  // manifest determines whether this value is stored as secret material.
+  string value = 2;
+}
+
+// Returns the installed identity spec.
+message AddIdentitySpecResponse {
+  // The installed identity spec, including the scope where it was installed.
+  IdentitySpec identity_spec = 1;
+  // Whether an existing spec with the same name in the same scope was replaced.
+  bool replaced = 2;
+}
+
+// Lists installed identity specs in one requested scope.
+message ListIdentitySpecsRequest {
+  // Requested identity-spec scope. If absent, list global specs. If present,
+  // list specs installed in that workspace's scope.
+  Workspace workspace = 1;
+  // When workspace is present, include global specs alongside workspace-scoped
+  // specs. When workspace is absent, the requested scope is already global, so
+  // this flag has no additional effect.
+  bool include_global = 2;
+}
+
+// Returns identity specs for the requested scope.
+message ListIdentitySpecsResponse {
+  // Installed identity specs sorted by scope and name. Each item includes its
+  // own scope; absent workspace means the item is global.
+  repeated IdentitySpec identity_specs = 1;
+}
+
+// Fetches one installed identity spec in one requested scope.
+message GetIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+  // Requested identity-spec scope. If absent, fetches the global spec. If
+  // present, fetches the spec in that workspace's scope.
+  Workspace workspace = 2;
+}
+
+// Returns one installed identity spec.
+message GetIdentitySpecResponse {
+  // The installed identity spec, including the scope where it was installed.
+  IdentitySpec identity_spec = 1;
+}
+
+// Deletes one installed identity spec in one requested scope.
+message DeleteIdentitySpecRequest {
+  // Identity spec name.
+  string name = 1;
+  // Requested identity-spec scope. If absent, deletes the global spec. If
+  // present, deletes the spec in that workspace's scope.
+  Workspace workspace = 2;
+  // Required when deleting the spec would orphan stored identity instances of
+  // any owner or identity type.
+  bool force = 3;
+}
+
+// Confirms identity spec deletion.
+message DeleteIdentitySpecResponse {
+  // Number of stored identities orphaned by deletion, across identity owners
+  // and identity types visible to the app.
+  uint32 orphaned_identities = 1;
+}
+
+// Identity spec APIs.
+service IdentitySpecService {
+  // Installs one identity spec in the requested scope.
+  rpc AddIdentitySpec(AddIdentitySpecRequest) returns (AddIdentitySpecResponse);
+  // Lists identity specs in the requested scope.
+  rpc ListIdentitySpecs(ListIdentitySpecsRequest) returns (ListIdentitySpecsResponse);
+  // Fetches one identity spec in the requested scope.
+  rpc GetIdentitySpec(GetIdentitySpecRequest) returns (GetIdentitySpecResponse);
+  // Deletes one identity spec in the requested scope.
+  rpc DeleteIdentitySpec(DeleteIdentitySpecRequest) returns (DeleteIdentitySpecResponse);
+}

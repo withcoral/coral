@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package coral.v1;
+
+import "coral/v1/resources.proto";
+
+// Scope that owns stored provider-facing identity material.
+enum IdentityOwner {
+  // Identity owner was not specified.
+  IDENTITY_OWNER_UNSPECIFIED = 0;
+  // Identity material is owned by the current Coral user principal.
+  IDENTITY_OWNER_USER = 1;
+  // Identity material is owned by a workspace and independent of a user principal.
+  IDENTITY_OWNER_WORKSPACE = 2;
+}
+
+// Stored provider-facing identity instance backed by an installed identity spec.
+message Identity {
+  // Stable identity name used by source identity bindings.
+  string name = 1;
+  // Identity spec name used to instantiate this identity. User-owned identities
+  // reference global specs; workspace-owned identities resolve their workspace
+  // spec with global fallback.
+  string identity_spec = 2;
+  // Provider or issuer name copied from the identity spec.
+  string issuer = 3;
+  // Identity type, such as `oauth` or `fixed_token`.
+  string identity_type = 4;
+  // Stored identity owner.
+  IdentityOwner owner = 5;
+  // Safe provider metadata, never token material.
+  repeated CredentialMetadata metadata = 6;
+}
+
+// Creates or replaces one identity owned by the request Coral user principal.
+message CreateUserOwnedIdentityRequest {
+  // Stable identity name used by source identity bindings.
+  string name = 1;
+  // Globally installed identity spec name. User-owned identities never resolve
+  // workspace-scoped specs.
+  string identity_spec = 2;
+
+  // Type-specific setup material. OAuth identity specs do not need per-identity
+  // setup material because their setup inputs belong to the installed identity
+  // spec.
+  oneof setup {
+    // Fixed-token identity setup input.
+    FixedTokenUserOwnedIdentitySetup fixed_token = 3;
+  }
+}
+
+// Setup payload for a fixed-token identity.
+message FixedTokenUserOwnedIdentitySetup {
+  // Bearer token to store for this identity.
+  string token = 1;
+}
+
+// OAuth authorization details emitted while creating an identity.
+message IdentityOAuthAuthorization {
+  // Provider authorization URL the user must visit.
+  string authorization_url = 1;
+  // Seconds until the OAuth retrieval expires.
+  uint64 expires_in_seconds = 2;
+  // Device-flow user code the user must enter at the provider URL.
+  string user_code = 3;
+  // Device-flow provider verification URL.
+  string verification_uri = 4;
+  // Device-flow provider verification URL with the user code embedded, when provided.
+  string verification_uri_complete = 5;
+}
+
+// Safe completion details emitted after creating an OAuth identity.
+message IdentityOAuthCompleted {
+  // Safe provider metadata, never token material.
+  repeated CredentialMetadata metadata = 1;
+}
+
+// Streaming event emitted while creating a user-owned identity.
+message CreateUserOwnedIdentityResponse {
+  // Creation progress or completion event.
+  oneof event {
+    // Identity creation completed.
+    Identity identity = 1;
+    // OAuth authorization URL is ready.
+    IdentityOAuthAuthorization oauth_authorization = 2;
+    // OAuth credential retrieval completed.
+    IdentityOAuthCompleted oauth_completed = 3;
+  }
+}
+
+// Lists user-owned identities for the request Coral user principal.
+message ListUserOwnedIdentitiesRequest {}
+
+// Returns user-owned identities sorted by name.
+message ListUserOwnedIdentitiesResponse {
+  // Stored user-owned identities.
+  repeated Identity identities = 1;
+}
+
+// Fetches one user-owned identity for the request Coral user principal.
+message GetUserOwnedIdentityRequest {
+  // Stored identity name.
+  string name = 1;
+}
+
+// Returns one user-owned identity.
+message GetUserOwnedIdentityResponse {
+  // Stored identity.
+  Identity identity = 1;
+}
+
+// Deletes one user-owned identity for the request Coral user principal.
+message DeleteUserOwnedIdentityRequest {
+  // Stored identity name.
+  string name = 1;
+}
+
+// Confirms user-owned identity deletion.
+message DeleteUserOwnedIdentityResponse {}
+
+// Stored identity APIs.
+service IdentityService {
+  // Creates or replaces one identity owned by the request Coral user principal.
+  rpc CreateUserOwnedIdentity(CreateUserOwnedIdentityRequest) returns (stream CreateUserOwnedIdentityResponse);
+  // Lists user-owned identities.
+  rpc ListUserOwnedIdentities(ListUserOwnedIdentitiesRequest) returns (ListUserOwnedIdentitiesResponse);
+  // Fetches one user-owned identity.
+  rpc GetUserOwnedIdentity(GetUserOwnedIdentityRequest) returns (GetUserOwnedIdentityResponse);
+  // Deletes one user-owned identity.
+  rpc DeleteUserOwnedIdentity(DeleteUserOwnedIdentityRequest) returns (DeleteUserOwnedIdentityResponse);
+}

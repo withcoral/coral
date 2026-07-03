@@ -1,6 +1,25 @@
 //! Build script for the generated `coral-api` `protobuf` and `tonic` bindings.
 
+const PROTOS: &[&str] = &[
+    "proto/coral/v1/catalog.proto",
+    "proto/coral/v1/resources.proto",
+    "proto/coral/v1/workspaces.proto",
+    "proto/coral/v1/task.proto",
+    "proto/coral/v1/feedback.proto",
+    "proto/coral/v1/sources.proto",
+    "proto/coral/v1/identities.proto",
+    "proto/coral/v1/identity_specs.proto",
+    "proto/coral/v1/query.proto",
+    "proto/coral/v1/search.proto",
+    "proto/coral/v1/traces.proto",
+];
+
 fn main() {
+    for proto in PROTOS {
+        println!("cargo:rerun-if-changed={proto}");
+    }
+    println!("cargo:rerun-if-changed=proto");
+
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");
     let mut config = tonic_prost_build::Config::new();
     config.protoc_executable(protoc);
@@ -15,20 +34,6 @@ fn main() {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_with_config(
-            config,
-            &[
-                "proto/coral/v1/catalog.proto",
-                "proto/coral/v1/resources.proto",
-                "proto/coral/v1/workspaces.proto",
-                "proto/coral/v1/task.proto",
-                "proto/coral/v1/feedback.proto",
-                "proto/coral/v1/sources.proto",
-                "proto/coral/v1/query.proto",
-                "proto/coral/v1/search.proto",
-                "proto/coral/v1/traces.proto",
-            ],
-            &["proto"],
-        )
+        .compile_with_config(config, PROTOS, &["proto"])
         .expect("compile coral v1 protobuf");
 }

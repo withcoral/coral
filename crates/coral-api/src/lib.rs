@@ -61,6 +61,13 @@ pub const CATALOG_RESPONSE_MAX_MESSAGE_SIZE: usize = QUERY_RESPONSE_MAX_MESSAGE_
 /// DSL v4 sources from large `OpenAPI` documents can exceed tonic's 4 MB default.
 pub const SOURCE_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
 
+/// Maximum gRPC message size for `IdentitySpecService` *responses*, in bytes.
+///
+/// Identity-spec listing returns an unpaginated aggregate in which every item
+/// includes its canonical manifest YAML, so valid responses can exceed tonic's
+/// 4 MB default.
+pub const IDENTITY_SPEC_RESPONSE_MAX_MESSAGE_SIZE: usize = CATALOG_RESPONSE_MAX_MESSAGE_SIZE;
+
 /// Maximum gRPC message size for `SearchService` *responses*, in bytes.
 ///
 /// Universal Search returns bounded metadata hints, but it may include table,

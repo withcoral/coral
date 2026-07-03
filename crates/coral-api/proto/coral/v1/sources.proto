@@ -380,14 +380,6 @@ message ImportSourceResponse {
   }
 }
 
-// Safe metadata returned after OAuth retrieval completes.
-message CredentialMetadata {
-  // Metadata key.
-  string key = 1;
-  // Metadata value.
-  string value = 2;
-}
-
 // OAuth method input used during credential retrieval. These values are not
 // stored as source-visible configuration; Coral may store sensitive values as
 // internal credential metadata when needed to preserve the OAuth lifecycle.

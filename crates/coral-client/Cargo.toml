@@ -29,4 +29,6 @@ coral-telemetry.workspace = true
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
 tracing-subscriber.workspace = true

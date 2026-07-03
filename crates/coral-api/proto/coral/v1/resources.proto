@@ -7,3 +7,11 @@ message Workspace {
   // Bare workspace name, such as `default`.
   string name = 1;
 }
+
+// Safe metadata returned after credential retrieval completes.
+message CredentialMetadata {
+  // Metadata key.
+  string key = 1;
+  // Metadata value.
+  string value = 2;
+}

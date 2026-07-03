@@ -41,8 +41,9 @@ use coral_api::v1::ExecuteSqlResponse;
 use serde_json::Value;
 
 pub use client::{
-    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, QueryClient, SearchClient,
-    SourceClient, WorkspaceClient, default_workspace, workspace,
+    AppClient, CatalogClient, DEFAULT_WORKSPACE_ID, FeedbackClient, IdentityClient,
+    IdentitySpecClient, QueryClient, SearchClient, SourceClient, WorkspaceClient,
+    default_workspace, workspace,
 };
 pub use error::{ClientError, QueryResultError};
 pub use search::{
