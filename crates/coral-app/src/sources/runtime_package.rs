@@ -161,7 +161,7 @@ fn http_manifest_for_surface(
         rate_limit: openapi_runtime.rate_limit.clone(),
         tables,
         functions,
-        declared_inputs: manifest.declared_inputs.clone(),
+        declared_inputs: surface.inputs.clone(),
     })
 }
 
@@ -255,7 +255,7 @@ fn mcp_manifest_for_surface(
         server: mcp_runtime.server.clone(),
         functions,
         tables,
-        declared_inputs: manifest.declared_inputs.clone(),
+        declared_inputs: surface.inputs.clone(),
     })
 }
 
@@ -408,7 +408,10 @@ mod tests {
         SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
         V4SourceCommon, V4SourceManifest, V4Surface,
     };
-    use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
+    use coral_spec::{
+        ManifestInputKind, ManifestInputSpec, PageSizeSpec, PaginationMode, PaginationSpec,
+        ResponseSpec,
+    };
 
     use super::{runtime_components_for_v4_source, surface_base_url};
 
@@ -622,6 +625,17 @@ mod tests {
         }
     }
 
+    fn secret_input(key: &str) -> ManifestInputSpec {
+        ManifestInputSpec {
+            key: key.to_string(),
+            kind: ManifestInputKind::Secret,
+            required: true,
+            default_value: String::new(),
+            hint: None,
+            credential: None,
+        }
+    }
+
     #[test]
     fn multi_surface_runtime_components_use_surface_relation_namespaces() {
         let manifest = V4SourceManifest {
@@ -671,6 +685,83 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(schema_names, ["github_v4_rest", "github_v4_mcp"]);
+    }
+
+    #[test]
+    fn multi_surface_runtime_components_use_surface_declared_inputs() {
+        let rest_input = secret_input("rest_token");
+        let mcp_input = secret_input("mcp_token");
+        let mut rest_surface = openapi_surface("rest", "github_v4_rest");
+        rest_surface.inputs = vec![rest_input.clone()];
+        let mut mcp_surface = mcp_surface("mcp", "github_v4_mcp");
+        mcp_surface.inputs = vec![mcp_input.clone()];
+        let manifest = V4SourceManifest {
+            common: V4SourceCommon {
+                dsl_version: 4,
+                name: "github_v4".to_string(),
+                description: String::new(),
+                test_queries: Vec::new(),
+            },
+            declared_inputs: vec![rest_input, mcp_input],
+            surfaces: vec![rest_surface, mcp_surface],
+        };
+        let materialized = V4MaterializedSource {
+            fingerprint: Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            },
+            surfaces: vec![
+                rest_materialized_surface_with_pagination(
+                    "rest",
+                    "rest_list_issues",
+                    PaginationSpec::default(),
+                ),
+                mcp_materialized_surface("mcp", "mcp_list_issues"),
+            ],
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "github_v4".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: vec![
+                    published_projection("rest", "github_v4_rest", "rest_list_issues"),
+                    published_projection("mcp", "github_v4_mcp", "mcp_list_issues"),
+                ],
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let components =
+            runtime_components_for_v4_source(&manifest, &materialized).expect("runtime components");
+        let coral_engine::RuntimeSourceComponent::Http(http) =
+            components.first().expect("http component")
+        else {
+            panic!("expected HTTP component");
+        };
+        let coral_engine::RuntimeSourceComponent::Mcp(mcp) =
+            components.get(1).expect("mcp component")
+        else {
+            panic!("expected MCP component");
+        };
+
+        assert_eq!(
+            http.declared_inputs
+                .iter()
+                .map(|input| input.key.as_str())
+                .collect::<Vec<_>>(),
+            ["rest_token"]
+        );
+        assert_eq!(
+            mcp.declared_inputs
+                .iter()
+                .map(|input| input.key.as_str())
+                .collect::<Vec<_>>(),
+            ["mcp_token"]
+        );
     }
 
     #[test]

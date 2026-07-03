@@ -156,11 +156,41 @@ impl SourceInputResolutionContext {
     #[must_use]
     /// Builds request input-resolution context from one selected query source.
     pub fn from_query_source(source: &QuerySource) -> Self {
+        Self::from_query_source_for_inputs(source, source.declared_inputs())
+    }
+
+    #[must_use]
+    /// Builds request input-resolution context scoped to one runtime component.
+    pub(crate) fn from_query_source_for_inputs(
+        source: &QuerySource,
+        declared_inputs: &[ManifestInputSpec],
+    ) -> Self {
+        let variables = declared_inputs
+            .iter()
+            .filter(|input| input.kind == ManifestInputKind::Variable)
+            .filter_map(|input| {
+                source
+                    .variables()
+                    .get(&input.key)
+                    .map(|value| (input.key.clone(), value.clone()))
+            })
+            .collect();
+        let secrets = declared_inputs
+            .iter()
+            .filter(|input| input.kind == ManifestInputKind::Secret)
+            .filter_map(|input| {
+                source
+                    .secrets()
+                    .get(&input.key)
+                    .map(|value| (input.key.clone(), value.clone()))
+            })
+            .collect();
+
         Self {
             source_name: Arc::from(source.source_name()),
-            declared_inputs: Arc::from(source.declared_inputs().to_vec()),
-            variables: Arc::new(source.variables().clone()),
-            secrets: Arc::new(source.secrets().clone()),
+            declared_inputs: Arc::from(declared_inputs.to_vec()),
+            variables: Arc::new(variables),
+            secrets: Arc::new(secrets),
         }
     }
 
