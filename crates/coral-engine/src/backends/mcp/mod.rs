@@ -90,7 +90,10 @@ pub(crate) fn compile_manifest(
     manifest: &McpSourceManifest,
     request: &BackendCompileRequest<'_>,
 ) -> Box<dyn CompiledBackendSource> {
-    let source_input_resolution = SourceInputResolutionContext::from_query_source(request.source);
+    let source_input_resolution = SourceInputResolutionContext::from_query_source_for_inputs(
+        request.source,
+        &manifest.declared_inputs,
+    );
     let resolved_inputs = Arc::new(coral_spec::resolve_inputs(
         &manifest.declared_inputs,
         source_input_resolution.secrets(),

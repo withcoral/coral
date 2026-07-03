@@ -76,7 +76,10 @@ pub(crate) fn compile_manifest(
 ) -> Box<dyn CompiledBackendSource> {
     compile_source(
         manifest.clone(),
-        SourceInputResolutionContext::from_query_source(request.source),
+        SourceInputResolutionContext::from_query_source_for_inputs(
+            request.source,
+            &manifest.declared_inputs,
+        ),
         request.request_authenticators.clone(),
         request.runtime_context.body_capture_max_bytes,
         request.runtime_context.trace_context.clone(),
