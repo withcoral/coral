@@ -120,7 +120,7 @@ The shared gRPC contract.
 
 All inter-crate communication between `coral-client` and `coral-app` goes through these generated types. The active service contracts include source management, query execution, catalog discovery, workspaces, feedback, episodes, traces, and Universal Search.
 
-`SearchService` is the Universal Search contract. It returns typed, bounded search results plus provider status, coverage, and truncation metadata. The catalog-metadata provider is wired today; observed-value search and provider-native fanout report `NotEnabled` until those providers are enabled.
+`SearchService` is the Universal Search contract. It returns typed, bounded search results plus provider status, coverage, and truncation metadata. In this PR, `coral search` and the MCP `search` tool use it to search catalog metadata for relevant tables, table functions, columns, and filters.
 
 ## Dependency graph
 
