@@ -1,6 +1,6 @@
 //! Graph-plan intermediate representation: the shared, frontend- and
 //! backend-agnostic data model that the openCypher and GraphQL frontends compile
-//! into and that the `GraphPlanValidator` and SQL Lowerer consume. Defines
+//! into and that the `GraphPlanValidator` and SQL `SqlRenderer` consume. Defines
 //! `GraphQuery` (a single `GraphPlan` or a `GraphUnion`), node/relationship
 //! patterns and `Direction`, projections, scalar expressions, the predicate
 //! family (property, key, element-id, presence, EXISTS/COUNT patterns),

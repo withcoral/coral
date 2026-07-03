@@ -1,8 +1,8 @@
-//! Precomputed scalar-subquery lowering for the SQL Lowerer: discovers EXISTS/COUNT/COLLECT
+//! Precomputed scalar-subquery lowering for the SQL `SqlRenderer`: discovers EXISTS/COUNT/COLLECT
 //! scalar-subquery candidates across projections, predicates and scalar expressions, then
 //! renders them as precomputed LEFT JOIN subqueries — correlated and uncorrelated, over node
 //! or relationship patterns, including DISTINCT-count targets — with their correlation
-//! conditions. Builds the Lowerer's `ScalarSubqueryPlan`.
+//! conditions. Builds the `SqlRenderer`'s `ScalarSubqueryPlan`.
 
 #[allow(
     clippy::allow_attributes,
@@ -11,7 +11,7 @@
 )]
 use super::*;
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn build_scalar_subquery_plan(&self) -> Result<ScalarSubqueryPlan, CoreError> {
         let candidates = self.scalar_subquery_candidates();
         if candidates.is_empty() {

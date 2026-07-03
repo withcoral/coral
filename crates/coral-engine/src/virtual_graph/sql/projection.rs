@@ -1,4 +1,4 @@
-//! Projection rendering for the SQL Lowerer: builds the `SELECT`, `GROUP BY` and `ORDER BY`
+//! Projection rendering for the SQL `SqlRenderer`: builds the `SELECT`, `GROUP BY` and `ORDER BY`
 //! clauses from graph-plan projections — projected columns, aggregate targets/invocations,
 //! aggregation detection and grouping keys, and order expressions — and rejects projection
 //! scalar/structural/COLLECT/predicate subqueries that were not precomputed into joins.
@@ -13,9 +13,9 @@ use super::*;
 #[allow(
     clippy::allow_attributes,
     clippy::elidable_lifetime_names,
-    reason = "SQL child modules use the same explicit Lowerer lifetime shape as the parent impl."
+    reason = "SQL child modules use the same explicit SqlRenderer lifetime shape as the parent impl."
 )]
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn render_select(&self) -> Result<String, CoreError> {
         let mut rendered = Vec::with_capacity(self.validated.plan().projections.len());
         for projection in &self.validated.plan().projections {

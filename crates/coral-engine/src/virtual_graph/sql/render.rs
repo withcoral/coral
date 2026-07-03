@@ -1,8 +1,8 @@
-//! SQL text primitives for the graph-plan → `DataFusion` SQL Lowerer: stateless free
+//! SQL text primitives for the graph-plan → `DataFusion` SQL `SqlRenderer`: stateless free
 //! functions that quote identifiers and string literals; render literals, comparison
 //! and arithmetic operators, aggregate invocations, LIKE/regex/XOR patterns, typed
 //! literal lists and table references; and assemble UNION branch and outer-query SQL.
-//! Unlike the sibling modules these are module-level helpers, not `Lowerer` methods.
+//! Unlike the sibling modules these are module-level helpers, not `SqlRenderer` methods.
 
 use std::fmt::Write as _;
 

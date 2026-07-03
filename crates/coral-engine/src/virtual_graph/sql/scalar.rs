@@ -1,4 +1,4 @@
-//! Scalar-expression rendering for the SQL Lowerer: translates graph-plan
+//! Scalar-expression rendering for the SQL `SqlRenderer`: translates graph-plan
 //! `ScalarExpression`s into `DataFusion` SQL — structural and graph-metadata references,
 //! `CAST/TRY_CAST`, unary/binary/ternary string and math functions, COALESCE, REPLACE,
 //! ROUND, SUBSTRING, arithmetic, CASE, and presence-gated expressions. The top-level
@@ -14,9 +14,9 @@ use super::*;
 #[allow(
     clippy::allow_attributes,
     clippy::elidable_lifetime_names,
-    reason = "SQL child modules use the same explicit Lowerer lifetime shape as the parent impl."
+    reason = "SQL child modules use the same explicit SqlRenderer lifetime shape as the parent impl."
 )]
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn render_scalar_expression(
         &self,
         expression: &ScalarExpression,

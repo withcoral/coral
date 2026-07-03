@@ -1,6 +1,6 @@
-//! SQL Lowerer hub: lowers a validated graph plan into `DataFusion` SQL. Owns
+//! SQL `SqlRenderer` hub: lowers a validated graph plan into `DataFusion` SQL. Owns
 //! the `SqlTranslation` result, the `Declaration::lower_graph_plan` /
-//! `lower_graph_query` / union entry points, and the stateful `Lowerer` that
+//! `lower_graph_query` / union entry points, and the stateful `SqlRenderer` that
 //! assembles the SELECT/FROM/WHERE/GROUP BY/HAVING/ORDER BY/LIMIT/OFFSET clause
 //! text. Drives the `sql/*` rendering submodules (`joins`, `metadata`,
 //! `predicates`, `projection`, `render`, `scalar`, `scoped`, `subqueries`) and
@@ -81,7 +81,7 @@ impl Declaration {
     /// the plan uses a relationship shape not yet supported by the lowerer.
     pub fn lower_graph_plan(&self, plan: &GraphPlan) -> Result<SqlTranslation, CoreError> {
         let validated = self.validate_graph_plan(plan)?;
-        Lowerer::new(validated).lower()
+        SqlRenderer::new(validated).lower()
     }
 
     /// Lowers a read-only virtual graph query into `DataFusion` SQL.
@@ -130,12 +130,13 @@ impl Declaration {
     }
 }
 
-struct Lowerer<'a> {
+struct SqlRenderer<'a> {
     validated: ValidatedGraphPlan<'a>,
     subquery_plan: ScalarSubqueryPlan,
     /// Uniqueness counter for inline exists-count aliases (see `render_scalar_predicate_expression`,
     /// predicates.rs). Separate from `subquery_plan`: the alias it mints is local to a generated
-    /// COUNT(*) subquery SELECT and is never referenced by the outer query. Kept on the Lowerer
+    /// COUNT(*) subquery SELECT and is never referenced by the outer query. Kept on the
+    /// `SqlRenderer`
     /// (keep-and-share) rather than folded into `ScalarSubqueryPlan`.
     next_scalar_subquery_alias: Cell<usize>,
 }
@@ -238,7 +239,7 @@ struct OptionalScopeAnchor<'a> {
     anchor_is_left: bool,
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
             validated,
@@ -248,7 +249,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower(mut self) -> Result<SqlTranslation, CoreError> {
-        // The borrowed Lowerer carries an EMPTY ScalarSubqueryPlan during FROM construction, so
+        // The borrowed SqlRenderer carries an EMPTY ScalarSubqueryPlan during FROM construction, so
         // any subquery reached while rendering optional-match predicates renders inline, exactly
         // as today.
         let mut from_clause = FromClauseBuilder::new(&self).build()?;

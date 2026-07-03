@@ -1,4 +1,4 @@
-//! Predicate rendering for the SQL Lowerer: emits `WHERE` (pre-projection) and `HAVING`
+//! Predicate rendering for the SQL `SqlRenderer`: emits `WHERE` (pre-projection) and `HAVING`
 //! (post-projection) SQL from graph-plan predicate trees — property, scalar, key,
 //! element-id, presence, property-key-membership and EXISTS-pattern comparison leaves,
 //! their boolean-expression walkers, and the right-hand-side operand rendering.
@@ -10,7 +10,7 @@
 )]
 use super::*;
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn render_where(&self) -> Result<String, CoreError> {
         let mut predicates = self.render_pre_projection_predicates()?;
         if !self.plan_has_aggregation()

@@ -1,4 +1,4 @@
-//! Binding and graph-metadata reference rendering for the SQL Lowerer: resolves graph
+//! Binding and graph-metadata reference rendering for the SQL `SqlRenderer`: resolves graph
 //! bindings and projection aliases into SQL column expressions for properties, keys,
 //! element ids, labels, relationship types, property keys, and presence/identity
 //! (including undirected-endpoint variants), plus precomputed EXISTS/COUNT/COLLECT
@@ -82,7 +82,7 @@ impl ScalarSubqueryPlan {
     }
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn next_scalar_subquery_alias(&self, prefix: &str) -> String {
         let index = self.next_scalar_subquery_alias.get();
         self.next_scalar_subquery_alias.set(index + 1);

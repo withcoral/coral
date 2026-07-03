@@ -1,8 +1,8 @@
-//! FROM-clause construction for the SQL Lowerer: assembles the graph plan's join tree —
+//! FROM-clause construction for the SQL `SqlRenderer`: assembles the graph plan's join tree —
 //! start and cross-joined nodes, mandatory and OPTIONAL relationship joins, OPTIONAL MATCH
 //! scope grouping and anchoring, and relationship orientation/label matching with the
 //! resulting join conditions. `FromClauseBuilder` owns the mutable FROM workspace while
-//! borrowing the render-capable `Lowerer`.
+//! borrowing the render-capable `SqlRenderer`.
 
 use std::collections::BTreeSet;
 
@@ -14,13 +14,13 @@ use std::collections::BTreeSet;
 use super::*;
 
 pub(super) struct FromClauseBuilder<'a, 'r> {
-    lowerer: &'r Lowerer<'a>,
+    lowerer: &'r SqlRenderer<'a>,
     joined_nodes: BTreeSet<&'a str>,
     optional_relationships_joined: bool,
     from_clause: String,
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn render_optional_join_predicate(
         &self,
         relationship_index: usize,
@@ -256,7 +256,7 @@ impl<'a> Lowerer<'a> {
 }
 
 impl<'a, 'r> FromClauseBuilder<'a, 'r> {
-    pub(super) fn new(lowerer: &'r Lowerer<'a>) -> Self {
+    pub(super) fn new(lowerer: &'r SqlRenderer<'a>) -> Self {
         Self {
             lowerer,
             joined_nodes: BTreeSet::new(),
@@ -384,7 +384,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
     }
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn optional_relationship_node_variables(&self) -> BTreeSet<&'a str> {
         self.validated
             .plan()
@@ -448,7 +448,7 @@ impl FromClauseBuilder<'_, '_> {
     }
 }
 
-impl Lowerer<'_> {
+impl SqlRenderer<'_> {
     fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
         self.validated
             .plan()
@@ -534,7 +534,7 @@ impl FromClauseBuilder<'_, '_> {
         let optional_predicate = self
             .lowerer
             .render_optional_match_predicate(optional_match)?;
-        Lowerer::join_relationship(
+        SqlRenderer::join_relationship(
             &self.lowerer.validated,
             &mut self.joined_nodes,
             &mut self.from_clause,
@@ -550,7 +550,7 @@ impl FromClauseBuilder<'_, '_> {
     }
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn optional_relationship_component_anchor(
         &self,
         relationship_index: usize,
@@ -696,8 +696,10 @@ impl<'a> FromClauseBuilder<'a, '_> {
                 .collect::<Vec<_>>()
                 .join(" AND "),
         };
-        let outer_condition =
-            Lowerer::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
+        let outer_condition = SqlRenderer::join_condition_with_predicate(
+            outer_condition,
+            optional_predicate.as_deref(),
+        );
         write!(
             self.from_clause,
             " LEFT JOIN ({join_group}) ON {outer_condition}"
@@ -721,7 +723,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
     }
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn render_optional_match_group_anchor(
         &self,
         anchor: OptionalScopeAnchor<'a>,
@@ -809,7 +811,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
             .validated
             .relationship_alias(relationship_index, pattern);
         if left_joined && right_joined {
-            let condition = Lowerer::relationship_pair_condition(
+            let condition = SqlRenderer::relationship_pair_condition(
                 &self.lowerer.validated,
                 relationship,
                 &relationship_alias,
@@ -831,7 +833,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
         } else {
             (pattern.right.as_str(), pattern.left.as_str(), false)
         };
-        let relationship_join = Lowerer::relationship_known_node_condition(
+        let relationship_join = SqlRenderer::relationship_known_node_condition(
             &self.lowerer.validated,
             relationship,
             pattern,
@@ -849,7 +851,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
 
         if self.joined_nodes.contains(unknown_variable) {
-            let outer_join = Lowerer::relationship_known_node_condition(
+            let outer_join = SqlRenderer::relationship_known_node_condition(
                 &self.lowerer.validated,
                 relationship,
                 pattern,
@@ -857,7 +859,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
                 unknown_variable,
                 !known_is_left,
             )?;
-            return Lowerer::relationship_outer_condition_for_known_node(
+            return SqlRenderer::relationship_outer_condition_for_known_node(
                 &self.lowerer.validated,
                 relationship,
                 pattern,
@@ -867,7 +869,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
             .map(Some);
         }
 
-        let unknown_join = Lowerer::relationship_inner_unknown_condition_for_known_node(
+        let unknown_join = SqlRenderer::relationship_inner_unknown_condition_for_known_node(
             &self.lowerer.validated,
             relationship,
             pattern,
@@ -890,7 +892,7 @@ impl<'a> FromClauseBuilder<'a, '_> {
     }
 }
 
-impl Lowerer<'_> {
+impl SqlRenderer<'_> {
     fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
         self.validated
             .plan()
@@ -923,7 +925,7 @@ impl FromClauseBuilder<'_, '_> {
                 } else {
                     None
                 };
-                Lowerer::join_relationship(
+                SqlRenderer::join_relationship(
                     validated,
                     &mut self.joined_nodes,
                     &mut self.from_clause,
@@ -943,7 +945,7 @@ impl FromClauseBuilder<'_, '_> {
     }
 }
 
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     fn join_relationship(
         validated: &ValidatedGraphPlan<'a>,
         joined_nodes: &mut BTreeSet<&'a str>,

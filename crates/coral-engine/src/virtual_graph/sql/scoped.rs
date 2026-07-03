@@ -1,4 +1,4 @@
-//! Scoped-subquery SQL rendering for the SQL Lowerer: emits the correlated inline bodies of
+//! Scoped-subquery SQL rendering for the SQL `SqlRenderer`: emits the correlated inline bodies of
 //! EXISTS / COUNT / COLLECT subqueries — scoped pattern SELECTs, count/collect/distinct-count
 //! forms, nested scopes, and the predicate and scalar-expression rendering evaluated inside a
 //! subquery scope — plus the inner-vs-outer scope classification that decides precomputability.
@@ -14,9 +14,9 @@ use super::*;
 #[allow(
     clippy::allow_attributes,
     clippy::elidable_lifetime_names,
-    reason = "SQL child modules use the same explicit Lowerer lifetime shape as the parent impl."
+    reason = "SQL child modules use the same explicit SqlRenderer lifetime shape as the parent impl."
 )]
-impl<'a> Lowerer<'a> {
+impl<'a> SqlRenderer<'a> {
     pub(super) fn scoped_predicates_are_precomputable<'b>(
         predicate: &ExistsPatternPredicate,
         relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],

@@ -4,7 +4,7 @@
 //! relationship types onto `DataFusion` schema tables and key columns. Owns
 //! `from_yaml` parsing, structural `validate`, `validate_against_catalog`, and
 //! node-lookup accessors. This central type is extended by sibling modules — the
-//! SQL Lowerer adds `lower_graph_*` and the validator adds `validate_graph_plan`.
+//! SQL `SqlRenderer` adds `lower_graph_*` and the validator adds `validate_graph_plan`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
