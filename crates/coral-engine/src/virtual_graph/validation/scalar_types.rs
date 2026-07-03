@@ -313,6 +313,15 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Ok(ScalarType::Temporal(TemporalKind::Date))
             }
+            TemporalExpr::DateFromString { text } => {
+                let text_type = self.infer_scalar_expression_type(text, format!("{path}.text"))?;
+                Self::require_string_compatible_type(
+                    text_type,
+                    format!("{path}.text"),
+                    "date string constructor",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::Date))
+            }
         }
     }
 

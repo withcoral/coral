@@ -2083,6 +2083,15 @@ impl<'a> SqlRenderer<'a> {
                         local_aliases,
                     },
                 ),
+            ScalarExpression::Temporal(TemporalExpr::DateFromString { text }) => self
+                .render_date_from_string_expression(
+                    text,
+                    ScalarScope::Scoped {
+                        relationships,
+                        local_nodes,
+                        local_aliases,
+                    },
+                ),
             ScalarExpression::Round { expression, places } => self.render_round_expression(
                 expression.as_ref(),
                 places.as_deref(),

@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use super::{
     AggregateFunction, ComparisonOperator, CoreError, Diagnostic, GraphUnion,
     GraphUnionOuterProjectionItem, Literal, LiteralListElementType, NullOrder, OrderDirection,
-    OrderExpression, Projection, ScalarExpression, TableRef,
+    OrderExpression, Projection, ScalarExpression, TableRef, TemporalExpr,
 };
 use crate::virtual_graph::diagnostic_codes;
 
@@ -50,6 +50,7 @@ pub(super) fn scalar_expression_unary_operand(
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
+        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }

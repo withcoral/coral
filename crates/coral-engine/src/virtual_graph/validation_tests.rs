@@ -39,6 +39,12 @@ fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
     })
 }
 
+fn date_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DateFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 #[test]
 fn validate_graph_plan_resolves_bindings_and_relationships() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -709,8 +715,12 @@ fn validate_graph_plan_accepts_temporal_date_scalar_expressions() {
             alias: "date_value".to_string(),
         },
         Projection::Expression {
+            expression: date_from_string_expression("2015-07-21"),
+            alias: "date_string_value".to_string(),
+        },
+        Projection::Expression {
             expression: ScalarExpression::ToString {
-                expression: Box::new(date_expression(1984, 10, 11)),
+                expression: Box::new(date_from_string_expression("2015-07-21")),
             },
             alias: "date_text".to_string(),
         },
@@ -724,6 +734,29 @@ fn validate_graph_plan_accepts_temporal_date_scalar_expressions() {
     graph
         .validate_graph_plan(&plan)
         .expect("date scalar expressions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_date_string_constructor_with_non_string_text() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: ScalarExpression::Temporal(TemporalExpr::DateFromString {
+            text: Box::new(ScalarExpression::Literal(Literal::Integer(1984))),
+        }),
+        alias: "date_value".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("date string constructor text should require a string");
+
+    assert!(
+        error
+            .to_string()
+            .contains("date string constructor requires a string scalar expression, got integer"),
+        "{error}"
+    );
 }
 
 #[test]

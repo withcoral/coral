@@ -3929,3 +3929,91 @@ fn expression_projection(alias: &str, expression: ScalarExpression) -> Projectio
         alias: alias.to_string(),
     }
 }
+
+fn date_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DateFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
+#[test]
+fn renders_date_from_string_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        expression_projection("d", date_from_string_expression("2015-07-21")),
+        expression_projection(
+            "text",
+            ScalarExpression::ToString {
+                expression: Box::new(date_from_string_expression("2015-07-21")),
+            },
+        ),
+    ];
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("date string projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT CAST('2015-07-21' AS DATE) AS \"d\", \
+             CAST(CAST('2015-07-21' AS DATE) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_date_from_string_comparison() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: date_from_string_expression("2015-07-21"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(date_from_string_expression("2016-01-01")),
+    }));
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("date string comparison should lower");
+
+    assert!(
+        translation
+            .sql()
+            .contains("WHERE CAST('2015-07-21' AS DATE) < CAST('2016-01-01' AS DATE)"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_date_from_string_order() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(date_from_string_expression("2015-07-21")),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("date string ordering should lower");
+
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST('2015-07-21' AS DATE) ASC"),
+        "{}",
+        translation.sql()
+    );
+}

@@ -415,6 +415,13 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
     }
 
     match expression {
+        ScalarExpression::Temporal(TemporalExpr::DateFromString { text }) => {
+            reject_ignored_path_variable_references_in_scalar_expression(
+                text,
+                state,
+                format!("{path}.text"),
+            )
+        }
         ScalarExpression::Coalesce { expressions } => {
             reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
         }

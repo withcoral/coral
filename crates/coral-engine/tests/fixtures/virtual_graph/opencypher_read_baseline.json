@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 11,
+    "Temporal": 13,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10373,12 +10373,45 @@
       }
     },
     {
-      "id": "temporal-date-string-constructor-rejected",
+      "id": "temporal-date-string-constructor",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') AS d",
       "expected": {
-        "kind": "error",
-        "contains": "date() string constructor is not supported yet"
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-01"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-string-iso",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2015-07-21') AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2015-07-21"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-string-eq-map",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') = date({year: 2020, month: 1, day: 1}) AS same",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "same": true
+          }
+        ]
       }
     },
     {
@@ -10479,7 +10512,7 @@
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') AS shifted",
       "expected": {
         "kind": "error",
-        "contains": "date() string constructor is not supported yet"
+        "contains": "scalar function 'duration' is not supported here"
       }
     },
     {

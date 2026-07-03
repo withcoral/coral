@@ -7073,6 +7073,7 @@ fn unary_scalar_expression_operand_mut(
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
+        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -7188,6 +7189,7 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
+        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -18273,11 +18275,17 @@ fn compile_date_argument_scalar_expression(
         Expression::Literal(CypherLiteral::Map(map)) => {
             compile_date_map_scalar_expression(map, path)
         }
-        Expression::Literal(CypherLiteral::String(_)) => Err(unsupported(
+        Expression::Literal(CypherLiteral::String(value)) => {
+            Ok(make_date_from_string_scalar_expression(value.value.clone()))
+        }
+        Expression::Literal(_) => Err(unsupported(
             path,
-            "date() string constructor is not supported yet",
+            "date() requires a literal map or string argument",
         )),
-        _ => Err(unsupported(path, "date() requires a literal map argument")),
+        _ => Err(unsupported(
+            path,
+            "dynamic date() string argument not supported yet",
+        )),
     }
 }
 
@@ -18342,6 +18350,12 @@ fn compile_date_integer_field(
 
 fn default_date_component() -> ScalarExpression {
     ScalarExpression::Literal(Literal::Integer(1))
+}
+
+fn make_date_from_string_scalar_expression(text: String) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DateFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text))),
+    })
 }
 
 fn compile_core_scalar_function_expression(

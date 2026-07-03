@@ -625,6 +625,11 @@ pub enum TemporalExpr {
         /// Day component.
         day: Box<ScalarExpression>,
     },
+    /// Construct a native DATE value from an ISO date string.
+    DateFromString {
+        /// ISO date string expression.
+        text: Box<ScalarExpression>,
+    },
 }
 
 /// Supported temporal scalar kinds.
@@ -1417,6 +1422,9 @@ fn temporal_expression_references_outside_scope(
             scalar_expression_references_outside_scope(year, scope)
                 || scalar_expression_references_outside_scope(month, scope)
                 || scalar_expression_references_outside_scope(day, scope)
+        }
+        TemporalExpr::DateFromString { text } => {
+            scalar_expression_references_outside_scope(text, scope)
         }
     }
 }

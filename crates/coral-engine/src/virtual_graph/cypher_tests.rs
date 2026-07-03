@@ -64,6 +64,12 @@ fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
     })
 }
 
+fn date_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DateFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 fn route_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -2020,11 +2026,41 @@ fn compiles_date_map_constructor_scalar_expressions() {
 }
 
 #[test]
+fn compiles_date_string_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN date('2020-01-01') AS d, \
+                toString(date('2020-01-01')) AS text",
+    )
+    .expect("literal date string constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: date_from_string_expression("2020-01-01"),
+                alias: "d".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(date_from_string_expression("2020-01-01")),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn rejects_unsupported_date_constructor_forms() {
     for (cypher, expected) in [
         (
-            "MATCH (person:Person) RETURN date('2020-01-01') AS d",
-            "date() string constructor is not supported yet",
+            "MATCH (person:Person) RETURN date(person.name) AS d",
+            "dynamic date() string argument not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date(2020) AS d",
+            "date() requires a literal map or string argument",
         ),
         (
             "MATCH (person:Person) RETURN date({year: person.age}) AS d",

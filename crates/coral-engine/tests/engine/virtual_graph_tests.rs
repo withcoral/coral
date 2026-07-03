@@ -169,6 +169,52 @@ async fn cypher_date_map_constructor_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_date_string_constructor_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN date('2015-07-21') AS d, \
+                toString(date('2015-07-21')) AS text",
+    )
+    .await
+    .expect("Cypher DATE string constructor should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT CAST('2015-07-21' AS DATE) AS d, \
+                    CAST(CAST('2015-07-21' AS DATE) AS VARCHAR) AS text \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent DATE string SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST('2015-07-21' AS DATE)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({"d": "2015-07-21", "text": "2015-07-21"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_parenthesized_path_patterns_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-554 scenarios, which is 34.30% of the full upstream scenario-definition inventory
-and 42.81% of the read-candidate inventory.
+556 scenarios, which is 34.43% of the full upstream scenario-definition inventory
+and 42.97% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 554 representative read-only scenarios:
+The baseline currently contains 556 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -247,7 +247,7 @@ The baseline currently contains 554 representative read-only scenarios:
   `toInteger(...)`, `toFloat(...)`, `toBoolean(...)`, nullable
   `toStringOrNull(...)`, `toIntegerOrNull(...)`, `toFloatOrNull(...)`,
   `toBooleanOrNull(...)` composition, and adjacent rejection coverage.
-- `Temporal`: 11 scenarios for DATE map constructor support and adjacent
+- `Temporal`: 13 scenarios for DATE map and string constructor support and adjacent
   temporal support boundaries, including `date(...)`, `datetime(...)`,
   `time(...)`, `duration(...)`, unsupported temporal map forms, component
   access, arithmetic, and `duration.between(...)`.
