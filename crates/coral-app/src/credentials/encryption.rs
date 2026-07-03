@@ -6,15 +6,19 @@
 )]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use base64::Engine as _;
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
+use tracing::warn;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use super::CredentialsError;
+use crate::bootstrap;
 use crate::sources::SourceName;
 use crate::state::AppStateLayout;
 use crate::storage::fs as storage_fs;
@@ -31,10 +35,24 @@ const NONCE_LEN: usize = 12;
 
 static LOCAL_KEY_FILE_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CredentialEncryptionKey {
     key_id: String,
     bytes: [u8; KEY_LEN],
+}
+
+impl fmt::Debug for CredentialEncryptionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CredentialEncryptionKey")
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for CredentialEncryptionKey {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
 }
 
 impl CredentialEncryptionKey {
@@ -57,16 +75,37 @@ pub(crate) trait CredentialKeyProvider: Send + Sync {
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError>;
 }
 
+/// Local credential encryption key provider.
+/// Shared-Postgres deployments MUST provision the same KEK on every server via
+/// `[credentials].encryption_key_env`; the local file key is single-config-dir only.
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFileCredentialKeyProvider {
     path: PathBuf,
+    config_file: PathBuf,
 }
 
 impl LocalFileCredentialKeyProvider {
     pub(crate) fn new(layout: &AppStateLayout) -> Self {
         Self {
             path: layout.credential_encryption_key_file(),
+            config_file: layout.config_file().to_path_buf(),
         }
+    }
+
+    fn load_configured_key(&self) -> Result<Option<CredentialEncryptionKey>, CredentialsError> {
+        let Some(env_name) = configured_key_env(&self.config_file)? else {
+            return Ok(None);
+        };
+        let raw = bootstrap::env_var(&env_name).ok_or_else(|| {
+            CredentialsError::Crypto(format!(
+                "credential encryption key environment variable `{env_name}` is not set"
+            ))
+        })?;
+        decode_key_material(&raw).map(Some).map_err(|error| {
+            CredentialsError::Crypto(format!(
+                "invalid credential encryption key from environment variable `{env_name}`: {error}"
+            ))
+        })
     }
 
     fn load_or_create_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
@@ -80,7 +119,7 @@ impl LocalFileCredentialKeyProvider {
         let _process_guard = FileLock::exclusive(&lock_path)?;
 
         match std::fs::read_to_string(&self.path) {
-            Ok(raw) => decode_key_file(&raw),
+            Ok(raw) => decode_key_material(&raw),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let bytes = random_array::<KEY_LEN>()?;
                 let encoded = format!(
@@ -88,6 +127,10 @@ impl LocalFileCredentialKeyProvider {
                     base64::engine::general_purpose::STANDARD.encode(bytes)
                 );
                 storage_fs::write_atomic(&self.path, encoded.as_bytes())?;
+                warn!(
+                    path = %self.path.display(),
+                    "created local credential encryption key; shared-Postgres deployments must provision the same KEK on every server"
+                );
                 Ok(CredentialEncryptionKey {
                     key_id: key_id_for_bytes(&bytes),
                     bytes,
@@ -100,11 +143,16 @@ impl LocalFileCredentialKeyProvider {
 
 impl CredentialKeyProvider for LocalFileCredentialKeyProvider {
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+        if let Some(key) = self.load_configured_key()? {
+            return Ok(key);
+        }
         self.load_or_create_key()
     }
 
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
-        let key = self.load_or_create_key()?;
+        let key = self
+            .load_configured_key()?
+            .map_or_else(|| self.load_or_create_key(), Ok)?;
         if key.key_id == key_id {
             Ok(key)
         } else {
@@ -139,7 +187,7 @@ pub(crate) fn encrypt_credential_values(
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<EncryptedCredentialDocument, CredentialsError> {
     let kek = key_provider.active_key()?;
-    let dek = random_array::<KEY_LEN>()?;
+    let dek = Zeroizing::new(random_array::<KEY_LEN>()?);
     let nonce = random_array::<NONCE_LEN>()?;
     let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
 
@@ -147,16 +195,18 @@ pub(crate) fn encrypt_credential_values(
         version: CREDENTIAL_DOCUMENT_VERSION,
         values: values.clone(),
     };
-    let mut document_bytes = serde_json::to_vec(&plaintext)
-        .map_err(|error| CredentialsError::Parse(error.to_string()))?;
+    let mut document_bytes = Zeroizing::new(
+        serde_json::to_vec(&plaintext)
+            .map_err(|error| CredentialsError::Parse(error.to_string()))?,
+    );
     seal(
-        &dek,
+        &*dek,
         &nonce,
         credential_document_aad(workspace_name, source_name),
         &mut document_bytes,
     )?;
 
-    let mut wrapped_dek = dek.to_vec();
+    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
     seal(
         &kek.bytes,
         &wrapped_dek_nonce,
@@ -165,11 +215,11 @@ pub(crate) fn encrypt_credential_values(
     )?;
 
     Ok(EncryptedCredentialDocument {
-        ciphertext: document_bytes,
+        ciphertext: std::mem::take(&mut *document_bytes),
         nonce: nonce.to_vec(),
-        wrapped_dek,
+        wrapped_dek: std::mem::take(&mut *wrapped_dek),
         wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: kek.key_id,
+        key_id: kek.key_id.clone(),
         algorithm: CREDENTIAL_DOCUMENT_ALGORITHM.to_string(),
         aad_version: CREDENTIAL_DOCUMENT_AAD_VERSION,
     })
@@ -208,12 +258,12 @@ pub(crate) fn rewrap_credential_document(
     }
 
     let dek = unwrap_dek(document, &old_kek)?;
-    let mut document_probe = document.ciphertext.clone();
+    let mut document_probe = Zeroizing::new(document.ciphertext.clone());
     if open(
-        &dek,
+        &*dek,
         document.nonce.as_slice(),
         credential_document_aad(workspace_name, source_name),
-        &mut document_probe,
+        document_probe.as_mut_slice(),
     )
     .is_err()
     {
@@ -227,7 +277,7 @@ pub(crate) fn rewrap_credential_document(
     }
 
     let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
-    let mut wrapped_dek = dek;
+    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
     seal(
         &active_kek.bytes,
         &wrapped_dek_nonce,
@@ -238,9 +288,9 @@ pub(crate) fn rewrap_credential_document(
     Ok(Some(EncryptedCredentialDocument {
         ciphertext: document.ciphertext.clone(),
         nonce: document.nonce.clone(),
-        wrapped_dek,
+        wrapped_dek: std::mem::take(&mut *wrapped_dek),
         wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: active_kek.key_id,
+        key_id: active_kek.key_id.clone(),
         algorithm: document.algorithm.clone(),
         aad_version: document.aad_version,
     }))
@@ -251,28 +301,28 @@ fn decrypt_credential_document_bytes(
     source_name: &SourceName,
     document: &EncryptedCredentialDocument,
     key_provider: &dyn CredentialKeyProvider,
-) -> Result<Vec<u8>, CredentialsError> {
+) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
     validate_document_metadata(document)?;
     let kek = key_provider.key(&document.key_id)?;
     let dek = unwrap_dek(document, &kek)?;
 
-    let mut ciphertext = document.ciphertext.clone();
+    let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
     match open(
-        &dek,
+        &*dek,
         document.nonce.as_slice(),
         credential_document_aad(workspace_name, source_name),
-        &mut ciphertext,
+        ciphertext.as_mut_slice(),
     ) {
-        Ok(plaintext) => Ok(plaintext.to_vec()),
+        Ok(plaintext) => Ok(Zeroizing::new(plaintext.to_vec())),
         Err(primary_error) => {
-            let mut legacy_ciphertext = document.ciphertext.clone();
+            let mut legacy_ciphertext = Zeroizing::new(document.ciphertext.clone());
             match open(
-                &dek,
+                &*dek,
                 document.nonce.as_slice(),
                 legacy_credential_document_aad(workspace_name, source_name, &document.key_id),
-                &mut legacy_ciphertext,
+                legacy_ciphertext.as_mut_slice(),
             ) {
-                Ok(plaintext) => Ok(plaintext.to_vec()),
+                Ok(plaintext) => Ok(Zeroizing::new(plaintext.to_vec())),
                 Err(_) => Err(primary_error),
             }
         }
@@ -282,22 +332,22 @@ fn decrypt_credential_document_bytes(
 fn unwrap_dek(
     document: &EncryptedCredentialDocument,
     kek: &CredentialEncryptionKey,
-) -> Result<Vec<u8>, CredentialsError> {
-    let mut dek = document.wrapped_dek.clone();
+) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
+    let mut dek = Zeroizing::new(document.wrapped_dek.clone());
     match open(
         &kek.bytes,
         document.wrapped_dek_nonce.as_slice(),
         credential_dek_aad(&document.key_id),
-        &mut dek,
+        dek.as_mut_slice(),
     ) {
         Ok(dek_plaintext) => validate_dek_plaintext(dek_plaintext),
         Err(primary_error) => {
-            let mut legacy_dek = document.wrapped_dek.clone();
+            let mut legacy_dek = Zeroizing::new(document.wrapped_dek.clone());
             match open(
                 &kek.bytes,
                 document.wrapped_dek_nonce.as_slice(),
                 legacy_credential_dek_aad(&document.key_id),
-                &mut legacy_dek,
+                legacy_dek.as_mut_slice(),
             ) {
                 Ok(dek_plaintext) => validate_dek_plaintext(dek_plaintext),
                 Err(_) => Err(primary_error),
@@ -306,14 +356,18 @@ fn unwrap_dek(
     }
 }
 
-fn validate_dek_plaintext(dek_plaintext: &[u8]) -> Result<Vec<u8>, CredentialsError> {
+fn validate_dek_plaintext(
+    dek_plaintext: &[u8],
+) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     if dek_plaintext.len() != KEY_LEN {
         return Err(CredentialsError::Crypto(format!(
             "credential document DEK has invalid length {}",
             dek_plaintext.len()
         )));
     }
-    Ok(dek_plaintext.to_vec())
+    let mut dek = [0_u8; KEY_LEN];
+    dek.copy_from_slice(dek_plaintext);
+    Ok(Zeroizing::new(dek))
 }
 
 fn validate_document_metadata(
@@ -428,18 +482,37 @@ fn random_array<const N: usize>() -> Result<[u8; N], CredentialsError> {
     Ok(bytes)
 }
 
-fn decode_key_file(raw: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+fn configured_key_env(config_file: &Path) -> Result<Option<String>, CredentialsError> {
+    if !config_file.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(config_file)?;
+    let config: toml::Value =
+        toml::from_str(&raw).map_err(|error| CredentialsError::Parse(error.to_string()))?;
+    let Some(value) = config
+        .get("credentials")
+        .and_then(|credentials| credentials.get("encryption_key_env"))
+    else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(|env| Some(env.to_string()))
+        .ok_or_else(|| {
+            CredentialsError::Parse("[credentials].encryption_key_env must be a string".to_string())
+        })
+}
+
+fn decode_key_material(raw: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
     let trimmed = raw.trim();
     let Some(encoded) = trimmed.strip_prefix(&format!("{KEY_FILE_VERSION}:")) else {
         return Err(CredentialsError::Crypto(
-            "unsupported credential encryption key file version".to_string(),
+            "unsupported credential encryption key version".to_string(),
         ));
     };
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|error| {
-            CredentialsError::Crypto(format!("invalid encryption key file: {error}"))
-        })?;
+        .map_err(|error| CredentialsError::Crypto(format!("invalid encryption key: {error}")))?;
     let bytes: [u8; KEY_LEN] = decoded.try_into().map_err(|decoded: Vec<u8>| {
         CredentialsError::Crypto(format!(
             "credential encryption key has invalid length {}",
@@ -456,4 +529,63 @@ fn key_id_for_bytes(bytes: &[u8; KEY_LEN]) -> String {
     let digest = Sha256::digest(bytes);
     let hex = format!("{digest:x}");
     format!("local-file-{}", hex.get(..16).unwrap_or(hex.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl CredentialKeyProvider for CredentialEncryptionKey {
+        fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError> {
+            Ok(self.clone())
+        }
+
+        fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError> {
+            if self.key_id() == key_id {
+                Ok(self.clone())
+            } else {
+                Err(CredentialsError::Crypto(format!(
+                    "credential encryption key '{key_id}' is unavailable"
+                )))
+            }
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_authenticates_context_and_redacts_debug() {
+        let ws = WorkspaceName::parse("acme").expect("workspace");
+        let src = SourceName::parse("github").expect("source");
+        let provider = CredentialEncryptionKey::from_static_bytes_for_test([7; KEY_LEN]);
+        let values = BTreeMap::from([("token".to_string(), "s3cr3t".to_string())]);
+
+        let document =
+            encrypt_credential_values(&ws, &src, &values, &provider).expect("encrypt credentials");
+        assert_eq!(
+            decrypt_credential_values(&ws, &src, &document, &provider).expect("decrypt"),
+            values
+        );
+
+        let mut tampered = document.clone();
+        *tampered.ciphertext.first_mut().expect("ciphertext byte") ^= 1;
+        decrypt_credential_values(&ws, &src, &tampered, &provider)
+            .expect_err("tampered ciphertext should fail");
+        let mut tampered = document.clone();
+        *tampered.wrapped_dek.first_mut().expect("wrapped DEK byte") ^= 1;
+        decrypt_credential_values(&ws, &src, &tampered, &provider)
+            .expect_err("tampered wrapped DEK should fail");
+        let other_ws = WorkspaceName::parse("other").expect("workspace");
+        decrypt_credential_values(&other_ws, &src, &document, &provider)
+            .expect_err("wrong workspace should fail");
+        let other_src = SourceName::parse("slack").expect("source");
+        decrypt_credential_values(&ws, &other_src, &document, &provider)
+            .expect_err("wrong source should fail");
+        let mismatch = CredentialEncryptionKey::from_static_bytes_for_test([8; KEY_LEN]);
+        decrypt_credential_values(&ws, &src, &document, &mismatch)
+            .expect_err("wrong key should fail");
+
+        let debug = format!("{provider:?}");
+        assert!(debug.contains(provider.key_id()));
+        assert!(!debug.contains("bytes"));
+        assert!(!debug.contains("[7, 7"));
+    }
 }
