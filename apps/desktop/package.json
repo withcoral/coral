@@ -20,6 +20,8 @@
     "package:dir": "electron-builder --dir --config electron-builder.config.ts",
     "prepackage:dmg": "npm run build",
     "package:dmg": "electron-builder --mac dmg --config electron-builder.config.ts",
+    "prepackage:mac": "CORAL_DESKTOP_UNIVERSAL=1 npm run build",
+    "package:mac": "electron-builder --mac --universal --publish never --config electron-builder.config.ts",
     "stage:coral": "node ./scripts/stage-coral.mjs"
   },
   "dependencies": {
@@ -32,6 +34,7 @@
     "@vanilla-extract/recipes": "0.5.7",
     "add-mcp": "^1.11.0",
     "classnames": "2.5.1",
+    "electron-updater": "^6.8.9",
     "isbot": "5.1.43",
     "jotai": "2.20.1",
     "lucide-react": "1.18.0",
