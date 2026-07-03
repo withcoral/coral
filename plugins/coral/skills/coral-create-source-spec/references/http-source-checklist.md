@@ -24,6 +24,7 @@ Use:
 - variables for non-secret configuration such as API base URLs
 - secrets for API keys, tokens, and client secrets
 - `credential.methods` on secret inputs when setup should offer OAuth or a manual token choice
+- separate `kind: identity` manifests for reusable identity setup contracts, when the task explicitly calls for one
 
 ## Authentication Setup
 
@@ -40,6 +41,7 @@ Use:
 - Do not add top-level source inputs solely for OAuth client credentials; `client.id.input` and `client.secret.input` are collected during OAuth setup.
 - If the provider supports pasted tokens too, put the OAuth method first and add a `source_config` fallback.
 - For short-lived OAuth access tokens, document the scopes, consent prompts, or client settings required for refresh-token issuance. If the provider will not issue refresh tokens, call out that users must reconnect when access tokens expire.
+- For `kind: identity` manifests, provider `issuer`, identity `type`, setup inputs, OAuth method config, and audience metadata belong on the identity spec. Identity OAuth client IDs may be defaults or variable inputs; client secrets must be declared secret inputs; OAuth URLs may template only variable inputs; identity inputs do not declare source credential methods.
 
 ## Description and Input Hints
 
