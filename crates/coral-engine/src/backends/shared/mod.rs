@@ -5,5 +5,6 @@ pub(crate) mod json_exec;
 pub(crate) mod json_path;
 pub(crate) mod mapping;
 pub(crate) mod response_rows;
+pub(crate) mod source_observation;
 pub(crate) mod template;
 pub(crate) mod trace;

@@ -16,11 +16,12 @@ use serde_json::Value;
 use super::client::McpSourceClient;
 use super::error::McpProviderQueryError;
 use super::fetch::McpFetchPlan;
+use crate::SourceObservationSurfaceKind;
 use crate::backends::SourceFunctionProviderFactory;
 use crate::backends::schema_from_columns;
 use crate::backends::shared::json_exec::JsonExec;
 use crate::backends::shared::mapping::convert_items;
-use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 
 #[derive(Clone)]
 pub(super) struct McpSourceTableFunction {
@@ -39,7 +40,7 @@ struct McpFunctionState {
     offset_pagination: Option<McpOffsetPaginationSpec>,
     columns: Arc<[coral_spec::ColumnSpec]>,
     fetch_limit_default: Option<usize>,
-    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for McpSourceTableFunction {
@@ -67,7 +68,7 @@ impl McpSourceTableFunction {
         backend: McpSourceClient,
         source_schema: String,
         function: McpTableFunctionSpec,
-        source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(function.columns(), &source_schema, function.name())?;
         let function_name = function.name().to_string();
@@ -194,7 +195,7 @@ impl TableProvider for McpFunctionCallTableProvider {
         )?
         .with_source_observation(
             SourceObservationSurfaceKind::Function,
-            self.state.source_observation_publishers.clone(),
+            Arc::clone(&self.state.source_observation_publishers),
         );
         Ok(Arc::new(exec))
     }

@@ -14,6 +14,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
 use serde_json::Value;
 
+use crate::SourceObservationSurfaceKind;
 use crate::backends::http::HttpSourceClient;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::http::target::HttpFetchTarget;
@@ -24,7 +25,7 @@ use crate::backends::shared::filter_expr::{
 };
 use crate::backends::shared::json_exec::{JsonExec, RowFetcher};
 use crate::backends::shared::mapping::{convert_items, filter_items_by_column_values};
-use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
+use crate::backends::shared::source_observation::SourceObservationPublishers;
 use coral_spec::backends::http::HttpTableSpec;
 
 /// Table provider that exposes one manifest-defined HTTP table to `DataFusion`.
@@ -34,7 +35,7 @@ pub(crate) struct HttpSourceTableProvider {
     table: Arc<HttpTableSpec>,
     target: HttpFetchTarget,
     schema: SchemaRef,
-    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 impl std::fmt::Debug for HttpSourceTableProvider {
@@ -57,7 +58,7 @@ impl HttpSourceTableProvider {
         backend: HttpSourceClient,
         source_schema: String,
         table: HttpTableSpec,
-        source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+        source_observation_publishers: SourceObservationPublishers,
     ) -> Result<Self> {
         let schema = schema_from_columns(table.columns(), &source_schema, table.name())?;
         let target = HttpFetchTarget::from_resolved_table_request(&table, table.request.clone());
@@ -81,6 +82,10 @@ impl HttpSourceTableProvider {
 
     pub(crate) fn table_spec(&self) -> &Arc<HttpTableSpec> {
         &self.table
+    }
+
+    pub(crate) fn source_observation_publishers(&self) -> &SourceObservationPublishers {
+        &self.source_observation_publishers
     }
 }
 
@@ -107,7 +112,7 @@ pub(crate) struct HttpJsonExecRequest<'a> {
     pub(crate) projection: Option<&'a Vec<usize>>,
     pub(crate) limit: Option<usize>,
     pub(crate) surface_kind: SourceObservationSurfaceKind,
-    pub(crate) source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    pub(crate) source_observation_publishers: SourceObservationPublishers,
 }
 
 #[async_trait]
@@ -155,6 +160,7 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
     } = request;
     let target = Arc::new(target);
     let mut conversion_filter_values = request_filter_values.clone();
+    let observation_filter_values = Arc::new(request_filter_values.clone());
     conversion_filter_values.extend(
         local_filter_values
             .iter()
@@ -211,6 +217,15 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
             )
         })
     };
+    let observation_converter = {
+        let target = target.clone();
+        let schema = schema.clone();
+        let filters = Arc::clone(&observation_filter_values);
+        let args = Arc::clone(&arg_values);
+        Arc::new(move |items: &[Value]| {
+            convert_items(target.columns(), schema.clone(), &filters, &args, items)
+        })
+    };
 
     let exec = JsonExec::new(
         source_schema,
@@ -220,7 +235,11 @@ pub(crate) fn http_json_exec(request: HttpJsonExecRequest<'_>) -> Result<Arc<dyn
         converter,
         projection.cloned(),
     )?
-    .with_source_observation(surface_kind, source_observation_publishers);
+    .with_source_observation_converter(
+        surface_kind,
+        source_observation_publishers,
+        observation_converter,
+    );
 
     Ok(Arc::new(exec))
 }
@@ -325,7 +344,7 @@ impl TableProvider for HttpSourceTableProvider {
             projection,
             limit,
             surface_kind: SourceObservationSurfaceKind::Table,
-            source_observation_publishers: self.source_observation_publishers.clone(),
+            source_observation_publishers: Arc::clone(&self.source_observation_publishers),
         })
     }
 }

@@ -9,6 +9,9 @@ use datafusion::common::{DataFusionError, Result};
 
 use crate::backends::schema_from_columns;
 use crate::backends::shared::mapping::convert_items;
+use crate::backends::shared::source_observation::{
+    SourceObservationConfig, publish_source_scan_batch,
+};
 use crate::runtime::dependent_join::bindings::{
     Tuple, extract_binding_value, filter_values_for_tuple,
 };
@@ -26,6 +29,7 @@ pub(crate) struct BuildJoinedBatchesConfig<'a> {
     pub(crate) resolver_projection_len: usize,
     pub(crate) dependent_first: bool,
     pub(crate) output_schema: &'a SchemaRef,
+    pub(crate) source_observation: Option<&'a SourceObservationConfig>,
 }
 
 pub(crate) fn build_joined_batches(
@@ -57,6 +61,14 @@ pub(crate) fn build_joined_batches(
             &HashMap::new(),
             rows,
         )?;
+        if let Some(source_observation) = config.source_observation {
+            publish_source_scan_batch(
+                config.dependent_source_schema,
+                config.dependent_table.name(),
+                source_observation,
+                &dependent_batch,
+            );
+        }
         // The rewrite replaced the Join node, so nothing downstream re-applies
         // the ON condition. APIs can resolve keyed lookups loosely (rename
         // redirects, case-insensitive identifiers), so enforce the join
