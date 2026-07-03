@@ -72,10 +72,8 @@ use crate::state::{AppStateLayout, ConfigStore};
 use crate::task::manager::TaskManager;
 use crate::task::service::TaskService;
 use crate::task::store::TaskStore;
-use crate::telemetry::TelemetryConfig;
-#[cfg(test)]
-use crate::telemetry::TraceManager;
 use crate::telemetry::service::TraceService;
+use crate::telemetry::{InstalledLocalTraceStore, TelemetryConfig};
 use crate::transport::GrpcRequestContextLayer;
 use crate::users::manager::UserManager;
 use crate::users::service::UserService;
@@ -392,19 +390,15 @@ impl ServerBuilder {
         let config_store = ConfigStore::new(layout.clone());
         let (coral_db, authorization_server) =
             bootstrap_database(&layout, &config_store, session_auth).await?;
-        let (telemetry_config, active_trace_store) =
-            init_server_telemetry(&layout, self.config.enable_stderr_logs)?;
-        let sync_trace_store = active_trace_store.clone();
+        let (telemetry_config, active_trace_store) = init_server_telemetry(
+            &layout,
+            self.config.enable_stderr_logs,
+            Arc::clone(&coral_db),
+        )?;
         apply_local_principal_policy(&coral_db, local_principal).await?;
         let active_trace_store_dir = active_trace_store.as_ref().map(|store| store.dir.clone());
-        import_filesystem_feedback_reports(&coral_db, &layout).await?;
-        if let Some(store) = sync_trace_store.as_ref() {
-            TraceService::sync_summaries(store.dir.clone(), store.retention, coral_db.as_ref())
-                .await
-                .map_err(|error| {
-                    AppError::Database(format!("trace summary import failed: {error}"))
-                })?;
-        }
+        import_filesystem_feedback_reports(coral_db.as_ref(), &layout).await?;
+        backfill_trace_summaries(active_trace_store.as_ref(), coral_db.as_ref()).await?;
         let credential_store = init_credential_store(&layout, &coral_db)?;
         import_legacy_credential_material(coral_db.as_ref(), &layout, &credential_store).await?;
         let credential_manager = CredentialManager::new(credential_store);
@@ -624,6 +618,7 @@ fn build_authorization_server(
 fn init_server_telemetry(
     layout: &AppStateLayout,
     enable_stderr_logs: bool,
+    db: Arc<CoralDb>,
 ) -> Result<
     (
         TelemetryConfig,
@@ -636,8 +631,12 @@ fn init_server_telemetry(
         .trace_history
         .enabled
         .then(|| layout.local_trace_store_dir());
-    let installed_trace_store =
-        crate::telemetry::init_tracing(&config, enable_stderr_logs, local_trace_store_dir)?;
+    let installed_trace_store = crate::telemetry::init_tracing(
+        &config,
+        enable_stderr_logs,
+        local_trace_store_dir,
+        Some(db),
+    )?;
     let active_trace_store = config
         .trace_history
         .enabled
@@ -671,6 +670,19 @@ async fn init_database(layout: &AppStateLayout) -> Result<CoralDb, AppError> {
     let coral_db = CoralDb::open(database_config).await?;
     coral_db.migrate().await?;
     Ok(coral_db)
+}
+
+async fn backfill_trace_summaries(
+    store: Option<&InstalledLocalTraceStore>,
+    coral_db: &CoralDb,
+) -> Result<(), AppError> {
+    let Some(store) = store else {
+        return Ok(());
+    };
+    TraceService::backfill_summaries(store.dir.clone(), store.retention, coral_db)
+        .await
+        .map(|_| ())
+        .map_err(|error| AppError::Database(format!("trace summary import failed: {error}")))
 }
 
 fn init_credential_store(

@@ -83,6 +83,7 @@ jobs:
               - 'Makefile'
               - 'crates/coral-app/migrations/**'
               - 'crates/coral-app/src/state/db/**'
+              - 'crates/coral-app/src/telemetry/service.rs'
               - 'crates/coral-app/tests/grpc/source_lifecycle_tests.rs'
               - 'crates/coral-app/tests/postgres_database_tests.rs'
               # The xtask recovery contracts run in this job too, against the

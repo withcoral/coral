@@ -2,7 +2,7 @@
 
 mod query_stream;
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -733,6 +733,16 @@ impl TraceStore {
             .map_err(|source| TraceStoreError::Worker { source })?
     }
 
+    pub(crate) async fn list_all_traces_tolerant(
+        &self,
+        scope: TraceScope,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let traces = self.clone();
+        task::spawn_blocking(move || traces.list_all_traces_tolerant_sync(&scope))
+            .await
+            .map_err(|source| TraceStoreError::Worker { source })?
+    }
+
     pub(crate) async fn get_trace(
         &self,
         trace_id: String,
@@ -831,7 +841,62 @@ impl TraceStore {
         query_stream::list(self, limit, offset, scope)
     }
 
-    fn get_trace_sync(
+    fn list_all_traces_tolerant_sync(
+        &self,
+        scope: &TraceScope,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        if let Err(error) = self.prune_expired() {
+            tracing::warn!("skipping local trace retention prune before summary backfill: {error}");
+        }
+        let files = self.jsonl_files_by_modified()?;
+        let mut spans_by_id = HashMap::new();
+        let mut traces: HashMap<String, TraceListAggregate> = HashMap::new();
+
+        for file in files {
+            match read_list_spans_file(&file.path) {
+                Ok(spans) => {
+                    for span in spans {
+                        record_list_span(span, scope, &mut spans_by_id, &mut traces);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %file.path.display(),
+                        "skipping unreadable local trace file during summary backfill: {error}"
+                    );
+                }
+            }
+        }
+
+        let mut summaries = traces
+            .into_values()
+            .filter(|aggregate| aggregate.in_scope)
+            .map(TraceListAggregate::into_summary)
+            .collect::<Vec<_>>();
+        sort_summaries(&mut summaries);
+        Ok(summaries)
+    }
+
+    pub(crate) fn workspace_trace_summaries_sync(
+        &self,
+        trace_id: &str,
+    ) -> Result<Vec<TraceSummaryRecord>, TraceStoreError> {
+        let detail = self.get_trace_sync(trace_id, &TraceScope::Host)?;
+        let workspaces = detail
+            .spans
+            .iter()
+            .filter_map(|span| workspace_attribute(&span.attributes_json))
+            .collect::<BTreeSet<_>>();
+        workspaces
+            .into_iter()
+            .map(|workspace| {
+                self.get_trace_sync(trace_id, &TraceScope::workspaces([workspace.as_str()]))
+                    .map(|detail| detail.summary)
+            })
+            .collect()
+    }
+
+    pub(crate) fn get_trace_sync(
         &self,
         trace_id: &str,
         scope: &TraceScope,
