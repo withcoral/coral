@@ -155,6 +155,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # Reclaim the runner's preinstalled OS bloat (Android SDKs, .NET, GHC, Boost,
+      # CodeQL) before the Rust build. The per-step "Free Rust *artifacts" cleanups
+      # below only reclaim cargo target output; the xtask final-link was exhausting
+      # the runner's root disk (`ld: final link failed: No space left on device`),
+      # which this fixes at the source. Dependency-free (no third-party action).
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          df -h /
+
       - name: Install Rust toolchain
         run: rustup show
 
