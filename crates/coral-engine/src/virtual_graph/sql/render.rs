@@ -50,7 +50,10 @@ pub(super) fn scalar_expression_unary_operand(
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
-        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
+        | ScalarExpression::Temporal(
+            TemporalExpr::DateFromString { text: expression }
+            | TemporalExpr::LocalDateTimeFromString { text: expression },
+        )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }

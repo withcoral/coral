@@ -338,6 +338,31 @@ impl<'a> SqlRenderer<'a> {
                     self.reject_unprecomputed_projection_scalar_subqueries(length)?;
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => {
+                for expression in [
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                ] {
+                    self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+                }
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,

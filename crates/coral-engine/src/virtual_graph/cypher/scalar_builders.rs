@@ -122,6 +122,34 @@ pub(super) fn make_date_scalar_expression(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporal constructor components mirror openCypher localdatetime fields."
+)]
+pub(super) fn make_localdatetime_scalar_expression(
+    year: ScalarExpression,
+    month: ScalarExpression,
+    day: ScalarExpression,
+    hour: ScalarExpression,
+    minute: ScalarExpression,
+    second: ScalarExpression,
+    millisecond: ScalarExpression,
+    microsecond: ScalarExpression,
+    nanosecond: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+        year: Box::new(year),
+        month: Box::new(month),
+        day: Box::new(day),
+        hour: Box::new(hour),
+        minute: Box::new(minute),
+        second: Box::new(second),
+        millisecond: Box::new(millisecond),
+        microsecond: Box::new(microsecond),
+        nanosecond: Box::new(nanosecond),
+    })
+}
+
 pub(super) fn static_list_case_result_scalar_expression(
     result: StaticListCaseResult,
     element_type: LiteralListElementType,

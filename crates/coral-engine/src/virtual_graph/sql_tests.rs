@@ -66,6 +66,34 @@ fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test helper mirrors openCypher localdatetime fields."
+)]
+fn localdatetime_expression(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
 #[test]
 fn lower_graph_plan_renders_forward_relationship_sql() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -2205,6 +2233,66 @@ fn lower_graph_plan_renders_temporal_date_expressions() {
 }
 
 #[test]
+fn lower_graph_plan_renders_temporal_localdatetime_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: localdatetime_expression(2020, 1, 15, 12, 34, 56, 0, 0, 0),
+            alias: "d".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(localdatetime_expression(2020, 1, 15, 12, 34, 56, 0, 0, 0)),
+            },
+            alias: "text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: localdatetime_expression(2020, 1, 15, 12, 0, 0, 0, 0, 0),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localdatetime_expression(
+            2020, 1, 16, 0, 0, 0, 0, 0, 0,
+        )),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(localdatetime_expression(
+            2020, 1, 15, 12, 34, 56, 0, 0, 0,
+        )),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localdatetime scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS \"d\", \
+             CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "WHERE CAST('2020-01-15T12:00:00' AS TIMESTAMP) < CAST('2020-01-16T00:00:00' AS TIMESTAMP)"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST('2020-01-15T12:34:56' AS TIMESTAMP) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_null_if_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);
@@ -4186,6 +4274,12 @@ fn date_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 #[test]
 fn renders_date_from_string_projection() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -4263,6 +4357,95 @@ fn renders_date_from_string_order() {
         translation
             .sql()
             .contains("ORDER BY CAST('2015-07-21' AS DATE) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localdatetime_from_string_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        expression_projection(
+            "d",
+            localdatetime_from_string_expression("2020-01-15T12:34:56"),
+        ),
+        expression_projection(
+            "text",
+            ScalarExpression::ToString {
+                expression: Box::new(localdatetime_from_string_expression("2020-01-15T12:34:56")),
+            },
+        ),
+    ];
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localdatetime string projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS \"d\", \
+             CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localdatetime_from_string_comparison() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: localdatetime_from_string_expression("2020-01-15T12:00:00"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localdatetime_from_string_expression(
+            "2020-01-16T00:00:00",
+        )),
+    }));
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localdatetime string comparison should lower");
+
+    assert!(
+        translation.sql().contains(
+            "WHERE CAST('2020-01-15T12:00:00' AS TIMESTAMP) < CAST('2020-01-16T00:00:00' AS TIMESTAMP)"
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localdatetime_from_string_order() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(localdatetime_from_string_expression(
+            "2020-01-15T12:34:56",
+        )),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localdatetime string ordering should lower");
+
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST('2020-01-15T12:34:56' AS TIMESTAMP) ASC"),
         "{}",
         translation.sql()
     );

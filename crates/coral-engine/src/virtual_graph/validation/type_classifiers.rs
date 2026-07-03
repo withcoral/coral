@@ -119,6 +119,9 @@ pub(super) fn scalar_type_for_data_type(data_type: &str) -> ScalarType {
     if data_type.starts_with("Date") {
         return ScalarType::Temporal(TemporalKind::Date);
     }
+    if data_type.starts_with("Timestamp") {
+        return ScalarType::Temporal(TemporalKind::LocalDateTime);
+    }
     if data_type.starts_with("Dictionary") {
         return scalar_type_for_dictionary_data_type(data_type);
     }
@@ -139,6 +142,8 @@ fn scalar_type_for_dictionary_data_type(data_type: &str) -> ScalarType {
         ScalarType::Boolean
     } else if data_type.contains("Date") {
         ScalarType::Temporal(TemporalKind::Date)
+    } else if data_type.contains("Timestamp") {
+        ScalarType::Temporal(TemporalKind::LocalDateTime)
     } else {
         ScalarType::Other
     }

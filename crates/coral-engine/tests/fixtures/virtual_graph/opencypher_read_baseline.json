@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 18,
+    "Temporal": 25,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10568,6 +10568,94 @@
       }
     },
     {
+      "id": "temporal-localdatetime-string-constructor",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56') AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-15T12:34:56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-string-zoned-z-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56Z') AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "localdatetime() does not accept a timezone; use a naive date-time string"
+      }
+    },
+    {
+      "id": "temporal-localdatetime-string-zoned-offset-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56+01:00') AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "localdatetime() does not accept a timezone; use a naive date-time string"
+      }
+    },
+    {
+      "id": "temporal-localdatetime-map-constructor",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime({year: 2020, month: 1, day: 15, hour: 12, minute: 34, second: 56}) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-15T12:34:56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-map-default-time",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime({year: 2020, month: 1, day: 15}) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-15T00:00:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-compare-lt",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:00:00') < localdatetime('2020-01-16T00:00:00') AS lt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "lt": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-to-string",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(localdatetime('2020-01-15T12:34:56')) AS text",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "text": "2020-01-15T12:34:56"
+          }
+        ]
+      }
+    },
+    {
       "id": "temporal-date-component-access-rejected",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01').year AS year",
@@ -10711,6 +10799,15 @@
       }
     },
     {
+      "id": "with-limit-zero-before-match-rejected",
+      "feature": "With",
+      "query": "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 0 MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name AS friend",
+      "expected": {
+        "kind": "error",
+        "contains": "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
+      }
+    },
+    {
       "id": "with-aggregate-stage-before-match",
       "feature": "With",
       "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WITH a, count(b) AS deg MATCH (a)-[:KNOWS]->(c:Person) RETURN a.name AS name, deg",
@@ -10731,15 +10828,6 @@
             "deg": 1
           }
         ]
-      }
-    },
-    {
-      "id": "with-limit-zero-before-match-rejected",
-      "feature": "With",
-      "query": "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 0 MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name AS friend",
-      "expected": {
-        "kind": "error",
-        "contains": "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
       }
     }
   ]

@@ -113,11 +113,8 @@ impl<'a> SqlRenderer<'a> {
                 length.as_deref(),
                 ScalarScope::TopLevel,
             ),
-            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
-                self.render_make_date_expression(year, month, day, ScalarScope::TopLevel)
-            }
-            ScalarExpression::Temporal(TemporalExpr::DateFromString { text }) => {
-                self.render_date_from_string_expression(text, ScalarScope::TopLevel)
+            ScalarExpression::Temporal(temporal) => {
+                self.render_temporal_expression(temporal, ScalarScope::TopLevel)
             }
             ScalarExpression::Round { expression, places } => {
                 self.render_round_expression(expression, places.as_deref(), ScalarScope::TopLevel)
@@ -431,6 +428,46 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
+    pub(super) fn render_temporal_expression<'b, 'c>(
+        &self,
+        temporal: &TemporalExpr,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match temporal {
+            TemporalExpr::MakeDate { year, month, day } => {
+                self.render_make_date_expression(year, month, day, scope)
+            }
+            TemporalExpr::DateFromString { text } => {
+                self.render_date_from_string_expression(text, scope)
+            }
+            TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            } => self.render_make_localdatetime_expression(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                scope,
+            ),
+            TemporalExpr::LocalDateTimeFromString { text } => {
+                self.render_localdatetime_from_string_expression(text, scope)
+            }
+        }
+    }
+
     pub(super) fn render_make_date_expression<'b, 'c>(
         &self,
         year: &ScalarExpression,
@@ -454,6 +491,81 @@ impl<'a> SqlRenderer<'a> {
         Ok(format!(
             "CAST({} AS DATE)",
             self.render_scalar_in_scope(text, scope)?
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Temporal constructor components mirror openCypher localdatetime fields."
+    )]
+    pub(super) fn render_make_localdatetime_expression<'b, 'c>(
+        &self,
+        year: &ScalarExpression,
+        month: &ScalarExpression,
+        day: &ScalarExpression,
+        hour: &ScalarExpression,
+        minute: &ScalarExpression,
+        second: &ScalarExpression,
+        millisecond: &ScalarExpression,
+        microsecond: &ScalarExpression,
+        nanosecond: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        if let Some(timestamp) = literal_localdatetime(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ) {
+            return Ok(format!(
+                "CAST({} AS TIMESTAMP)",
+                quote_string_literal(&timestamp)
+            ));
+        }
+
+        let total_nanoseconds = format!(
+            "(({} * 1000000) + ({} * 1000) + {})",
+            self.render_scalar_in_scope(millisecond, scope)?,
+            self.render_scalar_in_scope(microsecond, scope)?,
+            self.render_scalar_in_scope(nanosecond, scope)?
+        );
+        let timestamp = format!(
+            "concat({}, '-', {}, '-', {}, 'T', {}, ':', {}, ':', {}, '.', lpad(CAST({total_nanoseconds} AS VARCHAR), 9, '0'))",
+            self.render_zero_padded_component(year, 4, scope)?,
+            self.render_zero_padded_component(month, 2, scope)?,
+            self.render_zero_padded_component(day, 2, scope)?,
+            self.render_zero_padded_component(hour, 2, scope)?,
+            self.render_zero_padded_component(minute, 2, scope)?,
+            self.render_zero_padded_component(second, 2, scope)?,
+        );
+        Ok(format!("CAST({timestamp} AS TIMESTAMP)"))
+    }
+
+    pub(super) fn render_localdatetime_from_string_expression<'b, 'c>(
+        &self,
+        text: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS TIMESTAMP)",
+            self.render_scalar_in_scope(text, scope)?
+        ))
+    }
+
+    fn render_zero_padded_component<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        width: usize,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "lpad(CAST({} AS VARCHAR), {width}, '0')",
+            self.render_scalar_in_scope(expression, scope)?
         ))
     }
 
@@ -572,5 +684,50 @@ impl<'a> SqlRenderer<'a> {
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE {expression} END"
         ))
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporal constructor components mirror openCypher localdatetime fields."
+)]
+fn literal_localdatetime(
+    year: &ScalarExpression,
+    month: &ScalarExpression,
+    day: &ScalarExpression,
+    hour: &ScalarExpression,
+    minute: &ScalarExpression,
+    second: &ScalarExpression,
+    millisecond: &ScalarExpression,
+    microsecond: &ScalarExpression,
+    nanosecond: &ScalarExpression,
+) -> Option<String> {
+    let total_nanoseconds = literal_integer(millisecond)? * 1_000_000
+        + literal_integer(microsecond)? * 1_000
+        + literal_integer(nanosecond)?;
+    let mut timestamp = format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        literal_integer(year)?,
+        literal_integer(month)?,
+        literal_integer(day)?,
+        literal_integer(hour)?,
+        literal_integer(minute)?,
+        literal_integer(second)?,
+    );
+    if total_nanoseconds != 0 {
+        let mut fractional = format!("{total_nanoseconds:09}");
+        while fractional.ends_with('0') {
+            fractional.pop();
+        }
+        timestamp.push('.');
+        timestamp.push_str(&fractional);
+    }
+    Some(timestamp)
+}
+
+fn literal_integer(expression: &ScalarExpression) -> Option<i64> {
+    match expression {
+        ScalarExpression::Literal(Literal::Integer(value)) => Some(*value),
+        _ => None,
     }
 }

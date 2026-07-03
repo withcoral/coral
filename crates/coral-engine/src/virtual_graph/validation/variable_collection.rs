@@ -252,6 +252,10 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive variable collector stays total over every scalar variant."
+    )]
     fn collect_scalar_expression_variables<'b>(
         expression: &'b ScalarExpression,
         variables: &mut BTreeSet<&'b str>,
@@ -337,6 +341,31 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(length, variables);
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => {
+                for expression in [
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                ] {
+                    Self::collect_scalar_expression_variables(expression, variables);
+                }
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -401,6 +430,9 @@ impl<'a> GraphPlanValidator<'a> {
                 search,
                 replacement,
             } => Some((expression, search, replacement)),
+            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => {
+                Some((year, month, day))
+            }
             _ => None,
         }
     }
@@ -461,6 +493,10 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Degrees { expression }
             | ScalarExpression::Radians { expression }
             | ScalarExpression::IsNaN { expression }
+            | ScalarExpression::Temporal(
+                TemporalExpr::DateFromString { text: expression }
+                | TemporalExpr::LocalDateTimeFromString { text: expression },
+            )
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,
         }

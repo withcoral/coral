@@ -105,6 +105,40 @@ fn date_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test helper mirrors openCypher localdatetime fields."
+)]
+fn localdatetime_expression(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
+fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 fn route_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -2119,6 +2153,112 @@ fn rejects_unsupported_date_constructor_forms() {
         ),
     ] {
         let error = compile_cypher(cypher).expect_err("unsupported date form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn compiles_localdatetime_map_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN localdatetime({year: 2020, month: 1, day: 15, hour: 12, minute: 34, second: 56}) AS full, \
+                localdatetime({year: 2020, month: 1, day: 15}) AS default_time, \
+                toString(localdatetime({year: 2020, month: 1, day: 15, hour: 12, minute: 34, second: 56})) AS text",
+    )
+    .expect("literal localdatetime map constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: localdatetime_expression(2020, 1, 15, 12, 34, 56, 0, 0, 0),
+                alias: "full".to_string(),
+            },
+            Projection::Expression {
+                expression: localdatetime_expression(2020, 1, 15, 0, 0, 0, 0, 0, 0),
+                alias: "default_time".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(localdatetime_expression(
+                        2020, 1, 15, 12, 34, 56, 0, 0, 0,
+                    )),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_localdatetime_string_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN localdatetime('2020-01-15T12:34:56') AS d, \
+                toString(localdatetime('2020-01-15T12:34:56')) AS text",
+    )
+    .expect("literal localdatetime string constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                alias: "d".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(localdatetime_from_string_expression(
+                        "2020-01-15T12:34:56",
+                    )),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_localdatetime_constructor_forms() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN localdatetime(person.name) AS d",
+            "dynamic localdatetime() string argument not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime('2020-01-15T12:34:56Z') AS d",
+            "localdatetime() does not accept a timezone; use a naive date-time string",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime('2020-01-15T12:34:56+01:00') AS d",
+            "localdatetime() does not accept a timezone; use a naive date-time string",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime(2020) AS d",
+            "localdatetime() requires a literal map or string argument",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime({year: person.age}) AS d",
+            "dynamic temporal fields not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime({month: 1, day: 15}) AS d",
+            "localdatetime() map constructor requires a literal integer year",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime({year: 2020, timezone: 'UTC'}) AS d",
+            "localdatetime() temporal field 'timezone' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime({year: 2020, date: date({year: 2020})}) AS d",
+            "localdatetime() temporal field 'date' is not supported yet",
+        ),
+    ] {
+        let error =
+            compile_cypher(cypher).expect_err("unsupported localdatetime form should be rejected");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?}, got {error}"

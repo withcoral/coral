@@ -635,6 +635,32 @@ pub enum TemporalExpr {
         /// ISO date string expression.
         text: Box<ScalarExpression>,
     },
+    /// Construct a native local date-time value from date and time components.
+    MakeLocalDateTime {
+        /// Year component.
+        year: Box<ScalarExpression>,
+        /// Month component.
+        month: Box<ScalarExpression>,
+        /// Day component.
+        day: Box<ScalarExpression>,
+        /// Hour component.
+        hour: Box<ScalarExpression>,
+        /// Minute component.
+        minute: Box<ScalarExpression>,
+        /// Second component.
+        second: Box<ScalarExpression>,
+        /// Millisecond component.
+        millisecond: Box<ScalarExpression>,
+        /// Microsecond component.
+        microsecond: Box<ScalarExpression>,
+        /// Nanosecond component.
+        nanosecond: Box<ScalarExpression>,
+    },
+    /// Construct a native local date-time value from an ISO local date-time string.
+    LocalDateTimeFromString {
+        /// ISO local date-time string expression.
+        text: Box<ScalarExpression>,
+    },
 }
 
 /// Supported temporal scalar kinds.
@@ -642,6 +668,8 @@ pub enum TemporalExpr {
 pub(super) enum TemporalKind {
     /// Native DATE value.
     Date,
+    /// Native local date-time value.
+    LocalDateTime,
 }
 
 /// Read-only scoped graph pattern counted by `COUNT { ... }`.
@@ -1429,9 +1457,32 @@ fn temporal_expression_references_outside_scope(
                 || scalar_expression_references_outside_scope(month, scope)
                 || scalar_expression_references_outside_scope(day, scope)
         }
-        TemporalExpr::DateFromString { text } => {
+        TemporalExpr::DateFromString { text } | TemporalExpr::LocalDateTimeFromString { text } => {
             scalar_expression_references_outside_scope(text, scope)
         }
+        TemporalExpr::MakeLocalDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        } => [
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ]
+        .iter()
+        .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
     }
 }
 

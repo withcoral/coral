@@ -257,6 +257,10 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scoped scalar dispatcher keeps inner/outer binding checks total over every scalar variant"
+    )]
     fn scoped_structural_scalar_expression_is_inner<'b>(
         expression: &ScalarExpression,
         relationship_bindings: &[ExistsRelationshipSqlBinding<'a, 'b>],
@@ -333,6 +337,35 @@ impl<'a> SqlRenderer<'a> {
                     )
                 })
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => [
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            ]
+            .iter()
+            .all(|expression| {
+                Self::scoped_scalar_expression_is_inner(
+                    expression,
+                    relationship_bindings,
+                    local_nodes,
+                )
+            }),
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -2085,26 +2118,16 @@ impl<'a> SqlRenderer<'a> {
                     local_aliases,
                 },
             ),
-            ScalarExpression::Temporal(TemporalExpr::MakeDate { year, month, day }) => self
-                .render_make_date_expression(
-                    year,
-                    month,
-                    day,
+            ScalarExpression::Temporal(temporal) => {
+                self.render_temporal_expression(
+                    temporal,
                     ScalarScope::Scoped {
                         relationships,
                         local_nodes,
                         local_aliases,
                     },
-                ),
-            ScalarExpression::Temporal(TemporalExpr::DateFromString { text }) => self
-                .render_date_from_string_expression(
-                    text,
-                    ScalarScope::Scoped {
-                        relationships,
-                        local_nodes,
-                        local_aliases,
-                    },
-                ),
+                )
+            }
             ScalarExpression::Round { expression, places } => self.render_round_expression(
                 expression.as_ref(),
                 places.as_deref(),

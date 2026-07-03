@@ -233,6 +233,10 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This exhaustive scalar subquery collector stays total over every scalar variant."
+    )]
     fn collect_structural_scalar_expression_subquery_candidates(
         &self,
         expression: &ScalarExpression,
@@ -317,6 +321,33 @@ impl<'a> SqlRenderer<'a> {
                 if let Some(length) = length {
                     self.collect_scalar_expression_subquery_candidates(
                         length, required, candidates,
+                    );
+                }
+            }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => {
+                for expression in [
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                ] {
+                    self.collect_scalar_expression_subquery_candidates(
+                        expression, required, candidates,
                     );
                 }
             }

@@ -3371,6 +3371,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_coalesce_function(function)
         || is_null_if_function(function)
         || is_date_function(function)
+        || is_localdatetime_function(function)
         || is_to_string_function(function)
         || is_to_integer_function(function)
         || is_to_float_function(function)
@@ -7853,7 +7854,10 @@ fn unary_scalar_expression_operand_mut(
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
-        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
+        | ScalarExpression::Temporal(
+            TemporalExpr::DateFromString { text: expression }
+            | TemporalExpr::LocalDateTimeFromString { text: expression },
+        )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -7969,7 +7973,10 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Degrees { expression }
         | ScalarExpression::Radians { expression }
         | ScalarExpression::IsNaN { expression }
-        | ScalarExpression::Temporal(TemporalExpr::DateFromString { text: expression })
+        | ScalarExpression::Temporal(
+            TemporalExpr::DateFromString { text: expression }
+            | TemporalExpr::LocalDateTimeFromString { text: expression },
+        )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
     }
@@ -11037,6 +11044,10 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This exhaustive structural scalar dispatcher stays total over every scalar variant."
+)]
 fn hidden_subquery_order_structural_expression_can_be_precomputed(
     expression: &ScalarExpression,
 ) -> bool {
@@ -11124,6 +11135,29 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
                 && hidden_subquery_order_expression_can_be_precomputed(month)
                 && hidden_subquery_order_expression_can_be_precomputed(day)
         }
+        ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        }) => [
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ]
+        .iter()
+        .all(|expression| hidden_subquery_order_expression_can_be_precomputed(expression)),
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -11204,6 +11238,10 @@ fn scalar_expression_correlated_subquery_count(expression: &ScalarExpression) ->
     scalar_expression_leaf_correlated_subquery_count(expression)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This exhaustive correlated-subquery dispatcher stays total over every scalar variant."
+)]
 fn compound_scalar_expression_correlated_subquery_count(
     expression: &ScalarExpression,
 ) -> Option<usize> {
@@ -11297,6 +11335,32 @@ fn compound_scalar_expression_correlated_subquery_count(
             scalar_expression_correlated_subquery_count(year)
                 + scalar_expression_correlated_subquery_count(month)
                 + scalar_expression_correlated_subquery_count(day),
+        ),
+        ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        }) => Some(
+            [
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            ]
+            .iter()
+            .map(|expression| scalar_expression_correlated_subquery_count(expression))
+            .sum(),
         ),
         _ => None,
     }
@@ -19028,6 +19092,8 @@ fn compile_temporal_scalar_function_expression(
 ) -> Result<Option<ScalarExpression>, CoreError> {
     if is_date_function(function) {
         compile_date_scalar_expression(function, path).map(Some)
+    } else if is_localdatetime_function(function) {
+        compile_localdatetime_scalar_expression(function, path).map(Some)
     } else {
         Ok(None)
     }
@@ -19136,6 +19202,164 @@ fn default_date_component() -> ScalarExpression {
 
 fn make_date_from_string_scalar_expression(text: String) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::DateFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text))),
+    })
+}
+
+fn compile_localdatetime_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "localdatetime() requires exactly one argument",
+        ));
+    };
+    compile_localdatetime_argument_scalar_expression(argument, format!("{path}.arguments[0]"))
+}
+
+fn compile_localdatetime_argument_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match argument {
+        Expression::Parenthesized(inner) => {
+            compile_localdatetime_argument_scalar_expression(inner, path)
+        }
+        Expression::Literal(CypherLiteral::Map(map)) => {
+            compile_localdatetime_map_scalar_expression(map, path)
+        }
+        Expression::Literal(CypherLiteral::String(value)) => {
+            if localdatetime_literal_has_timezone(&value.value) {
+                return Err(unsupported(
+                    path,
+                    "localdatetime() does not accept a timezone; use a naive date-time string",
+                ));
+            }
+            Ok(make_localdatetime_from_string_scalar_expression(
+                value.value.clone(),
+            ))
+        }
+        Expression::Literal(_) => Err(unsupported(
+            path,
+            "localdatetime() requires a literal map or string argument",
+        )),
+        _ => Err(unsupported(
+            path,
+            "dynamic localdatetime() string argument not supported yet",
+        )),
+    }
+}
+
+fn compile_localdatetime_map_scalar_expression(
+    map: &MapLiteral,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut year = None;
+    let mut month = None;
+    let mut day = None;
+    let mut hour = None;
+    let mut minute = None;
+    let mut second = None;
+    let mut millisecond = None;
+    let mut microsecond = None;
+    let mut nanosecond = None;
+    for (key, value) in &map.entries {
+        let field = key.name.name.as_str();
+        let field_path = format!("{path}.{field}");
+        match field {
+            "year" => {
+                year = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "month" => {
+                month = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "day" => {
+                day = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "hour" => {
+                hour = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "minute" => {
+                minute = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "second" => {
+                second = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "millisecond" => {
+                millisecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "microsecond" => {
+                microsecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "nanosecond" => {
+                nanosecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            _ => {
+                return Err(unsupported(
+                    field_path,
+                    format!("localdatetime() temporal field '{field}' is not supported yet"),
+                ));
+            }
+        }
+    }
+    let Some(year) = year else {
+        return Err(unsupported(
+            format!("{path}.year"),
+            "localdatetime() map constructor requires a literal integer year",
+        ));
+    };
+    Ok(make_localdatetime_scalar_expression(
+        year,
+        month.unwrap_or_else(default_date_component),
+        day.unwrap_or_else(default_date_component),
+        hour.unwrap_or_else(default_time_component),
+        minute.unwrap_or_else(default_time_component),
+        second.unwrap_or_else(default_time_component),
+        millisecond.unwrap_or_else(default_time_component),
+        microsecond.unwrap_or_else(default_time_component),
+        nanosecond.unwrap_or_else(default_time_component),
+    ))
+}
+
+fn default_time_component() -> ScalarExpression {
+    ScalarExpression::Literal(Literal::Integer(0))
+}
+
+fn localdatetime_literal_has_timezone(text: &str) -> bool {
+    if !looks_like_datetime_text(text) {
+        return false;
+    }
+    text.ends_with('Z') || text.ends_with('z') || has_offset_suffix(text)
+}
+
+fn looks_like_datetime_text(text: &str) -> bool {
+    let Some((_, time)) = text.split_once(['T', 't', ' ']) else {
+        return false;
+    };
+    time.contains(':')
+}
+
+fn has_offset_suffix(text: &str) -> bool {
+    let Some(suffix_start) = text.len().checked_sub(6) else {
+        return false;
+    };
+    matches!(
+        text.as_bytes().get(suffix_start..),
+        Some([b'+' | b'-', hour_tens, hour_ones, b':', minute_tens, minute_ones])
+            if hour_tens.is_ascii_digit()
+                && hour_ones.is_ascii_digit()
+                && minute_tens.is_ascii_digit()
+                && minute_ones.is_ascii_digit()
+    )
+}
+
+fn make_localdatetime_from_string_scalar_expression(text: String) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalDateTimeFromString {
         text: Box::new(ScalarExpression::Literal(Literal::String(text))),
     })
 }
@@ -19606,7 +19830,7 @@ fn compile_scalar_expression_in_predicate_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), date(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), date(), localdatetime(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
 }

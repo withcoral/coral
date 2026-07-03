@@ -415,12 +415,42 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
     }
 
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::DateFromString { text }) => {
-            reject_ignored_path_variable_references_in_scalar_expression(
-                text,
-                state,
-                format!("{path}.text"),
-            )
+        ScalarExpression::Temporal(
+            TemporalExpr::DateFromString { text } | TemporalExpr::LocalDateTimeFromString { text },
+        ) => reject_ignored_path_variable_references_in_scalar_expression(
+            text,
+            state,
+            format!("{path}.text"),
+        ),
+        ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        }) => {
+            for (name, expression) in [
+                ("year", year),
+                ("month", month),
+                ("day", day),
+                ("hour", hour),
+                ("minute", minute),
+                ("second", second),
+                ("millisecond", millisecond),
+                ("microsecond", microsecond),
+                ("nanosecond", nanosecond),
+            ] {
+                reject_ignored_path_variable_references_in_scalar_expression(
+                    expression,
+                    state,
+                    format!("{path}.{name}"),
+                )?;
+            }
+            Ok(())
         }
         ScalarExpression::Coalesce { expressions } => {
             reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
