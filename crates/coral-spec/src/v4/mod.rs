@@ -52,6 +52,6 @@ pub use projections::{
 pub use schema::generated_v4_source_manifest_schema;
 pub use surfaces::{
     McpToolCatalog, McpToolDescriptor, OpenApiDocumentMetadata, import_mcp_surface,
-    import_openapi_surface, normalize_mcp_tool_catalog, normalize_source_document,
-    openapi_document_metadata,
+    import_openapi_surface, import_openapi_surface_with_base_uri, normalize_mcp_tool_catalog,
+    normalize_source_document, openapi_document_metadata,
 };

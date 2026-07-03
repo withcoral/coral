@@ -23,6 +23,16 @@ pub fn import_openapi_surface(
     surface: &V4Surface,
     document_bytes: &[u8],
 ) -> Result<SemanticIr> {
+    let base_uri = openapi_document_base_uri(surface)?;
+    import_openapi_surface_with_base_uri(manifest, surface, document_bytes, &base_uri)
+}
+
+pub fn import_openapi_surface_with_base_uri(
+    manifest: &V4SourceManifest,
+    surface: &V4Surface,
+    document_bytes: &[u8],
+    descriptor_base_uri: &str,
+) -> Result<SemanticIr> {
     let mut document: Value =
         serde_yaml::from_slice(document_bytes).map_err(ManifestError::parse_yaml)?;
     let openapi = document
@@ -37,7 +47,7 @@ pub fn import_openapi_surface(
     }
 
     annotate_ref_sites(&mut document);
-    let document = dereference_openapi_document(surface, &document)?;
+    let document = dereference_openapi_document(surface, descriptor_base_uri, &document)?;
     let mut importer = OpenApiImporter::new(manifest, surface, &document);
     importer.import()
 }
@@ -65,11 +75,14 @@ fn annotate_ref_sites(value: &mut Value) {
     }
 }
 
-fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result<Value> {
-    let base_uri = openapi_document_base_uri(surface)?;
-    let parsed_descriptor_url = Url::parse(&base_uri).map_err(|error| {
+fn dereference_openapi_document(
+    surface: &V4Surface,
+    descriptor_base_uri: &str,
+    document: &Value,
+) -> Result<Value> {
+    let parsed_descriptor_url = Url::parse(descriptor_base_uri).map_err(|error| {
         ManifestError::validation(format!(
-            "OpenAPI descriptor base URI '{base_uri}' for surface '{}' is invalid: {error}",
+            "OpenAPI descriptor base URI '{descriptor_base_uri}' for surface '{}' is invalid: {error}",
             surface.id
         ))
     })?;
@@ -112,7 +125,7 @@ fn dereference_openapi_document(surface: &V4Surface, document: &Value) -> Result
     })?;
 
     jsonschema::options()
-        .with_base_uri(base_uri)
+        .with_base_uri(descriptor_base_uri)
         .with_registry(&registry)
         .dereference(&reachable_document)
         .map_err(|error| {

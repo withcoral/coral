@@ -11,8 +11,8 @@ use coral_spec::v4::{
     ProjectionCatalog, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceType,
     V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceManifest,
     generate_projection_catalog, import_mcp_surface, import_openapi_surface,
-    normalize_mcp_tool_catalog, normalize_source_document, openapi_document_metadata,
-    validate_materialized_source, validate_openapi_base_url_template,
+    import_openapi_surface_with_base_uri, normalize_mcp_tool_catalog, normalize_source_document,
+    openapi_document_metadata, validate_materialized_source, validate_openapi_base_url_template,
 };
 use coral_spec::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestInputKind, ManifestInputSpec,
@@ -666,6 +666,12 @@ struct MaterializedSurfaceBuild {
     semantic_ir: SemanticIr,
 }
 
+#[derive(Debug)]
+struct DescriptorRead {
+    bytes: Vec<u8>,
+    effective_base_uri: Option<String>,
+}
+
 fn materialize_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
@@ -681,23 +687,40 @@ fn materialize_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
 ) -> Result<MaterializedSurfaceBuild, AppError> {
-    let bytes = read_descriptor(surface)?;
-    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
-    let observed_sha256 = sha256_hex(&bytes);
-    let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
-        AppError::FailedPrecondition(format!(
-            "failed to import source '{}' surface '{}': {error}",
-            manifest.common.name, surface.id
-        ))
-    })?;
-    let normalized_document = normalize_source_document(&bytes)
+    let descriptor = read_descriptor(surface)?;
+    validate_materialized_surface_base_url(manifest, surface, &descriptor.bytes)?;
+    let observed_sha256 = sha256_hex(&descriptor.bytes);
+    let semantic_ir = import_openapi_surface_with_descriptor(manifest, surface, &descriptor)
+        .map_err(|error| {
+            AppError::FailedPrecondition(format!(
+                "failed to import source '{}' surface '{}': {error}",
+                manifest.common.name, surface.id
+            ))
+        })?;
+    let normalized_document = normalize_source_document(&descriptor.bytes)
         .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
     Ok(MaterializedSurfaceBuild {
-        raw_document: bytes,
+        raw_document: descriptor.bytes,
         normalized_document: normalized_document.into_bytes(),
         observed_sha256,
         semantic_ir,
     })
+}
+
+fn import_openapi_surface_with_descriptor(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    descriptor: &DescriptorRead,
+) -> coral_spec::Result<SemanticIr> {
+    if let Some(base_uri) = descriptor.effective_base_uri.as_deref() {
+        return import_openapi_surface_with_base_uri(
+            manifest,
+            surface,
+            &descriptor.bytes,
+            base_uri,
+        );
+    }
+    import_openapi_surface(manifest, surface, &descriptor.bytes)
 }
 
 fn materialize_mcp_surface(
@@ -818,7 +841,7 @@ fn validate_materialized_surface_base_url(
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))
 }
 
-fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
+fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<DescriptorRead, AppError> {
     match &surface.descriptor {
         coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
         coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
@@ -831,7 +854,7 @@ fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppEr
     }
 }
 
-fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
+fn read_file_descriptor(file: &Path) -> Result<DescriptorRead, AppError> {
     let canonical = canonicalize_file_descriptor(file)?;
     let metadata = std::fs::metadata(&canonical)?;
     if metadata.len() > MAX_DESCRIPTOR_BYTES {
@@ -841,7 +864,11 @@ fn read_file_descriptor(file: &Path) -> Result<Vec<u8>, AppError> {
             metadata.len()
         )));
     }
-    std::fs::read(canonical).map_err(AppError::from)
+    let bytes = std::fs::read(canonical).map_err(AppError::from)?;
+    Ok(DescriptorRead {
+        bytes,
+        effective_base_uri: None,
+    })
 }
 
 pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppError> {
@@ -868,7 +895,7 @@ pub(crate) fn canonicalize_file_descriptor(file: &Path) -> Result<PathBuf, AppEr
     Ok(canonical)
 }
 
-fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
+fn read_url_descriptor(url: &str) -> Result<DescriptorRead, AppError> {
     let url = url.to_string();
     let panic_url = url.clone();
     std::thread::spawn(move || read_url_descriptor_on_blocking_thread(&url))
@@ -880,7 +907,7 @@ fn read_url_descriptor(url: &str) -> Result<Vec<u8>, AppError> {
         })?
 }
 
-fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError> {
+fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<DescriptorRead, AppError> {
     ensure_https_descriptor_url(url)?;
     let client = reqwest::blocking::Client::builder()
         .timeout(DESCRIPTOR_FETCH_TIMEOUT)
@@ -910,6 +937,7 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
             response.status()
         )));
     }
+    let effective_base_uri = response.url().to_string();
     if let Some(length) = response.content_length()
         && length > MAX_DESCRIPTOR_BYTES
     {
@@ -929,7 +957,10 @@ fn read_url_descriptor_on_blocking_thread(url: &str) -> Result<Vec<u8>, AppError
             "OpenAPI descriptor '{url}' is too large: exceeds {MAX_DESCRIPTOR_BYTES} bytes"
         )));
     }
-    Ok(bytes)
+    Ok(DescriptorRead {
+        bytes,
+        effective_base_uri: Some(effective_base_uri),
+    })
 }
 
 fn ensure_https_descriptor_url(url: &str) -> Result<(), AppError> {

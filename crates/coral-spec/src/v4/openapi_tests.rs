@@ -1092,6 +1092,58 @@ components:
     );
 }
 
+#[test]
+fn importer_bases_relative_refs_on_supplied_descriptor_uri() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let authored_file = temp.path().join("authored/openapi.yaml");
+    let final_file = temp.path().join("final/openapi.yaml");
+    std::fs::create_dir_all(temp.path().join("final/paths")).expect("paths dir");
+    std::fs::write(
+        temp.path().join("final/paths/items.yaml"),
+        r"
+get:
+  operationId: items/list
+  responses:
+    '204': {}
+",
+    )
+    .expect("final path item");
+    let final_base_uri = url::Url::from_file_path(&final_file)
+        .expect("final descriptor uri")
+        .to_string();
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: redirected_descriptor_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        authored_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface_with_base_uri(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    $ref: paths/items.yaml
+"
+        .as_bytes(),
+        &final_base_uri,
+    )
+    .expect("relative refs should use supplied descriptor URI");
+
+    assert_eq!(ir.operations.len(), 1);
+    assert_eq!(ir.operations.first().expect("operation").id, "items_list");
+}
+
 fn write_external_ref_fixture(root: &Path) {
     std::fs::create_dir_all(root.join("paths")).expect("paths dir");
     std::fs::create_dir_all(root.join("parameters")).expect("parameters dir");
