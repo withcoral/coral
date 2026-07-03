@@ -1246,8 +1246,8 @@ dependencies = [
  "prost",
  "regex",
  "reqwest 0.13.4",
- "rusqlite",
  "ring",
+ "rusqlite",
  "sea-query",
  "sea-query-sqlx",
  "serde",
@@ -1273,6 +1273,7 @@ dependencies = [
  "windows-native-keyring-store",
  "wiremock",
  "zbus-secret-service-keyring-store",
+ "zeroize",
 ]
 
 [[package]]
