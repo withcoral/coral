@@ -1584,7 +1584,7 @@ fn durable_import_manifest_yaml(
     };
     let mut replacement_files = BTreeMap::new();
     for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
+        let SurfaceDescriptor::File { file, .. } = &surface.descriptor else {
             continue;
         };
         let canonical = canonicalize_file_descriptor(file)?;

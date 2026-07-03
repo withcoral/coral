@@ -673,6 +673,7 @@ mod tests {
             surface_type: SurfaceType::OpenApi,
             descriptor: SurfaceDescriptor::File {
                 file: PathBuf::from("/tmp/openapi.yaml"),
+                sha256: None,
             },
             inputs: Vec::new(),
             runtime: SurfaceRuntimeConfig::OpenApi(OpenApiRuntimeConfig {
@@ -739,6 +740,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "demo".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -997,6 +999,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -1049,6 +1052,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -1093,6 +1097,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -1147,6 +1152,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -1224,6 +1230,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },
@@ -1285,6 +1292,7 @@ mod tests {
             common: V4SourceCommon {
                 dsl_version: 4,
                 name: "github_v4".to_string(),
+                version: None,
                 description: String::new(),
                 test_queries: Vec::new(),
             },

@@ -42,6 +42,99 @@ surfaces:
 }
 
 #[test]
+fn parses_v4_manifest_version_and_descriptor_sha256() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+version: 1.2.3
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+",
+    )
+    .expect("v4 manifest");
+    assert_eq!(manifest.source_version(), Some("1.2.3"));
+    let v4 = manifest.as_v4().expect("v4");
+    assert_eq!(v4.common.version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        v4.surfaces.first().expect("surface").descriptor.sha256(),
+        Some("0000000000000000000000000000000000000000000000000000000000000000")
+    );
+}
+
+#[test]
+fn rejects_empty_v4_manifest_version() {
+    let error = parse_source_manifest_yaml(
+        r#"
+name: demo
+dsl_version: 4
+version: ""
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+"#,
+    )
+    .expect_err("empty version should fail");
+
+    assert!(
+        error.to_string().contains("/version"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_invalid_v4_descriptor_sha256() {
+    for sha256 in [
+        "abc",
+        "000000000000000000000000000000000000000000000000000000000000000G",
+    ] {
+        let raw = format!(
+            r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    sha256: {sha256}
+"
+        );
+        let error = parse_source_manifest_yaml(&raw).expect_err("invalid sha256 should fail");
+        assert!(
+            error.to_string().contains("sha256"),
+            "unexpected error for {sha256}: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_v4_mcp_descriptor_sha256() {
+    let error = parse_source_manifest_yaml(
+        r"
+name: demo
+dsl_version: 4
+surfaces:
+  - id: mcp
+    type: mcp
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    server:
+      transport: stdio
+      command: demo-mcp-server
+",
+    )
+    .expect_err("mcp sha256 should fail");
+
+    assert!(
+        error.to_string().contains("sha256"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn parses_v4_openapi_surface_without_base_url() {
     let manifest = parse_source_manifest_yaml(
         r"

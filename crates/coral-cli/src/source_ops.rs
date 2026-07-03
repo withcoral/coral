@@ -475,7 +475,7 @@ fn durable_manifest_file_yaml(
     };
     let mut replacement_files = BTreeMap::new();
     for surface in &v4.surfaces {
-        let SurfaceDescriptor::File { file } = &surface.descriptor else {
+        let SurfaceDescriptor::File { file, .. } = &surface.descriptor else {
             continue;
         };
         let canonical = canonicalize_manifest_descriptor(file, manifest_dir)?;
