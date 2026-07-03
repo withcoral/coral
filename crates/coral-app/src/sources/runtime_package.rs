@@ -143,11 +143,12 @@ pub(crate) fn query_source_from_installed_manifest(
             &materialized,
             diagnostic_reporter,
         )
-        .map_err(|error| {
-            incompatible_materialization_error(
+        .map_err(|error| match error {
+            error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
+            error => incompatible_materialization_error(
                 &source.name,
                 format!("failed to assemble runtime package: {error}"),
-            )
+            ),
         })?;
         let query_source = QuerySource::from_runtime_components(
             RuntimeSourcePackage {
@@ -191,6 +192,11 @@ pub(crate) fn runtime_components_for_v4_source(
     let mut diagnostics = Vec::new();
     let mut published_surface_count = 0_usize;
     let mut first_surface_error = None;
+    if manifest.identity_requirements.is_some() {
+        return Err(AppError::UnsupportedV4IdentityRequirements {
+            source_name: manifest.common.name.clone(),
+        });
+    }
     for surface in &manifest.surfaces {
         if !has_published_projection(materialized, &surface.id) {
             continue;
@@ -616,15 +622,18 @@ mod tests {
     use coral_spec::backends::http::{AuthSpec, RateLimitSpec};
     use coral_spec::backends::mcp::{McpOffsetPaginationSpec, McpPaginationSpec, McpServerSpec};
     use coral_spec::v4::{
-        Fingerprint, HttpMethod, IrExecutionAttachment, IrOperation, IrOperationOutput,
-        MCP_IMPORTER_VERSION, MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig,
-        OPENAPI_IMPORTER_VERSION, OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection,
-        ProjectionCatalog, ProjectionKind, ProjectionVisibility, RestExecutionAttachment,
-        RestResponseAttachment, SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor,
-        SurfaceRuntimeConfig, SurfaceType, V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource,
-        V4SourceCommon, V4SourceManifest, V4Surface,
+        AcceptedIdentityRequirement, Fingerprint, HttpMethod, IdentityRequirements,
+        IrExecutionAttachment, IrOperation, IrOperationOutput, MCP_IMPORTER_VERSION,
+        MaterializedSurface, McpExecutionAttachment, McpRuntimeConfig, OPENAPI_IMPORTER_VERSION,
+        OpenApiRuntimeConfig, PROJECTION_GENERATOR_VERSION, Projection, ProjectionCatalog,
+        ProjectionKind, ProjectionVisibility, RestExecutionAttachment, RestResponseAttachment,
+        SURFACE_IMPORTER_VERSION, SemanticIr, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
+        V4_ARTIFACT_SCHEMA_VERSION, V4MaterializedSource, V4SourceCommon, V4SourceManifest,
+        V4Surface,
     };
     use coral_spec::{PageSizeSpec, PaginationMode, PaginationSpec, ResponseSpec};
+
+    use crate::bootstrap::AppError;
 
     use super::{
         runtime_components_for_v4_source as build_runtime_components, runtime_contract_fingerprint,
@@ -937,6 +946,49 @@ mod tests {
             runtime_contract_fingerprint("name: demo", &BTreeMap::new(), Some(&materialized))
                 .expect("fingerprint without optional provenance");
         assert!(without_optional_provenance.as_str().starts_with("v1:"));
+    }
+
+    #[test]
+    fn runtime_components_fail_closed_for_identity_gated_source_without_projections() {
+        let mut manifest = manifest_with_surface(surface_without_authored_base_url());
+        manifest.identity_requirements = Some(IdentityRequirements {
+            accepts: vec![AcceptedIdentityRequirement {
+                id: "github".to_string(),
+                identity_specs: vec!["github_oauth".to_string()],
+                audience: BTreeMap::new(),
+            }],
+        });
+        let materialized = V4MaterializedSource {
+            fingerprint: Some(Fingerprint {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                manifest_sha256: String::new(),
+                surfaces: Vec::new(),
+                importer_version: SURFACE_IMPORTER_VERSION.to_string(),
+                projection_generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
+            }),
+            surfaces: Vec::new(),
+            projections: ProjectionCatalog {
+                artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+                source_name: "demo".to_string(),
+                generator_version: Some(PROJECTION_GENERATOR_VERSION.to_string()),
+                projections: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            diagnostics: Vec::new(),
+        };
+
+        let error = runtime_components_for_v4_source(&manifest, &materialized)
+            .expect_err("identity-gated runtime should fail before projection filtering");
+
+        assert!(matches!(
+            &error,
+            AppError::UnsupportedV4IdentityRequirements { source_name }
+                if source_name == "demo"
+        ));
+        let message = error.to_string();
+        assert!(message.contains("cannot resolve source identities"));
+        assert!(!message.contains("Re-add"));
     }
 
     #[test]

@@ -91,7 +91,8 @@ impl CatalogSnapshotLoader {
                         .extend(source_catalog.table_functions);
                 }
                 Err(
-                    error @ (AppError::MissingOrIncompatibleV4Materialization { .. }
+                    error @ (AppError::UnsupportedV4IdentityRequirements { .. }
+                    | AppError::MissingOrIncompatibleV4Materialization { .. }
                     | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
                     self.diagnostic_reporter.report_source_load_failure(
@@ -142,11 +143,12 @@ impl CatalogSnapshotLoader {
                 &materialized,
                 &self.diagnostic_reporter,
             )
-            .map_err(|error| {
-                incompatible_materialization_error(
+            .map_err(|error| match error {
+                error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
+                error => incompatible_materialization_error(
                     &source.name,
                     format!("failed to assemble runtime package: {error}"),
-                )
+                ),
             })
         } else {
             Ok(runtime_components_from_manifest(&source_spec))
