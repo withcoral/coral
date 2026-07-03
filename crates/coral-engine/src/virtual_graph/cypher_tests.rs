@@ -43,6 +43,41 @@ relationships:
     .expect("star test graph should parse")
 }
 
+fn staged_planning_test_graph() -> Declaration {
+    Declaration::from_yaml(
+        r"
+version: 1
+name: staged_planning_test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+      age: age
+  - label: Service
+    table: { schema: ops, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: KNOWS
+    table: { schema: ops, name: knows }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+  - type: LIKES
+    table: { schema: ops, name: likes }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: liked_person_id }
+  - type: OWNS
+    table: { schema: ops, name: ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+",
+    )
+    .expect("staged planning test graph should parse")
+}
+
 fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
     Projection::Expression {
         expression: ScalarExpression::TypedLiteralList {
@@ -4123,6 +4158,262 @@ fn compiles_terminal_with_star_modifiers() {
             },
             alias: Some("service".to_string()),
         }]
+    );
+}
+
+#[test]
+fn compiles_staged_with_order_limit_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged WITH ORDER BY LIMIT before MATCH should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("target query should compile to a staged graph query");
+    };
+    assert_eq!(staged.stages.len(), 1);
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport {
+            variable: "a".to_string(),
+            column: "a_id".to_string(),
+        }]
+    );
+    assert_eq!(
+        stage.plan.projections,
+        vec![Projection::Key {
+            variable: "a".to_string(),
+            alias: "a_id".to_string(),
+        }]
+    );
+    assert_eq!(
+        stage.plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::Property(PropertyRef {
+                variable: "a".to_string(),
+                property: "age".to_string(),
+            }),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
+    );
+    assert_eq!(stage.plan.limit, Some(2));
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.projections,
+        vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("a".to_string()),
+            },
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "b".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("b".to_string()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_staged_with_second_relationship_type() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:LIKES]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged route should allow any explicit relationship type");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("second relationship type should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "LIKES".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_staged_with_multiple_carried_property_returns() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:OWNS]->(b:Service) \
+             RETURN a.name AS a, a.age AS age, b.name AS b",
+    )
+    .expect("staged route should rehydrate carried node property columns");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("multi-property carried return should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.projections,
+        vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("a".to_string()),
+            },
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a".to_string(),
+                    property: "age".to_string(),
+                },
+                alias: Some("age".to_string()),
+            },
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "b".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("b".to_string()),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_adjacent_staged_with_order_limit_shapes() {
+    let cases = [
+        (
+            "incoming final match",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (b:Person)-[:KNOWS]->(a) \
+             RETURN a.name AS a, b.name AS b",
+        ),
+        (
+            "undirected final match",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]-(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+        ),
+        (
+            "initial WHERE before WITH",
+            "MATCH (a:Person) \
+             WHERE a.age > 30 \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+        ),
+        (
+            "multi-hop final match",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS a, b.name AS b, c.name AS c",
+        ),
+        (
+            "graph-object return",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person) \
+             RETURN a AS a, b.name AS b",
+        ),
+        (
+            "unverified ORDER BY property",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.city LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+        ),
+    ];
+
+    for (name, cypher) in cases {
+        assert_staged_planning_reject(name, cypher);
+    }
+}
+
+#[test]
+fn rejects_staged_with_unlabeled_final_target() {
+    assert_staged_planning_reject(
+        "unlabeled final target",
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:KNOWS]->(b) \
+         RETURN a.name AS a, b.name AS b",
+    );
+}
+
+#[test]
+fn rejects_staged_with_untyped_final_relationship() {
+    assert_staged_planning_reject(
+        "untyped final relationship",
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    );
+}
+
+#[test]
+fn rejects_staged_with_limit_zero_before_match() {
+    let graph = staged_planning_test_graph();
+    let error = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 0 \
+             MATCH (a)-[:KNOWS]->(b:Person) \
+             RETURN b.name AS b",
+    )
+    .expect_err("LIMIT 0 staged planning remains outside the minimal spike slice");
+
+    assert!(
+        error
+            .to_string()
+            .contains("WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"),
+        "{error}"
+    );
+}
+
+fn assert_staged_planning_reject(name: &str, cypher: &str) {
+    let graph = staged_planning_test_graph();
+    let Err(error) = compile_cypher_query_for_graph(&graph, cypher) else {
+        panic!("{name} should require broader staged planning");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"),
+        "{name}: {error}"
     );
 }
 

@@ -111,25 +111,21 @@ impl<'a> SqlRenderer<'a> {
         pattern: &'a RelationshipPattern,
     ) -> Result<String, CoreError> {
         let orientations = Self::relationship_orientations(validated, relationship, pattern)?;
-        let left_binding = validated.binding(&pattern.left)?;
-        let right_binding = validated.binding(&pattern.right)?;
-        let left_node = validated.node_binding(&pattern.left)?;
-        let right_node = validated.node_binding(&pattern.right)?;
+        let left_key = Self::node_key_ref(validated, &pattern.left)?;
+        let right_key = Self::node_key_ref(validated, &pattern.right)?;
 
         let has_multiple_orientations = orientations.len() > 1;
         let conditions = orientations
             .iter()
             .map(|orientation| {
                 let condition = format!(
-                    "{}.{} = {}.{} AND {}.{} = {}.{}",
+                    "{}.{} = {} AND {}.{} = {}",
                     quote_ident(relationship_alias),
                     quote_ident(&orientation.left_relationship_key),
-                    quote_ident(left_binding.alias()),
-                    quote_ident(&left_node.key),
+                    left_key,
                     quote_ident(relationship_alias),
                     quote_ident(&orientation.right_relationship_key),
-                    quote_ident(right_binding.alias()),
-                    quote_ident(&right_node.key)
+                    right_key
                 );
                 if has_multiple_orientations {
                     format!("({condition})")
@@ -150,8 +146,7 @@ impl<'a> SqlRenderer<'a> {
         node_is_left: bool,
     ) -> Result<String, CoreError> {
         let orientations = Self::relationship_orientations(validated, relationship, pattern)?;
-        let node_binding = validated.binding(node_variable)?;
-        let node = validated.node_binding(node_variable)?;
+        let node_key = Self::node_key_ref(validated, node_variable)?;
 
         let conditions = orientations
             .iter()
@@ -162,15 +157,40 @@ impl<'a> SqlRenderer<'a> {
                     orientation.right_relationship_key.as_str()
                 };
                 format!(
-                    "{}.{} = {}.{}",
+                    "{}.{} = {}",
                     quote_ident(relationship_alias),
                     quote_ident(relationship_key),
-                    quote_ident(node_binding.alias()),
-                    quote_ident(&node.key)
+                    node_key
                 )
             })
             .collect::<Vec<_>>();
         Self::render_condition_disjunction(&conditions)
+    }
+
+    fn node_key_ref(
+        validated: &ValidatedGraphPlan<'a>,
+        variable: &str,
+    ) -> Result<String, CoreError> {
+        let binding = validated.binding(variable)?;
+        match binding.kind() {
+            ValidatedBindingKind::Node(node) => Ok(format!(
+                "{}.{}",
+                quote_ident(binding.alias()),
+                quote_ident(&node.key)
+            )),
+            ValidatedBindingKind::StageColumn {
+                stage_alias,
+                key_column,
+                ..
+            } => Ok(format!(
+                "{}.{}",
+                quote_ident(stage_alias),
+                quote_ident(key_column)
+            )),
+            ValidatedBindingKind::Relationship(_) => Err(CoreError::internal(
+                "validated relationship endpoint was not a node binding",
+            )),
+        }
     }
 
     fn relationship_orientations(
@@ -282,14 +302,35 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
 
     fn start_from_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
         let binding = self.lowerer.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
-            return Err(CoreError::internal("graph component root was not a node"));
-        };
-        self.from_clause = format!(
-            "FROM {} AS {}",
-            render_table_ref(&node_mapping.table),
-            quote_ident(binding.alias())
-        );
+        match binding.kind() {
+            ValidatedBindingKind::Node(node_mapping) => {
+                self.from_clause = format!(
+                    "FROM {} AS {}",
+                    render_table_ref(&node_mapping.table),
+                    quote_ident(binding.alias())
+                );
+            }
+            ValidatedBindingKind::StageColumn {
+                node,
+                stage_alias,
+                key_column,
+            } => {
+                self.from_clause = format!(
+                    "FROM {} AS {} JOIN {} AS {} ON {}.{} = {}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(stage_alias),
+                    render_table_ref(&node.table),
+                    quote_ident(binding.alias()),
+                    quote_ident(binding.alias()),
+                    quote_ident(&node.key),
+                    quote_ident(stage_alias),
+                    quote_ident(key_column)
+                );
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal("graph component root was not a node"));
+            }
+        }
         self.joined_nodes.insert(variable);
         Ok(())
     }
@@ -299,16 +340,39 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
             return Ok(());
         }
         let binding = self.lowerer.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
-            return Err(CoreError::internal("graph component root was not a node"));
-        };
-        write!(
-            self.from_clause,
-            " CROSS JOIN {} AS {}",
-            render_table_ref(&node_mapping.table),
-            quote_ident(binding.alias())
-        )
-        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        match binding.kind() {
+            ValidatedBindingKind::Node(node_mapping) => {
+                write!(
+                    self.from_clause,
+                    " CROSS JOIN {} AS {}",
+                    render_table_ref(&node_mapping.table),
+                    quote_ident(binding.alias())
+                )
+                .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            }
+            ValidatedBindingKind::StageColumn {
+                node,
+                stage_alias,
+                key_column,
+            } => {
+                write!(
+                    self.from_clause,
+                    " CROSS JOIN {} AS {} JOIN {} AS {} ON {}.{} = {}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(stage_alias),
+                    render_table_ref(&node.table),
+                    quote_ident(binding.alias()),
+                    quote_ident(binding.alias()),
+                    quote_ident(&node.key),
+                    quote_ident(stage_alias),
+                    quote_ident(key_column)
+                )
+                .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal("graph component root was not a node"));
+            }
+        }
         self.joined_nodes.insert(variable);
         Ok(())
     }

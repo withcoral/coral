@@ -24,7 +24,9 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()
         })?;
         let (table, column) = match binding.kind() {
-            ValidatedBindingKind::Node(node) => (&node.table, node.key.as_str()),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                (&node.table, node.key.as_str())
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 let Some(key) = relationship.key.as_deref() else {
                     return Ok(ScalarType::Unknown);

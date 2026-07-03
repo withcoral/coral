@@ -1660,8 +1660,39 @@ impl GraphPlan {
 pub enum GraphQuery {
     /// A single graph query plan.
     Plan(GraphPlan),
+    /// A staged chain of graph plans where non-terminal stages export row keys
+    /// consumed by the final plan.
+    Staged(GraphStagedQuery),
     /// A top-level set union of graph query plans.
     Union(GraphUnion),
+}
+
+/// Staged graph query with one or more non-terminal row-source stages and a
+/// final graph plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphStagedQuery {
+    /// Non-terminal stages rendered as CTEs in order.
+    pub stages: Vec<GraphStage>,
+    /// Final stage rendered against exported stage columns.
+    pub final_plan: GraphPlan,
+}
+
+/// One non-terminal staged graph plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphStage {
+    /// Stage-local graph plan.
+    pub plan: GraphPlan,
+    /// Key columns exported by the stage for later stages.
+    pub exports: Vec<GraphStageExport>,
+}
+
+/// Key column exported by a graph stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphStageExport {
+    /// Graph variable carried across the stage boundary.
+    pub variable: String,
+    /// Output column name containing the variable's key.
+    pub column: String,
 }
 
 /// Top-level `UNION` / `UNION ALL` over graph plans.

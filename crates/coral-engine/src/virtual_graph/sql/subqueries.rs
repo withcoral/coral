@@ -921,7 +921,10 @@ impl<'a> SqlRenderer<'a> {
             ));
         }
         let binding = self.validated.binding(&property.variable)?;
-        if !matches!(binding.kind(), ValidatedBindingKind::Node(_)) {
+        if !matches!(
+            binding.kind(),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. }
+        ) {
             return Err(CoreError::InvalidInput(
                 "hidden ORDER BY node precompute supports correlations to one outer node binding"
                     .to_string(),
@@ -948,7 +951,10 @@ impl<'a> SqlRenderer<'a> {
             )?));
         }
         let binding = self.validated.binding(variable)?;
-        if !matches!(binding.kind(), ValidatedBindingKind::Node(_)) {
+        if !matches!(
+            binding.kind(),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. }
+        ) {
             return Err(CoreError::InvalidInput(
                 "hidden ORDER BY node precompute supports correlations to one outer node binding"
                     .to_string(),
@@ -1196,7 +1202,10 @@ impl<'a> SqlRenderer<'a> {
             return Ok(None);
         }
         let binding = self.validated.binding(outer_variable)?;
-        if !matches!(binding.kind(), ValidatedBindingKind::Node(_)) {
+        if !matches!(
+            binding.kind(),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. }
+        ) {
             return Ok(None);
         }
         Ok(Some(outer_variable.to_string()))

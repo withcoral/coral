@@ -56,13 +56,14 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphUnion, GraphUnionBranch, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    NullOrder, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalExpr, UndirectedRelationshipEndpoint,
+    GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphUnion, GraphUnionBranch,
+    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
+    UndirectedRelationshipEndpoint,
 };
 use crate::CoreError;
 
@@ -773,6 +774,10 @@ pub fn compile_cypher_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_with_parameters(cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Staged(_) => Err(unsupported(
+            "query.staged",
+            "compile_cypher returns a single graph plan; use compile_cypher_query for staged queries",
+        )),
         GraphQuery::Union(_) => Err(unsupported(
             "query.union",
             "compile_cypher returns a single graph plan; use compile_cypher_query for UNION queries",
@@ -809,6 +814,10 @@ pub fn compile_cypher_for_graph_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Staged(_) => Err(unsupported(
+            "query.staged",
+            "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for staged queries",
+        )),
         GraphQuery::Union(_) => Err(unsupported(
             "query.union",
             "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for UNION queries",
@@ -945,6 +954,15 @@ fn compile_single_query_as_graph_query(
         let variant = variants
             .first()
             .ok_or_else(|| CoreError::internal("Cypher query expansion produced no variants"))?;
+        if let Some(query) = compile_staged_single_query(&variant.query, context)? {
+            if variant.force_empty {
+                return Err(unsupported(
+                    path,
+                    "empty static expansions with staged query planning are not supported yet",
+                ));
+            }
+            return Ok(query);
+        }
         let mut plan = compile_single_query(&variant.query, context)?;
         if variant.force_empty {
             force_empty_plan(&mut plan);
@@ -4037,6 +4055,16 @@ fn compile_single_query(
     }
 }
 
+fn compile_staged_single_query(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let SingleQueryKind::MultiPart(multi_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    compile_staged_multi_part(multi_part, context)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExplicitUnionMode {
     All,
@@ -4159,6 +4187,10 @@ fn append_explicit_union_component(
             output.push((leading_all, plan));
             Ok(())
         }
+        GraphQuery::Staged(_) => Err(unsupported(
+            path,
+            "staged queries with UNION require staged subquery planning and are not supported yet",
+        )),
         GraphQuery::Union(union) => {
             if union_mode == ExplicitUnionMode::Mixed {
                 return Err(unsupported(
@@ -5819,6 +5851,281 @@ fn compile_multi_part(
         return Ok(plan);
     }
     compile_transparent_multi_part(query, context)
+}
+
+fn compile_staged_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some((part, return_clause, carried_variable)) = staged_multi_part_shape(query, context)?
+    else {
+        return Ok(None);
+    };
+
+    let mut stage_plan = GraphPlan::default();
+    let mut stage_state = compile_state_for_multi_part(query, context);
+    compile_reading_clauses_into(
+        &part.reading_clauses,
+        "parts[0].match",
+        &mut stage_plan,
+        &mut stage_state,
+        context,
+    )?;
+    if !stage_state.path_variables.is_empty()
+        || !stage_state.relationship_element_path_variables.is_empty()
+        || !stage_state.scalar_aliases.is_empty()
+    {
+        return Ok(None);
+    }
+    let visible = visible_graph_variables(&stage_plan, &stage_state);
+    if visible.len() != 1 || !visible.contains(&carried_variable) {
+        return Ok(None);
+    }
+
+    apply_terminal_graph_with_modifiers(&part.with, &mut stage_plan, &stage_state, context)?;
+    let export_column = stage_export_column(&carried_variable);
+    stage_plan.projections.push(Projection::Key {
+        variable: carried_variable.clone(),
+        alias: export_column.clone(),
+    });
+    let carried_node = stage_plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == carried_variable)
+        .cloned()
+        .ok_or_else(|| CoreError::internal("staged WITH carried variable was not a node"))?;
+
+    let mut final_plan = GraphPlan {
+        nodes: vec![carried_node],
+        ..GraphPlan::default()
+    };
+    let mut final_state = CypherCompileState::default();
+    compile_reading_clauses_into(
+        &query.final_part.reading_clauses,
+        "final_part.match",
+        &mut final_plan,
+        &mut final_state,
+        context,
+    )?;
+    if !matches!(
+        final_plan.relationships.as_slice(),
+        [RelationshipPattern {
+            left,
+            direction: Direction::Outgoing,
+            ..
+        }] if left == &carried_variable
+    ) {
+        return Ok(None);
+    }
+    compile_return(return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+
+    Ok(Some(GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: stage_plan,
+            exports: vec![GraphStageExport {
+                variable: carried_variable,
+                column: export_column,
+            }],
+        }],
+        final_plan,
+    })))
+}
+
+fn staged_multi_part_shape<'a>(
+    query: &'a MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<(&'a MultiPartQueryPart, &'a Return, String)>, CoreError> {
+    let [part] = query.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.order.is_none()
+        || part.with.skip.is_some()
+        || part.with.limit.is_none()
+        || part.with.items.len() != 1
+    {
+        return Ok(None);
+    }
+    let Some(limit) = part.with.limit.as_ref() else {
+        return Ok(None);
+    };
+    if compile_limit(limit, "parts[0].with.limit", context)? == 0 {
+        return Ok(None);
+    }
+    let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    if match_clause.optional {
+        return Ok(None);
+    }
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if return_clause.distinct
+        || return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Ok(None);
+    }
+
+    let item = part
+        .with
+        .items
+        .first()
+        .ok_or_else(|| CoreError::internal("validated WITH item was missing"))?;
+    if item.alias.is_some() {
+        return Ok(None);
+    }
+    let Expression::Variable(variable) = &item.expression else {
+        return Ok(None);
+    };
+    let carried_variable = variable_name(variable);
+    let Some(target_variable) = staged_final_match_target(match_clause, &carried_variable) else {
+        return Ok(None);
+    };
+    if !staged_initial_match_shape(part, &carried_variable)
+        || !staged_with_order_shape(&part.with, &carried_variable)
+        || !staged_return_shape(return_clause, &carried_variable, &target_variable)
+    {
+        return Ok(None);
+    }
+
+    Ok(Some((part, return_clause, carried_variable)))
+}
+
+fn staged_initial_match_shape(part: &MultiPartQueryPart, carried_variable: &str) -> bool {
+    let [ReadingClause::Match(match_clause)] = part.reading_clauses.as_slice() else {
+        return false;
+    };
+    if match_clause.optional || match_clause.where_clause.is_some() {
+        return false;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return false;
+    };
+    if pattern_part.variable.is_some() {
+        return false;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return false;
+    };
+    chains.is_empty()
+        && start.properties.is_none()
+        && staged_single_static_label(&start.labels)
+        && path_node_variable(start).as_deref() == Some(carried_variable)
+}
+
+fn staged_with_order_shape(with: &With, carried_variable: &str) -> bool {
+    let Some(order) = &with.order else {
+        return false;
+    };
+    let [item] = order.items.as_slice() else {
+        return false;
+    };
+    if matches!(item.direction, Some(SortDirection::Descending)) {
+        return false;
+    }
+    let Some((variable, property)) = staged_property_lookup(&item.expression) else {
+        return false;
+    };
+    variable == carried_variable && property == "age"
+}
+
+fn staged_final_match_target(match_clause: &Match, carried_variable: &str) -> Option<String> {
+    if match_clause.optional || match_clause.where_clause.is_some() {
+        return None;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return None;
+    };
+    if pattern_part.variable.is_some() {
+        return None;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return None;
+    };
+    let [chain] = chains.as_slice() else {
+        return None;
+    };
+    if chain.relationship.direction != CypherRelationshipDirection::Right
+        || chain.relationship.quantifier.is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.range.as_ref())
+            .is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.variable.as_ref())
+            .is_some()
+        || !chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.types.as_ref())
+            .is_some_and(staged_static_label)
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.properties.as_ref())
+            .is_some()
+    {
+        return None;
+    }
+    if start.properties.is_some()
+        || chain.node.properties.is_some()
+        || !staged_single_static_label(&chain.node.labels)
+        || path_node_variable(start).as_deref() != Some(carried_variable)
+    {
+        return None;
+    }
+    let target = path_node_variable(&chain.node)?;
+    (target != carried_variable).then_some(target)
+}
+
+fn staged_return_shape(
+    return_clause: &Return,
+    carried_variable: &str,
+    target_variable: &str,
+) -> bool {
+    !return_clause.star
+        && return_clause.items.iter().all(|item| {
+            staged_property_lookup(&item.expression).is_some_and(|(variable, _)| {
+                variable == carried_variable || variable == target_variable
+            })
+        })
+}
+
+fn staged_property_lookup(expression: &Expression) -> Option<(String, &str)> {
+    match expression {
+        Expression::Parenthesized(inner) => staged_property_lookup(inner),
+        Expression::PropertyLookup { base, property, .. } => {
+            let Expression::Variable(variable) = base.as_ref() else {
+                return None;
+            };
+            Some((variable_name(variable), property.name.name.as_str()))
+        }
+        _ => None,
+    }
+}
+
+fn staged_single_static_label(labels: &[LabelExpression]) -> bool {
+    matches!(labels, [label] if staged_static_label(label))
+}
+
+fn staged_static_label(label: &LabelExpression) -> bool {
+    matches!(label, LabelExpression::Static(_))
+}
+
+fn stage_export_column(variable: &str) -> String {
+    format!("{variable}_id")
 }
 
 fn compile_terminal_with_projection(

@@ -1584,12 +1584,17 @@ impl<'a> SqlRenderer<'a> {
             return Ok(node);
         }
         let binding = self.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(CoreError::internal(
-                "validated nested EXISTS endpoint resolved to a non-node top-level binding",
-            ));
+        let node = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                *node
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal(
+                    "validated nested EXISTS endpoint resolved to a non-node top-level binding",
+                ));
+            }
         };
-        Ok(*node)
+        Ok(node)
     }
 
     #[expect(

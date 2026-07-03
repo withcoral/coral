@@ -123,6 +123,88 @@ async fn cypher_translation_executes_against_synthetic_file_sources() {
 }
 
 #[tokio::test]
+async fn cypher_staged_with_order_limit_executes_with_second_relationship_type() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:LIKES]->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged Cypher query with non-KNOWS relationship type should execute");
+
+    assert!(
+        execution.translated_sql().contains("WITH \"stage0\" AS"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("\"staged\".\"likes\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"a": "Alice", "b": "Bob"}),
+            json!({"a": "Bob", "b": "Carol"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_with_order_limit_rehydrates_multiple_carried_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:OWNS]->(b:Service) \
+         RETURN a.name AS a, a.age AS age, b.name AS b",
+    )
+    .await
+    .expect("staged Cypher query should rehydrate multiple carried properties");
+
+    assert!(
+        execution.translated_sql().contains("WITH \"stage0\" AS"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("\"staged\".\"ownerships\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"a": "Alice", "age": 30, "b": "billing-api"}),
+            json!({"a": "Bob", "age": 25, "b": "deployments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_date_map_constructor_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -18461,6 +18543,121 @@ fn owner_service_plan() -> GraphPlan {
     }
 }
 
+fn write_staged_planning_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "staged_people.jsonl",
+        &[
+            json!({"id": 1, "full_name": "Alice", "age": 30}),
+            json!({"id": 2, "full_name": "Bob", "age": 25}),
+            json!({"id": 3, "full_name": "Carol", "age": 35}),
+            json!({"id": 4, "full_name": "Dana", "age": 40}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_services.jsonl",
+        &[
+            json!({"id": 10, "service_name": "billing-api"}),
+            json!({"id": 20, "service_name": "deployments"}),
+            json!({"id": 30, "service_name": "experiments"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_knows.jsonl",
+        &[
+            json!({"person_id": 1, "friend_id": 2}),
+            json!({"person_id": 1, "friend_id": 3}),
+            json!({"person_id": 2, "friend_id": 3}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_likes.jsonl",
+        &[
+            json!({"person_id": 1, "liked_person_id": 2}),
+            json!({"person_id": 2, "liked_person_id": 3}),
+            json!({"person_id": 3, "liked_person_id": 1}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_ownerships.jsonl",
+        &[
+            json!({"person_id": 1, "service_id": 10}),
+            json!({"person_id": 2, "service_id": 20}),
+            json!({"person_id": 3, "service_id": 30}),
+        ],
+    );
+}
+
+fn staged_planning_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "staged",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "people",
+                "description": "Synthetic staged people fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_people.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "full_name", "type": "Utf8" },
+                    { "name": "age", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "services",
+                "description": "Synthetic staged services fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_services.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "service_name", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "knows",
+                "description": "Synthetic staged KNOWS edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_knows.jsonl" },
+                "columns": [
+                    { "name": "person_id", "type": "Int64" },
+                    { "name": "friend_id", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "likes",
+                "description": "Synthetic staged LIKES edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_likes.jsonl" },
+                "columns": [
+                    { "name": "person_id", "type": "Int64" },
+                    { "name": "liked_person_id", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "ownerships",
+                "description": "Synthetic staged ownership edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_ownerships.jsonl" },
+                "columns": [
+                    { "name": "person_id", "type": "Int64" },
+                    { "name": "service_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
+fn staged_planning_test_graph() -> GraphDeclaration {
+    GraphDeclaration::from_yaml(STAGED_PLANNING_GRAPH).expect("staged graph should parse")
+}
+
 fn write_ops_fixture(dir: &Path) {
     write_jsonl_file(
         dir,
@@ -18756,6 +18953,37 @@ relationships:
     properties:
       criticality: criticality
       source: source
+";
+
+const STAGED_PLANNING_GRAPH: &str = r"
+version: 1
+name: staged_planning
+description: Synthetic staged planning graph
+nodes:
+  - label: Person
+    table: { schema: staged, name: people }
+    key: id
+    properties:
+      name: full_name
+      age: age
+  - label: Service
+    table: { schema: staged, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: KNOWS
+    table: { schema: staged, name: knows }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+  - type: LIKES
+    table: { schema: staged, name: likes }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: liked_person_id }
+  - type: OWNS
+    table: { schema: staged, name: ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
 ";
 
 const ROUTE_GRAPH: &str = r"

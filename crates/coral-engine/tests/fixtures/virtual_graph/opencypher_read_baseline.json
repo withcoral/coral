@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 30
+    "With": 31
   },
   "scenarios": [
     {
@@ -10613,6 +10613,29 @@
           {
             "name": "Bob",
             "active": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-graph-variable-before-match",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 2 MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Alice",
+            "b": "Bob"
+          },
+          {
+            "a": "Alice",
+            "b": "Carol"
+          },
+          {
+            "a": "Bob",
+            "b": "Carol"
           }
         ]
       }

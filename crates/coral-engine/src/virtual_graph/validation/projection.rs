@@ -316,13 +316,18 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error()
         })?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(Diagnostic::new(
-                diagnostic_codes::INVALID_LABELS_PROJECTION,
-                path,
-                format!("labels({variable}) requires a node variable"),
-            )
-            .into_core_error());
+        let node = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                *node
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(Diagnostic::new(
+                    diagnostic_codes::INVALID_LABELS_PROJECTION,
+                    path,
+                    format!("labels({variable}) requires a node variable"),
+                )
+                .into_core_error());
+            }
         };
         if node.label != label {
             return Err(Diagnostic::new(
@@ -370,7 +375,7 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()
         })?;
         match binding.kind() {
-            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. } => Ok(()),
             ValidatedBindingKind::Relationship(relationship) => {
                 if relationship.key.is_some() {
                     Ok(())
@@ -404,7 +409,7 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()
         })?;
         match binding.kind() {
-            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. } => Ok(()),
             ValidatedBindingKind::Relationship(relationship) => {
                 if relationship.key.is_some() {
                     Ok(())
@@ -438,7 +443,7 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()
         })?;
         match binding.kind() {
-            ValidatedBindingKind::Node(_) => Ok(()),
+            ValidatedBindingKind::Node(_) | ValidatedBindingKind::StageColumn { .. } => Ok(()),
             ValidatedBindingKind::Relationship(relationship) => {
                 if relationship.key.is_some() {
                     Ok(())

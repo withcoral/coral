@@ -76,7 +76,9 @@ impl<'a> GraphPlanValidator<'a> {
         }
         let path = path.into();
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
-            Some(ValidatedBindingKind::Node(node)) => Ok(*node),
+            Some(
+                ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. },
+            ) => Ok(*node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
                 diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,
@@ -1466,7 +1468,9 @@ impl<'a> GraphPlanValidator<'a> {
         }
         let path = path.into();
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
-            Some(ValidatedBindingKind::Node(node)) => Ok(*node),
+            Some(
+                ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. },
+            ) => Ok(*node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
                 diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,

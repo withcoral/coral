@@ -203,12 +203,17 @@ impl<'a> SqlRenderer<'a> {
             return Ok(node);
         }
         let binding = self.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(CoreError::internal(
-                "validated EXISTS endpoint was not a node binding",
-            ));
+        let node = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                *node
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal(
+                    "validated EXISTS endpoint was not a node binding",
+                ));
+            }
         };
-        Ok(*node)
+        Ok(node)
     }
 
     pub(super) fn exists_relationship_condition<'b>(
@@ -278,6 +283,17 @@ impl<'a> SqlRenderer<'a> {
         let binding = self.validated.binding(variable)?;
         let column = match binding.kind() {
             ValidatedBindingKind::Node(node) => node.key.as_str(),
+            ValidatedBindingKind::StageColumn {
+                stage_alias,
+                key_column,
+                ..
+            } => {
+                return Ok(format!(
+                    "{}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(key_column)
+                ));
+            }
             ValidatedBindingKind::Relationship(relationship) => relationship
                 .key
                 .as_deref()
@@ -308,10 +324,15 @@ impl<'a> SqlRenderer<'a> {
         label: &str,
     ) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(CoreError::internal(
-                "validated labels expression did not reference a node",
-            ));
+        let node = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                *node
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal(
+                    "validated labels expression did not reference a node",
+                ));
+            }
         };
         if node.label != label {
             return Err(CoreError::internal(
@@ -328,7 +349,9 @@ impl<'a> SqlRenderer<'a> {
     pub(super) fn render_property_keys_ref(&self, variable: &str) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
         let property_names = match binding.kind() {
-            ValidatedBindingKind::Node(node) => node.properties.keys(),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                node.properties.keys()
+            }
             ValidatedBindingKind::Relationship(relationship) => relationship.properties.keys(),
         }
         .map(|property| quote_string_literal(property))
@@ -400,6 +423,17 @@ impl<'a> SqlRenderer<'a> {
         let binding = self.validated.binding(variable)?;
         let key = match binding.kind() {
             ValidatedBindingKind::Node(node) => node.key.as_str(),
+            ValidatedBindingKind::StageColumn {
+                stage_alias,
+                key_column,
+                ..
+            } => {
+                return Ok(format!(
+                    "{}.{}",
+                    quote_ident(stage_alias),
+                    quote_ident(key_column)
+                ));
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 relationship.key.as_deref().ok_or_else(|| {
                     CoreError::internal(
@@ -442,7 +476,9 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         let binding = self.validated.binding(variable)?;
         let prefix = match binding.kind() {
-            ValidatedBindingKind::Node(node) => format!("node:{}:", node.label),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                format!("node:{}:", node.label)
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 format!("relationship:{}:", relationship.relationship_type)
             }
@@ -467,7 +503,9 @@ impl<'a> SqlRenderer<'a> {
     pub(super) fn render_property_ref(&self, property: &PropertyRef) -> Result<String, CoreError> {
         let binding = self.validated.binding(&property.variable)?;
         let column = match binding.kind() {
-            ValidatedBindingKind::Node(node) => node.column_for_property(&property.property),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                node.column_for_property(&property.property)
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 relationship.column_for_property(&property.property)
             }
@@ -552,10 +590,15 @@ impl<'a> SqlRenderer<'a> {
         let (_, relationship_pattern) =
             self.relationship_pattern_for_variable(relationship_variable)?;
         let binding = self.validated.binding(&relationship_pattern.left)?;
-        let ValidatedBindingKind::Node(node) = binding.kind() else {
-            return Err(CoreError::internal(
-                "validated undirected endpoint keys did not reference a node",
-            ));
+        let node = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                *node
+            }
+            ValidatedBindingKind::Relationship(_) => {
+                return Err(CoreError::internal(
+                    "validated undirected endpoint keys did not reference a node",
+                ));
+            }
         };
         let property_names = node
             .properties

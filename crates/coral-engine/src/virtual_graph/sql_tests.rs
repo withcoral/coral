@@ -1,11 +1,11 @@
 use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
-    ExistsPatternPredicate, GraphPlan, KeyPredicate, Literal, NodePattern, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate,
-    PropertyRef, RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalExpr,
+    ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
+    KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression,
+    OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
 };
 
 const GRAPH: &str = r"
@@ -41,6 +41,23 @@ relationships:
       criticality: criticality
 ";
 
+const STAGED_GRAPH: &str = r"
+version: 1
+name: staged
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+      age: age
+relationships:
+  - type: KNOWS
+    table: { schema: ops, name: knows }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+";
+
 fn date_expression(year: i64, month: i64, day: i64) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::MakeDate {
         year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
@@ -65,6 +82,105 @@ fn lower_graph_plan_renders_forward_relationship_sql() {
              JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
              JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\" \
              WHERE \"n1\".\"tier\" = 'prod' ORDER BY \"n0\".\"full_name\" ASC LIMIT 25"
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_with_order_limit_cte() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: GraphPlan {
+                nodes: vec![NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                }],
+                relationships: Vec::new(),
+                optional_relationships: Vec::new(),
+                optional_matches: Vec::new(),
+                distinct: false,
+                projections: vec![Projection::Key {
+                    variable: "a".to_string(),
+                    alias: "a_id".to_string(),
+                }],
+                predicates: Vec::new(),
+                predicate: None,
+                post_projection_predicate: None,
+                order_by: vec![OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "a".to_string(),
+                        property: "age".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                }],
+                skip: None,
+                limit: Some(2),
+            },
+            exports: vec![GraphStageExport {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            }],
+        }],
+        final_plan: GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "b".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            }],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "a".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("a".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "b".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("b".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        },
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 2) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
     );
 }
 

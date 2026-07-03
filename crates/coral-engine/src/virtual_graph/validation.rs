@@ -62,7 +62,18 @@ pub(crate) struct ValidatedBinding<'a> {
 #[derive(Debug, Clone)]
 pub(crate) enum ValidatedBindingKind<'a> {
     Node(&'a Node),
+    StageColumn {
+        node: &'a Node,
+        stage_alias: String,
+        key_column: String,
+    },
     Relationship(&'a Relationship),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StageColumnBinding {
+    pub(crate) stage_alias: String,
+    pub(crate) key_column: String,
 }
 
 impl Declaration {
@@ -80,6 +91,14 @@ impl Declaration {
         GraphPlanValidator::new(self, plan, None).validate()
     }
 
+    pub(crate) fn validate_graph_plan_with_stage_columns<'a>(
+        &'a self,
+        plan: &'a GraphPlan,
+        stage_columns: BTreeMap<&'a str, StageColumnBinding>,
+    ) -> Result<ValidatedGraphPlan<'a>, CoreError> {
+        GraphPlanValidator::new_with_stage_columns(self, plan, None, stage_columns).validate()
+    }
+
     pub(crate) fn validate_graph_plan_against_catalog(
         &self,
         plan: &GraphPlan,
@@ -94,6 +113,7 @@ impl Declaration {
     pub(crate) fn validate_graph_query(&self, query: &GraphQuery) -> Result<(), CoreError> {
         match query {
             GraphQuery::Plan(plan) => self.validate_graph_plan(plan).map(|_| ()),
+            GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, None),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
                     return Err(CoreError::internal("graph union had no union branches"));
@@ -131,6 +151,7 @@ impl Declaration {
             GraphQuery::Plan(plan) => GraphPlanValidator::new(self, plan, Some(catalog))
                 .validate()
                 .map(|_| ()),
+            GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, Some(catalog)),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
                     return Err(CoreError::internal("graph union had no union branches"));
@@ -157,6 +178,40 @@ impl Declaration {
             }
         }
     }
+
+    fn validate_graph_staged_query(
+        &self,
+        staged: &super::ir::GraphStagedQuery,
+        catalog: Option<&CatalogInfo>,
+    ) -> Result<(), CoreError> {
+        if staged.stages.is_empty() {
+            return Err(CoreError::internal("staged graph query had no stages"));
+        }
+
+        for stage in &staged.stages {
+            GraphPlanValidator::new(self, &stage.plan, catalog)
+                .validate()
+                .map(|_| ())?;
+            for export in &stage.exports {
+                if !stage
+                    .plan
+                    .projections
+                    .iter()
+                    .any(|projection| projection.output_name() == export.column)
+                {
+                    return Err(CoreError::internal(format!(
+                        "staged graph query exported missing column '{}'",
+                        export.column
+                    )));
+                }
+            }
+        }
+
+        let stage_columns = stage_column_bindings(staged)?;
+        GraphPlanValidator::new_with_stage_columns(self, &staged.final_plan, catalog, stage_columns)
+            .validate()
+            .map(|_| ())
+    }
 }
 
 impl<'a> ValidatedGraphPlan<'a> {
@@ -182,6 +237,9 @@ impl<'a> ValidatedGraphPlan<'a> {
     pub(crate) fn node_binding(&self, variable: &str) -> Result<&Node, CoreError> {
         let binding = self.binding(variable)?;
         let ValidatedBindingKind::Node(node) = binding.kind() else {
+            if let ValidatedBindingKind::StageColumn { node, .. } = binding.kind() {
+                return Ok(node);
+            }
             return Err(Diagnostic::new(
                 diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 "variable",
@@ -229,7 +287,9 @@ impl<'a> ValidatedBinding<'a> {
 
     fn column_for_property(&self, property: &str) -> Option<&str> {
         match self.kind {
-            ValidatedBindingKind::Node(node) => node.column_for_property(property),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                node.column_for_property(property)
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 relationship.column_for_property(property)
             }
@@ -241,6 +301,7 @@ struct GraphPlanValidator<'a> {
     graph: &'a Declaration,
     plan: &'a GraphPlan,
     catalog: Option<&'a CatalogInfo>,
+    stage_columns: BTreeMap<&'a str, StageColumnBinding>,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     relationship_mappings: Vec<&'a Relationship>,
 }
@@ -251,6 +312,23 @@ impl<'a> GraphPlanValidator<'a> {
             graph,
             plan,
             catalog,
+            stage_columns: BTreeMap::new(),
+            bindings: BTreeMap::new(),
+            relationship_mappings: Vec::with_capacity(plan.relationships.len()),
+        }
+    }
+
+    fn new_with_stage_columns(
+        graph: &'a Declaration,
+        plan: &'a GraphPlan,
+        catalog: Option<&'a CatalogInfo>,
+        stage_columns: BTreeMap<&'a str, StageColumnBinding>,
+    ) -> Self {
+        Self {
+            graph,
+            plan,
+            catalog,
+            stage_columns,
             bindings: BTreeMap::new(),
             relationship_mappings: Vec::with_capacity(plan.relationships.len()),
         }
@@ -317,7 +395,17 @@ impl<'a> GraphPlanValidator<'a> {
                 pattern.variable.as_str(),
                 ValidatedBinding {
                     alias: format!("n{index}"),
-                    kind: ValidatedBindingKind::Node(node),
+                    kind: if let Some(stage_column) =
+                        self.stage_columns.get(pattern.variable.as_str())
+                    {
+                        ValidatedBindingKind::StageColumn {
+                            node,
+                            stage_alias: stage_column.stage_alias.clone(),
+                            key_column: stage_column.key_column.clone(),
+                        }
+                    } else {
+                        ValidatedBindingKind::Node(node)
+                    },
                 },
             );
         }
@@ -692,7 +780,9 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<&Node, CoreError> {
         let path = path.into();
         match self.bindings.get(variable).map(ValidatedBinding::kind) {
-            Some(ValidatedBindingKind::Node(node)) => Ok(node),
+            Some(
+                ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. },
+            ) => Ok(node),
             Some(ValidatedBindingKind::Relationship(_)) => Err(Diagnostic::new(
                 diagnostic_codes::INVALID_ENDPOINT_VARIABLE,
                 path,
@@ -707,6 +797,33 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()),
         }
     }
+}
+
+pub(crate) fn stage_column_bindings(
+    staged: &super::ir::GraphStagedQuery,
+) -> Result<BTreeMap<&str, StageColumnBinding>, CoreError> {
+    let mut bindings = BTreeMap::new();
+    for (index, stage) in staged.stages.iter().enumerate() {
+        let stage_alias = format!("stage{index}");
+        for export in &stage.exports {
+            if bindings
+                .insert(
+                    export.variable.as_str(),
+                    StageColumnBinding {
+                        stage_alias: stage_alias.clone(),
+                        key_column: export.column.clone(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(CoreError::internal(format!(
+                    "staged graph query exported variable '{}' more than once",
+                    export.variable
+                )));
+            }
+        }
+    }
+    Ok(bindings)
 }
 
 fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), CoreError> {

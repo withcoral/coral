@@ -728,7 +728,9 @@ impl<'a> GraphPlanValidator<'a> {
             return Ok(ScalarType::Unknown);
         };
         let table = match binding.kind() {
-            ValidatedBindingKind::Node(node) => &node.table,
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                &node.table
+            }
             ValidatedBindingKind::Relationship(relationship) => &relationship.table,
         };
         Ok(self.column_scalar_type(table, column))

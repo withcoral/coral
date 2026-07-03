@@ -15,7 +15,7 @@ use super::diagnostic::Diagnostic;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
+    GraphQuery, GraphStagedQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
     LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
     OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
@@ -23,7 +23,7 @@ use super::ir::{
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
     UndirectedRelationshipEndpoint,
 };
-use super::validation::{ValidatedBindingKind, ValidatedGraphPlan};
+use super::validation::{ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings};
 use crate::CoreError;
 
 mod joins;
@@ -93,8 +93,40 @@ impl Declaration {
     pub fn lower_graph_query(&self, query: &GraphQuery) -> Result<SqlTranslation, CoreError> {
         match query {
             GraphQuery::Plan(plan) => self.lower_graph_plan(plan),
+            GraphQuery::Staged(staged) => self.lower_graph_staged_query(staged),
             GraphQuery::Union(union) => self.lower_graph_union(union),
         }
+    }
+
+    fn lower_graph_staged_query(
+        &self,
+        staged: &GraphStagedQuery,
+    ) -> Result<SqlTranslation, CoreError> {
+        if staged.stages.is_empty() {
+            return Err(CoreError::internal("staged graph query had no stages"));
+        }
+
+        let mut ctes = Vec::with_capacity(staged.stages.len());
+        let mut diagnostics = Vec::new();
+        for (index, stage) in staged.stages.iter().enumerate() {
+            let translation = self.lower_graph_plan(&stage.plan)?;
+            diagnostics.extend(translation.diagnostics().iter().cloned());
+            ctes.push(format!(
+                "{} AS ({})",
+                quote_ident(&format!("stage{index}")),
+                translation.sql()
+            ));
+        }
+
+        let stage_columns = stage_column_bindings(staged)?;
+        let final_validated =
+            self.validate_graph_plan_with_stage_columns(&staged.final_plan, stage_columns)?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!("WITH {} {}", ctes.join(", "), final_translation.sql()),
+            diagnostics,
+        ))
     }
 
     fn lower_graph_union(&self, union: &GraphUnion) -> Result<SqlTranslation, CoreError> {

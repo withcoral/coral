@@ -565,7 +565,9 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         let binding = self.validated.binding(&predicate.variable)?;
         let has_key = match binding.kind() {
-            ValidatedBindingKind::Node(node) => node.properties.contains_key(&predicate.key),
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                node.properties.contains_key(&predicate.key)
+            }
             ValidatedBindingKind::Relationship(relationship) => {
                 relationship.properties.contains_key(&predicate.key)
             }
