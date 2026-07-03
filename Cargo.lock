@@ -1402,10 +1402,12 @@ name = "coral-spec"
 version = "0.5.1"
 dependencies = [
  "jsonschema",
+ "reqwest 0.13.4",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror",
  "tracing",
  "url",

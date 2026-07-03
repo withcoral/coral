@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use super::*;
 use crate::{SourceTableFunctionKind, parse_source_manifest_yaml};
@@ -788,7 +789,7 @@ paths:
       operationId: external/list
       responses:
         '200':
-          $ref: 'https://example.com/openapi.yaml#/components/responses/Items'
+          $ref: '#/components/responses/MissingExternal'
 "
         .as_bytes(),
     )
@@ -800,13 +801,120 @@ paths:
         .map(|diagnostic| diagnostic.code.as_str())
         .collect::<Vec<_>>();
     assert!(codes.contains(&"OPENAPI_REF_NOT_FOUND"), "{codes:?}");
-    assert!(
-        codes.contains(&"OPENAPI_EXTERNAL_REF_UNSUPPORTED"),
-        "{codes:?}"
-    );
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
     }
+}
+
+#[test]
+fn importer_hydrates_external_openapi_refs() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_external_ref_fixture(temp.path());
+    let openapi_file = temp.path().join("openapi.yaml");
+    let manifest = parse_source_manifest_yaml(&format!(
+        r"
+name: external_refs
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+",
+        openapi_file.display()
+    ))
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    $ref: paths/items.yaml
+"
+        .as_bytes(),
+    )
+    .expect("external refs import");
+    let operation = ir.operations.first().expect("operation");
+    assert_eq!(operation.id, "items_list");
+    assert_eq!(operation.inputs.len(), 1);
+    let page = operation.inputs.first().expect("page input");
+    assert_eq!(page.name, "page");
+    assert_eq!(page.data_type, IrScalarType::Integer);
+    assert_eq!(operation.output.cardinality, OutputCardinality::List);
+    assert_eq!(operation.output.type_ref, "item");
+    assert!(
+        operation.diagnostics.is_empty(),
+        "{:?}",
+        operation.diagnostics
+    );
+
+    let item = ir
+        .types
+        .iter()
+        .find(|ty| ty.id == "item")
+        .expect("item type");
+    let IrTypeShape::Object { fields } = &item.shape else {
+        panic!("item should import as object: {:?}", item.shape);
+    };
+    assert_eq!(fields.len(), 1);
+    let id = fields.first().expect("id field");
+    assert_eq!(id.name, "id");
+    assert!(matches!(
+        ir.types
+            .iter()
+            .find(|ty| ty.id == id.type_ref)
+            .expect("id type")
+            .shape,
+        IrTypeShape::Scalar(IrScalarType::String)
+    ));
+}
+
+fn write_external_ref_fixture(root: &Path) {
+    std::fs::create_dir_all(root.join("paths")).expect("paths dir");
+    std::fs::create_dir_all(root.join("parameters")).expect("parameters dir");
+    std::fs::create_dir_all(root.join("schemas")).expect("schemas dir");
+    std::fs::write(
+        root.join("paths/items.yaml"),
+        r"
+get:
+  operationId: items/list
+  parameters:
+    - $ref: ../parameters/page.yaml#/Page
+  responses:
+    '200':
+      content:
+        application/json:
+          schema:
+            type: array
+            items:
+              $ref: ../schemas/item.yaml#/Item
+",
+    )
+    .expect("path ref");
+    std::fs::write(
+        root.join("parameters/page.yaml"),
+        r"
+Page:
+  name: page
+  in: query
+  schema: {type: integer}
+",
+    )
+    .expect("parameter ref");
+    std::fs::write(
+        root.join("schemas/item.yaml"),
+        r"
+Item:
+  type: object
+  properties:
+    id: {type: string}
+",
+    )
+    .expect("schema ref");
 }
 
 #[test]

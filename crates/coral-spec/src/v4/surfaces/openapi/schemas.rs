@@ -10,7 +10,7 @@ use crate::v4::surfaces::json_schema::{
     json_schema_scalar_type, merge_json_schema_properties_exact,
 };
 
-use super::import::OpenApiImporter;
+use super::import::{OpenApiImporter, original_ref};
 
 impl OpenApiImporter<'_> {
     #[expect(
@@ -25,7 +25,7 @@ impl OpenApiImporter<'_> {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<String> {
         let resolved = self.resolve_ref(schema, operation_id, diagnostics)?;
-        let type_id = schema.get("$ref").and_then(Value::as_str).map_or_else(
+        let type_id = original_ref(schema).map_or_else(
             || normalize_identifier(suggested_id, "type"),
             type_id_from_ref,
         );
@@ -187,7 +187,7 @@ impl OpenApiImporter<'_> {
         if let Some(description) = schema.get("description").and_then(Value::as_str) {
             return description.to_string();
         }
-        let Some(reference) = schema.get("$ref").and_then(Value::as_str) else {
+        let Some(reference) = original_ref(schema) else {
             return String::new();
         };
         let Some(pointer) = reference.strip_prefix('#') else {

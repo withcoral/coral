@@ -6,7 +6,7 @@ use crate::v4::ir::{
     IrEntityCandidate, IrOperationOutput, OutputCardinality, RestResponseAttachment,
 };
 
-use super::import::OpenApiImporter;
+use super::import::{OpenApiImporter, original_ref};
 
 impl OpenApiImporter<'_> {
     pub(super) fn import_response(
@@ -189,9 +189,7 @@ fn classify_response_schema(
             OutputCardinality::List,
             Vec::new(),
             item.clone(),
-            item.get("$ref")
-                .and_then(Value::as_str)
-                .map(entity_name_from_ref),
+            original_ref(&item).map(entity_name_from_ref),
         );
     }
     if schema
@@ -210,18 +208,14 @@ fn classify_response_schema(
                 OutputCardinality::WrappedList,
                 vec![property_name.to_string()],
                 item.clone(),
-                item.get("$ref")
-                    .and_then(Value::as_str)
-                    .map(entity_name_from_ref),
+                original_ref(&item).map(entity_name_from_ref),
             );
         }
         return (
             OutputCardinality::Singleton,
             Vec::new(),
             schema.clone(),
-            schema
-                .get("$ref")
-                .and_then(Value::as_str)
+            original_ref(schema)
                 .map(entity_name_from_ref)
                 .or_else(|| Some(entity_name_from_path(path))),
         );
