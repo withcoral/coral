@@ -33,3 +33,5 @@ mod query_result_observer_tests;
 mod structured_error_tests;
 #[path = "engine/test_source_tests.rs"]
 mod test_source_tests;
+#[path = "engine/v4_tests.rs"]
+mod v4_tests;
