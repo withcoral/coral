@@ -1,11 +1,25 @@
-//! openCypher frontend: parses (via `decypher`) and compiles Coral's read-only
-//! openCypher subset into the shared graph-plan IR. Owns the `compile_cypher` /
-//! `compile_cypher_query` entry points (with per-graph and parameter-bound
-//! variants) yielding a `GraphPlan` or `GraphQuery`, pre-parse text
-//! normalization, static UNWIND and pattern-alternative expansion, and pattern,
-//! predicate, scalar, function, and EXISTS/COUNT/COLLECT-subquery lowering. The
-//! read-side counterpart to the GraphQL frontend; CST recovery and function
-//! classification split into the `cst_recovery` and `functions` submodules.
+//! openCypher→IR compile-orchestration hub: parses (via `decypher`) and lowers
+//! Coral's read-only openCypher subset into the shared graph-plan IR. Owns the
+//! `compile_cypher` / `compile_cypher_query` entry points (per-graph and
+//! parameter-bound variants) yielding a `GraphPlan` / `GraphQuery`; the
+//! `CypherCompileContext` — a source-derived bundle of span-keyed lookup tables
+//! (variable-only function args, comprehension/reduce/UNWIND sources,
+//! compact-EXISTS queries, ORDER BY null placements), bound parameters, and the
+//! optional graph `Declaration` — threaded read-only through nearly every
+//! compile fn alongside `PredicateCompileMode` (Graph vs CASE-WHEN, carrying
+//! `&GraphPlan` + `&CypherCompileState`); static UNWIND and pattern-alternative
+//! expansion; pattern/clause/statement compilation (the `&mut GraphPlan`
+//! mutation core); and EXISTS/COUNT/COLLECT-subquery lowering. The
+//! scalar-lowering and static literal-folding middle stays one module by
+//! necessity — a single strongly-connected component, mutually recursive through
+//! the dispatch spine (`compile_scalar_expression_in_mode` /
+//! `compile_core_scalar_function_expression` + the single/two/three-argument
+//! compilers): a follow-able recursive-descent engine, not decomposable without a
+//! trait/callback redesign. Read-side counterpart to the GraphQL frontend.
+//! Submodules: `cst_recovery` (CST recovery + pre-parse normalization),
+//! `functions` (function classification), `static_eval` (pure literal folding),
+//! `reference_validation` (context-free reference checks), `variable_rename` (IR
+//! rename visitors), `scalar_builders` (pure IR construction).
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
