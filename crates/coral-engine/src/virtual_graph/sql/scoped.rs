@@ -2276,12 +2276,17 @@ impl<'a> SqlRenderer<'a> {
             self.render_scoped_scalar_expression(left, relationships, local_nodes, local_aliases)?;
         let right =
             self.render_scoped_scalar_expression(right, relationships, local_nodes, local_aliases)?;
-        if *operator == ArithmeticOperator::Power {
-            return Ok(format!("power({left}, {right})"));
-        }
+        let op = match *operator {
+            ArithmeticOperator::Power => return Ok(format!("power({left}, {right})")),
+            ArithmeticOperator::Add => InfixArithmeticOperator::Add,
+            ArithmeticOperator::Subtract => InfixArithmeticOperator::Subtract,
+            ArithmeticOperator::Multiply => InfixArithmeticOperator::Multiply,
+            ArithmeticOperator::Divide => InfixArithmeticOperator::Divide,
+            ArithmeticOperator::Modulo => InfixArithmeticOperator::Modulo,
+        };
         Ok(format!(
             "({left} {} {right})",
-            render_arithmetic_operator(*operator)
+            render_arithmetic_operator(op)
         ))
     }
 

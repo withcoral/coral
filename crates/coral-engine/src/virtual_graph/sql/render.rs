@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use super::{
-    AggregateFunction, ArithmeticOperator, ComparisonOperator, CoreError, Diagnostic, GraphUnion,
+    AggregateFunction, ComparisonOperator, CoreError, Diagnostic, GraphUnion,
     GraphUnionOuterProjectionItem, Literal, LiteralListElementType, NullOrder, OrderDirection,
     OrderExpression, Projection, ScalarExpression, TableRef,
 };
@@ -291,14 +291,22 @@ pub(super) fn projection_output_alias(projection: &Projection) -> Option<&str> {
     }
 }
 
-pub(super) fn render_arithmetic_operator(operator: ArithmeticOperator) -> &'static str {
+#[derive(Debug, Clone, Copy)]
+pub(super) enum InfixArithmeticOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+}
+
+pub(super) fn render_arithmetic_operator(operator: InfixArithmeticOperator) -> &'static str {
     match operator {
-        ArithmeticOperator::Add => "+",
-        ArithmeticOperator::Subtract => "-",
-        ArithmeticOperator::Multiply => "*",
-        ArithmeticOperator::Divide => "/",
-        ArithmeticOperator::Modulo => "%",
-        ArithmeticOperator::Power => unreachable!("power arithmetic lowers as a function"),
+        InfixArithmeticOperator::Add => "+",
+        InfixArithmeticOperator::Subtract => "-",
+        InfixArithmeticOperator::Multiply => "*",
+        InfixArithmeticOperator::Divide => "/",
+        InfixArithmeticOperator::Modulo => "%",
     }
 }
 

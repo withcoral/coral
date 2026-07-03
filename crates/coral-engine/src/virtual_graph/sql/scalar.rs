@@ -412,12 +412,17 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         let left = self.render_scalar_expression(left)?;
         let right = self.render_scalar_expression(right)?;
-        if operator == ArithmeticOperator::Power {
-            return Ok(format!("power({left}, {right})"));
-        }
+        let op = match operator {
+            ArithmeticOperator::Power => return Ok(format!("power({left}, {right})")),
+            ArithmeticOperator::Add => InfixArithmeticOperator::Add,
+            ArithmeticOperator::Subtract => InfixArithmeticOperator::Subtract,
+            ArithmeticOperator::Multiply => InfixArithmeticOperator::Multiply,
+            ArithmeticOperator::Divide => InfixArithmeticOperator::Divide,
+            ArithmeticOperator::Modulo => InfixArithmeticOperator::Modulo,
+        };
         Ok(format!(
             "({left} {} {right})",
-            render_arithmetic_operator(operator)
+            render_arithmetic_operator(op)
         ))
     }
 
