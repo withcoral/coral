@@ -86,12 +86,7 @@ pub(crate) fn optional_u32_argument(
             None,
         ));
     }
-    u32::try_from(value).map_err(|_error| {
-        ErrorData::invalid_params(
-            format!("argument '{key}' must be between {min} and {max}"),
-            None,
-        )
-    })
+    Ok(value as u32)
 }
 
 #[cfg(test)]

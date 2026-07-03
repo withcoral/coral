@@ -52,8 +52,6 @@ const MCP_INITIAL_QUERY_EXAMPLE_LIMIT: usize = 5;
 const DEFAULT_SEARCH_LIMIT: u32 = 10;
 const MIN_SEARCH_LIMIT: u32 = 1;
 const MAX_SEARCH_LIMIT: u32 = 50;
-const MIN_SEARCH_LIMIT_RANGE: i64 = MIN_SEARCH_LIMIT as i64;
-const MAX_SEARCH_LIMIT_RANGE: i64 = MAX_SEARCH_LIMIT as i64;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -140,7 +138,7 @@ struct SearchArgs {
     #[arg(
         long,
         default_value_t = DEFAULT_SEARCH_LIMIT,
-        value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT_RANGE..=MAX_SEARCH_LIMIT_RANGE)
+        value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT as i64..=MAX_SEARCH_LIMIT as i64)
     )]
     limit: u32,
     /// Plain-language metadata search text
@@ -1140,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn search_limit_rejects_values_outside_server_contract() {
+    fn search_limit_rejects_values_outside_cli_contract() {
         Cli::try_parse_from(["coral", "search", "--limit", "0", "github"])
             .expect_err("zero limit should fail before contacting the server");
         Cli::try_parse_from(["coral", "search", "--limit", "51", "github"])
