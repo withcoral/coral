@@ -104,7 +104,7 @@ The MCP stdio server.
 | --------------- | ------------------------------------------------------------------- |
 | MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
 | Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
-| Tools           | `sql`, `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optional `feedback` |
+| Tools           | `sql`, `search`, `list_catalog`, `describe_table`, `list_columns`, optional `feedback` |
 | Resources       | `coral://guide`, `coral://tables`                                   |
 
 Uses `coral-client` to reach `coral-app`, same transport as the CLI.
@@ -119,6 +119,8 @@ The shared gRPC contract.
 | Generated bindings   | Tonic-generated Rust types and service traits                                          |
 
 All inter-crate communication between `coral-client` and `coral-app` goes through these generated types. The active service contracts include source management, query execution, catalog discovery, workspaces, feedback, episodes, traces, and Universal Search.
+
+`SearchService` is the Universal Search contract. It returns typed, bounded search results plus provider status, coverage, and truncation metadata. The catalog-metadata provider is wired today; observed-value search and provider-native fanout report `NotEnabled` until those providers are enabled.
 
 ## Dependency graph
 

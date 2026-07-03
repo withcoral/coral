@@ -17,7 +17,7 @@ const MAX_SEARCH_LIMIT: u32 = 50;
 pub(crate) struct SearchArguments {
     #[schemars(
         length(min = 1),
-        description = "Natural-language clue to route to likely Coral schemas, tables, functions, columns, filters, or locally indexed hints."
+        description = "Plain-language text for finding relevant Coral schemas, tables, functions, columns, or filters."
     )]
     pub(crate) query: String,
     #[serde(default = "default_search_limit")]
@@ -61,7 +61,7 @@ pub(crate) fn search_arguments(
 
 fn search_description(context: &ToolDescriptionContext) -> String {
     format!(
-        "Search Coral metadata and routing hints across connected sources/schemas. {} {} table(s) and {} table function(s) are currently visible. Returns typed results plus provider statuses; adapters do not execute SQL or provider-native fanout themselves.",
+        "Find relevant Coral tables, table functions, columns, and filters across connected sources/schemas. {} {} table(s) and {} table function(s) are currently visible. Returns typed results plus provider statuses; use `sql` to query the data.",
         context.connected_sources_sentence(),
         context.visible_table_count,
         context.visible_function_count

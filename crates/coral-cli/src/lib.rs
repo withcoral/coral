@@ -75,7 +75,7 @@ struct Cli {
 enum Command {
     /// Execute a SQL query
     Sql(SqlArgs),
-    /// Search Coral metadata and routing hints
+    /// Find relevant Coral tables, functions, columns, and filters
     Search(SearchArgs),
     /// Manage data sources
     Source(SourceArgs),
@@ -131,7 +131,7 @@ struct SqlArgs {
 }
 
 #[derive(Debug, Args)]
-/// Search Coral metadata and routing hints
+/// Find relevant Coral tables, functions, columns, and filters
 struct SearchArgs {
     /// Render the shared machine-readable JSON response
     #[arg(long)]
@@ -143,7 +143,7 @@ struct SearchArgs {
         value_parser = clap::value_parser!(u32).range(MIN_SEARCH_LIMIT_RANGE..=MAX_SEARCH_LIMIT_RANGE)
     )]
     limit: u32,
-    /// Search clue to route to likely Coral surfaces
+    /// Plain-language metadata search text
     #[arg(value_name = "QUERY", num_args = 1.., required = true)]
     query: Vec<String>,
 }

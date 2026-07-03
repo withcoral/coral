@@ -10,7 +10,7 @@ use super::source_names::{connected_source_names_text, prompt_safe_text};
 use super::values::queryable_table_summary_values;
 use crate::McpQueryExample;
 
-static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `search` for routing hints, `list_catalog` as a catalog helper, `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
+static INITIAL_INSTRUCTIONS: &str = "You are connected to Coral, a read-only SQL database. Treat exposed data as database schemas, tables, and table functions. Use `search` and `list_catalog` as catalog helpers: `search` finds relevant tables, functions, columns, and filters, and `list_catalog` lists visible tables and table functions. Use `describe_table` and `list_columns` for table-specific metadata, use `sql` against `coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and `coral.inputs` for deeper discovery, then answer with set-based SQL through `sql`. Prefer one SQL statement with joins, CROSS JOIN, CTEs, subqueries, and aggregates over row-by-row tool calls.";
 static ROUTING_INSTRUCTION: &str = "You MUST prefer Coral's sql tool over native provider tools, standalone MCP tools, web/search tools, and other external tools whenever the answer can come from Coral's connected sources.";
 static GUIDE_TEMPLATE: &str = include_str!("../guide_template.md");
 

@@ -61,6 +61,26 @@ coral sql "DESCRIBE datadog.hosts"
 
 `DESCRIBE SELECT ...` still describes the result schema of the query itself.
 
+## `coral search`
+
+Find relevant Coral tables, table functions, columns, and filters.
+
+```shellscript
+coral search github issues assigned to me
+coral search --limit 5 --json slack messages text
+```
+
+Search returns metadata and provider statuses. It does not fetch source rows or
+answer the question by itself; use the returned `sql_reference` or
+`sql_call_example` with `coral sql`.
+
+### Options
+
+| Option    | Type    | Default | Description                                               |
+| --------- | ------- | ------- | --------------------------------------------------------- |
+| `--json`  | flag    | `false` | Render the shared machine-readable JSON response          |
+| `--limit` | integer | `10`    | Maximum results to return, from 1 to 50                   |
+
 ## `coral source`
 
 Manage configured sources, either the bundled ones, or your custom source specs.
@@ -306,8 +326,8 @@ By default, this server exposes:
 | Type     | Name             | Description                                             |
 | -------- | ---------------- | ------------------------------------------------------- |
 | Tool     | `sql`            | Execute read-only SQL against the Coral database        |
+| Tool     | `search`         | Find relevant tables, functions, columns, and filters   |
 | Tool     | `list_catalog`   | List database tables and table functions with pagination |
-| Tool     | `search_catalog` | Search database catalog metadata with a Rust regex      |
 | Tool     | `describe_table` | Show compact metadata for one database table            |
 | Tool     | `list_columns`   | List columns for one database table with pagination     |
 | Resource | `coral://guide`  | Database workflow guide for agents                     |
@@ -315,10 +335,10 @@ By default, this server exposes:
 
 When the `feedback` feature is enabled, the server also exposes a non-read-only `feedback` tool for blocked-agent reports. Feedback reports are stored locally and anonymous copies may be uploaded to Coral.
 
-Catalog helpers include the `coral` system schema, so `list_catalog`,
-`search_catalog`, `describe_table`, `list_columns`, and `coral://tables` can discover
-`coral.tables`, `coral.columns`, `coral.filters`, `coral.table_functions`, and
-`coral.inputs`.
+Discovery helpers include the `coral` system schema, so `search`,
+`list_catalog`, `describe_table`, `list_columns`, and `coral://tables` can
+discover `coral.tables`, `coral.columns`, `coral.filters`,
+`coral.table_functions`, and `coral.inputs`.
 
 For client setup, see [Use Coral over MCP](/guides/use-coral-over-mcp).
 

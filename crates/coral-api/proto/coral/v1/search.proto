@@ -19,9 +19,9 @@ message SearchRequest {
   uint32 limit = 3;
 }
 
-// Universal Search response with typed, bounded routing hints.
+// Universal Search response with typed, bounded results.
 message SearchResponse {
-  // Ordered search hints.
+  // Ordered search results.
   repeated SearchResult results = 1;
   // Provider coverage and error disclosure.
   repeated SearchProviderStatus provider_statuses = 2;
