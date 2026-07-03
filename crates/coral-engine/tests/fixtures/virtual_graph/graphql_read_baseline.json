@@ -2,7 +2,7 @@
   "suite": "coral-graphql-read-baseline",
   "description": "Curated GraphQL read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through GraphQL parsing, graph validation, shared graph IR lowering, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 14,
+    "Aggregation": 20,
     "BooleanFilters": 8,
     "ErrorHandling": 16,
     "GeneratedClientShape": 9,
@@ -10,7 +10,7 @@
     "NestedRelationships": 15,
     "RelationshipExistence": 8,
     "RootSelection": 4,
-    "RowModifiers": 15,
+    "RowModifiers": 17,
     "ScalarFilters": 18
   },
   "scenarios": [
@@ -2148,7 +2148,196 @@
       "query": "query { Person { name } person { name } }",
       "expected": {
         "kind": "error",
-        "contains": "GraphQL virtual graph queries must select exactly one included root node field"
+          "contains": "GraphQL virtual graph queries must select exactly one included root node field"
+      }
+    },
+    {
+      "id": "rich-sum-avg-distinct-age",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person { total: _sum(field: age) distinctTotal: _sumDistinct(field: age) distinctAverage: _avgDistinct(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "total": 180,
+            "distinctTotal": 140,
+            "distinctAverage": 35.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-min-max-distinct-age",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person { distinctYoungest: _minDistinct(field: age) distinctOldest: _maxDistinct(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "distinctYoungest": 20,
+            "distinctOldest": 50
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-median-distinct-age",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person { medianAge: _median(field: age) distinctMedianAge: _medianDistinct(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "medianAge": 25.0,
+            "distinctMedianAge": 35.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-collect-distinct-age",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person(orderBy: [{ field: age, direction: ASC }]) { age ages: _collect(field: age) distinctAges: _collectDistinct(field: age) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 20,
+            "ages": [
+              20,
+              20,
+              20
+            ],
+            "distinctAges": [
+              20
+            ]
+          },
+          {
+            "age": 30,
+            "ages": [
+              30
+            ],
+            "distinctAges": [
+              30
+            ]
+          },
+          {
+            "age": 40,
+            "ages": [
+              40
+            ],
+            "distinctAges": [
+              40
+            ]
+          },
+          {
+            "age": 50,
+            "ages": [
+              50
+            ],
+            "distinctAges": [
+              50
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-stddev-sample-weight",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person { spread: _stDev(field: weight) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "spread": 2.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-stddev-population-score",
+      "feature": "Aggregation",
+      "fixture": "rich",
+      "query": "query { Person { spread: _stDevP(field: score) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "spread": 2.0
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-order-nulls-first",
+      "feature": "RowModifiers",
+      "fixture": "rich",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC, nulls: FIRST }, { field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Cee"
+          },
+          {
+            "name": "Eve"
+          },
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Bea"
+          },
+          {
+            "name": "Dot"
+          },
+          {
+            "name": "Fay"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rich-order-nulls-last",
+      "feature": "RowModifiers",
+      "fixture": "rich",
+      "query": "query { Person(orderBy: [{ field: city, direction: ASC, nulls: LAST }, { field: name, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Bea"
+          },
+          {
+            "name": "Dot"
+          },
+          {
+            "name": "Fay"
+          },
+          {
+            "name": "Cee"
+          },
+          {
+            "name": "Eve"
+          }
+        ]
       }
     }
   ]

@@ -16,16 +16,16 @@ const DEFAULT_GRAPHQL_BASELINE_FIXTURE: &str =
     "crates/coral-engine/tests/fixtures/virtual_graph/graphql_read_baseline.json";
 const DEFAULT_UPSTREAM_SCENARIO_FLOOR: usize = 1_615;
 const DEFAULT_UPSTREAM_READ_CANDIDATE_FLOOR: usize = 1_294;
-const GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS: usize = 9_091;
+const GRAPHQL_SCHEMA_COVERAGE_OVERALL_FLOOR_BASIS_POINTS: usize = 10_000;
 const GRAPHQL_SCHEMA_COVERAGE_CATEGORY_FLOORS: &[(&str, usize)] = &[
-    ("Aggregates", 9),
+    ("Aggregates", 17),
     ("BooleanCombinators", 4),
     ("Directives", 2),
     ("ElementIdOperators", 18),
     ("IdentityFields", 6),
     ("IdentityOperators", 10),
     ("MetaFields", 2),
-    ("NullOrders", 0),
+    ("NullOrders", 2),
     ("OrderDirections", 2),
     ("RejectionPaths", 15),
     ("RootFieldForms", 3),
@@ -33,18 +33,7 @@ const GRAPHQL_SCHEMA_COVERAGE_CATEGORY_FLOORS: &[(&str, usize)] = &[
     ("ScalarOperators", 18),
     ("Traversal", 6),
 ];
-const GRAPHQL_SCHEMA_COVERAGE_ACKNOWLEDGED_UNCOVERED: &[&str] = &[
-    "Aggregates:_avgDistinct",
-    "Aggregates:_collectDistinct",
-    "Aggregates:_maxDistinct",
-    "Aggregates:_medianDistinct",
-    "Aggregates:_minDistinct",
-    "Aggregates:_stDev",
-    "Aggregates:_stDevP",
-    "Aggregates:_sumDistinct",
-    "NullOrders:FIRST",
-    "NullOrders:LAST",
-];
+const GRAPHQL_SCHEMA_COVERAGE_ACKNOWLEDGED_UNCOVERED: &[&str] = &[];
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct Args {
@@ -1309,9 +1298,9 @@ mod tests {
             .expect("GraphQL baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 139);
+        assert_eq!(report.scenario_count, 147);
         assert_eq!(report.expected_error_count, 16);
-        assert_eq!(report.feature_counts.get("Aggregation"), Some(&14));
+        assert_eq!(report.feature_counts.get("Aggregation"), Some(&20));
         assert_eq!(report.feature_counts.get("RootSelection"), Some(&4));
         assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&18));
         assert!(report.feature_floor_violations.is_empty());
@@ -1328,20 +1317,20 @@ mod tests {
             .expect("GraphQL schema coverage report should build");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 139);
-        assert_eq!(report.accepted_scenario_count, 123);
+        assert_eq!(report.scenario_count, 147);
+        assert_eq!(report.accepted_scenario_count, 131);
         assert_eq!(report.error_scenario_count, 16);
-        assert_eq!(report.overall.covered, 100);
+        assert_eq!(report.overall.covered, 110);
         assert_eq!(report.overall.total, 110);
-        assert_eq!(report.overall.basis_points, 9_091);
-        assert_eq!(report.alias_spellings.covered, 62);
+        assert_eq!(report.overall.basis_points, 10_000);
+        assert_eq!(report.alias_spellings.covered, 64);
         assert_eq!(report.alias_spellings.total, 137);
         assert_eq!(
             report
                 .categories
                 .get("Aggregates")
                 .map(|coverage| (coverage.covered, coverage.total)),
-            Some((9, 17))
+            Some((17, 17))
         );
         assert_eq!(
             report
@@ -1360,6 +1349,13 @@ mod tests {
         assert_eq!(
             report
                 .categories
+                .get("NullOrders")
+                .map(|coverage| (coverage.covered, coverage.total)),
+            Some((2, 2))
+        );
+        assert_eq!(
+            report
+                .categories
                 .get("RejectionPaths")
                 .map(|coverage| (coverage.covered, coverage.total)),
             Some((15, 15))
@@ -1371,8 +1367,8 @@ mod tests {
                 .map(|coverage| (coverage.covered, coverage.total)),
             Some((18, 18))
         );
-        assert_eq!(report.overall_floor_basis_points, 9_091);
-        assert_eq!(report.category_covered_floors.get("Aggregates"), Some(&9));
+        assert_eq!(report.overall_floor_basis_points, 10_000);
+        assert_eq!(report.category_covered_floors.get("Aggregates"), Some(&17));
         assert_eq!(
             report.category_covered_floors.get("ElementIdOperators"),
             Some(&18)
@@ -1381,6 +1377,7 @@ mod tests {
             report.category_covered_floors.get("IdentityOperators"),
             Some(&10)
         );
+        assert_eq!(report.category_covered_floors.get("NullOrders"), Some(&2));
         assert_eq!(
             report.category_covered_floors.get("RejectionPaths"),
             Some(&15)

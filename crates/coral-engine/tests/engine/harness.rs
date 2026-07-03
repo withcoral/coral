@@ -115,6 +115,66 @@ pub(crate) fn dir_url(path: &Path) -> String {
     format!("file://{}/", path.display())
 }
 
+/// Richer SHARED virtual-graph fixture ("fixture B"): duplicated numeric values (meaningful
+/// DISTINCT aggregates), a numeric spread (stddev), and null-bearing `city` (null ordering).
+/// People-only (single-label Person) — relationships are `#[serde(default)]` so a node-only graph
+/// is valid; a KNOWS extension is a documented follow-up for relationship-level cypher aggregates.
+pub(crate) fn write_rich_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "rich_people.jsonl",
+        &[
+            json!({"id": 1, "name": "Ada", "age": 20, "city": "London", "score": 8.0,  "weight": 7.0}),
+            json!({"id": 2, "name": "Bea", "age": 20, "city": "London", "score": 8.0,  "weight": 9.0}),
+            json!({"id": 3, "name": "Cee", "age": 20, "city": null,     "score": 8.0,  "weight": 10.0}),
+            json!({"id": 4, "name": "Dot", "age": 30, "city": "Paris",  "score": 12.0, "weight": 10.0}),
+            json!({"id": 5, "name": "Eve", "age": 40, "city": null,     "score": 12.0, "weight": 11.0}),
+            json!({"id": 6, "name": "Fay", "age": 50, "city": "Paris",  "score": 12.0, "weight": 13.0}),
+        ],
+    );
+}
+
+pub(crate) fn rich_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "rich",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "people",
+                "description": "Richer shared virtual-graph people fixture (duplicates, spread, nulls)",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "rich_people.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "name", "type": "Utf8" },
+                    { "name": "age", "type": "Int64" },
+                    { "name": "city", "type": "Utf8" },
+                    { "name": "score", "type": "Float64" },
+                    { "name": "weight", "type": "Float64" }
+                ]
+            }
+        ]
+    })
+}
+
+pub(crate) const RICH_GRAPH: &str = r"
+version: 1
+name: rich-shared-fixture
+description: Richer shared virtual-graph fixture — duplicated values, numeric spread, null-bearing props
+nodes:
+  - label: Person
+    table: { schema: rich, name: people }
+    key: id
+    properties:
+      name: name
+      age: age
+      city: city
+      score: score
+      weight: weight
+";
+
 pub(crate) fn users_rows() -> Vec<Value> {
     vec![
         json!({"id": 1, "name": "Ada", "email": "ada@example.com"}),

@@ -23,6 +23,16 @@ struct BaselineScenario {
     feature: String,
     query: String,
     expected: BaselineExpectation,
+    #[serde(default)]
+    fixture: BaselineFixture,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BaselineFixture {
+    #[default]
+    Baseline,
+    Rich,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,13 +57,22 @@ async fn graphql_read_baseline_gate() {
 
     let temp = TempDir::new().expect("temp dir");
     write_graphql_fixture(temp.path());
+    crate::harness::write_rich_fixture(temp.path());
     let graph = GraphDeclaration::from_yaml(GRAPHQL_BASELINE_GRAPH)
         .expect("GraphQL baseline graph should parse");
+    let rich_graph = GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
+        .expect("rich fixture graph should parse");
 
     for scenario in suite.scenarios {
-        let source = build_source(graphql_manifest(temp.path()));
+        let (source, graph) = match scenario.fixture {
+            BaselineFixture::Baseline => (build_source(graphql_manifest(temp.path())), &graph),
+            BaselineFixture::Rich => (
+                build_source(crate::harness::rich_manifest(temp.path())),
+                &rich_graph,
+            ),
+        };
         let result =
-            CoralQuery::execute_graphql(&[source], test_runtime(), &graph, &scenario.query).await;
+            CoralQuery::execute_graphql(&[source], test_runtime(), graph, &scenario.query).await;
         match scenario.expected {
             BaselineExpectation::Rows { ordered, mut rows } => {
                 let execution = result.unwrap_or_else(|error| {
