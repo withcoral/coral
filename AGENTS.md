@@ -35,8 +35,8 @@
   you need a stable port. Use `make postgres-start` when you only need the
   server, `make postgres-stop` when finished, and `make postgres-clean` to
   remove the reusable container.
-- Run `make schema-check` before submitting PRs that touch generated source
-  manifest schemas or the Rust helpers that generate them. Use
+- Run `make schema-check` before submitting PRs that touch generated manifest
+  schemas or the Rust helpers that generate them. Use
   `make schema-generate` to refresh generated schema files. The Validate
   workflow enforces this through its `schema-freshness` job when schema inputs
   change.
