@@ -1,3 +1,9 @@
+//! Scoped-subquery SQL rendering for the SQL Lowerer: emits the correlated inline bodies of
+//! EXISTS / COUNT / COLLECT subqueries — scoped pattern SELECTs, count/collect/distinct-count
+//! forms, nested scopes, and the predicate and scalar-expression rendering evaluated inside a
+//! subquery scope — plus the inner-vs-outer scope classification that decides precomputability.
+//! The scoped counterpart to the top-level `predicates`/`scalar`/`subqueries` renderers.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

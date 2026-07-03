@@ -1,3 +1,9 @@
+//! Binding and graph-metadata reference rendering for the SQL Lowerer: resolves graph
+//! bindings and projection aliases into SQL column expressions for properties, keys,
+//! element ids, labels, relationship types, property keys, and presence/identity
+//! (including undirected-endpoint variants), plus precomputed EXISTS/COUNT/COLLECT
+//! scalar-subquery result references and their EXISTS local-node/relationship mappings.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

@@ -1,3 +1,9 @@
+//! Type-classification helpers for the graph plan validator: stateless free functions that
+//! derive `ScalarType`s from literals, literal lists and column data types, apply numeric
+//! result-type promotion, and expose aggregate-function metadata (SQL name, numeric-target
+//! and graph-key-target rules, DISTINCT `PERCENTILE_CONT` rejection) plus projection-alias
+//! extraction. Pure helpers with no validator state, unlike the sibling `validation/*` impls.
+
 use super::{
     AggregateFunction, CoreError, Diagnostic, Literal, LiteralListElementType, Projection,
     ScalarType,

@@ -1,3 +1,9 @@
+//! Precomputed scalar-subquery lowering for the SQL Lowerer: discovers EXISTS/COUNT/COLLECT
+//! scalar-subquery candidates across projections, predicates and scalar expressions, then
+//! renders them as precomputed LEFT JOIN subqueries — correlated and uncorrelated, over node
+//! or relationship patterns, including DISTINCT-count targets — with their correlation
+//! conditions. Populates the Lowerer's `precomputed_scalar_subqueries` set.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

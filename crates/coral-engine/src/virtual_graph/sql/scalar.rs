@@ -1,3 +1,9 @@
+//! Scalar-expression rendering for the SQL Lowerer: translates graph-plan
+//! `ScalarExpression`s into `DataFusion` SQL — structural and graph-metadata references,
+//! `CAST/TRY_CAST`, unary/binary/ternary string and math functions, COALESCE, REPLACE,
+//! ROUND, SUBSTRING, arithmetic, CASE, and presence-gated expressions. The top-level
+//! (non-scoped) counterpart to the scoped-subquery scalar rendering in `scoped`.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

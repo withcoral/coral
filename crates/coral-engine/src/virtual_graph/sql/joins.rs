@@ -1,3 +1,8 @@
+//! FROM-clause construction for the SQL Lowerer: assembles the graph plan's join tree —
+//! start and cross-joined nodes, mandatory and OPTIONAL relationship joins, OPTIONAL MATCH
+//! scope grouping and anchoring, and relationship orientation/label matching with the
+//! resulting join conditions. Mutating `Lowerer` methods over `from_clause`/`joined_nodes`.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

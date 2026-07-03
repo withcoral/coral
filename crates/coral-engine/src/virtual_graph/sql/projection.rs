@@ -1,3 +1,8 @@
+//! Projection rendering for the SQL Lowerer: builds the `SELECT`, `GROUP BY` and `ORDER BY`
+//! clauses from graph-plan projections — projected columns, aggregate targets/invocations,
+//! aggregation detection and grouping keys, and order expressions — and rejects projection
+//! scalar/structural/COLLECT/predicate subqueries that were not precomputed into joins.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,

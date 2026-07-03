@@ -1,3 +1,8 @@
+//! Predicate rendering for the SQL Lowerer: emits `WHERE` (pre-projection) and `HAVING`
+//! (post-projection) SQL from graph-plan predicate trees — property, scalar, key,
+//! element-id, presence, property-key-membership and EXISTS-pattern comparison leaves,
+//! their boolean-expression walkers, and the right-hand-side operand rendering.
+
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,
