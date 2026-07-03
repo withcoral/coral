@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 regex.workspace = true
 rmcp.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -20,9 +21,11 @@ tonic.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
+uuid.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
+coral-telemetry.workspace = true
 
 [dev-dependencies]
 coral-app.workspace = true

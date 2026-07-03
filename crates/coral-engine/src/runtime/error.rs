@@ -10,6 +10,7 @@ use crate::TableFunctionInfo;
 use crate::backends::http::ProviderQueryError;
 use crate::backends::mcp::McpProviderQueryError;
 use crate::contracts::{ColumnParts, StructuredQueryError, TableRefParts};
+use crate::runtime::dependent_join::error::DependentJoinError;
 use crate::{
     CoreError, QueryResultObserverError, SourceDecoratorError, SourceInputResolverError, TableInfo,
 };
@@ -59,6 +60,9 @@ pub(crate) fn datafusion_to_core_with_sql_and_table_functions(
             }
             if let Some(source_input_error) = inner.downcast_ref::<SourceInputResolverError>() {
                 return source_input_resolver_error_to_core(source_input_error);
+            }
+            if let Some(dependent_join_error) = inner.downcast_ref::<DependentJoinError>() {
+                return dependent_join_error.to_core_error();
             }
             CoreError::internal(inner.to_string())
         }

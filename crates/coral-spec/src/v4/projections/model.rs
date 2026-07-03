@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
 use crate::v4::ir::IrInputLocation;
-use crate::{
-    DetailHintSpec, ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind,
-};
+use crate::{DetailHintSpec, ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectionCatalog {
@@ -18,6 +16,8 @@ pub struct ProjectionCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Projection {
     pub name: String,
+    #[serde(default)]
+    pub namespace: String,
     pub kind: ProjectionKind,
     pub description: String,
     pub guide: String,
@@ -26,7 +26,6 @@ pub struct Projection {
     pub visibility: ProjectionVisibility,
     pub inputs: Vec<ProjectionInput>,
     pub columns: Vec<ProjectionColumn>,
-    pub pagination: PaginationSpec,
     pub search_limits: Option<SearchLimitsSpec>,
     pub detail_hints: Vec<DetailHintSpec>,
     pub diagnostics: Vec<Diagnostic>,
@@ -83,7 +82,7 @@ mod tests {
         Projection, ProjectionCatalog, ProjectionKind, ProjectionVisibility, SqlInputExposure,
     };
     use crate::v4::{PROJECTION_GENERATOR_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
-    use crate::{ManifestDataType, PaginationSpec, SearchLimitsSpec, SourceTableFunctionKind};
+    use crate::{ManifestDataType, SearchLimitsSpec, SourceTableFunctionKind};
 
     #[test]
     fn projection_catalog_yaml_uses_editor_friendly_enum_shapes() {
@@ -93,6 +92,7 @@ mod tests {
             generator_version: PROJECTION_GENERATOR_VERSION.to_string(),
             projections: vec![Projection {
                 name: "search_issues".to_string(),
+                namespace: "demo".to_string(),
                 kind: ProjectionKind::TableFunction {
                     function_kind: SourceTableFunctionKind::Search,
                 },
@@ -103,7 +103,6 @@ mod tests {
                 visibility: ProjectionVisibility::Published,
                 inputs: Vec::new(),
                 columns: Vec::new(),
-                pagination: PaginationSpec::default(),
                 search_limits: Some(SearchLimitsSpec {
                     default_top_k: 30,
                     max_top_k: 100,
@@ -128,9 +127,48 @@ mod tests {
             yaml.contains("function_kind: search"),
             "missing function kind: {yaml}"
         );
+        assert!(
+            !yaml.contains("pagination:"),
+            "projection catalog should not serialize pagination: {yaml}"
+        );
 
         serde_yaml::from_str::<ProjectionCatalog>(&yaml)
             .expect("projection catalog should round-trip");
+    }
+
+    #[test]
+    fn projection_deserializes_legacy_catalogs_without_namespace() {
+        let raw = format!(
+            r"
+artifact_schema_version: {V4_ARTIFACT_SCHEMA_VERSION}
+source_name: demo
+generator_version: {PROJECTION_GENERATOR_VERSION}
+projections:
+  - name: search_issues
+    kind:
+      type: table_function
+      value:
+        function_kind: search
+    description: ''
+    guide: ''
+    surface_id: rest
+    operation_id: issues/search
+    visibility: published
+    inputs: []
+    columns: []
+    search_limits: null
+    detail_hints: []
+    diagnostics: []
+diagnostics: []
+"
+        );
+
+        let catalog: ProjectionCatalog =
+            serde_yaml::from_str(&raw).expect("legacy projection catalog should deserialize");
+        assert_eq!(
+            catalog.projections.first().expect("projection").namespace,
+            ""
+        );
     }
 
     #[test]

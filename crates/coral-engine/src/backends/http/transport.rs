@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use datafusion::error::{DataFusionError, Result};
+use opentelemetry::Context as OtelContext;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use tracing::Instrument as _;
 use tracing::field;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::RequestAuthenticator;
 use crate::backends::http::ProviderQueryError;
@@ -34,6 +36,7 @@ pub(super) struct OutgoingHttpRequest<'a> {
     pub(super) auth: &'a AuthSpec,
     pub(super) request_headers: &'a [HeaderSpec],
     pub(super) request_authenticators: &'a HashMap<String, Arc<dyn RequestAuthenticator>>,
+    pub(super) trace_context: Option<&'a OtelContext>,
     pub(super) table_headers: &'a [HeaderSpec],
     pub(super) table_name: &'a str,
     pub(super) method: HttpMethod,
@@ -68,6 +71,7 @@ pub(super) async fn execute_request(
         auth,
         request_headers,
         request_authenticators,
+        trace_context,
         table_headers,
         table_name,
         method,
@@ -154,6 +158,9 @@ pub(super) async fn execute_request(
             server.port = field::Empty,
             url.full = %traced_url,
         );
+        if let Some(trace_context) = trace_context {
+            drop(request_span.set_parent(trace_context.clone()));
+        }
         record_trace_http_endpoint(&request_span, &trace_endpoint);
         if attempt > 1 {
             request_span.record(
@@ -491,6 +498,7 @@ mod tests {
                 auth: &AuthSpec::default(),
                 request_headers: &[],
                 request_authenticators: &HashMap::new(),
+                trace_context: None,
                 table_headers: &[],
                 table_name: "items",
                 method: HttpMethod::GET,

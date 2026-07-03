@@ -18,6 +18,39 @@ pub fn normalize_identifier(value: &str, prefix: &str) -> String {
     }
 }
 
+pub(crate) fn normalize_sql_identifier(value: &str, prefix: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut output = String::new();
+    let mut last_underscore = false;
+    for (index, c) in chars.iter().copied().enumerate() {
+        if c.is_ascii_alphanumeric() {
+            let previous = index.checked_sub(1).and_then(|idx| chars.get(idx)).copied();
+            let next = chars.get(index + 1).copied();
+            let starts_camel_word = c.is_ascii_uppercase()
+                && !output.is_empty()
+                && !last_underscore
+                && (previous
+                    .is_some_and(|prev| prev.is_ascii_lowercase() || prev.is_ascii_digit())
+                    || (previous.is_some_and(|prev| prev.is_ascii_uppercase())
+                        && next.is_some_and(|next| next.is_ascii_lowercase())));
+            if starts_camel_word {
+                output.push('_');
+            }
+            output.push(c.to_ascii_lowercase());
+            last_underscore = false;
+        } else if !last_underscore {
+            output.push('_');
+            last_underscore = true;
+        }
+    }
+    let output = output.trim_matches('_').to_string();
+    if output.is_empty() || output.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        format!("{prefix}_{output}")
+    } else {
+        output
+    }
+}
+
 pub(crate) fn singularize(value: &str) -> String {
     if let Some(stem) = value.strip_suffix("ies")
         && !stem.is_empty()
@@ -69,4 +102,27 @@ pub(crate) fn stable_suffix(value: &str) -> String {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}").chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_sql_identifier;
+
+    #[test]
+    fn sql_identifier_normalization_splits_camel_case_and_acronyms() {
+        let cases = [
+            ("perPage", "per_page"),
+            ("pullNumber", "pull_number"),
+            ("notificationID", "notification_id"),
+            ("repositoryURLValue", "repository_url_value"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_sql_identifier(input, "input"),
+                expected,
+                "failed to normalize {input}"
+            );
+        }
+    }
 }

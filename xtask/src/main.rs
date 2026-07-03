@@ -10,6 +10,8 @@
 //!     plugin tree into a distribution checkout.
 //!   - `perf-check` runs command-level performance regression checks.
 //!   - `generate-schemas` refreshes checked-in generated JSON schemas.
+//!   - `release-macos-sign-notarize` signs and notarizes macOS release
+//!     artifacts.
 
 #![allow(
     clippy::print_stderr,
@@ -25,7 +27,9 @@ use clap::{Parser, Subcommand};
 
 mod detect;
 mod docs;
+mod env;
 mod perf;
+mod release;
 mod schemas;
 mod skills;
 mod sources;
@@ -52,6 +56,8 @@ enum Command {
     PerfCheck(perf::Args),
     /// Regenerate checked-in generated JSON schemas.
     GenerateSchemas(schemas::Args),
+    /// Sign, package, and notarize one macOS release binary.
+    ReleaseMacosSignNotarize(release::MacosSignNotarizeArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -100,5 +106,6 @@ fn run(command: &Command) -> Result<bool> {
         Command::ExportSkills(args) => skills::export(&args.dest),
         Command::PerfCheck(args) => perf::run(args),
         Command::GenerateSchemas(args) => schemas::run(args),
+        Command::ReleaseMacosSignNotarize(args) => release::macos_sign_notarize(args),
     }
 }

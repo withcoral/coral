@@ -1,24 +1,35 @@
 //! Focused helpers for the Coral MCP surface.
 
+mod arguments;
 mod catalog;
+mod context;
 mod discovery;
+mod episode;
 mod errors;
+mod feedback;
 mod resources;
+mod schema;
+mod source_names;
+mod sql;
+mod tool_names;
 mod tools;
 mod values;
 
 pub(crate) use catalog::{
-    describe_table_value, list_catalog_value, list_columns_value, search_catalog_value,
+    CatalogToolKind, describe_table_arguments, describe_table_value, list_catalog_arguments,
+    list_catalog_value, list_columns_arguments, list_columns_table_fallback_value,
+    list_columns_value, search_catalog_arguments, search_catalog_value,
 };
-pub(crate) use discovery::{Pagination, parse_pagination, parse_pagination_with_limits};
+pub(crate) use context::ToolDescriptionContext;
+pub(crate) use episode::{
+    EpisodeId, EpisodeOpenedValue, open_episode_arguments, optional_episode_id_argument,
+};
 pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
+pub(crate) use feedback::{FeedbackStoredValue, feedback_arguments};
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,
 };
-pub(crate) use tools::{
-    CatalogToolKind, build_tool_result, describe_table_arguments, describe_table_tool,
-    feedback_tool, list_catalog_arguments, list_catalog_tool, list_columns_arguments,
-    list_columns_tool, required_string_argument, search_catalog_arguments, search_catalog_tool,
-    sql_tool,
-};
+pub(crate) use sql::{SqlBatchValue, SqlQueryResultValue, sql_arguments};
+pub(crate) use tool_names::ToolName;
+pub(crate) use tools::{available_tools, build_tool_result};

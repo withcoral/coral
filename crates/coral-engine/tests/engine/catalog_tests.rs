@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use coral_engine::{ColumnInfo, CoralQuery, CoreError, QuerySource, TableInfo};
+use coral_engine::{CoralQuery, CoreError, QuerySource, TableInfo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -89,6 +89,8 @@ fn build_catalog_sources() -> (TempDir, Vec<QuerySource>) {
     (temp, sources)
 }
 
+const SYSTEM_TABLE_NAMES: &[&str] = &["columns", "filters", "inputs", "table_functions", "tables"];
+
 #[tokio::test]
 async fn coral_tables_lists_installed_sources() {
     let (_temp, sources) = build_catalog_sources();
@@ -97,7 +99,8 @@ async fn coral_tables_lists_installed_sources() {
         &CoralQuery::execute_sql(
             &sources,
             test_runtime(),
-            "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
+            "SELECT schema_name, table_name FROM coral.tables \
+             WHERE schema_name <> 'coral' ORDER BY schema_name, table_name",
         )
         .await
         .expect("catalog query should succeed"),
@@ -109,6 +112,27 @@ async fn coral_tables_lists_installed_sources() {
             json!({"schema_name": "alpha", "table_name": "users"}),
             json!({"schema_name": "beta", "table_name": "teams"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn coral_tables_lists_system_catalog_without_sources() {
+    let rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[],
+            test_runtime(),
+            "SELECT schema_name, table_name FROM coral.tables ORDER BY schema_name, table_name",
+        )
+        .await
+        .expect("catalog query should succeed"),
+    );
+
+    assert_eq!(
+        rows,
+        SYSTEM_TABLE_NAMES
+            .iter()
+            .map(|table| json!({"schema_name": "coral", "table_name": table}))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -199,12 +223,21 @@ async fn list_tables_matches_catalog() {
 }
 
 #[tokio::test]
-async fn list_tables_empty_when_no_sources() {
+async fn list_tables_returns_system_catalog_when_no_sources() {
     let tables = CoralQuery::list_tables(&[], test_runtime(), None, None)
         .await
-        .expect("empty source list should succeed");
+        .expect("source-free catalog should succeed");
 
-    assert!(tables.is_empty());
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| (table.schema_name.as_str(), table.table_name.as_str()))
+            .collect::<Vec<_>>(),
+        SYSTEM_TABLE_NAMES
+            .iter()
+            .map(|table| ("coral", *table))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -251,18 +284,6 @@ fn table_summary(table: &TableInfo) -> (String, String, String) {
         table.table_name.clone(),
         table.description.clone(),
     )
-}
-
-#[expect(
-    dead_code,
-    reason = "Reserved for targeted schema assertions as this suite grows."
-)]
-fn table_column_names(table: &TableInfo) -> Vec<String> {
-    table
-        .columns
-        .iter()
-        .map(|column: &ColumnInfo| column.name.clone())
-        .collect()
 }
 
 fn http_manifest_with_inputs() -> Value {

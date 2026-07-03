@@ -4,7 +4,6 @@ use crate::v4::diagnostics::{Diagnostic, DiagnosticSeverity};
 use crate::v4::ir::{IrExecutionAttachment, IrOperation, OutputCardinality, SemanticIr};
 use crate::v4::manifest::V4SourceManifest;
 use crate::v4::naming::{normalize_identifier, pluralize, singularize, stable_suffix};
-use crate::{PaginationMode, PaginationSpec};
 
 use super::model::{
     Projection, ProjectionInput, ProjectionKind, ProjectionVisibility, SqlInputExposure,
@@ -23,10 +22,10 @@ pub(super) fn resolve_projection_name_collisions(
                 .map(move |operation| ((ir.surface_id.as_str(), operation.id.as_str()), operation))
         })
         .collect::<HashMap<_, _>>();
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
     for (index, projection) in projections.iter().enumerate() {
         groups
-            .entry(projection.name.clone())
+            .entry((projection.namespace.clone(), projection.name.clone()))
             .or_default()
             .push(index);
     }
@@ -52,15 +51,18 @@ pub(super) fn resolve_projection_name_collisions(
         keep_base_name.insert(keep);
     }
 
-    let mut used_names = HashSet::new();
+    let mut used_names_by_namespace = BTreeMap::<String, HashSet<String>>::new();
     for index in keep_base_name.iter().copied() {
         if let Some(projection) = projections.get(index) {
-            used_names.insert(projection.name.clone());
+            used_names_by_namespace
+                .entry(projection.namespace.clone())
+                .or_default()
+                .insert(projection.name.clone());
         }
     }
 
     let mut diagnostics = Vec::new();
-    for indexes in groups.values().filter(|indexes| indexes.len() > 1) {
+    for ((namespace, _), indexes) in groups.iter().filter(|(_, indexes)| indexes.len() > 1) {
         for index in indexes {
             if keep_base_name.contains(index) {
                 continue;
@@ -68,22 +70,17 @@ pub(super) fn resolve_projection_name_collisions(
             let projection = projections
                 .get(*index)
                 .expect("projection index came from projections");
-            let operation = operations.get(&(
-                projection.surface_id.as_str(),
-                projection.operation_id.as_str(),
-            ));
-            let base_name = projection.name.clone();
-            let mut name = operation.map_or_else(
-                || normalize_identifier(&projection.operation_id, "projection"),
-                |operation| contextual_projection_name(&base_name, operation),
-            );
-            if name == base_name || used_names.contains(&name) {
-                let suffix = stable_suffix(&format!(
-                    "{}/{}/{}",
-                    manifest.common.name, projection.surface_id, projection.operation_id
-                ));
-                name = format!("{name}__{suffix}");
-            }
+            let operation = operations
+                .get(&(
+                    projection.surface_id.as_str(),
+                    projection.operation_id.as_str(),
+                ))
+                .copied();
+            let used_names = used_names_by_namespace
+                .entry(namespace.clone())
+                .or_default();
+            let name =
+                collision_resolved_projection_name(manifest, projection, operation, used_names);
             used_names.insert(name.clone());
             let projection = projections
                 .get_mut(*index)
@@ -118,6 +115,28 @@ fn projection_name_priority(
     )
 }
 
+fn collision_resolved_projection_name(
+    manifest: &V4SourceManifest,
+    projection: &Projection,
+    operation: Option<&IrOperation>,
+    used_names: &HashSet<String>,
+) -> String {
+    let base_name = projection.name.as_str();
+    let contextual_name = operation.map_or_else(
+        || normalize_identifier(&projection.operation_id, "projection"),
+        |operation| contextual_projection_name(base_name, operation),
+    );
+    if contextual_name != base_name && !used_names.contains(&contextual_name) {
+        return contextual_name;
+    }
+
+    let suffix = stable_suffix(&format!(
+        "{}/{}/{}",
+        manifest.common.name, projection.surface_id, projection.operation_id
+    ));
+    format!("{contextual_name}__{suffix}")
+}
+
 fn required_input_count(operation: &IrOperation) -> usize {
     operation
         .inputs
@@ -148,11 +167,14 @@ fn projection_path_context(operation: &IrOperation) -> Option<String> {
 }
 
 fn rest_literal_path_segments(operation: &IrOperation) -> Vec<String> {
-    let IrExecutionAttachment::Rest(rest) = &operation.execution;
-    rest.path_template
-        .split('/')
-        .filter_map(normalized_path_literal_segment)
-        .collect()
+    match &operation.execution {
+        IrExecutionAttachment::Rest(rest) => rest
+            .path_template
+            .split('/')
+            .filter_map(normalized_path_literal_segment)
+            .collect(),
+        IrExecutionAttachment::Mcp(_) => Vec::new(),
+    }
 }
 
 fn normalized_path_literal_segment(segment: &str) -> Option<String> {
@@ -166,7 +188,6 @@ fn normalized_path_literal_segment(segment: &str) -> Option<String> {
 pub(super) fn projection_guide(
     kind: &ProjectionKind,
     inputs: &[ProjectionInput],
-    pagination: &PaginationSpec,
     is_search: bool,
 ) -> String {
     let exposed_inputs = inputs
@@ -211,9 +232,6 @@ pub(super) fn projection_guide(
         sentences.push(
             "Use LIMIT to control result size; search endpoints can be rate-limited.".to_string(),
         );
-    } else if pagination.mode != PaginationMode::None {
-        sentences
-            .push("Use LIMIT for spot checks; large result sets paginate quickly.".to_string());
     }
 
     sentences.join(" ")
@@ -242,6 +260,17 @@ pub(super) fn projection_name(operation: &IrOperation, is_search: bool) -> Strin
             normalize_identifier(&operation.id, "projection")
         }
     }
+}
+
+pub(super) fn projection_name_from_operation_naming(operation: &IrOperation) -> Option<String> {
+    let naming = operation.naming.as_ref()?;
+    let group = non_empty_naming_part(naming.group.as_deref())?;
+    let operation = non_empty_naming_part(naming.operation.as_deref())?;
+    Some(format!("{group}_{operation}"))
+}
+
+fn non_empty_naming_part(part: Option<&str>) -> Option<&str> {
+    part.filter(|part| !part.is_empty())
 }
 
 fn projection_entity_name(operation: &IrOperation, is_search: bool) -> String {
@@ -297,6 +326,7 @@ pub(super) fn is_search_operation(operation: &IrOperation) -> bool {
             .path_template
             .split(|c: char| !c.is_ascii_alphanumeric())
             .any(|token| token.eq_ignore_ascii_case("search")),
+        IrExecutionAttachment::Mcp(_) => false,
     };
     path_has_search
         || id_tokens

@@ -1,0 +1,139 @@
+---
+title: "Architecture"
+description: "Crate structure, request flow, and key design choices."
+---
+
+## Overview
+
+Coral is split into seven crates. The two entry points, the CLI and the MCP server, share the same runtime through `coral-client` and `coral-app`.
+
+```mermaid
+graph TD
+    CLI["coral-cli"] --> Client["coral-client"]
+    MCP["coral-mcp"] --> Client
+    Client -->|gRPC| App["coral-app"]
+    App --> Spec["coral-spec"]
+    App --> Engine["coral-engine"]
+    Engine --> DF["DataFusion"]
+    App --> State["Local config + secrets"]
+```
+
+## Request flow
+
+A query follows this path:
+
+1. **Entry point:** a user runs `coral sql` or an agent calls the `sql` MCP tool
+2. **Bootstrap:** the caller decides whether to start a local `coral-app` server or dial an existing endpoint
+3. **`coral-client`:** connects to that endpoint and sends the request over gRPC
+4. **`coral-app`:** loads installed sources from local state, delegates spec validation to `coral-spec`, and hands validated specs to `coral-engine`
+5. **`coral-engine`:** compiles specs into DataFusion table providers, registers them in a session, and executes SQL
+6. **Result:** Arrow record batches flow back through gRPC to the client, which formats them as table or JSON output (CLI) or structured MCP tool results (MCP)
+
+## Crates
+
+### `coral-cli`
+
+The user-facing command-line interface.
+
+| Owns | Details |
+| --- | --- |
+| Command parsing | `coral sql`, `coral source`, `coral onboard`, `coral mcp-stdio` |
+| Interactive prompts | Variables and secrets during `source add` |
+| Output formatting | Table and JSON via `coral-client` helpers |
+
+Intentionally thin at the binary boundary — `main.rs` is a small wrapper, `bootstrap.rs` owns CLI bootstrap, and `lib.rs` owns shared command parsing and dispatch for Coral binaries. Query/result helpers stay in `coral-client`.
+For black-box CLI tests, contributors can enable the `CORAL_ENDPOINT` bootstrap override with `cargo nextest run --locked -p coral-cli --features cli-test-server`.
+
+### `coral-client`
+
+Shared client library used by both `coral-cli` and `coral-mcp`.
+
+| Owns               | Details                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Endpoint dialing   | `AppClient::connect(endpoint)` builds typed gRPC clients for an existing endpoint    |
+| Explicit local bootstrap | `local::{ServerBuilder, ServerMode, RunningServer}` for callers that need local server control |
+| Result decoding    | Arrow IPC → record batches                                                           |
+| Error decoding     | Decodes AIP-193 `ErrorInfo` from `tonic::Status` details (`status_error.rs`)         |
+| Formatting helpers | `format_batches_table`, `format_batches_json`                                        |
+
+### `coral-app`
+
+The local server and core orchestrator.
+
+| Owns | Details |
+| --- | --- |
+| Server bootstrap | In-process gRPC server lifecycle (`bootstrap/`) |
+| Source management | Install, add from file, list, validate, remove (`sources/`) |
+| Workspace state and lifecycle | Workspace service plus config, secrets, and layout (`workspaces/`, `state/`, `storage/`) |
+| Feedback persistence | Workspace-scoped blocked-agent feedback reports (`feedback/`) |
+| Query orchestration | Loads sources, builds the engine, executes SQL (`query/`) |
+| Catalog discovery | Lists/searches/describes query-visible tables and columns (`catalog/`) |
+
+This is the largest crate. It ties `coral-spec` and `coral-engine` together and manages all persistent local state.
+
+### `coral-spec`
+
+Source spec parsing and validation.
+
+| Owns                    | Details                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| YAML parsing            | Deserializes source specs into typed Rust structs                              |
+| Validation              | Structural invariants, required fields, backend-specific rules (`validate.rs`) |
+| Input discovery         | Extracts required variables and secrets from specs (`inputs.rs`)               |
+| Backend-specific models | HTTP, MCP, and file spec shapes (`backends/`)                                  |
+
+Produces a validated spec model that `coral-engine` consumes. No runtime or I/O, pure data transformation.
+
+### `coral-engine`
+
+Query execution engine.
+
+| Owns                    | Details                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| Backend compilation     | Turns validated specs into DataFusion `TableProvider` implementations (`backends/`)   |
+| Runtime registry        | Registers table providers into a DataFusion session (`runtime/`)                      |
+| Query contracts         | Engine-facing types for catalog and query results (`contracts/`)                      |
+| Backend implementations | HTTP, MCP, and native file backends (`backends/http`, `backends/mcp`, `backends/file`) |
+
+### `coral-mcp`
+
+The MCP stdio server.
+
+| Owns            | Details                                                             |
+| --------------- | ------------------------------------------------------------------- |
+| MCP protocol    | Tool and resource handlers via the `rmcp` SDK (`server.rs`)         |
+| Surface shaping | Tool/resource/error helpers split across `surface/{mod,tools,resources,errors}.rs`; discovery semantics come from `coral-app` |
+| Tools           | `sql`, `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, optional `feedback` |
+| Resources       | `coral://guide`, `coral://tables`                                   |
+
+Uses `coral-client` to reach `coral-app`, same transport as the CLI.
+
+### `coral-api`
+
+The shared gRPC contract.
+
+| Owns                 | Details                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| Protobuf definitions | `proto/coral/v1/` transport contracts for Coral services and messages |
+| Generated bindings   | Tonic-generated Rust types and service traits                                          |
+
+All inter-crate communication between `coral-client` and `coral-app` goes through these generated types.
+
+## Dependency graph
+
+```mermaid
+graph TD
+    CLI["coral-cli"] --> Client["coral-client"]
+    MCP["coral-mcp"] --> Client
+    Client --> API["coral-api"]
+    API --> App["coral-app"]
+    App --> Spec["coral-spec"]
+    App --> Engine["coral-engine"]
+```
+
+`coral-spec` and `coral-engine` do not depend on each other. `coral-app` is the integration point that connects them.
+
+## Key design choices
+
+- **Local gRPC server.** The CLI and MCP server don't embed the engine directly, they go through a local gRPC server managed by `coral-app`. This keeps the engine lifecycle in one place and makes the client/server boundary explicit.
+- **Spec vs engine separation.** `coral-spec` is pure validation (no I/O, no runtime). `coral-engine` is pure execution (no YAML parsing, no persistence). `coral-app` bridges the two.

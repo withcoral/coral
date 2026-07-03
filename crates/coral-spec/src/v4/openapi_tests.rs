@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::parse_source_manifest_yaml;
+use crate::{SourceTableFunctionKind, parse_source_manifest_yaml};
 
 #[test]
 fn extracts_openapi_document_metadata() {
@@ -48,6 +48,139 @@ paths: {}
         Some("https://statusgator.com/api/v3")
     );
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The OpenAPI fixture keeps related naming metadata cases together."
+)]
+fn importer_preserves_openapi_operation_naming_metadata() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: github
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.github.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /orgs/{org}/settings/billing/ai-credit-usage:
+    get:
+      tags: ['', 'billing', 'ignored']
+      operationId: billing/get-github-billing-ai-credit-usage-report-org
+      parameters:
+        - {name: org, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Usage'}
+  /quotes:
+    get:
+      tags: ['forex', 'finance', 'quotes']
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Quote'}
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+  /fallback:
+    get:
+      tags: ['misc']
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Item'}
+components:
+  schemas:
+    Usage:
+      type: object
+      properties:
+        total: {type: integer}
+    Quote:
+      type: object
+      properties:
+        symbol: {type: string}
+    Item:
+      type: object
+      properties:
+        id: {type: string}
+"
+        .as_bytes(),
+    )
+    .expect("import");
+
+    let operations = ir
+        .operations
+        .iter()
+        .map(|operation| (operation.id.as_str(), operation.naming.as_ref()))
+        .collect::<BTreeMap<_, _>>();
+    let billing = operations
+        .get("billing_get_github_billing_ai_credit_usage_report_org")
+        .and_then(|naming| *naming)
+        .expect("billing naming metadata");
+    assert_eq!(billing.group.as_deref(), Some("billing"));
+    assert_eq!(
+        billing.operation.as_deref(),
+        Some("get_github_billing_ai_credit_usage_report_org")
+    );
+
+    let quotes = operations
+        .get("get_quotes")
+        .and_then(|naming| *naming)
+        .expect("quotes naming metadata");
+    assert_eq!(quotes.group.as_deref(), Some("forex"));
+    assert_eq!(quotes.operation.as_deref(), Some("get_quotes"));
+
+    let items = operations
+        .get("items_list")
+        .and_then(|naming| *naming)
+        .expect("items naming metadata");
+    assert_eq!(items.group.as_deref(), None);
+    assert_eq!(items.operation.as_deref(), Some("list"));
+
+    let fallback = operations
+        .get("get_fallback")
+        .and_then(|naming| *naming)
+        .expect("fallback naming metadata");
+    assert_eq!(fallback.group.as_deref(), Some("misc"));
+    assert_eq!(fallback.operation.as_deref(), Some("get_fallback"));
+
+    let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
+    let quotes_projection = catalog
+        .projections
+        .iter()
+        .find(|projection| projection.operation_id == "get_quotes")
+        .expect("quotes projection");
+    assert_eq!(quotes_projection.name, "forex_get_quotes");
+    assert!(matches!(quotes_projection.kind, ProjectionKind::Table));
+}
+
 #[test]
 fn importer_recognizes_common_wrapped_list_response_fields() {
     let manifest = parse_source_manifest_yaml(
@@ -110,7 +243,12 @@ components:
         .find(|projection| projection.operation_id == "listincidents")
         .expect("projection");
     assert_eq!(projection.name, "incidents");
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
@@ -169,7 +307,12 @@ components:
     let catalog = generate_projection_catalog(v4, &[ir]).expect("catalog");
     let projection = catalog.projections.first().expect("projection");
     assert_eq!(projection.name, "repositories");
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
@@ -379,7 +522,12 @@ components:
         .expect("projection");
     assert_eq!(projection.name, "issues");
     assert_eq!(projection.visibility, ProjectionVisibility::Published);
-    assert!(matches!(projection.kind, ProjectionKind::Table));
+    assert!(matches!(
+        projection.kind,
+        ProjectionKind::TableFunction {
+            function_kind: SourceTableFunctionKind::Table
+        }
+    ));
 }
 
 #[test]
@@ -449,12 +597,16 @@ paths:
 
     let range = operations.get("range_list").expect("range operation");
     assert_eq!(range.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(range_rest) = &range.execution;
+    let IrExecutionAttachment::Rest(range_rest) = &range.execution else {
+        panic!("range operation should be REST");
+    };
     assert_eq!(range_rest.response.status_code, 200);
 
     let numeric = operations.get("numeric_list").expect("numeric operation");
     assert_eq!(numeric.output.cardinality, OutputCardinality::List);
-    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution;
+    let IrExecutionAttachment::Rest(numeric_rest) = &numeric.execution else {
+        panic!("numeric operation should be REST");
+    };
     assert_eq!(numeric_rest.response.status_code, 201);
 }
 
@@ -655,6 +807,61 @@ paths:
     for operation in &ir.operations {
         assert_eq!(operation.output.cardinality, OutputCardinality::None);
     }
+}
+
+#[test]
+fn importer_warns_for_openapi_all_of_property_conflicts() {
+    let manifest = parse_source_manifest_yaml(
+        r"
+name: conflicting_all_of
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+    base_url: https://api.example.com
+",
+    )
+    .expect("manifest");
+    let v4 = manifest.as_v4().expect("v4");
+    let surface = v4.surfaces.first().expect("one surface");
+    let ir = import_openapi_surface(
+        v4,
+        surface,
+        r"
+openapi: 3.0.3
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Combined'}
+components:
+  schemas:
+    Combined:
+      allOf:
+        - type: object
+          properties:
+            id: {type: string}
+        - type: object
+          properties:
+            id: {type: integer}
+"
+        .as_bytes(),
+    )
+    .expect("conflicting allOf imports with diagnostics");
+
+    let operation = ir.operations.first().expect("operation");
+    let codes = operation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"OPENAPI_ALLOF_CONFLICT"), "{codes:?}");
+    assert_eq!(operation.output.type_ref, "json");
 }
 
 #[test]

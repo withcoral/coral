@@ -25,7 +25,7 @@ jobs:
     environment: skills-sync
     steps:
       - name: Check out Coral
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -33,7 +33,7 @@ jobs:
         run: rustup show
 
       - name: Check out skills distribution
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: withcoral/skills
           ref: main
@@ -57,6 +57,8 @@ jobs:
             skills
 
       - name: Commit and publish changes
+        env:
+          GH_APP_TOKEN: ${{ steps.github-app-token.outputs.token }}
         run: |
           set -euo pipefail
           cd skills-dist
@@ -71,4 +73,4 @@ jobs:
           git commit \
             -m "chore: sync skills from coral" \
             -m "Source: withcoral/coral@${GITHUB_SHA}"
-          git push "https://x-access-token:${{ steps.github-app-token.outputs.token }}@github.com/withcoral/skills.git" HEAD:main
+          git push "https://x-access-token:${GH_APP_TOKEN}@github.com/withcoral/skills.git" HEAD:main

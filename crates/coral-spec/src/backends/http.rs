@@ -18,15 +18,16 @@ use serde_json::{Map, Value};
 
 use crate::{
     ColumnSpec, DeclaredRelation, DetailHintDeclaringSurface, DetailHintSpec,
-    DetailHintTargetTable, FilterSpec, HeaderSpec, ManifestError, ManifestInputSpec,
-    PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec, Result,
-    SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec, TableCommon,
+    DetailHintTargetTable, FilterSpec, HeaderSpec, HttpTableValidation, ManifestError,
+    ManifestInputSpec, PaginationSpec, ParsedTemplate, RequestRouteSpec, RequestSpec, ResponseSpec,
+    Result, SearchLimitsSpec, SourceBackend, SourceManifestCommon, SourceTableFunctionSpec,
+    TableCommon,
     inputs::{
         collect_source_inputs_value, declared_secret_input_names, required_secret_input_names,
     },
     validate::validate_template,
     validate_declared_relation_namespace, validate_detail_hint_references, validate_http_function,
-    validate_http_table, validate_test_queries,
+    validate_http_table, validate_source_name, validate_test_queries,
 };
 
 /// Source-level authentication requirements for HTTP-backed source specs.
@@ -232,17 +233,17 @@ impl HttpSourceManifest {
 
 impl RawHttpTableSpec {
     fn into_validated(self, schema: &str) -> Result<HttpTableSpec> {
-        validate_http_table(
+        validate_http_table(HttpTableValidation {
             schema,
-            &self.name,
-            &self.filters,
-            &self.columns,
-            &self.request,
-            &self.requests,
-            &self.pagination,
-            self.search_limits.as_ref(),
-            &self.detail_hints,
-        )?;
+            table_name: &self.name,
+            filters: &self.filters,
+            columns: &self.columns,
+            request: &self.request,
+            requests: &self.requests,
+            pagination: &self.pagination,
+            search_limits: self.search_limits.as_ref(),
+            detail_hints: &self.detail_hints,
+        })?;
 
         Ok(HttpTableSpec {
             common: TableCommon::new(
@@ -288,6 +289,7 @@ impl HttpSourceManifest {
                 "source '{name}' must define at least one table or function"
             )));
         }
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
         validate_declared_relation_namespace(
             &name,

@@ -278,12 +278,12 @@ LIMIT 50;
 Swap in qualifiers such as `review-requested:USER`, `review:none`, or
 `user-review-requested:@me` for reviewer workflows.
 
-For repo-scoped pull request lists, use the compact alias columns when you want
-the PR number, branch refs, head SHA, and author login without double-underscore
-field names:
+For repo-scoped pull request lists, select `number` and the compact alias
+columns when you want branch refs, head SHA, and author login without
+double-underscore field names:
 
 ```sql
-SELECT pull_number, title, head_ref, head_sha, base_ref, user_login
+SELECT number, title, head_ref, head_sha, base_ref, user_login
 FROM github.pulls
 WHERE owner = 'myorg' AND repo = 'myrepo' AND state = 'open'
 ORDER BY updated_at DESC
@@ -295,7 +295,7 @@ workflows, identify merged pull requests with `merged_at IS NOT NULL` or start
 from `github.search_issues(q => 'repo:myorg/myrepo is:pull-request is:merged')`.
 
 ```sql
-SELECT pull_number, title, merged_at
+SELECT number, title, merged_at
 FROM github.pulls
 WHERE owner = 'myorg' AND repo = 'myrepo' AND state = 'closed'
   AND merged_at IS NOT NULL
@@ -411,7 +411,7 @@ user_repos / org_repos / search_repositories(...)
     → commits → commit__tree__sha → trees
     → workflows → workflow_id → repo_action_workflow_runs
     → repo_action_runs → run_id → jobs, attempts, repo_action_run_timing
-    → pulls → pull_number → files, reviews, requested_reviewers
+    → pulls.number → pull_number filters on files, reviews, requested_reviewers
     → reviews → review_id → repo_pull_review_comments
     → repo_issue_comments → comment_id → reactions
     → check_runs (ref) → check_run_id → annotations, repo_check_runs

@@ -1,5 +1,111 @@
 # Changelog
 
+## [0.5.1](https://github.com/withcoral/coral/compare/v0.5.0...v0.5.1) (2026-07-01)
+
+
+### Features
+
+* **spec:** provide means of overriding projections.yaml ([#1418](https://github.com/withcoral/coral/issues/1418)) ([7a7437c](https://github.com/withcoral/coral/commit/7a7437cef9dd9238b3fe8fc338743c5fa50f7bec)), closes [#1028](https://github.com/withcoral/coral/issues/1028)
+
+
+### Bug Fixes
+
+* **app:** add workspace trace pruning store ([#1412](https://github.com/withcoral/coral/issues/1412)) ([d19e431](https://github.com/withcoral/coral/commit/d19e4313ac5e9adf01d474a1591a880e524747e5))
+* **app:** prune traces during workspace remove ([#1413](https://github.com/withcoral/coral/issues/1413)) ([a1276ba](https://github.com/withcoral/coral/commit/a1276baa788eb76bacfce3fc37d55c150e411d92))
+* **mcp:** surface SQL errors in tool content ([#1466](https://github.com/withcoral/coral/issues/1466)) ([edfcbf0](https://github.com/withcoral/coral/commit/edfcbf08b4d3cc0d5eff941d37d100ecdc12c54b))
+
+## [0.5.0](https://github.com/withcoral/coral/compare/v0.4.4...v0.5.0) (2026-07-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** support SQL query batches ([#1393](https://github.com/withcoral/coral/issues/1393))
+
+### Features
+
+* **api:** expose workspace lifecycle service ([#1404](https://github.com/withcoral/coral/issues/1404)) ([9c9509d](https://github.com/withcoral/coral/commit/9c9509d741ce00b19129fff9f3ac1339d0ec9ccf))
+* **app:** persist workspace state ([#1461](https://github.com/withcoral/coral/issues/1461)) ([fd871aa](https://github.com/withcoral/coral/commit/fd871aac79cb22fb0effd8ca30165e2111c0ebae))
+* **app:** read and select MCP startup query history ([#1394](https://github.com/withcoral/coral/issues/1394)) ([a1ff8bf](https://github.com/withcoral/coral/commit/a1ff8bf098d58b89ed044307cded5868741ec607))
+* **app:** record query provenance in traces ([#1389](https://github.com/withcoral/coral/issues/1389)) ([f58825f](https://github.com/withcoral/coral/commit/f58825f1c3a862c21b51d59fc440aa6f340fcb91))
+* **app:** validate workspace-scoped operations ([#1405](https://github.com/withcoral/coral/issues/1405)) ([353c9a4](https://github.com/withcoral/coral/commit/353c9a45e04ac4f27b71e9056df01bd2847fbeb6))
+* **cli:** add workspace selection commands ([#1406](https://github.com/withcoral/coral/issues/1406)) ([8d9f41b](https://github.com/withcoral/coral/commit/8d9f41be8217f8f48dd7dfa624813ab543253a12))
+* **cli:** pass trace-backed query examples to MCP ([#1391](https://github.com/withcoral/coral/issues/1391)) ([a20d9a3](https://github.com/withcoral/coral/commit/a20d9a367bd7c4200eab993d8e38f6228b24049e))
+* **engine:** surface query execution provenance ([#1373](https://github.com/withcoral/coral/issues/1373)) ([4621c89](https://github.com/withcoral/coral/commit/4621c89633f221b214a6dfcc6a64137e006322be))
+* **mcp:** render supplied query examples at initialize ([#1390](https://github.com/withcoral/coral/issues/1390)) ([01d9238](https://github.com/withcoral/coral/commit/01d923846a3699a18df2a5659e6ea8f6d70107cc))
+* **mcp:** support SQL query batches ([#1393](https://github.com/withcoral/coral/issues/1393)) ([60c38d8](https://github.com/withcoral/coral/commit/60c38d8eae6fe4c61a61449fd7a8805699bb78bb))
+* **mcp:** surface selected workspace context ([#1408](https://github.com/withcoral/coral/issues/1408)) ([6f11c47](https://github.com/withcoral/coral/commit/6f11c478da1905a6e5bb828c18f4f7954617b861))
+* **reef:** add protobuf codegen ([#1384](https://github.com/withcoral/coral/issues/1384)) ([012e34f](https://github.com/withcoral/coral/commit/012e34fcc75e55bf215383006f2c701a87588fb8))
+* **sources/core/cloudwatch_logs:** support log stream array filters ([#1417](https://github.com/withcoral/coral/issues/1417)) ([d03c53d](https://github.com/withcoral/coral/commit/d03c53d251951611ecf93aec3dcdac5fbce26cc2))
+* **ui:** add reef frontend shell ([#1377](https://github.com/withcoral/coral/issues/1377)) ([dbce77f](https://github.com/withcoral/coral/commit/dbce77f443bddde1e076e9a0886ddf7400568812))
+
+
+### Bug Fixes
+
+* **app:** harden workspace deletion rollback ([#1409](https://github.com/withcoral/coral/issues/1409)) ([0919ea7](https://github.com/withcoral/coral/commit/0919ea7b3e92c0c59b9873f11996b69f9a354699))
+* **app:** make source re-add atomic ([#1196](https://github.com/withcoral/coral/issues/1196)) ([54b214c](https://github.com/withcoral/coral/commit/54b214cf99fbd1db1610938326df252c7a9419ea))
+* **mcp:** harden workspace source instructions ([#1410](https://github.com/withcoral/coral/issues/1410)) ([ede1808](https://github.com/withcoral/coral/commit/ede1808a2204388999fd3a51c2e3f789223f655b))
+* **sources/core/cloudwatch_metrics:** expose request filters ([#1422](https://github.com/withcoral/coral/issues/1422)) ([542f3ca](https://github.com/withcoral/coral/commit/542f3cac5c38e50f22cd933695dc93d61a2ed73b))
+
+## [0.4.4](https://github.com/withcoral/coral/compare/v0.4.3...v0.4.4) (2026-06-22)
+
+
+### Features
+
+* add MCP as a surface type in DSL v4 ([#1215](https://github.com/withcoral/coral/issues/1215)) ([1b1946d](https://github.com/withcoral/coral/commit/1b1946d7a1a532870e1ed2b8138bd9e3f5708f34))
+* **engine:** account query memory usage ([#886](https://github.com/withcoral/coral/issues/886)) ([74ec8d5](https://github.com/withcoral/coral/commit/74ec8d575cda63df7068714f2afa2969b5a14bf5))
+* **engine:** plan source functions as logical nodes ([#1257](https://github.com/withcoral/coral/issues/1257)) ([aaae090](https://github.com/withcoral/coral/commit/aaae09010946d9cd0d02cf69e90b7d96bedc6184))
+* **episode:** bound the per-workspace log by bytes with oldest-out eviction (BENCH-496) ([#1261](https://github.com/withcoral/coral/issues/1261)) ([69ca434](https://github.com/withcoral/coral/commit/69ca43420afa495cba21428059457b93d7fcce29))
+* **mcp:** add open_episode surface ([#1262](https://github.com/withcoral/coral/issues/1262)) ([041be10](https://github.com/withcoral/coral/commit/041be10b9fcfb6c20e903d52aae5d88e38405d37))
+* **mcp:** include connected sources in initialize instructions ([#1356](https://github.com/withcoral/coral/issues/1356)) ([72cfddb](https://github.com/withcoral/coral/commit/72cfddb654ba7b78bc749447fab6ff2c86c0e03f))
+* **ui:** Use dialog to confirm souce removal ([#1320](https://github.com/withcoral/coral/issues/1320)) ([445ea85](https://github.com/withcoral/coral/commit/445ea852101516508d7bf73540778c47be68ea71))
+
+
+### Bug Fixes
+
+* **spec:** preserve path parameter defaults ([#1193](https://github.com/withcoral/coral/issues/1193)) ([42782a5](https://github.com/withcoral/coral/commit/42782a50fc76524af759bc0fbdc2d99346f96afd)), closes [#1153](https://github.com/withcoral/coral/issues/1153)
+* **spec:** refactor MCP importer into topic-focused modules ([#1314](https://github.com/withcoral/coral/issues/1314)) ([b9cea77](https://github.com/withcoral/coral/commit/b9cea7729477768d0632e306d6d11e36cf84c3ca))
+
+## [0.4.3](https://github.com/withcoral/coral/compare/v0.4.2...v0.4.3) (2026-06-15)
+
+
+### Features
+
+* **app:** attribute episode.id on coral.query spans from request metadata (BENCH-496) ([#1227](https://github.com/withcoral/coral/issues/1227)) ([5904418](https://github.com/withcoral/coral/commit/5904418ab93bb0dc2b716ec3c8da78816b2fc9f2))
+* **app:** OpenEpisode handler — persist episodes via EpisodeService (BENCH-496) ([#1225](https://github.com/withcoral/coral/issues/1225)) ([ac33aa7](https://github.com/withcoral/coral/commit/ac33aa772c826153ec994f7b196ac1396cdb4f02))
+* **app:** per-workspace episode store (BENCH-496) ([#1214](https://github.com/withcoral/coral/issues/1214)) ([625d909](https://github.com/withcoral/coral/commit/625d909bc058424eea0f7e345d19848f54a50338))
+* **codex:** expose JSONL event provenance ([#1128](https://github.com/withcoral/coral/issues/1128)) ([8f71558](https://github.com/withcoral/coral/commit/8f71558703a82414471c785f086de8e4e159c981))
+* **mcp:** surface connected sources in tool descriptions ([#1218](https://github.com/withcoral/coral/issues/1218)) ([c317481](https://github.com/withcoral/coral/commit/c317481173f2c0d83e3b954258f720812398d8e0))
+* predicate push down implementation ([#399](https://github.com/withcoral/coral/issues/399)) ([f00eb29](https://github.com/withcoral/coral/commit/f00eb299a825fb4e384c1fa2b8bb5010c96c2c0b))
+* **trajectory:** episodes — associate each query with the intent it served (BENCH-496) ([#1169](https://github.com/withcoral/coral/issues/1169)) ([8cdb29c](https://github.com/withcoral/coral/commit/8cdb29c0ca8c71e8c7af86ed3cbfc08ae99c6acf))
+* **ui:** sources management page ([#826](https://github.com/withcoral/coral/issues/826)) ([9ae999c](https://github.com/withcoral/coral/commit/9ae999c19f016f8c1c5689656d063296ce10ca41))
+
+
+### Bug Fixes
+
+* **app:** fingerprint credential method hints ([#1190](https://github.com/withcoral/coral/issues/1190)) ([7647bc0](https://github.com/withcoral/coral/commit/7647bc0cfe129ee2f054a36cbf05f69696e87e09)), closes [#1148](https://github.com/withcoral/coral/issues/1148)
+* **app:** reject SQL-controlled v4 base URLs ([#1184](https://github.com/withcoral/coral/issues/1184)) ([7efdd52](https://github.com/withcoral/coral/commit/7efdd52b91fecf001cca11ed57b18c4391c8df7f)), closes [#1150](https://github.com/withcoral/coral/issues/1150)
+* **app:** wrap v4 artifact read errors ([#1185](https://github.com/withcoral/coral/issues/1185)) ([2672ca3](https://github.com/withcoral/coral/commit/2672ca3eaa381c31834c9282b42ab1a5ba43bcea)), closes [#1124](https://github.com/withcoral/coral/issues/1124)
+* **catalog:** expose system metadata tables to helpers ([#1217](https://github.com/withcoral/coral/issues/1217)) ([2e60127](https://github.com/withcoral/coral/commit/2e6012726054507276c823f027ea1155253f8c41))
+* **engine:** enforce join equality on dependent join fetched rows ([#1245](https://github.com/withcoral/coral/issues/1245)) ([7da16e1](https://github.com/withcoral/coral/commit/7da16e19e5e66b26d220ed8cce35fe3eb253df78))
+* **engine:** explain table-function describe errors ([#1138](https://github.com/withcoral/coral/issues/1138)) ([ce90758](https://github.com/withcoral/coral/commit/ce907580de5b21444ab3ad5e6f5c62eb0fbe51c4))
+* **sources/core/github:** mark repos_get owner filter as lookup key ([#1243](https://github.com/withcoral/coral/issues/1243)) ([baf2ce0](https://github.com/withcoral/coral/commit/baf2ce06bb4e4d3c513653826d155e93fc9f079a))
+* **spec:** handle OpenAPI 2XX responses ([#1182](https://github.com/withcoral/coral/issues/1182)) ([ad92ecc](https://github.com/withcoral/coral/commit/ad92ecc3af72bf0f4c1d8905457a3a70aeb7eda6)), closes [#1151](https://github.com/withcoral/coral/issues/1151)
+* **spec:** preserve non-string enum values ([#1187](https://github.com/withcoral/coral/issues/1187)) ([97d19a3](https://github.com/withcoral/coral/commit/97d19a32bb936f0d73c251e26742f39e487912a5)), closes [#1159](https://github.com/withcoral/coral/issues/1159)
+* **spec:** preserve ref property descriptions ([#1188](https://github.com/withcoral/coral/issues/1188)) ([0dca806](https://github.com/withcoral/coral/commit/0dca8063f63980ecf08340c0fdb226a85c090438)), closes [#1157](https://github.com/withcoral/coral/issues/1157)
+* **spec:** reject invalid MCP stdio env names ([#1212](https://github.com/withcoral/coral/issues/1212)) ([0308e47](https://github.com/withcoral/coral/commit/0308e47055c73bc2cd5eb7cf34335cb2a1f6f006))
+* **spec:** remove OpenAPI-branded v4 IR location ([#1194](https://github.com/withcoral/coral/issues/1194)) ([b4692fd](https://github.com/withcoral/coral/commit/b4692fd5d3158a5ccece699a4ea8b252a4a3d57f))
+* **spec:** require omitted OpenAPI path params ([#1179](https://github.com/withcoral/coral/issues/1179)) ([069673f](https://github.com/withcoral/coral/commit/069673fb8ea79bf64cf2014704085da869e46d27))
+* **spec:** resolve DSL v4 response refs ([#1143](https://github.com/withcoral/coral/issues/1143)) ([51fb9f1](https://github.com/withcoral/coral/commit/51fb9f1c622685150c6d3ca84d84d5ab5f2d6716))
+* **spec:** respect additionalProperties false ([#1186](https://github.com/withcoral/coral/issues/1186)) ([f829f44](https://github.com/withcoral/coral/commit/f829f44a38a2fc390578162905ce7657d3a10943)), closes [#1158](https://github.com/withcoral/coral/issues/1158)
+* **spec:** retain projection rename diagnostics ([#1191](https://github.com/withcoral/coral/issues/1191)) ([49ce8cb](https://github.com/withcoral/coral/commit/49ce8cb79e590bfd510e742f464652cff09eac8f)), closes [#1152](https://github.com/withcoral/coral/issues/1152)
+* **spec:** use editor-friendly v4 artifact YAML ([#1195](https://github.com/withcoral/coral/issues/1195)) ([42db4af](https://github.com/withcoral/coral/commit/42db4af3c8f1851afc8c8f4b5e1982201c63e3b0))
+* **spec:** validate v4 OAuth endpoint templates ([#1189](https://github.com/withcoral/coral/issues/1189)) ([4af1dbc](https://github.com/withcoral/coral/commit/4af1dbc51f97f57369a542e593c4f5b9a713d87e)), closes [#1160](https://github.com/withcoral/coral/issues/1160)
+
+
+### Performance Improvements
+
+* **mcp:** compact success tool text ([#1197](https://github.com/withcoral/coral/issues/1197)) ([0acff67](https://github.com/withcoral/coral/commit/0acff679cf57fbbf1a0868bf2277a0d280189833))
+
 ## [0.4.2](https://github.com/withcoral/coral/compare/v0.4.1...v0.4.2) (2026-06-03)
 
 

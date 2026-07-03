@@ -26325,10 +26325,14 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
       - name: commit_sha
         required: false
     request:
@@ -46951,6 +46955,7 @@ tables:
     guide: >
       Use this table to list issues assigned to the authenticated user. Works without WHERE filters.
       Start with org or state before paging; the feed is viewer-specific, not a global issue search.
+      Add owner, repo, and number to jump to one specific repository issue.
     filters:
       - name: filter
         required: false
@@ -46976,8 +46981,10 @@ tables:
         required: false
       - name: owner
         required: false
+        lookup_key: true
       - name: repo
         required: false
+        lookup_key: true
       - name: milestone
         required: false
       - name: assignee
@@ -46986,8 +46993,10 @@ tables:
         required: false
       - name: mentioned
         required: false
-      - name: issue_number
+      - name: number
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /issues
@@ -47020,6 +47029,12 @@ tables:
           from: filter
           key: pulls
     requests:
+      - when_filters:
+          - owner
+          - repo
+          - number
+        method: GET
+        path: /repos/{{filter.owner}}/{{filter.repo}}/issues/{{filter.number}}
       - when_filters:
           - org
         method: GET
@@ -51136,14 +51151,6 @@ tables:
         expr:
           kind: from_filter
           key: repo
-      - name: issue_number
-        type: Utf8
-        nullable: true
-        virtual: true
-        description: The number that identifies the issue.
-        expr:
-          kind: from_filter
-          key: issue_number
   - name: issues_list_comments
     description: List issue comments
     guide: >
@@ -89777,14 +89784,16 @@ tables:
     guide: >
       Requires owner and repo. By default this table requests state=all from GitHub so aggregates include open and closed
       pull requests; add state when you need only open, closed, or all. Other useful optional filters are head and base. Add
-      pull_number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
-      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include pull_number
+      number to jump from the default list call to a specific record lookup. GitHub only populates diff-stat columns
+      such as additions, deletions, changed_files, and the merged boolean on that per-PR lookup, so include number
       before using them. For list queries, use merged_at IS NOT NULL to identify merged pull requests.
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: state
         required: false
       - name: head
@@ -89795,8 +89804,10 @@ tables:
         required: false
       - name: direction
         required: false
-      - name: pull_number
+      - name: number
+        type: Int64
         required: false
+        lookup_key: true
       - name: commit_sha
         required: false
     request:
@@ -89823,9 +89834,9 @@ tables:
       - when_filters:
           - owner
           - repo
-          - pull_number
+          - number
         method: GET
-        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.pull_number}}
+        path: /repos/{{filter.owner}}/{{filter.repo}}/pulls/{{filter.number}}
       - when_filters:
           - owner
           - repo
@@ -90034,7 +90045,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines added. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines added. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91659,7 +91670,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Number of changed files. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -91716,7 +91727,7 @@ tables:
         type: Int64
         nullable: true
         virtual: false
-        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter pull_number before using it.
+        description: Lines deleted. GitHub only populates this on the per-PR lookup, so filter number before using it.
         expr:
           kind: path
           path:
@@ -93211,7 +93222,7 @@ tables:
         type: Boolean
         nullable: true
         virtual: false
-        description: Only populated by the per-PR lookup. Filter pull_number before using this boolean; for list workflows, use merged_at IS NOT NULL.
+        description: Only populated by the per-PR lookup. Filter number before using this boolean; for list workflows, use merged_at IS NOT NULL.
         expr:
           kind: path
           path:
@@ -93838,15 +93849,6 @@ tables:
           kind: path
           path:
             - patch_url
-      - name: pull_number
-        type: Int64
-        nullable: true
-        virtual: false
-        description: Pull request number. Also usable as an optional pushed-down filter for per-PR lookup.
-        expr:
-          kind: path
-          path:
-            - number
       - name: rebaseable
         type: Utf8
         nullable: true
@@ -126168,14 +126170,18 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
       - name: sort
         required: false
       - name: direction
         required: false
       - name: comment_id
+        type: Int64
         required: false
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}/issues/comments
@@ -138498,8 +138504,10 @@ tables:
     filters:
       - name: owner
         required: true
+        lookup_key: true
       - name: repo
         required: true
+        lookup_key: true
     request:
       method: GET
       path: /repos/{{filter.owner}}/{{filter.repo}}

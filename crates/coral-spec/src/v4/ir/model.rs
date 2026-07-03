@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::v4::diagnostics::Diagnostic;
+use crate::v4::ir::mcp::McpExecutionAttachment;
 use crate::v4::ir::rest::RestExecutionAttachment;
 use crate::v4::manifest::SurfaceType;
 
@@ -23,11 +24,21 @@ pub struct IrOperation {
     pub description: String,
     pub deprecated: bool,
     pub read_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naming: Option<IrOperationNaming>,
     pub inputs: Vec<IrOperationInput>,
     pub output: IrOperationOutput,
     pub entity: Option<IrEntityCandidate>,
     pub execution: IrExecutionAttachment,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrOperationNaming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +123,7 @@ pub enum IrInputLocation {
     Header,
     Cookie,
     Body,
+    ToolArg,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,20 +142,23 @@ pub enum HttpMethod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum IrExecutionAttachment {
-    Rest(RestExecutionAttachment),
+    Rest(Box<RestExecutionAttachment>),
+    Mcp(McpExecutionAttachment),
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         HttpMethod, IrExecutionAttachment, IrInputLocation, IrOperation, IrOperationInput,
-        IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality, SemanticIr,
+        IrOperationNaming, IrOperationOutput, IrScalarType, IrType, IrTypeShape, OutputCardinality,
+        SemanticIr,
     };
     use crate::PaginationSpec;
     use crate::v4::diagnostics::Diagnostic;
+    use crate::v4::ir::mcp::McpExecutionAttachment;
     use crate::v4::ir::rest::{RestExecutionAttachment, RestResponseAttachment};
     use crate::v4::manifest::SurfaceType;
-    use crate::v4::{OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
+    use crate::v4::{MCP_IMPORTER_VERSION, OPENAPI_IMPORTER_VERSION, V4_ARTIFACT_SCHEMA_VERSION};
 
     #[test]
     fn semantic_ir_yaml_uses_editor_friendly_enum_shapes() {
@@ -159,6 +174,10 @@ mod tests {
                 description: String::new(),
                 deprecated: false,
                 read_only: true,
+                naming: Some(IrOperationNaming {
+                    group: Some("issues".to_string()),
+                    operation: Some("list".to_string()),
+                }),
                 inputs: Vec::new(),
                 output: IrOperationOutput {
                     cardinality: OutputCardinality::List,
@@ -166,7 +185,7 @@ mod tests {
                     row_path: Vec::new(),
                 },
                 entity: None,
-                execution: IrExecutionAttachment::Rest(RestExecutionAttachment {
+                execution: IrExecutionAttachment::Rest(Box::new(RestExecutionAttachment {
                     method: HttpMethod::Get,
                     path_template: "/issues".to_string(),
                     parameters: Vec::new(),
@@ -177,7 +196,7 @@ mod tests {
                         response: crate::ResponseSpec::default(),
                     },
                     pagination: PaginationSpec::default(),
-                }),
+                })),
                 diagnostics: Vec::new(),
             }],
             types: vec![
@@ -212,6 +231,72 @@ mod tests {
         assert!(yaml.contains("type: scalar"), "missing scalar tag: {yaml}");
 
         serde_yaml::from_str::<SemanticIr>(&yaml).expect("semantic IR should round-trip");
+    }
+
+    #[test]
+    fn mcp_execution_attachment_uses_v2_artifact_schema() {
+        let ir = SemanticIr {
+            artifact_schema_version: V4_ARTIFACT_SCHEMA_VERSION,
+            source_name: "demo".to_string(),
+            surface_id: "mcp".to_string(),
+            surface_type: SurfaceType::Mcp,
+            importer_version: MCP_IMPORTER_VERSION.to_string(),
+            operations: vec![IrOperation {
+                id: "list_items".to_string(),
+                method_name: "list_items".to_string(),
+                description: String::new(),
+                deprecated: false,
+                read_only: true,
+                naming: None,
+                inputs: vec![IrOperationInput {
+                    name: "cursor".to_string(),
+                    location: IrInputLocation::ToolArg,
+                    required: false,
+                    data_type: IrScalarType::String,
+                    default_value: None,
+                    description: String::new(),
+                }],
+                output: IrOperationOutput {
+                    cardinality: OutputCardinality::List,
+                    type_ref: "item".to_string(),
+                    row_path: Vec::new(),
+                },
+                entity: None,
+                execution: IrExecutionAttachment::Mcp(McpExecutionAttachment {
+                    tool_name: "list_items".to_string(),
+                    pagination: None,
+                    offset_pagination: None,
+                }),
+                diagnostics: Vec::new(),
+            }],
+            types: vec![IrType {
+                id: "item".to_string(),
+                shape: IrTypeShape::Object { fields: Vec::new() },
+                nullable: false,
+                description: String::new(),
+            }],
+            diagnostics: Vec::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&ir).expect("serialize MCP semantic IR");
+        assert!(
+            yaml.contains("artifact_schema_version: 2"),
+            "MCP execution variants require the v2 artifact schema: {yaml}"
+        );
+        assert!(
+            yaml.contains("surface_type: mcp"),
+            "missing MCP surface: {yaml}"
+        );
+        assert!(
+            yaml.contains("type: mcp"),
+            "missing MCP execution tag: {yaml}"
+        );
+        assert!(
+            yaml.contains("location: tool_arg"),
+            "missing tool arg input: {yaml}"
+        );
+
+        serde_yaml::from_str::<SemanticIr>(&yaml).expect("MCP semantic IR should round-trip");
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! custom HTTP headers so an instrumented MCP server can continue the
 //! trace.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -20,7 +20,9 @@ use async_trait::async_trait;
 use coral_spec::backends::mcp::McpServerSpec;
 use datafusion::error::{DataFusionError, Result};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use rmcp::model::{CallToolRequestParams, ClientInfo, Implementation, JsonObject};
+use rmcp::model::{
+    CallToolRequestParams, ClientInfo, Implementation, JsonObject, PaginatedRequestParams, Tool,
+};
 use rmcp::transport::ConfigureCommandExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -40,6 +42,8 @@ use crate::backends::shared::trace::{
     inject_trace_context, record_processing_error, record_trace_http_endpoint, sanitize_trace_url,
     trace_http_endpoint,
 };
+
+const MAX_MCP_DISCOVERY_PAGES: usize = 100;
 
 #[derive(Debug)]
 pub(super) struct StdioMcpToolCaller {
@@ -70,6 +74,51 @@ impl StdioMcpToolCaller {
             env.push((spec.name.clone(), value_to_env_string(value)));
         }
         Ok(env)
+    }
+
+    pub(super) async fn list_tools(&self) -> Result<Vec<Tool>> {
+        let McpServerSpec::Stdio {
+            command: program,
+            args,
+            ..
+        } = &self.server
+        else {
+            unreachable!("StdioMcpToolCaller requires a stdio MCP server spec");
+        };
+
+        let mut command = Command::new(program);
+        command.args(args);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+
+        for (name, value) in self.resolved_server_env().await? {
+            command.env(name, value);
+        }
+
+        let transport = rmcp::transport::TokioChildProcess::new(command.configure(|cmd| {
+            cmd.kill_on_drop(true);
+        }))
+        .map_err(|error| {
+            DataFusionError::External(Box::new(McpProviderQueryError::ServerStart {
+                source_schema: self.source_name.clone(),
+                detail: error.to_string(),
+            }))
+        })?;
+        let client = McpClientHandler::new(&self.source_name)
+            .serve(transport)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(McpProviderQueryError::Initialize {
+                    source_schema: self.source_name.clone(),
+                    detail: error.to_string(),
+                }))
+            })?;
+        list_tools_bounded(client.peer(), &self.source_name, |source_name, error| {
+            McpProviderQueryError::Initialize {
+                source_schema: source_name.to_string(),
+                detail: error.to_string(),
+            }
+        })
+        .await
     }
 }
 
@@ -133,10 +182,7 @@ impl StdioMcpToolCaller {
     ) -> Result<Value> {
         let mut command = Command::new(program);
         command.args(args);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
         for (name, value) in self.resolved_server_env().await? {
             command.env(name, value);
@@ -208,6 +254,33 @@ impl StreamableHttpMcpToolCaller {
             return Ok(None);
         };
         Ok(Some(value_to_env_string(token)))
+    }
+
+    pub(super) async fn list_tools(&self) -> Result<Vec<Tool>> {
+        let McpServerSpec::StreamableHttp { url, .. } = &self.server else {
+            unreachable!("StreamableHttpMcpToolCaller requires a Streamable HTTP MCP server spec");
+        };
+
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone())
+            .reinit_on_expired_session(true);
+        if let Some(token) = self.resolved_bearer_token().await? {
+            config = config.auth_header(token);
+        }
+
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let client = McpClientHandler::new(&self.source_name)
+            .serve(transport)
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(mcp_http_initialize_error(
+                    &self.source_name,
+                    &error,
+                )))
+            })?;
+        list_tools_bounded(client.peer(), &self.source_name, |source_name, error| {
+            mcp_http_initialize_error(source_name, error)
+        })
+        .await
     }
 }
 
@@ -362,6 +435,45 @@ fn value_to_env_string(value: Value) -> String {
     }
 }
 
+async fn list_tools_bounded(
+    peer: &rmcp::service::Peer<rmcp::RoleClient>,
+    source_name: &str,
+    classify_error: impl Fn(&str, &(dyn std::error::Error + 'static)) -> McpProviderQueryError,
+) -> Result<Vec<Tool>> {
+    let mut tools = Vec::new();
+    let mut cursor = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    for _page in 0..MAX_MCP_DISCOVERY_PAGES {
+        let result = peer
+            .list_tools(Some(PaginatedRequestParams::default().with_cursor(cursor)))
+            .await
+            .map_err(|error| {
+                DataFusionError::External(Box::new(classify_error(source_name, &error)))
+            })?;
+        tools.extend(result.tools);
+        let Some(next_cursor) = result.next_cursor else {
+            return Ok(tools);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(DataFusionError::External(Box::new(
+                McpProviderQueryError::Initialize {
+                    source_schema: source_name.to_string(),
+                    detail: format!("MCP tools/list returned repeated next cursor '{next_cursor}'"),
+                },
+            )));
+        }
+        cursor = Some(next_cursor);
+    }
+
+    Err(DataFusionError::External(Box::new(
+        McpProviderQueryError::Initialize {
+            source_schema: source_name.to_string(),
+            detail: format!("MCP tools/list exceeded max_pages={MAX_MCP_DISCOVERY_PAGES}"),
+        },
+    )))
+}
+
 fn mcp_http_initialize_error(
     source_schema: &str,
     error: &(dyn std::error::Error + 'static),
@@ -480,6 +592,7 @@ fn is_http_status_response(detail: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use opentelemetry::Value as OtelValue;
     use opentelemetry::trace::{SpanKind, Status, TracerProvider};
@@ -626,6 +739,47 @@ mod tests {
             }))
     }
 
+    fn json_rpc_result_response(id: Value, result: Value) -> ResponseTemplate {
+        let mut body = serde_json::Map::new();
+        body.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+        body.insert("id".to_string(), id);
+        body.insert("result".to_string(), result);
+        ResponseTemplate::new(200)
+            .append_header("Content-Type", "application/json")
+            .set_body_json(Value::Object(body))
+    }
+
+    fn json_rpc_request_id(body: &Value) -> Value {
+        body.get("id").cloned().unwrap_or(Value::Null)
+    }
+
+    fn tool_result(name: &str) -> Value {
+        json!({
+            "name": name,
+            "description": format!("Tool {name}"),
+            "inputSchema": { "type": "object", "properties": {} }
+        })
+    }
+
+    async fn mount_streamable_http_tools_list_responder(
+        server: &MockServer,
+        tools_list_response: impl Fn(&Value) -> ResponseTemplate + Send + Sync + 'static,
+    ) {
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = request.body_json().expect("JSON-RPC request body");
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => initialize_response(),
+                    Some("notifications/initialized") => ResponseTemplate::new(202),
+                    Some("tools/list") => tools_list_response(&body),
+                    other => ResponseTemplate::new(404)
+                        .set_body_string(format!("unexpected MCP method {other:?}")),
+                }
+            })
+            .mount(server)
+            .await;
+    }
+
     #[tokio::test]
     async fn streamable_http_caller_sends_bearer_token_and_decodes_tool_result() {
         let server = MockServer::start().await;
@@ -699,6 +853,114 @@ mod tests {
             .and_then(|issue| issue.get("title"))
             .and_then(Value::as_str);
         assert_eq!(title, Some("Bug A"));
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_follows_cursor_pages() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            responder_calls.fetch_add(1, Ordering::SeqCst);
+            match body.pointer("/params/cursor").and_then(Value::as_str) {
+                None => json_rpc_result_response(
+                    json_rpc_request_id(body),
+                    json!({
+                        "tools": [tool_result("first_page_tool")],
+                        "nextCursor": "second-page"
+                    }),
+                ),
+                Some("second-page") => json_rpc_result_response(
+                    json_rpc_request_id(body),
+                    json!({
+                        "tools": [tool_result("second_page_tool")]
+                    }),
+                ),
+                other => ResponseTemplate::new(400)
+                    .set_body_string(format!("unexpected cursor {other:?}")),
+            }
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let tools = caller
+            .list_tools()
+            .await
+            .expect("tools/list should succeed");
+
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, ["first_page_tool", "second_page_tool"]);
+        assert_eq!(list_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_rejects_repeated_cursor() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            responder_calls.fetch_add(1, Ordering::SeqCst);
+            json_rpc_result_response(
+                json_rpc_request_id(body),
+                json!({
+                    "tools": [tool_result("looping_tool")],
+                    "nextCursor": "same-cursor"
+                }),
+            )
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let error = caller
+            .list_tools()
+            .await
+            .expect_err("repeated cursor should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("MCP tools/list returned repeated next cursor 'same-cursor'"),
+            "unexpected repeated-cursor error: {error}"
+        );
+        assert_eq!(list_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn streamable_http_list_tools_bounded_rejects_max_page_overrun() {
+        let server = MockServer::start().await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&list_calls);
+        mount_streamable_http_tools_list_responder(&server, move |body| {
+            let page = responder_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            json_rpc_result_response(
+                json_rpc_request_id(body),
+                json!({
+                    "tools": [tool_result(&format!("tool_{page}"))],
+                    "nextCursor": format!("page-{page}")
+                }),
+            )
+        })
+        .await;
+        let manifest = streamable_http_manifest(&server.uri());
+        let caller = make_caller(manifest, McpBodyCapture::default());
+
+        let error = caller
+            .list_tools()
+            .await
+            .expect_err("max page overrun should fail");
+
+        assert!(
+            error.to_string().contains(&format!(
+                "MCP tools/list exceeded max_pages={MAX_MCP_DISCOVERY_PAGES}"
+            )),
+            "unexpected max-page error: {error}"
+        );
+        assert_eq!(list_calls.load(Ordering::SeqCst), MAX_MCP_DISCOVERY_PAGES);
     }
 
     /// Helper: wire up a wiremock server that successfully serves

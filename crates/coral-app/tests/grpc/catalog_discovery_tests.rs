@@ -249,7 +249,7 @@ async fn describe_missing_table_returns_catalog_suggestions() {
         .into_inner();
 
     assert!(response.table.is_none());
-    assert_eq!(response.available_schemas, vec!["local_messages"]);
+    assert_eq!(response.available_schemas, vec!["coral", "local_messages"]);
     assert_eq!(response.same_schema_tables.len(), 3);
     assert_eq!(response.suggestions.len(), 3);
     assert_eq!(response.suggestions[0].name, "events");

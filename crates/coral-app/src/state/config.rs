@@ -1,7 +1,8 @@
 //! Persists the installed source catalog in top-level `config.toml`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig, MemorySize, QueryMemoryConfig};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, InlineTable, Item, Value, value};
 use tracing::{info_span, warn};
@@ -12,11 +13,13 @@ use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::AppStateLayout;
 use crate::storage::fs::{self as storage_fs, FileLock};
-use crate::workspaces::WorkspaceName;
+use crate::workspaces::{DeletedWorkspace, WorkspaceName, WorkspaceRecord, WorkspaceStore};
 
 #[derive(Debug, Clone)]
-struct AppConfig {
+pub(crate) struct AppConfig {
     version: u32,
+    engine: PersistedEngineConfig,
+    workspaces: WorkspaceCatalog,
     catalog: SourceCatalog,
 }
 
@@ -24,8 +27,54 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             version: default_config_version(),
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog: SourceCatalog::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub(crate) fn workspaces(&self) -> Vec<WorkspaceRecord> {
+        self.workspaces.list()
+    }
+
+    pub(crate) fn has_workspace(&self, workspace_name: &WorkspaceName) -> bool {
+        self.workspaces.contains(workspace_name)
+    }
+
+    pub(crate) fn require_workspace(&self, workspace_name: &WorkspaceName) -> Result<(), AppError> {
+        if self.has_workspace(workspace_name) {
+            Ok(())
+        } else {
+            Err(AppError::WorkspaceNotFound(workspace_name.to_string()))
+        }
+    }
+
+    pub(crate) fn workspace_sources(&self, workspace_name: &WorkspaceName) -> Vec<InstalledSource> {
+        self.catalog.workspace_sources(workspace_name)
+    }
+
+    pub(crate) fn get_source(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Option<InstalledSource> {
+        self.catalog.get_source(workspace_name, source_name)
+    }
+
+    pub(crate) fn dependent_join_config(
+        &self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        self.engine
+            .dependent_join
+            .clone()
+            .try_into_runtime_config(selected_source_names)
+    }
+
+    pub(crate) fn memory_config(&self) -> Result<QueryMemoryConfig, AppError> {
+        self.engine.memory.clone().try_into_runtime_config()
     }
 }
 
@@ -38,7 +87,57 @@ struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
     version: u32,
     #[serde(default)]
+    engine: PersistedEngineConfig,
+    #[serde(default)]
     workspaces: BTreeMap<String, PersistedWorkspaceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedEngineConfig {
+    #[serde(default)]
+    dependent_join: PersistedDependentJoinConfig,
+    #[serde(default)]
+    memory: PersistedMemoryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedMemoryConfig {
+    #[serde(default)]
+    limit: Option<toml::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
+    #[serde(default)]
+    per_source: BTreeMap<String, PersistedDependentJoinSourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedDependentJoinSourceConfig {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bindings: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows: Option<usize>,
+    #[serde(default)]
+    max_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_resolver_rows_per_binding: Option<usize>,
+    #[serde(default)]
+    max_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,6 +233,37 @@ impl From<&InstalledSource> for PersistedInstalledSource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceCatalog(BTreeSet<WorkspaceName>);
+
+impl Default for WorkspaceCatalog {
+    fn default() -> Self {
+        Self(BTreeSet::from([WorkspaceName::default()]))
+    }
+}
+
+impl WorkspaceCatalog {
+    pub(crate) fn list(&self) -> Vec<WorkspaceRecord> {
+        self.0
+            .iter()
+            .cloned()
+            .map(|name| WorkspaceRecord { name })
+            .collect()
+    }
+
+    pub(crate) fn contains(&self, workspace_name: &WorkspaceName) -> bool {
+        self.0.contains(workspace_name)
+    }
+
+    pub(crate) fn insert(&mut self, workspace_name: WorkspaceName) -> bool {
+        self.0.insert(workspace_name)
+    }
+
+    pub(crate) fn remove(&mut self, workspace_name: &WorkspaceName) -> bool {
+        self.0.remove(workspace_name)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SourceCatalog(BTreeMap<WorkspaceName, BTreeMap<SourceName, InstalledSource>>);
 
@@ -196,6 +326,13 @@ impl SourceCatalog {
         }
 
         removed
+    }
+
+    pub(crate) fn remove_workspace(
+        &mut self,
+        workspace_name: &WorkspaceName,
+    ) -> Option<BTreeMap<SourceName, InstalledSource>> {
+        self.0.remove(workspace_name)
     }
 }
 
@@ -315,38 +452,151 @@ impl ConfigStore {
         Ok(())
     }
 
-    fn lock_shared(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_shared(&self) -> Result<FileLock, AppError> {
         FileLock::shared(self.layout.state_lock()).map_err(Into::into)
     }
 
-    fn lock_exclusive(&self) -> Result<FileLock, AppError> {
+    pub(crate) fn state_lock_exclusive(&self) -> Result<FileLock, AppError> {
         FileLock::exclusive(self.layout.state_lock()).map_err(Into::into)
+    }
+
+    /// Loads the app config without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned config.
+    pub(crate) fn load_config_unlocked(&self) -> Result<AppConfig, AppError> {
+        self.load_unlocked()
+    }
+
+    pub(crate) fn load_config(&self) -> Result<AppConfig, AppError> {
+        let _lock = self.state_lock_shared()?;
+        self.load_config_unlocked()
+    }
+
+    /// Loads the source catalog without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in shared or exclusive mode
+    /// while using any filesystem-backed source artifacts derived from the
+    /// returned catalog.
+    pub(crate) fn load_catalog_unlocked(&self) -> Result<SourceCatalog, AppError> {
+        self.load_config_unlocked().map(|config| config.catalog)
     }
 
     pub(crate) fn load_catalog(&self) -> Result<SourceCatalog, AppError> {
         let span = info_span!("coral.app.config.load_catalog");
         let _guard = span.enter();
-        let _lock = self.lock_shared()?;
-        self.load_unlocked().map(|config| config.catalog)
+        let _lock = self.state_lock_shared()?;
+        self.load_catalog_unlocked()
     }
 
-    fn update_catalog<T>(
+    fn update_config_unlocked<T>(
+        &self,
+        update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut config = self.load_unlocked()?;
+        let result = update(&mut config)?;
+        self.save_unlocked(&config)?;
+        Ok(result)
+    }
+
+    fn update_config<T>(
+        &self,
+        update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let _lock = self.state_lock_exclusive()?;
+        self.update_config_unlocked(update)
+    }
+
+    fn update_catalog_unlocked<T>(
         &self,
         update: impl FnOnce(&mut SourceCatalog) -> T,
     ) -> Result<T, AppError> {
-        let _lock = self.lock_exclusive()?;
-        let mut config = self.load_unlocked()?;
-        let result = update(&mut config.catalog);
-        self.save_unlocked(&config)?;
-        Ok(result)
+        self.update_config_unlocked(|config| Ok(update(&mut config.catalog)))
+    }
+
+    pub(crate) fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        self.load_config().map(|config| config.workspaces())
+    }
+
+    pub(crate) fn create_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        self.update_config(|config| {
+            if config.workspaces.insert(workspace_name.clone()) {
+                Ok(WorkspaceRecord {
+                    name: workspace_name.clone(),
+                })
+            } else {
+                Err(AppError::WorkspaceAlreadyExists(workspace_name.to_string()))
+            }
+        })
+    }
+
+    pub(crate) fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
+        self.update_config(|config| {
+            if workspace_name.is_default() {
+                return Err(AppError::FailedPrecondition(
+                    "default workspace cannot be removed".to_string(),
+                ));
+            }
+            let removed = config.workspaces.remove(workspace_name);
+            if removed {
+                let sources = config
+                    .catalog
+                    .remove_workspace(workspace_name)
+                    .map(BTreeMap::into_values)
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                return Ok(Some(DeletedWorkspace {
+                    workspace: WorkspaceRecord {
+                        name: workspace_name.clone(),
+                    },
+                    sources,
+                }));
+            }
+            Ok(None)
+        })
     }
 
     pub(crate) fn list_workspace_sources(
         &self,
         workspace_name: &WorkspaceName,
     ) -> Result<Vec<InstalledSource>, AppError> {
-        self.load_catalog()
-            .map(|catalog| catalog.workspace_sources(workspace_name))
+        let config = self.load_config()?;
+        config.require_workspace(workspace_name)?;
+        Ok(config.workspace_sources(workspace_name))
+    }
+
+    pub(crate) fn list_workspace_source_names(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Vec<String>, AppError> {
+        let config = self.load_config()?;
+        config.require_workspace(workspace_name)?;
+        Ok(config
+            .workspace_sources(workspace_name)
+            .into_iter()
+            .map(|source| source.name.as_str().to_string())
+            .collect())
+    }
+
+    /// Loads one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock while using source artifacts
+    /// associated with the returned config entry.
+    pub(crate) fn get_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<InstalledSource, AppError> {
+        self.load_catalog_unlocked()?
+            .get_source(workspace_name, source_name)
+            .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
     pub(crate) fn get_source(
@@ -354,27 +604,81 @@ impl ConfigStore {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<InstalledSource, AppError> {
-        self.load_catalog()?
+        let config = self.load_config()?;
+        config.require_workspace(workspace_name)?;
+        config
             .get_source(workspace_name, source_name)
             .ok_or_else(|| AppError::SourceNotFound(format!("{workspace_name}:{source_name}")))
     }
 
+    /// Upserts one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn upsert_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source: InstalledSource,
+    ) -> Result<(), AppError> {
+        self.update_catalog_unlocked(|catalog| catalog.upsert_source(workspace_name, source))
+    }
+
+    #[cfg(test)]
     pub(crate) fn upsert_source(
         &self,
         workspace_name: &WorkspaceName,
         source: InstalledSource,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| catalog.upsert_source(workspace_name, source))
+        self.update_config(|config| {
+            config.require_workspace(workspace_name)?;
+            config.catalog.upsert_source(workspace_name, source);
+            Ok(())
+        })
     }
 
+    /// Removes one installed source without taking the app state lock.
+    ///
+    /// Callers must already hold the state lock in exclusive mode.
+    pub(crate) fn remove_source_unlocked(
+        &self,
+        workspace_name: &WorkspaceName,
+        source_name: &SourceName,
+    ) -> Result<(), AppError> {
+        self.update_catalog_unlocked(|catalog| {
+            catalog.remove_source(workspace_name, source_name);
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn remove_source(
         &self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<(), AppError> {
-        self.update_catalog(|catalog| {
-            catalog.remove_source(workspace_name, source_name);
+        self.update_config(|config| {
+            config.require_workspace(workspace_name)?;
+            config.catalog.remove_source(workspace_name, source_name);
+            Ok(())
         })
+    }
+}
+
+impl WorkspaceStore for ConfigStore {
+    fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>, AppError> {
+        ConfigStore::list_workspaces(self)
+    }
+
+    fn create_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<WorkspaceRecord, AppError> {
+        ConfigStore::create_workspace(self, workspace_name)
+    }
+
+    fn delete_workspace(
+        &self,
+        workspace_name: &WorkspaceName,
+    ) -> Result<Option<DeletedWorkspace>, AppError> {
+        ConfigStore::delete_workspace(self, workspace_name)
     }
 }
 
@@ -388,14 +692,21 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
         .unwrap_or_default();
 
     doc["version"] = value(i64::from(config.version));
+    render_engine_config(&mut doc, &config.engine);
 
-    // Remove and fully rebuild the workspaces section so removed sources don't linger.
+    // Remove and fully rebuild the workspaces section so removed sources and
+    // removed empty workspaces don't linger.
     doc.remove("workspaces");
+
+    for workspace_name in config.workspaces.keys() {
+        ensure_implicit_table(&mut doc["workspaces"]);
+        ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
+    }
 
     for (workspace_name, workspace) in &config.workspaces {
         for (source_name, source) in &workspace.sources {
             ensure_implicit_table(&mut doc["workspaces"]);
-            ensure_implicit_table(&mut doc["workspaces"][workspace_name]);
+            ensure_explicit_table(&mut doc["workspaces"][workspace_name]);
             ensure_implicit_table(&mut doc["workspaces"][workspace_name]["sources"]);
 
             let source_item = &mut doc["workspaces"][workspace_name]["sources"][source_name];
@@ -428,6 +739,61 @@ fn render_config(config: &PersistedAppConfig, existing_raw: Option<&str>) -> Str
     doc.to_string()
 }
 
+fn render_engine_config(doc: &mut DocumentMut, engine: &PersistedEngineConfig) {
+    let Some(limit) = &engine.memory.limit else {
+        remove_engine_memory_limit(doc);
+        return;
+    };
+
+    let engine_item = doc
+        .as_table_mut()
+        .entry("engine")
+        .or_insert_with(toml_edit::table);
+    if !engine_item.is_table() {
+        *engine_item = toml_edit::table();
+    }
+    ensure_implicit_table(engine_item);
+
+    let engine_table = engine_item
+        .as_table_mut()
+        .expect("engine config entry should be a table after initialization");
+    let memory_item = engine_table
+        .entry("memory")
+        .or_insert_with(toml_edit::table);
+    if !memory_item.is_table() {
+        *memory_item = toml_edit::table();
+    }
+    memory_item
+        .as_table_mut()
+        .expect("engine memory config entry should be a table after initialization")["limit"] =
+        render_memory_limit_value(limit);
+}
+
+fn render_memory_limit_value(limit: &toml::Value) -> Item {
+    match limit {
+        toml::Value::String(raw) => value(raw.clone()),
+        toml::Value::Integer(raw) => value(*raw),
+        toml::Value::Float(raw) => value(*raw),
+        toml::Value::Boolean(raw) => value(*raw),
+        toml::Value::Datetime(raw) => value(raw.to_string()),
+        toml::Value::Array(_) | toml::Value::Table(_) => value(limit.to_string()),
+    }
+}
+
+fn remove_engine_memory_limit(doc: &mut DocumentMut) {
+    let Some(engine) = doc
+        .as_table_mut()
+        .get_mut("engine")
+        .and_then(Item::as_table_mut)
+    else {
+        return;
+    };
+    let Some(memory) = engine.get_mut("memory").and_then(Item::as_table_mut) else {
+        return;
+    };
+    memory.remove("limit");
+}
+
 fn ensure_implicit_table(item: &mut Item) {
     if !item.is_table() {
         *item = toml_edit::table();
@@ -437,13 +803,24 @@ fn ensure_implicit_table(item: &mut Item) {
         .set_implicit(true);
 }
 
+fn ensure_explicit_table(item: &mut Item) {
+    if !item.is_table() {
+        *item = toml_edit::table();
+    }
+    item.as_table_mut()
+        .expect("table item must be available")
+        .set_implicit(false);
+}
+
 impl TryFrom<PersistedAppConfig> for AppConfig {
     type Error = AppError;
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
+        let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
             let workspace_name = WorkspaceName::parse(&workspace_name)?;
+            workspaces.insert(workspace_name.clone());
             for (source_name, source) in workspace_config.sources {
                 let source_name = SourceName::parse(&source_name)?;
                 catalog.upsert_source(&workspace_name, source.into_installed_source(source_name));
@@ -451,6 +828,8 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
         }
         Ok(Self {
             version: value.version,
+            engine: value.engine,
+            workspaces,
             catalog,
         })
     }
@@ -459,6 +838,11 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
 impl From<&AppConfig> for PersistedAppConfig {
     fn from(value: &AppConfig) -> Self {
         let mut workspaces = BTreeMap::new();
+        for workspace in value.workspaces.list() {
+            workspaces
+                .entry(workspace.name.as_str().to_string())
+                .or_insert_with(PersistedWorkspaceConfig::default);
+        }
         for (workspace_name, sources) in &value.catalog.0 {
             let workspace_config = workspaces
                 .entry(workspace_name.as_str().to_string())
@@ -472,8 +856,150 @@ impl From<&AppConfig> for PersistedAppConfig {
         }
         Self {
             version: value.version,
+            engine: value.engine.clone(),
             workspaces,
         }
+    }
+}
+
+impl PersistedMemoryConfig {
+    fn try_into_runtime_config(self) -> Result<QueryMemoryConfig, AppError> {
+        let limit = self
+            .limit
+            .as_ref()
+            .map(parse_memory_limit_value)
+            .transpose()?;
+        Ok(QueryMemoryConfig::with_limit(limit))
+    }
+}
+
+fn parse_memory_limit_value(value: &toml::Value) -> Result<MemorySize, AppError> {
+    match value {
+        toml::Value::String(raw) => raw
+            .parse::<MemorySize>()
+            .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}"))),
+        toml::Value::Integer(bytes) if *bytes > 0 => {
+            let bytes = usize::try_from(*bytes).map_err(|_error| {
+                AppError::InvalidInput("engine.memory.limit: memory limit is too large".to_string())
+            })?;
+            MemorySize::from_bytes(bytes)
+                .map_err(|error| AppError::InvalidInput(format!("engine.memory.limit: {error}")))
+        }
+        toml::Value::Integer(_) => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be greater than 0".to_string(),
+        )),
+        _ => Err(AppError::InvalidInput(
+            "engine.memory.limit: memory limit must be a string with binary unit Ki, Mi, Gi, or Ti, or a positive integer byte count".to_string(),
+        )),
+    }
+}
+
+impl PersistedDependentJoinConfig {
+    fn try_into_runtime_config(
+        self,
+        selected_source_names: &[String],
+    ) -> Result<DependentJoinConfig, AppError> {
+        let default = DependentJoinConfig::default();
+        let mut per_source = BTreeMap::new();
+        for (source_name, source_config) in self.per_source {
+            let source_name = SourceName::parse(&source_name)?;
+            if !selected_source_names
+                .iter()
+                .any(|selected_source_name| selected_source_name == source_name.as_str())
+            {
+                continue;
+            }
+            per_source.insert(
+                source_name.as_str().to_string(),
+                source_config.try_into_runtime_config(source_name.as_str())?,
+            );
+        }
+        Ok(DependentJoinConfig {
+            enabled: self.enabled.unwrap_or(default.enabled),
+            max_bindings: positive_or_default(
+                "engine.dependent_join.max_bindings",
+                self.max_bindings,
+                default.max_bindings,
+            )?,
+            max_resolver_rows: positive_or_default(
+                "engine.dependent_join.max_resolver_rows",
+                self.max_resolver_rows,
+                default.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_rows_per_binding",
+                self.max_rows_per_binding,
+                default.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_or_default(
+                "engine.dependent_join.max_resolver_rows_per_binding",
+                self.max_resolver_rows_per_binding,
+                default.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_or_default(
+                "engine.dependent_join.max_concurrency",
+                self.max_concurrency,
+                default.max_concurrency,
+            )?,
+            per_source,
+        })
+    }
+}
+
+impl PersistedDependentJoinSourceConfig {
+    fn try_into_runtime_config(
+        self,
+        source_name: &str,
+    ) -> Result<DependentJoinSourceConfig, AppError> {
+        Ok(DependentJoinSourceConfig {
+            enabled: self.enabled,
+            max_bindings: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_bindings"),
+                self.max_bindings,
+            )?,
+            max_resolver_rows: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_resolver_rows"),
+                self.max_resolver_rows,
+            )?,
+            max_rows_per_binding: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_rows_per_binding"),
+                self.max_rows_per_binding,
+            )?,
+            max_resolver_rows_per_binding: positive_optional(
+                &format!(
+                    "engine.dependent_join.per_source.{source_name}.max_resolver_rows_per_binding"
+                ),
+                self.max_resolver_rows_per_binding,
+            )?,
+            max_concurrency: positive_optional(
+                &format!("engine.dependent_join.per_source.{source_name}.max_concurrency"),
+                self.max_concurrency,
+            )?,
+        })
+    }
+}
+
+fn positive_or_default(
+    field: &str,
+    value: Option<usize>,
+    default: usize,
+) -> Result<usize, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(value),
+        None => Ok(default),
+    }
+}
+
+fn positive_optional(field: &str, value: Option<usize>) -> Result<Option<usize>, AppError> {
+    match value {
+        Some(0) => Err(AppError::InvalidInput(format!(
+            "{field} must be greater than 0"
+        ))),
+        Some(value) => Ok(Some(value)),
+        None => Ok(None),
     }
 }
 
@@ -499,11 +1025,13 @@ mod tests {
 
     use std::collections::BTreeMap;
 
+    use coral_engine::{DependentJoinConfig, DependentJoinSourceConfig};
     use tempfile::TempDir;
 
     use super::{
-        AppConfig, PersistedAppConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
-        load_raw_feature_overrides, render_config, set_raw_feature_override,
+        AppConfig, AppError, ConfigStore, PersistedAppConfig, PersistedEngineConfig,
+        PersistedMemoryConfig, RawFeatureContainerState, RawFeatureValue, SourceCatalog,
+        WorkspaceCatalog, load_raw_feature_overrides, render_config, set_raw_feature_override,
     };
     use crate::credentials::CredentialStorageKind;
     use crate::sources::SourceName;
@@ -558,9 +1086,37 @@ mod tests {
             .container()
     }
 
+    fn selected_sources(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn assert_workspace_not_found<T>(result: Result<T, AppError>, workspace_name: &WorkspaceName) {
+        match result {
+            Err(AppError::WorkspaceNotFound(actual)) => {
+                assert_eq!(actual, workspace_name.as_str());
+            }
+            Ok(_) => panic!("expected WorkspaceNotFound for '{workspace_name}'"),
+            Err(error) => panic!("expected WorkspaceNotFound for '{workspace_name}', got {error}"),
+        }
+    }
+
     #[test]
     fn default_config_uses_canonical_version() {
         assert_eq!(AppConfig::default().version, 1);
+    }
+
+    #[test]
+    fn require_workspace_rejects_missing_workspace() {
+        let config = AppConfig::default();
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+
+        config
+            .require_workspace(&default_workspace())
+            .expect("default workspace should exist");
+        assert_workspace_not_found(
+            config.require_workspace(&missing_workspace),
+            &missing_workspace,
+        );
     }
 
     #[test]
@@ -570,6 +1126,8 @@ mod tests {
         catalog.upsert_source(&workspace_name, installed_source("github"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -584,6 +1142,46 @@ mod tests {
     }
 
     #[test]
+    fn renders_empty_workspaces_as_explicit_tables() {
+        let mut workspaces = WorkspaceCatalog::default();
+        workspaces.insert(WorkspaceName::parse("work").expect("workspace"));
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces,
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[workspaces.default]"));
+        assert!(raw.contains("[workspaces.work]"));
+    }
+
+    #[test]
+    fn loads_empty_workspace_tables() {
+        let raw = r"
+version = 1
+
+[workspaces.default]
+
+[workspaces.work]
+";
+
+        let config = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("workspace config should parse"),
+        )
+        .expect("config");
+        let names = config
+            .workspaces()
+            .into_iter()
+            .map(|workspace| workspace.name.as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["default", "work"]);
+    }
+
+    #[test]
     fn omits_empty_versions_from_rendered_source_entries() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -593,6 +1191,8 @@ mod tests {
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -634,6 +1234,362 @@ origin = "bundled"
     }
 
     #[test]
+    fn scoped_config_store_methods_reject_missing_workspace() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let missing_workspace = WorkspaceName::parse("missing").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source");
+
+        assert_workspace_not_found(
+            store.list_workspace_sources(&missing_workspace),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.get_source(&missing_workspace, &source_name),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.upsert_source(&missing_workspace, installed_source("github")),
+            &missing_workspace,
+        );
+        assert_workspace_not_found(
+            store.remove_source(&missing_workspace, &source_name),
+            &missing_workspace,
+        );
+    }
+
+    #[test]
+    fn delete_workspace_returns_removed_sources() {
+        let temp = TempDir::new().expect("temp dir");
+        let store = ConfigStore::new(test_layout(&temp));
+        let workspace_name = WorkspaceName::parse("work").expect("workspace");
+
+        store
+            .create_workspace(&workspace_name)
+            .expect("create workspace");
+        store
+            .upsert_source(&workspace_name, installed_source("github"))
+            .expect("upsert source");
+
+        let deleted = store
+            .delete_workspace(&workspace_name)
+            .expect("delete workspace")
+            .expect("workspace should be deleted");
+
+        assert_eq!(deleted.workspace.name, workspace_name);
+        assert_eq!(deleted.sources.len(), 1);
+        assert_eq!(deleted.sources[0].name.as_str(), "github");
+        assert_workspace_not_found(
+            store.list_workspace_sources(&deleted.workspace.name),
+            &deleted.workspace.name,
+        );
+    }
+
+    #[test]
+    fn loads_dependent_join_engine_config() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+enabled = false
+max_bindings = 7
+max_resolver_rows = 11
+max_rows_per_binding = 13
+max_resolver_rows_per_binding = 17
+max_concurrency = 19
+
+[engine.dependent_join.per_source.github]
+enabled = true
+max_bindings = 21
+max_concurrency = 4
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config,
+            DependentJoinConfig {
+                enabled: false,
+                max_bindings: 7,
+                max_resolver_rows: 11,
+                max_rows_per_binding: 13,
+                max_resolver_rows_per_binding: 17,
+                max_concurrency: 19,
+                per_source: BTreeMap::from([(
+                    "github".to_string(),
+                    DependentJoinSourceConfig {
+                        enabled: Some(true),
+                        max_bindings: Some(21),
+                        max_concurrency: Some(4),
+                        ..DependentJoinSourceConfig::default()
+                    },
+                )]),
+            }
+        );
+    }
+
+    #[test]
+    fn matches_dependent_join_source_config_after_source_name_normalization() {
+        let raw = r#"
+version = 1
+
+[engine.dependent_join.per_source." github "]
+enabled = false
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("dependent join config should be valid");
+
+        assert_eq!(
+            config.per_source.get("github"),
+            Some(&DependentJoinSourceConfig {
+                enabled: Some(false),
+                ..DependentJoinSourceConfig::default()
+            })
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+"#;
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn loads_engine_memory_config_from_integer_bytes() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = 2147483648
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect("memory config should be valid");
+
+        assert_eq!(
+            config.limit.expect("memory limit should be set").as_bytes(),
+            2 * 1024 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn renders_engine_memory_config() {
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), None);
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+    }
+
+    #[test]
+    fn rendering_engine_memory_preserves_unrelated_engine_sections() {
+        let existing_raw = r"
+version = 1
+
+[engine.other]
+flag = true
+";
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig {
+                memory: PersistedMemoryConfig {
+                    limit: Some(toml::Value::String("2Gi".to_string())),
+                },
+                ..PersistedEngineConfig::default()
+            },
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rendering_without_engine_memory_limit_removes_stale_limit() {
+        let existing_raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2Gi"
+
+[engine.other]
+flag = true
+"#;
+        let config = AppConfig {
+            version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
+            catalog: SourceCatalog::default(),
+        };
+
+        let raw = render_config(&PersistedAppConfig::from(&config), Some(existing_raw));
+
+        assert!(!raw.contains("limit = \"2Gi\""));
+        assert!(raw.contains("[engine.memory]"));
+        assert!(raw.contains("[engine.other]"));
+        assert!(raw.contains("flag = true"));
+    }
+
+    #[test]
+    fn rejects_invalid_engine_memory_config() {
+        let raw = r#"
+version = 1
+
+[engine.memory]
+limit = "2GiB"
+"#;
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("invalid memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must use binary unit")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_engine_memory_value_without_toml_decode_failure() {
+        let raw = r"
+version = 1
+
+[engine.memory]
+limit = true
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("memory config should parse")
+            .engine
+            .memory
+            .try_into_runtime_config()
+            .expect_err("unsupported memory limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.memory.limit: memory limit must be a string")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&[])
+            .expect_err("zero limit should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("engine.dependent_join.max_concurrency must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_dependent_join_source_limits() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 0
+";
+
+        let error = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect_err("zero source limit should fail");
+
+        assert!(error.to_string().contains(
+            "engine.dependent_join.per_source.github.max_concurrency must be greater than 0"
+        ));
+    }
+
+    #[test]
+    fn ignores_dependent_join_source_limits_for_unselected_sources() {
+        let raw = r"
+version = 1
+
+[engine.dependent_join.per_source.github]
+max_concurrency = 4
+
+[engine.dependent_join.per_source.linear]
+max_concurrency = 0
+";
+
+        let config = toml::from_str::<PersistedAppConfig>(raw)
+            .expect("dependent join config should parse")
+            .engine
+            .dependent_join
+            .try_into_runtime_config(&selected_sources(&["github"]))
+            .expect("unselected source override should not be validated");
+
+        assert!(config.per_source.contains_key("github"));
+        assert!(!config.per_source.contains_key("linear"));
+    }
+
+    #[test]
     fn round_trips_source_credential_storage() {
         let workspace_name = default_workspace();
         let mut source = installed_source("github");
@@ -642,6 +1598,8 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, source);
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -730,6 +1688,10 @@ headers = "from=config"
 	feedback = true
 	future_feature = "not-yet-known"
 
+[engine.dependent_join]
+enabled = false
+max_bindings = 250
+
 	[workspaces.default.sources.github]
 version = "1.0.0"
 variables = {}
@@ -742,6 +1704,8 @@ origin = "bundled"
         catalog.upsert_source(&workspace_name, installed_source("slack"));
         let config = AppConfig {
             version: 1,
+            engine: PersistedEngineConfig::default(),
+            workspaces: WorkspaceCatalog::default(),
             catalog,
         };
 
@@ -780,6 +1744,14 @@ origin = "bundled"
         assert!(
             raw.contains("future_feature = \"not-yet-known\""),
             "future feature override should be preserved"
+        );
+        assert!(
+            raw.contains("[engine.dependent_join]"),
+            "dependent join config should be preserved"
+        );
+        assert!(
+            raw.contains("max_bindings = 250"),
+            "dependent join limit should be preserved"
         );
 
         // The newly added source must be present.

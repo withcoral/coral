@@ -23,7 +23,8 @@ use crate::inputs::{
 use crate::{
     ColumnSpec, DeclaredRelation, FilterSpec, ManifestDataType, ManifestError, ManifestInputSpec,
     ParsedTemplate, Result, SourceBackend, SourceManifestCommon, TableCommon, TemplateNamespace,
-    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_test_queries,
+    TemplatePart, validate_columns, validate_declared_relation_namespace, validate_source_name,
+    validate_test_queries,
 };
 
 /// Validated top-level manifest for a native file-backed source.
@@ -611,6 +612,13 @@ fn validate_native_file_table_features(
     filters: &[FilterSpec],
     columns: &[ColumnSpec],
 ) -> Result<()> {
+    if let Some(filter) = filters.iter().find(|filter| filter.lookup_key) {
+        return Err(ManifestError::validation(format!(
+            "{schema}.{table} filter '{}': backend=file does not support lookup_key filters",
+            filter.name
+        )));
+    }
+
     if !filters.is_empty() {
         return Err(ManifestError::validation(format!(
             "{schema}.{table} uses backend=file and does not support declared filters; use SQL WHERE predicates instead"
@@ -698,6 +706,7 @@ impl FileSourceManifest {
             inputs: _inputs,
             tables,
         } = raw;
+        validate_source_name(&name)?;
         validate_test_queries(&name, &test_queries)?;
         validate_declared_relation_namespace(
             &name,

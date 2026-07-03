@@ -60,17 +60,20 @@ mod composition;
 pub mod contracts;
 mod runtime;
 
+pub use backends::mcp::discover_tool_catalog as discover_mcp_tool_catalog;
 pub use composition::{
     EngineExtensions, QueryResultObserver, QueryResultObserverError, RequestAuthenticator,
     RequestAuthenticatorError, SourceDecorator, SourceDecoratorError, SourceFailurePolicy,
     SourceInputResolutionContext, SourceInputResolver, SourceInputResolverError, SourceTables,
 };
 pub use contracts::{
-    CatalogInfo, ColumnInfo, CoreError, DescribeTableInfo, QueryExecution, QueryPlan,
-    QueryRuntimeConfig, QueryRuntimeContext, QuerySource, QueryTestFailure, QueryTestResult,
-    RuntimeSourceComponent, RuntimeSourcePackage, SourceValidationReport, StatusCode,
-    StructuredQueryError, TableFunctionArgumentInfo, TableFunctionInfo,
-    TableFunctionResultColumnInfo, TableInfo,
+    CatalogInfo, ColumnInfo, CoreError, DependentJoinConfig, DependentJoinSourceConfig,
+    DescribeTableInfo, EffectiveDependentJoinConfig, MemorySize, QueryExecution,
+    QueryExecutionProvenance, QueryMemoryConfig, QueryPlan, QueryRuntimeConfig,
+    QueryRuntimeContext, QuerySource, QueryTableFunctionUsage, QueryTableUsage, QueryTestFailure,
+    QueryTestResult, QueryTestSuccess, RuntimeSourceComponent, RuntimeSourcePackage,
+    SourceValidationReport, StatusCode, StructuredQueryError, TableFunctionArgumentInfo,
+    TableFunctionInfo, TableFunctionResultColumnInfo, TableInfo,
 };
 
 /// High-level query operations for the local query engine.
@@ -214,10 +217,16 @@ impl CoralQuery {
         let query_runtime =
             runtime::query::build_runtime(std::slice::from_ref(source), runtime).await?;
         let source_name = source.source_name();
-        let catalog = query_runtime.catalog_info(Some(source_name));
+        let schema_names = source.schema_names();
+        let catalog = query_runtime.catalog_info_for_schemas(&schema_names);
         if catalog.tables.is_empty() && catalog.table_functions.is_empty() {
             if let Some(failure) = query_runtime.registration_failure(source_name) {
                 return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+            }
+            for schema_name in schema_names {
+                if let Some(failure) = query_runtime.registration_failure(schema_name) {
+                    return Err(CoreError::FailedPrecondition(failure.detail.clone()));
+                }
             }
             return Err(CoreError::FailedPrecondition(format!(
                 "source '{source_name}' did not become queryable during validation"
