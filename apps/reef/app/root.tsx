@@ -1,7 +1,11 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router'
 
 import type { Route } from './+types/root'
-import { readSidebarCollapsedCookie } from './components/sidebar/sidebar-state'
+import {
+  readSidebarCollapsedCookie,
+  readSidebarCollapsedCookieValue,
+} from './components/sidebar/sidebar-state'
+import { ensureCoralRuntime } from './lib/coral-runtime'
 import './styles/globals.css'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
@@ -87,6 +91,19 @@ export async function loader({ request }: Route.LoaderArgs) {
     sidebarIsMinimized: readSidebarCollapsedCookie(request),
   }
 }
+
+export async function clientLoader(_args: Route.ClientLoaderArgs) {
+  // Warm the runtime, but best-effort: a sidecar failure must not fail the whole
+  // app shell. Route-level fetches surface connectivity errors where they're
+  // handled with inline loading/error states.
+  await ensureCoralRuntime().catch(() => undefined)
+  return {
+    sidebarIsMinimized:
+      typeof document === 'undefined' ? false : readSidebarCollapsedCookieValue(document.cookie),
+  }
+}
+
+clientLoader.hydrate = true as const
 
 export default function App() {
   return <Outlet />

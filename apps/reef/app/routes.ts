@@ -7,6 +7,8 @@ const isDesktopApp = process.env.CORAL_DESKTOP_APP === '1'
 export default [
   layout('routes/app-shell.tsx', [
     index('routes/index.tsx'),
+    route('sources', 'routes/sources.tsx'),
+    route('traces', 'routes/traces.tsx'),
     ...(isDesktopApp ? [route('settings', 'routes/settings.tsx')] : []),
   ]),
 ] satisfies RouteConfig

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
-import { app, protocol } from 'electron'
+import { app, net, protocol } from 'electron'
 import { repoRoot } from './sidecar'
 
 // The renderer is served over a custom, non-network scheme instead of a TCP
@@ -11,6 +11,11 @@ import { repoRoot } from './sidecar'
 export const APP_SCHEME = 'coral-app'
 export const APP_ORIGIN = `${APP_SCHEME}://app`
 export const APP_ENTRY_URL = `${APP_ORIGIN}/`
+
+// gRPC-web requests are proxied to the loopback sidecar under this same-origin
+// path, so the strict CSP ('self') covers them and no CORS layer is involved.
+const GRPC_PATH_PREFIX = '/__coral__'
+export const APP_GRPC_BASE = `${APP_ORIGIN}${GRPC_PATH_PREFIX}`
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -54,8 +59,8 @@ function contentSecurityPolicy(nonce: string): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self'",
-    // No renderer code reaches the sidecar yet; keep this locked to 'self' and
-    // widen it to the actual sidecar origin when the API client is wired.
+    // The sidecar is reached via the same-origin gRPC proxy path, so 'self' is
+    // sufficient — no loopback host needs to be allowlisted here.
     "connect-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -128,17 +133,63 @@ async function indexHtmlExists(root: string): Promise<boolean> {
   }
 }
 
-export function registerAppProtocol(): void {
+async function proxyToSidecar(
+  request: Request,
+  pathname: string,
+  resolveSidecarBaseUrl: () => Promise<string>,
+): Promise<Response> {
+  let baseUrl: string
+  try {
+    baseUrl = await resolveSidecarBaseUrl()
+  } catch (error) {
+    console.error('[app-renderer] sidecar unavailable for proxy', error)
+    return new Response('Sidecar unavailable', {
+      status: 502,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+
+  const suffix = pathname.slice(GRPC_PATH_PREFIX.length) // keeps the leading '/'
+  const target = `${baseUrl.replace(/\/$/, '')}${suffix}${new URL(request.url).search}`
+
+  // gRPC-web is unary or server-streaming only (never client-streaming), so the
+  // request body is a single small message — buffer it to avoid streaming-body
+  // constraints. The response may stream and is forwarded as-is (grpc-web encodes
+  // trailers in the body, so nothing extra is needed).
+  const body =
+    request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer()
+
+  // A main-process fetch is not subject to CORS, so the sidecar needs no CORS
+  // layer for this path.
+  try {
+    return await net.fetch(target, { method: request.method, headers: request.headers, body })
+  } catch (error) {
+    // The sidecar can die between resolve and fetch — return a controlled 502
+    // instead of surfacing a raw network failure to the renderer.
+    console.error('[app-renderer] sidecar proxy request failed', error)
+    return new Response('Sidecar request failed', {
+      status: 502,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  }
+}
+
+export function registerAppProtocol(resolveSidecarBaseUrl: () => Promise<string>): void {
   const root = rendererRoot()
 
   protocol.handle(APP_SCHEME, async (request) => {
+    const pathname = requestPathname(request.url)
+    if (pathname === null) return notFound()
+
+    // Same-origin gRPC-web proxy to the loopback sidecar.
+    if (pathname === GRPC_PATH_PREFIX || pathname.startsWith(`${GRPC_PATH_PREFIX}/`)) {
+      return proxyToSidecar(request, pathname, resolveSidecarBaseUrl)
+    }
+
     const headOnly = request.method === 'HEAD'
     if (request.method !== 'GET' && !headOnly) {
       return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
     }
-
-    const pathname = requestPathname(request.url)
-    if (pathname === null) return notFound()
 
     try {
       const filePath = await resolveFile(root, pathname)

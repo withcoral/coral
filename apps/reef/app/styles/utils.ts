@@ -1,4 +1,4 @@
-import type { ComplexStyleRule } from '@vanilla-extract/css'
+import { ComplexStyleRule } from '@vanilla-extract/css'
 
 function boxClamp(lines = 2) {
   return {
