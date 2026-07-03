@@ -267,7 +267,7 @@ mod tests {
     fn initial_instructions_frame_coral_as_sql_database() {
         let instructions = initial_instructions("default", &[], &[]);
         assert!(instructions.contains("read-only SQL database"));
-        assert!(instructions.contains("catalog helpers"));
+        assert!(instructions.contains("catalog helper"));
         assert!(instructions.contains("CROSS JOIN"));
         assert!(instructions.contains("row-by-row tool calls"));
     }
