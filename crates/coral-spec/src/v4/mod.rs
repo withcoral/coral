@@ -41,8 +41,9 @@ pub use ir::{
     RestRequestBody, RestResponseAttachment, SemanticIr,
 };
 pub use manifest::{
-    McpRuntimeConfig, OpenApiRuntimeConfig, SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType,
-    V4SourceCommon, V4SourceManifest, V4Surface, validate_openapi_base_url_template,
+    AcceptedIdentityRequirement, IdentityRequirements, McpRuntimeConfig, OpenApiRuntimeConfig,
+    SurfaceDescriptor, SurfaceRuntimeConfig, SurfaceType, V4SourceCommon, V4SourceManifest,
+    V4Surface, validate_openapi_base_url_template, validate_surface_id,
 };
 pub use naming::normalize_identifier;
 pub use parameter_metadata::{

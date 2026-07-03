@@ -133,6 +133,7 @@ pub use udf::{
     FunctionCoralSqlImplementationSpec, FunctionImplementationSpec, FunctionSpec,
     parse_function_sql,
 };
+pub use v4::validate_surface_id;
 pub(crate) use validate::{
     DeclaredRelation, DetailHintDeclaringSurface, DetailHintTargetTable, HttpTableValidation,
     validate_columns, validate_declared_relation_namespace, validate_detail_hint_references,

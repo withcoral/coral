@@ -74,6 +74,22 @@
               "type": "string",
               "minLength": 1
             },
+            "identity_requirements": {
+              "type": "object",
+              "properties": {
+                "accepts": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/AcceptedIdentityRequirementSchema"
+                  },
+                  "minItems": 1
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "accepts"
+              ]
+            },
             "auth": {
               "$ref": "#/$defs/AuthSpec",
               "default": {
@@ -814,6 +830,35 @@
         {
           "$ref": "#/$defs/V4OAuthPublicDynamicClientSchema"
         }
+      ]
+    },
+    "AcceptedIdentityRequirementSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "[^\t-\r    -     　]"
+        },
+        "identity_specs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[\t-\r    -     　]*[A-Za-z_][A-Za-z0-9_]*[\t-\r    -     　]*$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "audience": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "identity_specs"
       ]
     },
     "AuthSpec": {
