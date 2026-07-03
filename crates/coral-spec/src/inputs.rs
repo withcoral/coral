@@ -898,13 +898,6 @@ fn parse_credential_method(
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the next stacked identity-manifest change"
-    )
-)]
 pub(crate) fn parse_identity_oauth_method(
     identity_name: &str,
     method_index: usize,

@@ -5,6 +5,7 @@
 //! It is responsible for:
 //!
 //! - parsing raw `YAML` or structured source-spec values
+//! - parsing raw `YAML` or structured identity-spec values
 //! - validating source-spec shape and source-level invariants
 //! - extracting interactive install-time inputs such as variables and secrets
 //! - exposing normalized backend-specific source-spec models to sibling crates
@@ -31,6 +32,8 @@
 //!   for the declared interactive inputs
 //! - [`ManifestInputSpec`] describes one install-time input (variable or secret)
 //!   surfaced via [`ValidatedSourceManifest::declared_inputs`]
+//! - [`parse_identity_manifest_yaml`] parses identity specs that describe how
+//!   an app-owned identity is instantiated and injected into HTTP requests
 //!
 //! # Crate Relationships
 //!
@@ -79,6 +82,7 @@
 pub mod backends;
 mod common;
 mod error;
+mod identities;
 mod inputs;
 mod loader;
 mod parser;
@@ -105,6 +109,11 @@ pub(crate) use common::{
     validate_reserved_source_schema_name, validate_source_name, validate_test_queries,
 };
 pub use error::{ManifestError, Result};
+pub use identities::{
+    IDENTITY_SPEC_VERSION, IdentityManifest, IdentityOAuthMethodSpec, IdentityOAuthSpec,
+    IdentitySpecConfig, IdentitySpecType, parse_identity_manifest_value,
+    parse_identity_manifest_yaml,
+};
 pub use inputs::{
     ManifestCredentialMethod, ManifestCredentialMethodKind, ManifestCredentialSpec,
     ManifestInputKind, ManifestInputSpec, ManifestOAuthClientIdSpec, ManifestOAuthClientSecretSpec,
