@@ -12,7 +12,11 @@ import {
   GetSourceInfoResponseSchema,
   GetSourceRequestSchema,
   GetSourceResponseSchema,
+  ImportSourceRequestSchema,
+  ImportSourceResponseSchema,
   ListSourcesResponseSchema,
+  ValidateSourceRequestSchema,
+  ValidateSourceResponseSchema,
 } from '../../../src/generated/coral/v1/sources_pb'
 import { grpcWebError, grpcWebRequest, grpcWebResponse, grpcWebStreamResponse } from './grpc-web'
 import {
@@ -30,11 +34,13 @@ import {
   getInstalledCloudwatchLogsResponse,
   getInstalledGithubResponse,
   getInstalledLinearResponse,
+  importDslV4Responses,
   listAfterGithubOauthResponse,
   listAfterLinearInstallResponse,
   listAfterLinearRemovedResponse,
   listEmptyResponse,
   listInitialResponse,
+  validateDslV4Response,
 } from './source-fixtures'
 
 const discoverUrl = '*/coral.v1.SourceService/DiscoverSources'
@@ -43,6 +49,8 @@ const getUrl = '*/coral.v1.SourceService/GetSource'
 const getInfoUrl = '*/coral.v1.SourceService/GetSourceInfo'
 const createBundledUrl = '*/coral.v1.SourceService/CreateBundledSource'
 const createBundledWithOAuthUrl = '*/coral.v1.SourceService/CreateBundledSourceWithOAuth'
+const importUrl = '*/coral.v1.SourceService/ImportSource'
+const validateUrl = '*/coral.v1.SourceService/ValidateSource'
 const deleteUrl = '*/coral.v1.SourceService/DeleteSource'
 
 function sourceInfoResponse(name: string) {
@@ -159,6 +167,31 @@ export function sourceOAuthInstallHandlers() {
         createGithubOauthResponses,
         { delayMs: 1500 },
       )
+    }),
+  ]
+}
+
+export function sourceCreateHandlers() {
+  return [
+    http.post(importUrl, async ({ request }) => {
+      const message = await grpcWebRequest(ImportSourceRequestSchema, request)
+      if (!message.manifestYaml.includes('dsl_version: 4')) {
+        throw new Error('expected ImportSource manifest to use DSL v4')
+      }
+      if (!message.manifestYaml.includes('type: openapi')) {
+        throw new Error('expected ImportSource manifest to include an OpenAPI surface')
+      }
+      if (!message.manifestYaml.includes('github_openapi_v4')) {
+        throw new Error('expected ImportSource manifest to include the source name')
+      }
+      return grpcWebStreamResponse(ImportSourceResponseSchema, importDslV4Responses)
+    }),
+    http.post(validateUrl, async ({ request }) => {
+      const message = await grpcWebRequest(ValidateSourceRequestSchema, request)
+      if (message.name !== 'github_openapi_v4') {
+        throw new Error(`expected ValidateSource for github_openapi_v4, got ${message.name}`)
+      }
+      return grpcWebResponse(ValidateSourceResponseSchema, validateDslV4Response)
     }),
   ]
 }

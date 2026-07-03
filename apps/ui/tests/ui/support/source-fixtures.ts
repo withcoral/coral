@@ -1,12 +1,19 @@
 import { create } from '@bufbuild/protobuf'
 
 import {
+  ColumnSchema,
+  TableFunctionResultColumnSchema,
+  TableFunctionSchema,
+  TableSchema,
+} from '../../../src/generated/coral/v1/catalog_pb'
+import {
   CreateBundledSourceResponseSchema,
   CreateBundledSourceWithOAuthResponseSchema,
   DeleteSourceResponseSchema,
   DiscoverSourcesResponseSchema,
   GetSourceInfoResponseSchema,
   GetSourceResponseSchema,
+  ImportSourceResponseSchema,
   ListSourcesResponseSchema,
   OAuthCredentialClientIdSchema,
   OAuthCredentialClientSchema,
@@ -27,6 +34,7 @@ import {
   SourceSecretSchema,
   SourceVariableInputSchema,
   SourceVariableSchema,
+  ValidateSourceResponseSchema,
   type Source,
   type SourceInfo,
 } from '../../../src/generated/coral/v1/sources_pb'
@@ -241,6 +249,14 @@ const installedLinear: Source = create(SourceSchema, {
   secrets: [create(SourceSecretSchema, { key: 'LINEAR_API_TOKEN', value: '' })],
 })
 
+const installedDslV4Source: Source = create(SourceSchema, {
+  name: 'github_openapi_v4',
+  origin: SourceOrigin.IMPORTED,
+  credentialStorage: SourceCredentialStorage.FILE,
+  variables: [],
+  secrets: [],
+})
+
 export const initialInstalledSources: Source[] = [installedCloudwatchLogs, installedGithub]
 
 export const discoverInitialResponse = create(DiscoverSourcesResponseSchema, {
@@ -330,5 +346,55 @@ export const createGithubOauthResponses = [
     },
   }),
 ]
+
+export const importDslV4Responses = [
+  create(ImportSourceResponseSchema, {
+    event: {
+      case: 'source',
+      value: installedDslV4Source,
+    },
+  }),
+]
+
+export const validateDslV4Response = create(ValidateSourceResponseSchema, {
+  source: installedDslV4Source,
+  tables: [
+    create(TableSchema, {
+      workspace: { name: 'default' },
+      schemaName: 'github_openapi_v4',
+      name: 'search_issues_and_pull_requests',
+      description: 'Search issues and pull requests.',
+      columns: [
+        create(ColumnSchema, {
+          name: 'id',
+          dataType: 'Int64',
+          nullable: false,
+          ordinalPosition: 0,
+        }),
+        create(ColumnSchema, {
+          name: 'title',
+          dataType: 'Utf8',
+          nullable: true,
+          ordinalPosition: 1,
+        }),
+      ],
+    }),
+  ],
+  tableFunctions: [
+    create(TableFunctionSchema, {
+      workspace: { name: 'default' },
+      schemaName: 'github_openapi_v4',
+      name: 'issues_get',
+      description: 'Get an issue by owner, repo, and issue number.',
+      resultColumns: [
+        create(TableFunctionResultColumnSchema, {
+          name: 'result_json',
+          dataType: 'Json',
+          nullable: true,
+        }),
+      ],
+    }),
+  ],
+})
 
 export const deleteSourceResponse = create(DeleteSourceResponseSchema, {})

@@ -1,4 +1,8 @@
-import { sourceLifecycleHandlers, sourceOAuthInstallHandlers } from './support/source-handlers'
+import {
+  sourceCreateHandlers,
+  sourceLifecycleHandlers,
+  sourceOAuthInstallHandlers,
+} from './support/source-handlers'
 import { expect, test } from './playwright.setup'
 
 test('lists core sources by category, searches, and shows configured status', async ({
@@ -236,5 +240,29 @@ test('cmd-F focuses the search input', async ({ network, page, review }) => {
   await page.keyboard.press('ControlOrMeta+f')
 
   await expect(page.getByPlaceholder('Search sources…')).toBeFocused()
+  await review.pause()
+})
+
+test('creates and validates a DSL v4 source', async ({ network, page, review }) => {
+  network.use(...sourceCreateHandlers())
+
+  await review.chapter('Open the v4 source creator', 'Render the source manifest builder page')
+  await page.goto('/#/sources/create')
+
+  await expect(page.getByRole('heading', { name: 'Create DSL v4 Source', level: 1 })).toBeVisible()
+  const manifest = page.getByLabel('Manifest YAML')
+  await expect(manifest).toHaveValue(/dsl_version: 4/)
+  await expect(manifest).toHaveValue(/type: openapi/)
+  await review.pause()
+
+  await review.chapter(
+    'Import and validate',
+    'Submit the generated manifest and show validation results',
+  )
+  await page.getByRole('button', { name: 'Import & validate' }).click()
+
+  await expect(page.getByRole('heading', { name: 'Validated github_openapi_v4' })).toBeVisible()
+  await expect(page.getByText('github_openapi_v4.search_issues_and_pull_requests')).toBeVisible()
+  await expect(page.getByText('github_openapi_v4.issues_get')).toBeVisible()
   await review.pause()
 })

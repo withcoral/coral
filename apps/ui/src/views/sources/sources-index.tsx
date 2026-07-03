@@ -3,9 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { Typography } from '@/wax/components/typography'
+import { Container as ButtonContainer } from '@/wax/components/button/container'
+import { Icon as ButtonIcon } from '@/wax/components/button/icon'
+import { Text as ButtonText } from '@/wax/components/button/text'
 
 import { ErrorBanner } from '@/components/error-banner'
 import { providerIcon } from '@/lib/provider-icons'
+import { useRouter } from '@/lib/router'
 import { SOURCE_CATEGORY_ORDER, getCategoryForSource } from '@/lib/source-categories'
 import { discoverBundled, type CatalogEntry } from '@/lib/sources'
 
@@ -22,6 +26,7 @@ export function SourcesIndex() {
   const [installingName, setInstallingName] = useState<string | null>(null)
   const [detailName, setDetailName] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { navigate } = useRouter()
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -112,11 +117,21 @@ export function SourcesIndex() {
     <div className={styles.root}>
       <div className={styles.container}>
         <div className={styles.header}>
-          <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
-          <Typography.Body variant="secondary">
-            Connect external systems to query their data from Coral. Click a source to install or
-            inspect it.
-          </Typography.Body>
+          <div className={styles.headerText}>
+            <Typography.HeadingLarge as="h1">Sources</Typography.HeadingLarge>
+            <Typography.Body variant="secondary">
+              Connect external systems to query their data from Coral. Click a source to install or
+              inspect it.
+            </Typography.Body>
+          </div>
+          <ButtonContainer
+            onClick={() => navigate({ route: { kind: 'source-create' } })}
+            size="32"
+            variant="secondary"
+          >
+            <ButtonIcon name="Plus" />
+            <ButtonText>Create DSL v4 source</ButtonText>
+          </ButtonContainer>
         </div>
 
         <div className={styles.searchBar}>

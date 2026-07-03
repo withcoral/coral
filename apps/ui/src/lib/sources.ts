@@ -7,10 +7,13 @@ import {
   DiscoverSourcesRequestSchema,
   GetSourceInfoRequestSchema,
   GetSourceRequestSchema,
+  ImportSourceRequestSchema,
   SourceOrigin,
+  ValidateSourceRequestSchema,
   type OAuthCredentialRetrieval,
   type Source,
   type SourceInfo,
+  type ValidateSourceResponse,
 } from '@/generated/coral/v1/sources_pb'
 
 import { sourceClient, WORKSPACE } from './coral-clients'
@@ -153,4 +156,29 @@ export async function createBundledSourceWithOAuth(
     }
   }
   throw new Error(`install stream ended without a source event`)
+}
+
+export async function importSource(manifestYaml: string, inputs: InstallInput[]): Promise<Source> {
+  const { variables, secrets } = splitBindings(inputs)
+  const stream = sourceClient.importSource(
+    create(ImportSourceRequestSchema, {
+      workspace: WORKSPACE,
+      manifestYaml,
+      variables,
+      secrets,
+    }),
+  )
+
+  for await (const response of stream) {
+    const event = response.event
+    if (event.case === 'source') return event.value
+  }
+
+  throw new Error(`import stream ended without a source event`)
+}
+
+export async function validateSource(name: string): Promise<ValidateSourceResponse> {
+  return sourceClient.validateSource(
+    create(ValidateSourceRequestSchema, { workspace: WORKSPACE, name }),
+  )
 }

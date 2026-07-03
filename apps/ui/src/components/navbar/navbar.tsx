@@ -21,6 +21,12 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { icon: 'Activity', label: 'Traces', target: { kind: 'traces' }, matches: ['traces'] },
   { icon: 'Plug', label: 'Sources', target: { kind: 'sources' }, matches: ['sources'] },
+  {
+    icon: 'Plus',
+    label: 'Create source',
+    target: { kind: 'source-create' },
+    matches: ['source-create'],
+  },
 ]
 
 const QUERY_STREAM_LABEL = 'Query stream'

@@ -30,9 +30,17 @@ export const container = style({
 })
 
 export const header = style({
+  alignItems: 'flex-start',
+  display: 'flex',
+  gap: 16,
+  justifyContent: 'space-between',
+})
+
+export const headerText = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 4,
+  minWidth: 0,
 })
 
 export const loadingState = style({

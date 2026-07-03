@@ -1,6 +1,7 @@
 import { Shell } from '@/components/shell'
 import { useRouter } from '@/lib/router'
 import { TracesPage } from '@/views/TracesPage'
+import { SourceCreate } from '@/views/sources/source-create'
 import { SourcesIndex } from '@/views/sources/sources-index'
 import { ToastContainer } from '@/wax/components/toast'
 import { useThemeClassOnBody } from '@/wax/theme/theme-provider'
@@ -12,7 +13,13 @@ export function App() {
 
   return (
     <Shell>
-      {location.route.kind === 'sources' ? <SourcesIndex /> : <TracesPage />}
+      {location.route.kind === 'source-create' ? (
+        <SourceCreate />
+      ) : location.route.kind === 'sources' ? (
+        <SourcesIndex />
+      ) : (
+        <TracesPage />
+      )}
       <ToastContainer />
     </Shell>
   )
