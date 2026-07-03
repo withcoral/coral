@@ -63,7 +63,8 @@ coral sql "DESCRIBE datadog.hosts"
 
 ## `coral source`
 
-Manage configured sources, bundled source specs, and workspace-local imports.
+Manage installed sources, bundled source specs, and source specs imported into
+the selected workspace.
 
 ### `coral source discover`
 
@@ -159,23 +160,6 @@ Coral stores the source secrets in plaintext file storage and shows
 `file (plaintext)` in source output. Sources with no stored secret material show
 `none`.
 
-## `coral source-spec`
-
-Manage source specs in the global registry. Registered specs are reusable
-install targets for any workspace and are not scoped to `--workspace`.
-
-```shellscript
-coral source-spec add --file ./internal-crm.yaml
-coral source-spec list
-coral source add internal_crm --workspace work
-coral source-spec remove internal_crm
-```
-
-`coral source-spec remove <NAME>` removes the registry entry and its global
-manifest artifact. Existing workspace sources installed from that spec are not
-removed, but they become orphaned and fail validation or query loading until you
-register the spec again or remove and re-add the source.
-
 ### `coral source lint <FILE>`
 
 Validate a source spec YAML file without installing it. Checks YAML syntax, JSON schema conformance, and semantic rules such as duplicate columns or references to unknown filters.
@@ -200,6 +184,48 @@ Remove an installed source.
 ```shellscript
 coral source remove github
 ```
+
+## `coral source-spec`
+
+Manage source specs in the global registry. Registered specs are reusable
+install targets for any workspace and are not scoped to `--workspace`.
+
+### `coral source-spec list`
+
+List globally registered source specs.
+
+```shellscript
+coral source-spec list
+```
+
+### `coral source-spec add`
+
+Register a source spec in the global registry.
+
+```shellscript
+coral source-spec add --file ./internal-crm.yaml
+coral source add internal_crm --workspace work
+```
+
+#### Options
+
+| Option          | Type | Default  | Description                           |
+| --------------- | ---- | -------- | ------------------------------------- |
+| `--file <PATH>` | path | required | Source spec YAML file to register     |
+
+### `coral source-spec remove <NAME>`
+
+Remove a source spec from the global registry.
+
+```shellscript
+coral source-spec remove internal_crm
+```
+
+This removes the registry entry and its global manifest artifact. Existing
+workspace sources installed from that spec are not removed. Explicit validation
+for an orphaned source fails until you register the spec again or remove and
+re-add the source; query loading skips the orphaned source and continues with
+the rest of the workspace.
 
 ## `coral workspace`
 
