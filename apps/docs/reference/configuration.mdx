@@ -44,20 +44,19 @@ to the source installation in a workspace.
 
 ## Global Source Specs
 
-Reusable global source specs are indexed under `[source_specs]` and store their
-manifest artifacts under `source_specs/<name>` inside Coral's local state
-directory.
+Use global source specs when you want to reuse the same custom source definition
+across multiple workspaces. Importing with `coral source add --file` copies the
+spec into one workspace; registering with `coral source-spec add --file` stores
+one reusable definition that any workspace can install by name.
 
-```toml
-[source_specs.internal_crm]
-version = "1.0.0"
-```
+Registered specs store their manifest artifacts under `source_specs/<name>`
+inside Coral's local state directory.
 
 Sources installed from a global source spec store `origin = "global"` under the
 workspace source entry. Removing a global source spec does not remove those
 workspace sources. Explicit validation for an orphaned source fails until you
-register the spec again or remove and re-add the source; query loading skips the
-orphaned source and continues with the rest of the workspace.
+register the spec again or remove and re-add the source. Queries run without
+that source while the spec is missing.
 
 ## Runtime features
 
