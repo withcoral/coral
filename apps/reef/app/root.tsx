@@ -93,13 +93,12 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function clientLoader(_args: Route.ClientLoaderArgs) {
-  // Warm the runtime, but best-effort: a sidecar failure must not fail the whole
-  // app shell. Route-level fetches surface connectivity errors where they're
-  // handled with inline loading/error states.
-  await ensureCoralRuntime().catch(() => undefined)
+  // Warm the runtime in the background — do NOT await it, or the app shell blanks
+  // until the sidecar finishes starting (there's no HydrateFallback). Route-level
+  // fetches surface connectivity errors with inline loading/error states.
+  void ensureCoralRuntime()
   return {
-    sidebarIsMinimized:
-      typeof document === 'undefined' ? false : readSidebarCollapsedCookieValue(document.cookie),
+    sidebarIsMinimized: readSidebarCollapsedCookieValue(document.cookie),
   }
 }
 

@@ -135,7 +135,6 @@ async function indexHtmlExists(root: string): Promise<boolean> {
 
 async function proxyToSidecar(
   request: Request,
-  pathname: string,
   resolveSidecarBaseUrl: () => Promise<string>,
 ): Promise<Response> {
   let baseUrl: string
@@ -149,8 +148,11 @@ async function proxyToSidecar(
     })
   }
 
-  const suffix = pathname.slice(GRPC_PATH_PREFIX.length) // keeps the leading '/'
-  const target = `${baseUrl.replace(/\/$/, '')}${suffix}${new URL(request.url).search}`
+  // Forward the raw (still-encoded) path + query so the sidecar receives the URL
+  // exactly as sent — decoding here would corrupt encoded ?/#/%xx in REST paths.
+  const requestUrl = new URL(request.url)
+  const suffix = requestUrl.pathname.slice(GRPC_PATH_PREFIX.length) // keeps the leading '/'
+  const target = `${baseUrl.replace(/\/$/, '')}${suffix}${requestUrl.search}`
 
   // gRPC-web is unary or server-streaming only (never client-streaming), so the
   // request body is a single small message — buffer it to avoid streaming-body
@@ -183,7 +185,7 @@ export function registerAppProtocol(resolveSidecarBaseUrl: () => Promise<string>
 
     // Same-origin gRPC-web proxy to the loopback sidecar.
     if (pathname === GRPC_PATH_PREFIX || pathname.startsWith(`${GRPC_PATH_PREFIX}/`)) {
-      return proxyToSidecar(request, pathname, resolveSidecarBaseUrl)
+      return proxyToSidecar(request, resolveSidecarBaseUrl)
     }
 
     const headOnly = request.method === 'HEAD'

@@ -1,6 +1,5 @@
 import { create } from '@bufbuild/protobuf'
 import { createClient, type Client } from '@connectrpc/connect'
-import { createGrpcWebTransport } from '@connectrpc/connect-web'
 
 import {
   GetTraceRequestSchema,
@@ -10,22 +9,13 @@ import {
   type ListTracesResponse,
 } from '@/generated/coral/v1/traces_pb'
 
-import { ensureCoralRuntime } from './coral-runtime'
+import { getCoralTransport } from './coral-runtime'
 
-let tracesClientPromise: Promise<Client<typeof TraceService>> | null = null
 const listTraceRequests = new Map<string, Promise<ListTracesResponse>>()
 const getTraceRequests = new Map<string, Promise<GetTraceResponse>>()
 
 function getTracesClient(): Promise<Client<typeof TraceService>> {
-  if (tracesClientPromise) return tracesClientPromise
-  const promise = ensureCoralRuntime().then((runtime) =>
-    createClient(TraceService, createGrpcWebTransport({ baseUrl: runtime.url })),
-  )
-  promise.catch(() => {
-    if (tracesClientPromise === promise) tracesClientPromise = null
-  })
-  tracesClientPromise = promise
-  return promise
+  return getCoralTransport().then((transport) => createClient(TraceService, transport))
 }
 
 export async function listTraces(pageSize = 50, pageToken = ''): Promise<ListTracesResponse> {
