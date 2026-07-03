@@ -30,6 +30,16 @@ pub enum AppError {
     /// The request requires additional setup before it can succeed.
     #[error("failed precondition: {0}")]
     FailedPrecondition(String),
+    /// This build cannot resolve a DSL v4 surface's declared identities.
+    #[error(
+        "failed precondition: source '{source_name}' surface '{surface_id}' declares DSL v4 identity_requirements, but this Coral build cannot resolve source identities. Use a Coral build with identity runtime support before querying this source."
+    )]
+    UnsupportedV4IdentityRequirements {
+        /// Source containing the unsupported identity-gated surface.
+        source_name: String,
+        /// Identity-gated surface that cannot be assembled safely.
+        surface_id: String,
+    },
     /// A DSL v4 source has missing or stale generated runtime artifacts.
     #[error(
         "failed precondition: source '{source_name}' has missing or incompatible DSL v4 materialized artifacts: {detail}. Re-add the source to regenerate them."
@@ -239,6 +249,7 @@ fn app_code(error: &AppError) -> Code {
         AppError::WorkspaceAlreadyExists(_) => Code::AlreadyExists,
         AppError::InvalidInput(_) => Code::InvalidArgument,
         AppError::FailedPrecondition(_)
+        | AppError::UnsupportedV4IdentityRequirements { .. }
         | AppError::MissingOrIncompatibleV4Materialization { .. }
         | AppError::InvalidV4ProjectionOverride { .. }
         | AppError::CredentialRefresh(_)
@@ -277,6 +288,23 @@ mod tests {
         let out = truncate_status_detail(detail);
         assert!(out.len() <= MAX_STATUS_DETAIL_BYTES);
         assert!(out.ends_with("… (truncated)"), "missing marker: {out:?}");
+    }
+
+    #[test]
+    fn app_status_explains_unsupported_v4_identity_requirements_without_readd_guidance() {
+        let status = app_status(AppError::UnsupportedV4IdentityRequirements {
+            source_name: "demo".to_string(),
+            surface_id: "rest".to_string(),
+        });
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(status.message().contains("source 'demo' surface 'rest'"));
+        assert!(
+            status
+                .message()
+                .contains("cannot resolve source identities")
+        );
+        assert!(!status.message().contains("Re-add"));
     }
 
     #[test]

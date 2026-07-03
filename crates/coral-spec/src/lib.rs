@@ -80,6 +80,7 @@
     reason = "These manifest builders and accessors are internal crate APIs, not end-user APIs."
 )]
 pub mod backends;
+mod bundle;
 mod common;
 mod error;
 mod identities;
@@ -97,6 +98,7 @@ pub use backends::mcp::{
     McpEnvSpec, McpHttpAuthSpec, McpLimitBinding, McpServerSpec, McpSourceManifest,
     McpTableFilterBinding, McpTableFilterSpec, McpTableFunctionSpec, McpTableSpec,
 };
+pub use bundle::{IdentityManifestDocument, ManifestBundle, parse_manifest_bundle_yaml};
 pub use common::{
     BodyFieldSpec, BodySpec, ColumnSpec, DetailHintSpec, ExprSpec, FilterMode, FilterSpec,
     FunctionArgBinding, HeaderSpec, HttpMethod, ManifestDataType, PageSizeSpec, PaginationMode,

@@ -102,11 +102,12 @@ impl CatalogSnapshotLoader {
                 &installed.manifest_yaml,
                 v4,
             )?;
-            runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                incompatible_materialization_error(
+            runtime_components_for_v4_source(v4, &materialized).map_err(|error| match error {
+                error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
+                error => incompatible_materialization_error(
                     &source.name,
                     format!("failed to assemble runtime package: {error}"),
-                )
+                ),
             })
         } else {
             Ok(runtime_components_from_manifest(&source_spec))

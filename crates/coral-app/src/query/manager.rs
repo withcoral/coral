@@ -338,6 +338,7 @@ impl QueryManager {
                 Ok((loaded_source, _version)) => loaded_sources.push(loaded_source),
                 Err(
                     error @ (AppError::Credentials(CredentialsError::Unavailable(_))
+                    | AppError::UnsupportedV4IdentityRequirements { .. }
                     | AppError::MissingOrIncompatibleV4Materialization { .. }
                     | AppError::InvalidV4ProjectionOverride { .. }),
                 ) => {
@@ -371,14 +372,15 @@ impl QueryManager {
                 &installed.manifest_yaml,
                 v4,
             )?;
-            Some(
-                runtime_components_for_v4_source(v4, &materialized).map_err(|error| {
-                    incompatible_materialization_error(
+            Some(runtime_components_for_v4_source(v4, &materialized).map_err(
+                |error| match error {
+                    error @ AppError::UnsupportedV4IdentityRequirements { .. } => error,
+                    error => incompatible_materialization_error(
                         &source.name,
                         format!("failed to assemble runtime package: {error}"),
-                    )
-                })?,
-            )
+                    ),
+                },
+            )?)
         } else {
             None
         };
@@ -706,6 +708,9 @@ fn app_error_type(error: &AppError) -> &'static str {
         AppError::WorkspaceAlreadyExists(_) => "WORKSPACE_ALREADY_EXISTS",
         AppError::InvalidInput(_) => "INVALID_INPUT",
         AppError::FailedPrecondition(_) => "FAILED_PRECONDITION",
+        AppError::UnsupportedV4IdentityRequirements { .. } => {
+            "UNSUPPORTED_V4_IDENTITY_REQUIREMENTS"
+        }
         AppError::MissingOrIncompatibleV4Materialization { .. } => {
             "MISSING_OR_INCOMPATIBLE_V4_MATERIALIZATION"
         }
@@ -1160,6 +1165,81 @@ surfaces:
             execution_to_rows(&execution),
             vec![json!({"id": 1, "title": "Generated runtime package"})]
         );
+    }
+
+    #[tokio::test]
+    async fn load_query_sources_preserves_unsupported_v4_identity_requirements_error() {
+        let fixture = query_manager_with(QueryRuntimeContext::default(), Vec::new()).await;
+        fixture.manager.layout.ensure().expect("ensure layout");
+        let source_manager = SourceManager::new_for_tests(
+            fixture.manager.config_store.clone(),
+            fixture.manager.credential_manager.clone(),
+            fixture.manager.layout.clone(),
+        );
+        let workspace_name = WorkspaceName::default();
+        let descriptor_temp = tempfile::tempdir().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("identity-guard-openapi.yaml");
+        std::fs::write(
+            &openapi_file,
+            r"
+openapi: 3.0.3
+info: {title: Identity Guard}
+paths:
+  /items:
+    get:
+      operationId: items/list
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: integer}
+",
+        )
+        .expect("write OpenAPI fixture");
+        source_manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: format!(
+                        r"
+name: github_v4_identity_guard
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    identity_requirements:
+      accepts:
+        - id: github_api
+          identity_specs: [github_oauth]
+",
+                        openapi_file.display()
+                    ),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("import identity-gated v4 source");
+        std::fs::remove_file(&openapi_file).expect("remove authored descriptor after import");
+
+        let error = fixture
+            .manager
+            .load_query_sources(&workspace_name)
+            .await
+            .expect_err("identity-gated source must fail closed");
+
+        assert!(matches!(
+            &error,
+            AppError::UnsupportedV4IdentityRequirements {
+                source_name,
+                surface_id,
+            } if source_name == "github_v4_identity_guard" && surface_id == "rest"
+        ));
+        assert!(!error.to_string().contains("Re-add"));
     }
 
     #[tokio::test]
