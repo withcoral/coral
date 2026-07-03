@@ -7,7 +7,7 @@
 //! consumes the `ValidatedGraphPlan` produced by the `GraphPlanValidator`.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use super::declaration::{Declaration, Node, Relationship, TableRef};
@@ -34,6 +34,8 @@ mod render;
 mod scalar;
 mod scoped;
 mod subqueries;
+
+use self::joins::FromClauseBuilder;
 
 #[allow(
     clippy::allow_attributes,
@@ -130,9 +132,6 @@ impl Declaration {
 
 struct Lowerer<'a> {
     validated: ValidatedGraphPlan<'a>,
-    joined_nodes: BTreeSet<&'a str>,
-    optional_relationships_joined: bool,
-    from_clause: String,
     subquery_plan: ScalarSubqueryPlan,
     /// Uniqueness counter for inline exists-count aliases (see `render_scalar_predicate_expression`,
     /// predicates.rs). Separate from `subquery_plan`: the alias it mints is local to a generated
@@ -243,18 +242,18 @@ impl<'a> Lowerer<'a> {
     fn new(validated: ValidatedGraphPlan<'a>) -> Self {
         Self {
             validated,
-            joined_nodes: BTreeSet::new(),
-            optional_relationships_joined: false,
-            from_clause: String::new(),
             subquery_plan: ScalarSubqueryPlan::default(),
             next_scalar_subquery_alias: Cell::new(0),
         }
     }
 
     fn lower(mut self) -> Result<SqlTranslation, CoreError> {
-        self.build_from_clause()?;
+        // The borrowed Lowerer carries an EMPTY ScalarSubqueryPlan during FROM construction, so
+        // any subquery reached while rendering optional-match predicates renders inline, exactly
+        // as today.
+        let mut from_clause = FromClauseBuilder::new(&self).build()?;
         let plan = self.build_scalar_subquery_plan()?;
-        self.from_clause.push_str(&plan.from_joins);
+        from_clause.push_str(&plan.from_joins);
         self.subquery_plan = plan;
 
         let select = self.render_select()?;
@@ -277,8 +276,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(SqlTranslation::new(
             format!(
-                "{select} {}{where_clause}{group_by}{having}{order_by}{limit}{offset}",
-                self.from_clause
+                "{select} {from_clause}{where_clause}{group_by}{having}{order_by}{limit}{offset}"
             ),
             Vec::new(),
         ))

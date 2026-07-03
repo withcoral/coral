@@ -1,7 +1,10 @@
 //! FROM-clause construction for the SQL Lowerer: assembles the graph plan's join tree —
 //! start and cross-joined nodes, mandatory and OPTIONAL relationship joins, OPTIONAL MATCH
 //! scope grouping and anchoring, and relationship orientation/label matching with the
-//! resulting join conditions. Mutating `Lowerer` methods over `from_clause`/`joined_nodes`.
+//! resulting join conditions. `FromClauseBuilder` owns the mutable FROM workspace while
+//! borrowing the render-capable `Lowerer`.
+
+use std::collections::BTreeSet;
 
 #[allow(
     clippy::allow_attributes,
@@ -9,6 +12,13 @@
     reason = "Relationship join helpers are split into a child module while preserving parent-private access."
 )]
 use super::*;
+
+pub(super) struct FromClauseBuilder<'a, 'r> {
+    lowerer: &'r Lowerer<'a>,
+    joined_nodes: BTreeSet<&'a str>,
+    optional_relationships_joined: bool,
+    from_clause: String,
+}
 
 impl<'a> Lowerer<'a> {
     fn render_optional_join_predicate(
@@ -243,8 +253,20 @@ impl<'a> Lowerer<'a> {
             _ => Ok(format!("({})", conditions.join(" OR "))),
         }
     }
-    pub(super) fn build_from_clause(&mut self) -> Result<(), CoreError> {
-        let plan = self.validated.plan();
+}
+
+impl<'a, 'r> FromClauseBuilder<'a, 'r> {
+    pub(super) fn new(lowerer: &'r Lowerer<'a>) -> Self {
+        Self {
+            lowerer,
+            joined_nodes: BTreeSet::new(),
+            optional_relationships_joined: false,
+            from_clause: String::new(),
+        }
+    }
+
+    pub(super) fn build(mut self) -> Result<String, CoreError> {
+        let plan = self.lowerer.validated.plan();
         let first_node = plan
             .nodes
             .first()
@@ -255,11 +277,11 @@ impl<'a> Lowerer<'a> {
         self.cross_join_isolated_nodes()?;
         self.ensure_optional_relationships_joined()?;
 
-        Ok(())
+        Ok(self.from_clause)
     }
 
     fn start_from_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
-        let binding = self.validated.binding(variable)?;
+        let binding = self.lowerer.validated.binding(variable)?;
         let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
             return Err(CoreError::internal("graph component root was not a node"));
         };
@@ -276,7 +298,7 @@ impl<'a> Lowerer<'a> {
         if self.joined_nodes.contains(variable) {
             return Ok(());
         }
-        let binding = self.validated.binding(variable)?;
+        let binding = self.lowerer.validated.binding(variable)?;
         let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
             return Err(CoreError::internal("graph component root was not a node"));
         };
@@ -292,32 +314,34 @@ impl<'a> Lowerer<'a> {
     }
 
     fn cross_join_isolated_nodes(&mut self) -> Result<(), CoreError> {
-        let scoped_relationships = self.optional_match_scope_relationships();
-        let optional_match_nodes =
-            self.validated
-                .plan()
-                .optional_matches
-                .iter()
-                .flat_map(|optional_match| {
-                    optional_match
-                        .node_indices
-                        .iter()
-                        .copied()
-                        .filter_map(|index| self.validated.plan().nodes.get(index))
-                        .map(|node| node.variable.as_str())
-                });
+        let scoped_relationships = self.lowerer.optional_match_scope_relationships();
+        let optional_match_nodes = self
+            .lowerer
+            .validated
+            .plan()
+            .optional_matches
+            .iter()
+            .flat_map(|optional_match| {
+                optional_match
+                    .node_indices
+                    .iter()
+                    .copied()
+                    .filter_map(|index| self.lowerer.validated.plan().nodes.get(index))
+                    .map(|node| node.variable.as_str())
+            });
         let unscoped_optional_relationship_nodes = self
+            .lowerer
             .validated
             .plan()
             .optional_relationships
             .iter()
             .filter(|index| !scoped_relationships.contains(index))
-            .filter_map(|index| self.validated.plan().relationships.get(*index))
+            .filter_map(|index| self.lowerer.validated.plan().relationships.get(*index))
             .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()]);
         let optional_nodes = optional_match_nodes
             .chain(unscoped_optional_relationship_nodes)
             .collect::<BTreeSet<_>>();
-        for node in &self.validated.plan().nodes {
+        for node in &self.lowerer.validated.plan().nodes {
             if !self.joined_nodes.contains(node.variable.as_str())
                 && !optional_nodes.contains(node.variable.as_str())
             {
@@ -328,9 +352,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn join_mandatory_relationships(&mut self) -> Result<(), CoreError> {
-        let plan = self.validated.plan();
-        let validated = &self.validated;
-        let optional_nodes = self.optional_relationship_node_variables();
+        let plan = self.lowerer.validated.plan();
+        let validated = &self.lowerer.validated;
+        let optional_nodes = self.lowerer.optional_relationship_node_variables();
         let mut remaining_relationships = (0..plan.relationships.len())
             .filter(|index| !validated.relationship_is_optional(*index))
             .collect::<BTreeSet<_>>();
@@ -358,7 +382,9 @@ impl<'a> Lowerer<'a> {
         }
         Ok(())
     }
+}
 
+impl<'a> Lowerer<'a> {
     fn optional_relationship_node_variables(&self) -> BTreeSet<&'a str> {
         self.validated
             .plan()
@@ -368,7 +394,9 @@ impl<'a> Lowerer<'a> {
             .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
             .collect()
     }
+}
 
+impl FromClauseBuilder<'_, '_> {
     fn join_relationship_index_set(
         &mut self,
         remaining_relationships: &mut BTreeSet<usize>,
@@ -382,7 +410,7 @@ impl<'a> Lowerer<'a> {
                     let index = *remaining_relationships.first().ok_or_else(|| {
                         CoreError::internal("remaining optional relationship set was empty")
                     })?;
-                    let anchor = self.optional_relationship_component_anchor(index)?;
+                    let anchor = self.lowerer.optional_relationship_component_anchor(index)?;
                     self.cross_join_node(anchor)?;
                     continue;
                 }
@@ -395,10 +423,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn join_optional_relationships(&mut self) -> Result<(), CoreError> {
-        let scoped_relationships = self.optional_match_scope_relationships();
+        let scoped_relationships = self.lowerer.optional_match_scope_relationships();
         self.join_optional_match_scopes()?;
 
         let mut remaining_relationships = self
+            .lowerer
             .validated
             .plan()
             .optional_relationships
@@ -417,7 +446,9 @@ impl<'a> Lowerer<'a> {
         self.optional_relationships_joined = true;
         Ok(())
     }
+}
 
+impl Lowerer<'_> {
     fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
         self.validated
             .plan()
@@ -426,14 +457,17 @@ impl<'a> Lowerer<'a> {
             .flat_map(|optional_match| optional_match.relationship_indices.iter().copied())
             .collect()
     }
+}
 
+impl FromClauseBuilder<'_, '_> {
     fn join_optional_match_scopes(&mut self) -> Result<(), CoreError> {
         let mut remaining_scopes =
-            (0..self.validated.plan().optional_matches.len()).collect::<BTreeSet<_>>();
+            (0..self.lowerer.validated.plan().optional_matches.len()).collect::<BTreeSet<_>>();
         while !remaining_scopes.is_empty() {
             let mut progressed = false;
             for index in remaining_scopes.iter().copied().collect::<Vec<_>>() {
                 let optional_match = self
+                    .lowerer
                     .validated
                     .plan()
                     .optional_matches
@@ -453,12 +487,15 @@ impl<'a> Lowerer<'a> {
                 .first()
                 .ok_or_else(|| CoreError::internal("remaining optional scope set was empty"))?;
             let optional_match = self
+                .lowerer
                 .validated
                 .plan()
                 .optional_matches
                 .get(index)
                 .ok_or_else(|| CoreError::internal("optional match scope index missing"))?;
-            let anchor = self.optional_match_scope_component_anchor(optional_match)?;
+            let anchor = self
+                .lowerer
+                .optional_match_scope_component_anchor(optional_match)?;
             self.cross_join_node(anchor)?;
         }
         Ok(())
@@ -478,6 +515,7 @@ impl<'a> Lowerer<'a> {
         };
 
         let pattern = self
+            .lowerer
             .validated
             .plan()
             .relationships
@@ -489,10 +527,15 @@ impl<'a> Lowerer<'a> {
             return Ok(false);
         }
 
-        let relationship = self.validated.relationship_mapping(*relationship_index)?;
-        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
-        Self::join_relationship(
-            &self.validated,
+        let relationship = self
+            .lowerer
+            .validated
+            .relationship_mapping(*relationship_index)?;
+        let optional_predicate = self
+            .lowerer
+            .render_optional_match_predicate(optional_match)?;
+        Lowerer::join_relationship(
+            &self.lowerer.validated,
             &mut self.joined_nodes,
             &mut self.from_clause,
             *relationship_index,
@@ -505,7 +548,9 @@ impl<'a> Lowerer<'a> {
         )?;
         Ok(true)
     }
+}
 
+impl<'a> Lowerer<'a> {
     fn optional_relationship_component_anchor(
         &self,
         relationship_index: usize,
@@ -546,7 +591,9 @@ impl<'a> Lowerer<'a> {
             .min_by_key(|variable| self.node_position(variable).unwrap_or(usize::MAX))
             .ok_or_else(|| CoreError::internal("optional match scope had no anchor candidates"))
     }
+}
 
+impl<'a> FromClauseBuilder<'a, '_> {
     fn optional_match_scope_join_anchor(
         &self,
         optional_match: &OptionalMatchScope,
@@ -554,6 +601,7 @@ impl<'a> Lowerer<'a> {
         let mut anchor = None;
         for relationship_index in optional_match.relationship_indices.iter().copied() {
             let pattern = self
+                .lowerer
                 .validated
                 .plan()
                 .relationships
@@ -589,8 +637,9 @@ impl<'a> Lowerer<'a> {
             .copied()
             .collect::<BTreeSet<_>>();
         let mut inner_joined_nodes = BTreeSet::new();
-        let (mut join_group, outer_condition) =
-            self.render_optional_match_group_anchor(anchor, &mut inner_joined_nodes)?;
+        let (mut join_group, outer_condition) = self
+            .lowerer
+            .render_optional_match_group_anchor(anchor, &mut inner_joined_nodes)?;
         let mut outer_conditions = vec![outer_condition];
         remaining_relationships.remove(&anchor.relationship_index);
 
@@ -598,6 +647,7 @@ impl<'a> Lowerer<'a> {
             let mut progressed = false;
             for relationship_index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
                 let pattern = self
+                    .lowerer
                     .validated
                     .plan()
                     .relationships
@@ -630,7 +680,9 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let optional_predicate = self.render_optional_match_predicate(optional_match)?;
+        let optional_predicate = self
+            .lowerer
+            .render_optional_match_predicate(optional_match)?;
         let outer_condition = match outer_conditions.as_slice() {
             [] => {
                 return Err(CoreError::internal(
@@ -645,7 +697,7 @@ impl<'a> Lowerer<'a> {
                 .join(" AND "),
         };
         let outer_condition =
-            Self::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
+            Lowerer::join_condition_with_predicate(outer_condition, optional_predicate.as_deref());
         write!(
             self.from_clause,
             " LEFT JOIN ({join_group}) ON {outer_condition}"
@@ -654,6 +706,7 @@ impl<'a> Lowerer<'a> {
 
         for relationship_index in optional_match.relationship_indices.iter().copied() {
             let pattern = self
+                .lowerer
                 .validated
                 .plan()
                 .relationships
@@ -666,7 +719,9 @@ impl<'a> Lowerer<'a> {
         }
         Ok(())
     }
+}
 
+impl<'a> Lowerer<'a> {
     fn render_optional_match_group_anchor(
         &self,
         anchor: OptionalScopeAnchor<'a>,
@@ -727,7 +782,9 @@ impl<'a> Lowerer<'a> {
             outer_condition,
         ))
     }
+}
 
+impl<'a> FromClauseBuilder<'a, '_> {
     fn render_optional_match_group_relationship(
         &self,
         join_group: &mut String,
@@ -737,18 +794,23 @@ impl<'a> Lowerer<'a> {
         right_joined: bool,
     ) -> Result<Option<String>, CoreError> {
         let pattern = self
+            .lowerer
             .validated
             .plan()
             .relationships
             .get(relationship_index)
             .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
-        let relationship = self.validated.relationship_mapping(relationship_index)?;
+        let relationship = self
+            .lowerer
+            .validated
+            .relationship_mapping(relationship_index)?;
         let relationship_alias = self
+            .lowerer
             .validated
             .relationship_alias(relationship_index, pattern);
         if left_joined && right_joined {
-            let condition = Self::relationship_pair_condition(
-                &self.validated,
+            let condition = Lowerer::relationship_pair_condition(
+                &self.lowerer.validated,
                 relationship,
                 &relationship_alias,
                 pattern,
@@ -769,8 +831,8 @@ impl<'a> Lowerer<'a> {
         } else {
             (pattern.right.as_str(), pattern.left.as_str(), false)
         };
-        let relationship_join = Self::relationship_known_node_condition(
-            &self.validated,
+        let relationship_join = Lowerer::relationship_known_node_condition(
+            &self.lowerer.validated,
             relationship,
             pattern,
             &relationship_alias,
@@ -787,16 +849,16 @@ impl<'a> Lowerer<'a> {
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
 
         if self.joined_nodes.contains(unknown_variable) {
-            let outer_join = Self::relationship_known_node_condition(
-                &self.validated,
+            let outer_join = Lowerer::relationship_known_node_condition(
+                &self.lowerer.validated,
                 relationship,
                 pattern,
                 &relationship_alias,
                 unknown_variable,
                 !known_is_left,
             )?;
-            return Self::relationship_outer_condition_for_known_node(
-                &self.validated,
+            return Lowerer::relationship_outer_condition_for_known_node(
+                &self.lowerer.validated,
                 relationship,
                 pattern,
                 &relationship_alias,
@@ -805,16 +867,16 @@ impl<'a> Lowerer<'a> {
             .map(Some);
         }
 
-        let unknown_join = Self::relationship_inner_unknown_condition_for_known_node(
-            &self.validated,
+        let unknown_join = Lowerer::relationship_inner_unknown_condition_for_known_node(
+            &self.lowerer.validated,
             relationship,
             pattern,
             &relationship_alias,
             unknown_variable,
             !known_is_left,
         )?;
-        let unknown_node = self.validated.node_binding(unknown_variable)?;
-        let unknown_alias = self.validated.binding(unknown_variable)?.alias();
+        let unknown_node = self.lowerer.validated.node_binding(unknown_variable)?;
+        let unknown_alias = self.lowerer.validated.binding(unknown_variable)?.alias();
         write!(
             join_group,
             " JOIN {} AS {} ON {}",
@@ -826,7 +888,9 @@ impl<'a> Lowerer<'a> {
         inner_joined_nodes.insert(unknown_variable);
         Ok(None)
     }
+}
 
+impl Lowerer<'_> {
     fn node_position(&self, variable: &str) -> Result<usize, CoreError> {
         self.validated
             .plan()
@@ -835,14 +899,16 @@ impl<'a> Lowerer<'a> {
             .position(|node| node.variable == variable)
             .ok_or_else(|| CoreError::internal("validated node variable was missing"))
     }
+}
 
+impl FromClauseBuilder<'_, '_> {
     fn join_available_relationships(
         &mut self,
         remaining_relationships: &mut BTreeSet<usize>,
         optional: bool,
     ) -> Result<bool, CoreError> {
-        let plan = self.validated.plan();
-        let validated = &self.validated;
+        let plan = self.lowerer.validated.plan();
+        let validated = &self.lowerer.validated;
         let mut progressed = false;
         for index in remaining_relationships.iter().copied().collect::<Vec<_>>() {
             let pattern = plan.relationships.get(index).ok_or_else(|| {
@@ -853,11 +919,11 @@ impl<'a> Lowerer<'a> {
             if left_joined || right_joined {
                 let relationship = validated.relationship_mapping(index)?;
                 let optional_predicate = if optional {
-                    self.render_optional_join_predicate(index)?
+                    self.lowerer.render_optional_join_predicate(index)?
                 } else {
                     None
                 };
-                Self::join_relationship(
+                Lowerer::join_relationship(
                     validated,
                     &mut self.joined_nodes,
                     &mut self.from_clause,
@@ -875,7 +941,9 @@ impl<'a> Lowerer<'a> {
         }
         Ok(progressed)
     }
+}
 
+impl<'a> Lowerer<'a> {
     fn join_relationship(
         validated: &ValidatedGraphPlan<'a>,
         joined_nodes: &mut BTreeSet<&'a str>,
