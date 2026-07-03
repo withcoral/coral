@@ -26,6 +26,9 @@ struct V4SourceManifestSchema {
     #[schemars(length(min = 1))]
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required)]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -38,7 +41,7 @@ struct V4SourceManifestSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum V4SurfaceSchema {
-    Openapi(V4OpenApiSurfaceSchema),
+    Openapi(Box<V4OpenApiSurfaceSchema>),
     Mcp(V4McpSurfaceSchema),
 }
 
@@ -62,6 +65,9 @@ struct V4OpenApiSurfaceSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, length(min = 1))]
     file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^[0-9a-f]{64}$"))]
+    sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
@@ -788,7 +794,6 @@ surfaces:
     #[test]
     fn generated_schema_rejects_v3_only_fields_and_removed_snapshot_fields() {
         let invalid = [
-            "version: 1.0.0\n",
             "backend: http\n",
             "tables: []\n",
             "auth: {type: HeaderAuth}\n",
@@ -803,12 +808,50 @@ surfaces:
                 "field should be rejected: {field}"
             );
         }
+    }
 
+    #[test]
+    fn generated_schema_validates_v4_version_and_parser_agrees() {
+        let raw = "name: demo\ndsl_version: 4\nversion: 1.0.0\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n";
+        assert!(
+            validator().is_valid(&manifest_json(raw)),
+            "source version should be accepted"
+        );
+        assert_eq!(
+            parse_source_manifest_yaml(raw)
+                .expect("parser accepts source version")
+                .source_version(),
+            Some("1.0.0")
+        );
+
+        for version in ["\"\"", "null"] {
+            let raw = format!(
+                "name: demo\ndsl_version: 4\nversion: {version}\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
+            );
+            assert!(
+                !validator().is_valid(&manifest_json(&raw)),
+                "invalid source version should be rejected: {version}"
+            );
+            parse_source_manifest_yaml(&raw)
+                .expect_err("parser should reject invalid source version");
+        }
+    }
+
+    #[test]
+    fn generated_schema_validates_surface_sha256() {
         let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
         assert!(
-            !validator().is_valid(&manifest_json(raw)),
-            "surface sha256 should be rejected"
+            validator().is_valid(&manifest_json(raw)),
+            "valid surface sha256 should be accepted"
         );
+        parse_source_manifest_yaml(raw).expect("parser accepts surface sha256");
+
+        let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: nope\n";
+        assert!(
+            !validator().is_valid(&manifest_json(raw)),
+            "invalid surface sha256 should be rejected"
+        );
+        parse_source_manifest_yaml(raw).expect_err("parser rejects invalid surface sha256");
     }
 
     #[test]
@@ -817,6 +860,7 @@ surfaces:
             "    url: null\n",
             "    file: null\n",
             "    url: https://example.com/openapi.yaml\n    base_url: null\n",
+            "    url: https://example.com/openapi.yaml\n    sha256: null\n",
             "    url: https://example.com/openapi.yaml\n    auth: null\n",
             "    url: https://example.com/openapi.yaml\n    rate_limit: null\n",
         ];

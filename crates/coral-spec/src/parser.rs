@@ -77,7 +77,7 @@ impl ValidatedSourceManifest {
             ValidatedManifestKind::Http(manifest) => Some(&manifest.common.version),
             ValidatedManifestKind::File(manifest) => Some(&manifest.common.version),
             ValidatedManifestKind::Mcp(manifest) => Some(&manifest.common.version),
-            ValidatedManifestKind::V4(_) => None,
+            ValidatedManifestKind::V4(manifest) => manifest.common.version.as_deref(),
         }
     }
 

@@ -664,24 +664,17 @@ fn write_materialization(
     for surface in &manifest.surfaces {
         let materialized_surface = match materialize_surface(manifest, surface, inputs) {
             Ok(materialized_surface) => materialized_surface,
-            Err(error) => {
-                let message = format!(
-                    "failed to materialize source '{}' surface '{}': {error}",
-                    manifest.common.name, surface.id
+            Err(SurfaceMaterializationError::Recoverable(error)) => {
+                record_surface_materialization_failure(
+                    manifest,
+                    surface,
+                    &error,
+                    &mut diagnostics,
+                    &mut first_surface_error,
                 );
-                if first_surface_error.is_none() {
-                    first_surface_error = Some(message.clone());
-                }
-                diagnostics.push(Diagnostic {
-                    code: "SURFACE_MATERIALIZATION_FAILED".to_string(),
-                    severity: DiagnosticSeverity::Warning,
-                    message,
-                    surface_id: Some(surface.id.clone()),
-                    operation_id: None,
-                    projection_name: None,
-                });
                 continue;
             }
+            Err(SurfaceMaterializationError::Fatal(error)) => return Err(error),
         };
         let surface_dir = temp_dir.join("surfaces").join(&surface.id);
         write_surface_artifacts(&surface_dir, &materialized_surface)?;
@@ -745,6 +738,30 @@ fn write_materialization(
     Ok(())
 }
 
+fn record_surface_materialization_failure(
+    manifest: &V4SourceManifest,
+    surface: &coral_spec::v4::V4Surface,
+    error: &AppError,
+    diagnostics: &mut Vec<Diagnostic>,
+    first_surface_error: &mut Option<String>,
+) {
+    let message = format!(
+        "failed to materialize source '{}' surface '{}': {error}",
+        manifest.common.name, surface.id
+    );
+    if first_surface_error.is_none() {
+        *first_surface_error = Some(message.clone());
+    }
+    diagnostics.push(Diagnostic {
+        code: "SURFACE_MATERIALIZATION_FAILED".to_string(),
+        severity: DiagnosticSeverity::Warning,
+        message,
+        surface_id: Some(surface.id.clone()),
+        operation_id: None,
+        projection_name: None,
+    });
+}
+
 struct MaterializedSurfaceBuild {
     raw_document: Vec<u8>,
     normalized_document: Vec<u8>,
@@ -774,24 +791,36 @@ fn write_surface_artifacts(
     Ok(())
 }
 
+enum SurfaceMaterializationError {
+    Recoverable(AppError),
+    Fatal(AppError),
+}
+
+impl From<AppError> for SurfaceMaterializationError {
+    fn from(error: AppError) -> Self {
+        Self::Recoverable(error)
+    }
+}
+
 fn materialize_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
     inputs: &MaterializationInputs,
-) -> Result<MaterializedSurfaceBuild, AppError> {
+) -> Result<MaterializedSurfaceBuild, SurfaceMaterializationError> {
     match surface.surface_type {
         SurfaceType::OpenApi => materialize_openapi_surface(manifest, surface),
-        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs),
+        SurfaceType::Mcp => materialize_mcp_surface(manifest, surface, inputs).map_err(Into::into),
     }
 }
 
 fn materialize_openapi_surface(
     manifest: &V4SourceManifest,
     surface: &coral_spec::v4::V4Surface,
-) -> Result<MaterializedSurfaceBuild, AppError> {
+) -> Result<MaterializedSurfaceBuild, SurfaceMaterializationError> {
     let bytes = read_descriptor(surface)?;
-    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let observed_sha256 = sha256_hex(&bytes);
+    validate_descriptor_sha256(surface, &observed_sha256)?;
+    validate_materialized_surface_base_url(manifest, surface, &bytes)?;
     let semantic_ir = import_openapi_surface(manifest, surface, &bytes).map_err(|error| {
         AppError::FailedPrecondition(format!(
             "failed to import source '{}' surface '{}': {error}",
@@ -926,10 +955,28 @@ fn validate_materialized_surface_base_url(
     .map_err(|error| AppError::FailedPrecondition(error.to_string()))
 }
 
+fn validate_descriptor_sha256(
+    surface: &coral_spec::v4::V4Surface,
+    observed_sha256: &str,
+) -> Result<(), SurfaceMaterializationError> {
+    let Some(expected_sha256) = surface.descriptor.sha256() else {
+        return Ok(());
+    };
+    if expected_sha256 != observed_sha256 {
+        return Err(SurfaceMaterializationError::Fatal(
+            AppError::FailedPrecondition(format!(
+                "DSL v4 surface '{}' descriptor sha256 mismatch: expected {}, observed {}",
+                surface.id, expected_sha256, observed_sha256
+            )),
+        ));
+    }
+    Ok(())
+}
+
 fn read_descriptor(surface: &coral_spec::v4::V4Surface) -> Result<Vec<u8>, AppError> {
     match &surface.descriptor {
-        coral_spec::v4::SurfaceDescriptor::File { file } => read_file_descriptor(file),
-        coral_spec::v4::SurfaceDescriptor::Url { url } => read_url_descriptor(url),
+        coral_spec::v4::SurfaceDescriptor::File { file, .. } => read_file_descriptor(file),
+        coral_spec::v4::SurfaceDescriptor::Url { url, .. } => read_url_descriptor(url),
         coral_spec::v4::SurfaceDescriptor::McpServer { .. } => {
             Err(AppError::FailedPrecondition(format!(
                 "DSL v4 MCP surface '{}' does not have an OpenAPI descriptor",
@@ -1643,6 +1690,173 @@ surfaces:
                 .projections
                 .iter()
                 .all(|projection| projection.surface_id == "rest")
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_accepts_matching_descriptor_sha256() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let descriptor_sha256 = sha256_hex(openapi_fixture().as_bytes());
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: sha_match_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: {descriptor_sha256}
+    base_url: https://api.example.com
+",
+            openapi_file.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+
+        let build = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &SourceName::parse("sha_match_materialization_test").expect("source"),
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect("matching descriptor sha should materialize");
+        let fingerprint: Fingerprint =
+            read_yaml(&build.temp_dir.join(FINGERPRINT_FILENAME)).expect("read fingerprint");
+        assert_eq!(
+            fingerprint
+                .surfaces
+                .first()
+                .expect("fingerprint surface")
+                .descriptor_sha256,
+            descriptor_sha256
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_rejects_descriptor_sha256_mismatch() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let manifest_yaml = format!(
+            r"
+name: sha_mismatch_materialization_test
+dsl_version: 4
+surfaces:
+  - id: rest
+    type: openapi
+    file: {}
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+            openapi_file.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+
+        let error = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &SourceName::parse("sha_mismatch_materialization_test").expect("source"),
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect_err("descriptor sha mismatch should fail");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("surface 'rest'") && message.contains("descriptor sha256 mismatch"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn build_v4_materialization_aborts_all_surfaces_on_descriptor_sha256_mismatch() {
+        let descriptor_temp = TempDir::new().expect("descriptor temp dir");
+        let openapi_file = descriptor_temp.path().join("openapi.yaml");
+        std::fs::write(&openapi_file, openapi_fixture()).expect("write descriptor");
+        let state_temp = TempDir::new().expect("state temp dir");
+        let layout =
+            AppStateLayout::discover(Some(state_temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let source_name =
+            SourceName::parse("sha_mismatch_multi_materialization_test").expect("source");
+        let manifest_yaml = format!(
+            r"
+name: sha_mismatch_multi_materialization_test
+dsl_version: 4
+surfaces:
+  - id: good
+    namespace_suffix: good
+    type: openapi
+    file: {}
+    base_url: https://api.example.com
+  - id: bad
+    namespace_suffix: bad
+    type: openapi
+    file: {}
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
+    base_url: https://api.example.com
+",
+            openapi_file.display(),
+            openapi_file.display()
+        );
+        let manifest = parse_source_manifest_yaml(&manifest_yaml)
+            .expect("parse v4 manifest")
+            .as_v4()
+            .expect("v4")
+            .clone();
+        let temp_dir = layout.v4_materialized_tmp_dir(&workspace_name(), &source_name, "test");
+        let target_dir = layout.v4_materialized_dir(&workspace_name(), &source_name);
+
+        let error = build_v4_materialization_tmp(
+            &layout,
+            &workspace_name(),
+            &source_name,
+            &manifest_yaml,
+            &manifest,
+            &MaterializationInputs::default(),
+            "test",
+        )
+        .expect_err("pin mismatch should abort the whole materialization");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("surface 'bad'")
+                && message.contains("descriptor sha256 mismatch")
+                && message.contains(
+                    "expected 0000000000000000000000000000000000000000000000000000000000000000"
+                )
+                && message.contains("observed "),
+            "unexpected error: {message}"
+        );
+        assert!(
+            !temp_dir.exists(),
+            "failed materialization should clean temporary artifacts"
+        );
+        assert!(
+            !target_dir.exists(),
+            "failed materialization should not install a partial package"
         );
     }
 

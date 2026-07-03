@@ -125,7 +125,7 @@ mod tests {
 
     fn source_yaml(name: &str) -> String {
         format!(
-            "name: {name}\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    file: /tmp/github-openapi.yaml\n    identity_requirements:\n      accepts:\n        - id: github_api\n          identity_specs: [github_oauth, github_pat]\n          audience: {{host: api.github.com}}\n"
+            "name: {name}\ndsl_version: 4\nversion: 1.2.3\nsurfaces:\n  - id: rest\n    type: openapi\n    file: /tmp/github-openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n    identity_requirements:\n      accepts:\n        - id: github_api\n          identity_specs: [github_oauth, github_pat]\n          audience: {{host: api.github.com}}\n"
         )
     }
 
@@ -177,6 +177,14 @@ mod tests {
         let reparsed_source = parse_source_manifest_yaml(&bundle.source_manifest_yaml)
             .expect("canonical source document reparses");
         assert_eq!(reparsed_source.schema_name(), "demo");
+        assert_eq!(reparsed_source.source_version(), Some("1.2.3"));
+        assert_eq!(
+            reparsed_source
+                .as_v4()
+                .and_then(|manifest| manifest.surfaces.first())
+                .and_then(|surface| surface.descriptor.sha256()),
+            Some("0000000000000000000000000000000000000000000000000000000000000000")
+        );
         for document in &bundle.identity_manifests {
             assert_eq!(
                 parse_identity_manifest_yaml(&document.manifest_yaml)

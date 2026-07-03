@@ -163,6 +163,26 @@ mod tests {
     }
 
     #[test]
+    fn describe_v4_manifest_exposes_authored_version() {
+        let source = describe_manifest(
+            r"
+name: demo_v4
+dsl_version: 4
+version: 1.2.3
+surfaces:
+  - id: rest
+    type: openapi
+    file: /tmp/openapi.yaml
+",
+            SourceOrigin::Imported,
+            false,
+        )
+        .expect("describe v4 manifest");
+
+        assert_eq!(source.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
     fn describe_manifest_extracts_declared_inputs() {
         let source = describe_manifest(
             r#"

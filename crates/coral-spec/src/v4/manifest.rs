@@ -27,6 +27,8 @@ pub struct V4SourceManifest {
 pub struct V4SourceCommon {
     pub dsl_version: u32,
     pub name: String,
+    /// Optional authored source-spec version metadata.
+    pub version: Option<String>,
     pub description: String,
     pub test_queries: Vec<String>,
 }
@@ -53,9 +55,19 @@ pub enum SurfaceType {
 
 #[derive(Debug, Clone)]
 pub enum SurfaceDescriptor {
-    Url { url: String },
-    File { file: PathBuf },
-    McpServer { location: String },
+    Url {
+        url: String,
+        /// Expected SHA-256 digest of the fetched descriptor bytes.
+        sha256: Option<String>,
+    },
+    File {
+        file: PathBuf,
+        /// Expected SHA-256 digest of the file descriptor bytes.
+        sha256: Option<String>,
+    },
+    McpServer {
+        location: String,
+    },
 }
 
 impl SurfaceDescriptor {
@@ -72,6 +84,14 @@ impl SurfaceDescriptor {
             Self::Url { url, .. } => url.clone(),
             Self::File { file, .. } => file.display().to_string(),
             Self::McpServer { location } => location.clone(),
+        }
+    }
+
+    /// Returns the expected descriptor SHA-256 digest, when the manifest pins one.
+    pub fn sha256(&self) -> Option<&str> {
+        match self {
+            Self::Url { sha256, .. } | Self::File { sha256, .. } => sha256.as_deref(),
+            Self::McpServer { .. } => None,
         }
     }
 }
@@ -140,6 +160,8 @@ struct RawV4SourceManifest {
     dsl_version: u32,
     name: String,
     #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
     description: String,
     #[serde(default)]
     test_queries: Vec<String>,
@@ -158,6 +180,8 @@ struct RawV4Surface {
     url: Option<String>,
     #[serde(default)]
     file: Option<PathBuf>,
+    #[serde(default)]
+    sha256: Option<String>,
     #[serde(default, rename = "inputs")]
     _inputs: Option<Value>,
     #[serde(default)]
@@ -190,6 +214,7 @@ impl V4SourceManifest {
         let RawV4SourceManifest {
             dsl_version,
             name,
+            version,
             description,
             test_queries,
             surfaces,
@@ -208,6 +233,7 @@ impl V4SourceManifest {
         let common = V4SourceCommon {
             dsl_version,
             name: name.clone(),
+            version,
             description,
             test_queries,
         };
@@ -376,6 +402,7 @@ fn parse_mcp_surface(
         "identity_requirements",
         "request_headers",
         "rate_limit",
+        "sha256",
     ] {
         if surface_value.get(field).is_some() {
             return Err(ManifestError::validation(format!(
@@ -574,6 +601,9 @@ fn parse_openapi_descriptor(
     source_name: &str,
     surface: &RawV4Surface,
 ) -> Result<SurfaceDescriptor> {
+    if let Some(sha256) = surface.sha256.as_deref() {
+        validate_descriptor_sha256(source_name, &surface.id, sha256)?;
+    }
     match (&surface.url, &surface.file) {
         (Some(url), None) => {
             if !url.starts_with("https://") {
@@ -582,13 +612,33 @@ fn parse_openapi_descriptor(
                     surface.id
                 )));
             }
-            Ok(SurfaceDescriptor::Url { url: url.clone() })
+            Ok(SurfaceDescriptor::Url {
+                url: url.clone(),
+                sha256: surface.sha256.clone(),
+            })
         }
-        (None, Some(file)) => Ok(SurfaceDescriptor::File { file: file.clone() }),
+        (None, Some(file)) => Ok(SurfaceDescriptor::File {
+            file: file.clone(),
+            sha256: surface.sha256.clone(),
+        }),
         (Some(_), Some(_)) | (None, None) => Err(ManifestError::validation(format!(
             "source '{source_name}' surface '{}' must declare exactly one of url or file",
             surface.id
         ))),
+    }
+}
+
+fn validate_descriptor_sha256(source_name: &str, surface_id: &str, sha256: &str) -> Result<()> {
+    let valid = sha256.len() == 64
+        && sha256
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'a'..='f'));
+    if valid {
+        Ok(())
+    } else {
+        Err(ManifestError::validation(format!(
+            "source '{source_name}' surface '{surface_id}' sha256 must be a 64-character lowercase hexadecimal digest"
+        )))
     }
 }
 
