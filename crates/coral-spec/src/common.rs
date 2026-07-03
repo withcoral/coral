@@ -151,6 +151,15 @@ impl ManifestDataType {
             Self::Json => "Json",
         }
     }
+
+    /// Returns whether this manifest type binds into SQL parameters as text.
+    ///
+    /// This describes Coral's SQL binding shape. It does not imply all callers
+    /// should coerce these types identically before binding.
+    #[must_use]
+    pub fn binds_as_string(self) -> bool {
+        matches!(self, Self::Utf8 | Self::Timestamp | Self::Json)
+    }
 }
 
 impl std::fmt::Display for ManifestDataType {
