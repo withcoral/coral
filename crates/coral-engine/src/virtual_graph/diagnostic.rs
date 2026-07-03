@@ -1,3 +1,9 @@
+//! Structured virtual graph diagnostic: the `Diagnostic` value surfaced by
+//! validation, the frontends, and SQL lowering — a stable `code`, the
+//! declaration or plan `path`, and a human-readable `message`, with accessors
+//! and `into_core_error` that formats it into `CoreError::InvalidInput`. A small
+//! shared error type; carries no severity or source-span state.
+
 use crate::CoreError;
 
 /// Structured virtual graph diagnostic surfaced by validation and planning.

@@ -1,3 +1,13 @@
+//! GraphQL frontend and read capability surface: parses (via `graphql_parser`)
+//! and compiles Coral's read-only GraphQL subset into the shared graph-plan IR.
+//! Owns the `compile_graphql` entry points (with operation-name, variable, and
+//! per-graph variants), GraphQL variable binding, `where` scalar/identity/boolean
+//! filters, `out_`/`in_`/`any_` relationship traversal and aggregate fields, and
+//! order/null/row modifiers. Also exposes `GraphqlCapabilitySurface` /
+//! `graphql_read_capability_surface`, the accepted-vs-rejected subset used by
+//! coverage tooling. The read-side counterpart to the openCypher frontend;
+//! response aliasing lives in the `response_signatures` submodule.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use graphql_parser::query::{

@@ -1,3 +1,12 @@
+//! CST recovery and pre-parse normalization for the openCypher frontend: uses
+//! `decypher`'s lossless CST to recover source detail the high-level AST drops —
+//! variable-only function arguments (`count(n)`, `id(n)`, `type(r)`), list and
+//! pattern-comprehension/reduce/filter sources, inline property values, and
+//! `UNWIND` expression text — and runs the pre-parse text-rewriting passes
+//! (compact `COUNT` subqueries, static `range`, string-predicate functions,
+//! `ORDER BY` null placement) plus expression span helpers. Stateless
+//! `pub(super)` helpers split out of `cypher.rs`.
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 

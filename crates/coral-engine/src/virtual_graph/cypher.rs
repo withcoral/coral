@@ -1,3 +1,12 @@
+//! openCypher frontend: parses (via `decypher`) and compiles Coral's read-only
+//! openCypher subset into the shared graph-plan IR. Owns the `compile_cypher` /
+//! `compile_cypher_query` entry points (with per-graph and parameter-bound
+//! variants) yielding a `GraphPlan` or `GraphQuery`, pre-parse text
+//! normalization, static UNWIND and pattern-alternative expansion, and pattern,
+//! predicate, scalar, function, and EXISTS/COUNT/COLLECT-subquery lowering. The
+//! read-side counterpart to the GraphQL frontend; CST recovery and function
+//! classification split into the `cst_recovery` and `functions` submodules.
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};

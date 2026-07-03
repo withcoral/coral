@@ -1,3 +1,10 @@
+//! Virtual graph execution results: the `GraphExecution` (a `SqlTranslation`
+//! paired with the engine `QueryExecution` from running one plan) and
+//! `GraphQueryPlan` (a `SqlTranslation` paired with the `QueryPlan` from an
+//! explain) wrappers. Each exposes the translated `DataFusion` SQL, its
+//! diagnostics, and the underlying execution or plan. Result containers only —
+//! they bundle lowering output with downstream engine output and run nothing.
+
 use super::{Diagnostic, SqlTranslation};
 use crate::{QueryExecution, QueryPlan};
 

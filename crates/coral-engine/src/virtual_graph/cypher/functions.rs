@@ -1,3 +1,12 @@
+//! openCypher function classification: case-insensitive `pub(super)` predicates
+//! over `decypher` `FunctionInvocation`s that identify which built-in a call is —
+//! aggregates (`count`, `collect`, `sum`, `avg`, `min`/`max`, `percentileCont`,
+//! `stDev`...), scalar/string/list functions (`toString`, `toInteger`,
+//! `substring`, `split`, `coalesce`...), identity (`id`, `elementId`, `type`,
+//! `labels`, `keys`, `properties`), relationship endpoints, existence and
+//! collection quantifiers, and internal graph functions — plus canonical-name
+//! mapping helpers. Pure classifiers routing calls to IR lowering in `cypher.rs`.
+
 use decypher::ast::expr::{Expression, FunctionInvocation, Literal as CypherLiteral};
 
 use super::super::ir::AggregateFunction;

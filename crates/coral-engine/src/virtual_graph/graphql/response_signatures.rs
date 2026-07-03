@@ -1,3 +1,11 @@
+//! GraphQL response aliasing and selection signatures: derives stable projection
+//! and response-key aliases from selection fields (`projection_alias`,
+//! `graphql_response_name`, `edge_projection_alias`) and computes comparable
+//! structural signatures of root and relationship selections and their sorted
+//! arguments (`graphql_*_selection_signature`, `graphql_value_signature`) used to
+//! detect duplicate or conflicting selections and to name SQL projection columns.
+//! Stateless `pub(super)` helpers split out of `graphql.rs`.
+
 use graphql_parser::query::{Field, Value};
 use ordered_float::OrderedFloat;
 

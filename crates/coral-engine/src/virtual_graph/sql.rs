@@ -1,3 +1,11 @@
+//! SQL Lowerer hub: lowers a validated graph plan into `DataFusion` SQL. Owns
+//! the `SqlTranslation` result, the `Declaration::lower_graph_plan` /
+//! `lower_graph_query` / union entry points, and the stateful `Lowerer` that
+//! assembles the SELECT/FROM/WHERE/GROUP BY/HAVING/ORDER BY/LIMIT/OFFSET clause
+//! text. Drives the `sql/*` rendering submodules (`joins`, `metadata`,
+//! `predicates`, `projection`, `render`, `scalar`, `scoped`, `subqueries`) and
+//! consumes the `ValidatedGraphPlan` produced by the `GraphPlanValidator`.
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

@@ -1,4 +1,5 @@
-//! Stable virtual-graph diagnostic code registry.
+//! Registry of diagnostic code constants emitted by virtual-graph validation;
+//! each const's name equals its string value.
 #![allow(
     unreachable_pub,
     reason = "The registry intentionally keeps uniform pub const declarations inside the virtual graph module."
