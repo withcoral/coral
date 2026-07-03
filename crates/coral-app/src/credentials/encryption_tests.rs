@@ -7,6 +7,7 @@ use tempfile::tempdir;
 use zeroize::Zeroizing;
 
 use super::CredentialsError;
+use super::config::CredentialEncryptionKeySource;
 use super::encryption::test_support::{RotatingKeyProvider, StaticKeyProvider};
 use super::encryption::{
     CREDENTIAL_DOCUMENT_BINDING_VERSION, CredentialEncryptionKey, CredentialKeyProvider,
@@ -722,7 +723,7 @@ fn open_with_provider(
 }
 
 fn local_file_key_provider(layout: &AppStateLayout) -> LocalFileCredentialKeyProvider {
-    LocalFileCredentialKeyProvider::new(layout, None)
+    LocalFileCredentialKeyProvider::with_source(layout, None, CredentialEncryptionKeySource::File)
 }
 
 fn encrypt_credential_v1_for_test(

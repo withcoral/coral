@@ -12,6 +12,16 @@ pub(crate) struct CredentialStorageConfig {
     pub(crate) storage: CredentialStoragePreference,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialEncryptionKeySource {
+    #[default]
+    Auto,
+    File,
+    Keychain,
+    Vault,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct CredentialStorageConfigFile {
     #[serde(default)]
@@ -45,6 +55,10 @@ mod tests {
     fn defaults_to_auto_when_section_is_absent() {
         let file = toml::from_str::<CredentialStorageConfigFile>("version = 1").expect("config");
         assert_eq!(file.credentials.storage, CredentialStoragePreference::Auto);
+        assert_eq!(
+            CredentialEncryptionKeySource::default(),
+            CredentialEncryptionKeySource::Auto,
+        );
     }
 
     #[test]

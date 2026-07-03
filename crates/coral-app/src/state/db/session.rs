@@ -108,14 +108,6 @@ pub(crate) trait DbRepos: DbSession + Sized {
         MaterializationsRepo::new(self)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the credential runtime is the next stack layer")
-    )]
-    fn credential_documents(&mut self) -> CredentialDocumentsRepo<'_, Self> {
-        CredentialDocumentsRepo::new(self)
-    }
-
     fn feedback_reports(&mut self) -> FeedbackReportsRepo<'_, Self> {
         FeedbackReportsRepo::new(self)
     }
