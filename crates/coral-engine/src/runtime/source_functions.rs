@@ -72,10 +72,28 @@ impl SourceFunctionRegistry {
         self.functions.is_empty()
     }
 
+    /// Installs source-function planning and binding for one session.
+    ///
+    /// The two hooks are a pair: any session that can plan source-function
+    /// calls must also be able to bind parked [`SourceFunctionNode`] plans.
+    pub(crate) fn install(self, ctx: &SessionContext) -> Result<()> {
+        self.install_relation_planner(ctx)?;
+        Self::install_analyzer(ctx);
+        Ok(())
+    }
+
+    /// Installs only the relation planner that parks source-function calls.
+    ///
+    /// Use this only when the caller installs the analyzer separately for the
+    /// same session.
     pub(crate) fn install_relation_planner(self, ctx: &SessionContext) -> Result<()> {
         ctx.register_relation_planner(Arc::new(self))
     }
 
+    /// Installs the analyzer that resolves parked source-function calls.
+    ///
+    /// `DataFusion` appends analyzer rules, so callers should install this at
+    /// most once per session.
     pub(crate) fn install_analyzer(ctx: &SessionContext) {
         ctx.add_analyzer_rule(Arc::new(SourceFunctionAnalyzerRule));
     }

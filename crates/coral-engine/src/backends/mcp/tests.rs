@@ -433,9 +433,8 @@ fn register_test_sources(ctx: &SessionContext, sources: Vec<CompiledQuerySource>
             .flat_map(|source| source.table_functions.iter()),
     );
     source_functions
-        .install_relation_planner(ctx)
+        .install(ctx)
         .expect("source function planner should register");
-    SourceFunctionRegistry::install_analyzer(ctx);
 }
 
 fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<CompiledQuerySource>) {
@@ -448,9 +447,8 @@ fn register_test_sources_with_catalog(ctx: &SessionContext, sources: Vec<Compile
             .flat_map(|source| source.table_functions.iter()),
     );
     source_functions
-        .install_relation_planner(ctx)
+        .install(ctx)
         .expect("source function planner should register");
-    SourceFunctionRegistry::install_analyzer(ctx);
 }
 
 fn mcp_table_manifest() -> coral_spec::ValidatedSourceManifest {
