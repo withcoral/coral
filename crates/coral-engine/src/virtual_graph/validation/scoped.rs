@@ -470,10 +470,6 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Scoped scalar validation mirrors the top-level scalar type dispatcher while resolving local aliases"
-    )]
     pub(super) fn infer_scoped_scalar_expression_type<'b>(
         &self,
         expression: &ScalarExpression,
@@ -482,111 +478,31 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         let path = path.into();
         match expression {
-            ScalarExpression::Property(property) => {
-                self.validate_exists_property_ref(
-                    property,
-                    scope.relationships,
-                    scope.local_nodes,
-                    path.clone(),
-                )?;
-                self.exists_property_ref_scalar_type(
-                    property,
-                    scope.relationships,
-                    scope.local_nodes,
-                )
+            ScalarExpression::UndirectedEndpointProperty { .. }
+            | ScalarExpression::UndirectedEndpointKey { .. }
+            | ScalarExpression::UndirectedEndpointElementId { .. }
+            | ScalarExpression::UndirectedEndpointLabels { .. }
+            | ScalarExpression::UndirectedEndpointPropertyKeys { .. } => {
+                self.infer_scoped_undirected_endpoint_scalar_type(expression, scope, &path)
             }
-            ScalarExpression::UndirectedEndpointProperty {
-                relationship,
-                endpoint,
-                property,
-            } => {
-                if let Some(expression_type) = self
-                    .scoped_undirected_endpoint_property_scalar_type(
-                        relationship,
-                        *endpoint,
-                        property,
-                        scope,
-                        &path,
-                    )?
-                {
-                    Ok(expression_type)
-                } else {
-                    self.infer_atomic_scalar_type(expression, &path)
-                }
+            ScalarExpression::Property(_)
+            | ScalarExpression::Literal(_)
+            | ScalarExpression::LiteralList { .. }
+            | ScalarExpression::TypedLiteralList { .. }
+            | ScalarExpression::GraphKeyList { .. }
+            | ScalarExpression::Predicate(_)
+            | ScalarExpression::Key { .. }
+            | ScalarExpression::ElementId { .. }
+            | ScalarExpression::GraphIdentity { .. }
+            | ScalarExpression::GraphPresence { .. }
+            | ScalarExpression::NodeLabels { .. }
+            | ScalarExpression::PropertyKeys { .. }
+            | ScalarExpression::RelationshipType { .. }
+            | ScalarExpression::PresenceGated { .. } => {
+                self.infer_scoped_atomic_scalar_type(expression, scope, &path)
             }
-            ScalarExpression::UndirectedEndpointKey { relationship, .. } => {
-                if let Some((left_node, _)) =
-                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
-                {
-                    Ok(self.column_scalar_type(&left_node.table, &left_node.key))
-                } else {
-                    self.infer_atomic_scalar_type(expression, &path)
-                }
-            }
-            ScalarExpression::UndirectedEndpointElementId { relationship, .. } => {
-                if self
-                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
-                    .is_some()
-                {
-                    Ok(ScalarType::String)
-                } else {
-                    self.infer_atomic_scalar_type(expression, &path)
-                }
-            }
-            ScalarExpression::UndirectedEndpointLabels {
-                relationship,
-                label,
-                ..
-            } => {
-                if let Some((left_node, _)) =
-                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
-                {
-                    if left_node.label != *label {
-                        return Err(CoreError::internal(
-                            "validated scoped same-label undirected endpoint labels did not match node label",
-                        ));
-                    }
-                    Ok(ScalarType::Other)
-                } else {
-                    self.infer_atomic_scalar_type(expression, &path)
-                }
-            }
-            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
-                if self
-                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, &path)?
-                    .is_some()
-                {
-                    Ok(ScalarType::Other)
-                } else {
-                    self.infer_atomic_scalar_type(expression, &path)
-                }
-            }
-            ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
-            ScalarExpression::LiteralList { literals } => {
-                Self::validate_literal_list_projection(literals, path)?;
-                Ok(ScalarType::Other)
-            }
-            ScalarExpression::TypedLiteralList {
-                literals,
-                element_type,
-            } => {
-                Self::validate_typed_literal_list(literals, *element_type, path)?;
-                Ok(ScalarType::Other)
-            }
-            ScalarExpression::GraphKeyList { variables } => {
-                for variable in variables {
-                    self.validate_exists_key_ref(
-                        variable,
-                        scope.relationships,
-                        scope.local_nodes,
-                        path.clone(),
-                    )?;
-                }
-                Ok(ScalarType::Other)
-            }
-            ScalarExpression::Predicate(predicate) => {
-                self.validate_scoped_predicate_expression(predicate, scope, path)?;
-                Ok(ScalarType::Boolean)
+            ScalarExpression::Coalesce { expressions } => {
+                self.infer_scoped_coalesce_scalar_type(expressions, scope, &path)
             }
             ScalarExpression::CountSubquery {
                 pattern,
@@ -612,23 +528,144 @@ impl<'a> GraphPlanValidator<'a> {
                 "nested COLLECT subqueries require scoped list-value planning and are not supported yet",
             )
             .into_core_error()),
+            ScalarExpression::NullIf { expression, value } => {
+                self.infer_scoped_null_if_scalar_type(expression, value, scope, &path)
+            }
+            ScalarExpression::Case {
+                alternatives,
+                else_expression,
+            } => self.infer_scoped_case_scalar_type(
+                alternatives,
+                else_expression.as_deref(),
+                scope,
+                &path,
+            ),
+            _ => self.infer_scoped_scalar_function_type(expression, scope, &path),
+        }
+    }
+
+    fn infer_scoped_undirected_endpoint_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        match expression {
+            ScalarExpression::UndirectedEndpointProperty {
+                relationship,
+                endpoint,
+                property,
+            } => {
+                if let Some(expression_type) = self
+                    .scoped_undirected_endpoint_property_scalar_type(
+                        relationship,
+                        *endpoint,
+                        property,
+                        scope,
+                        path,
+                    )?
+                {
+                    Ok(expression_type)
+                } else {
+                    self.infer_atomic_scalar_type(expression, path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointKey { relationship, .. } => {
+                if let Some((left_node, _)) =
+                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, path)?
+                {
+                    Ok(self.column_scalar_type(&left_node.table, &left_node.key))
+                } else {
+                    self.infer_atomic_scalar_type(expression, path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointElementId { relationship, .. } => {
+                if self
+                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, path)?
+                    .is_some()
+                {
+                    Ok(ScalarType::String)
+                } else {
+                    self.infer_atomic_scalar_type(expression, path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointLabels {
+                relationship,
+                label,
+                ..
+            } => {
+                if let Some((left_node, _)) =
+                    self.scoped_same_label_undirected_endpoint_nodes(relationship, scope, path)?
+                {
+                    if left_node.label != *label {
+                        return Err(CoreError::internal(
+                            "validated scoped same-label undirected endpoint labels did not match node label",
+                        ));
+                    }
+                    Ok(ScalarType::Other)
+                } else {
+                    self.infer_atomic_scalar_type(expression, path)
+                }
+            }
+            ScalarExpression::UndirectedEndpointPropertyKeys { relationship, .. } => {
+                if self
+                    .scoped_same_label_undirected_endpoint_nodes(relationship, scope, path)?
+                    .is_some()
+                {
+                    Ok(ScalarType::Other)
+                } else {
+                    self.infer_atomic_scalar_type(expression, path)
+                }
+            }
+            _ => unreachable!(
+                "non-undirected endpoint scalar expression reached scoped endpoint type inference"
+            ),
+        }
+    }
+
+    fn infer_scoped_atomic_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let relationships = scope.relationships;
+        let local_nodes = scope.local_nodes;
+
+        match expression {
+            ScalarExpression::Property(property) => {
+                self.validate_exists_property_ref(property, relationships, local_nodes, path)?;
+                self.exists_property_ref_scalar_type(property, relationships, local_nodes)
+            }
+            ScalarExpression::Literal(literal) => Ok(literal_scalar_type(literal)),
+            ScalarExpression::LiteralList { literals } => {
+                Self::validate_literal_list_projection(literals, path)?;
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            } => {
+                Self::validate_typed_literal_list(literals, *element_type, path)?;
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::GraphKeyList { variables } => {
+                for variable in variables {
+                    self.validate_exists_key_ref(variable, relationships, local_nodes, path)?;
+                }
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::Predicate(predicate) => {
+                self.validate_scoped_predicate_expression(predicate, scope, path)?;
+                Ok(ScalarType::Boolean)
+            }
             ScalarExpression::Key { variable } => {
-                self.validate_exists_key_ref(
-                    variable,
-                    scope.relationships,
-                    scope.local_nodes,
-                    path.clone(),
-                )?;
+                self.validate_exists_key_ref(variable, relationships, local_nodes, path)?;
                 self.scoped_key_scalar_type(variable, scope)
             }
             ScalarExpression::ElementId { variable }
             | ScalarExpression::GraphIdentity { variable } => {
-                self.validate_exists_key_ref(
-                    variable,
-                    scope.relationships,
-                    scope.local_nodes,
-                    path,
-                )?;
+                self.validate_exists_key_ref(variable, relationships, local_nodes, path)?;
                 Ok(ScalarType::String)
             }
             ScalarExpression::GraphPresence { variable } => {
@@ -659,103 +696,134 @@ impl<'a> GraphPlanValidator<'a> {
                 presence_variable,
                 expression,
             } => {
-                self.validate_scoped_variable(presence_variable, scope, path.clone())?;
+                self.validate_scoped_variable(presence_variable, scope, path)?;
                 self.infer_scoped_scalar_expression_type(
                     expression,
                     scope,
                     format!("{path}.expression"),
                 )
             }
-            ScalarExpression::Coalesce { expressions } => {
-                if expressions.len() < 2 {
-                    return Err(Diagnostic::new(
-                        "INVALID_SCALAR_EXPRESSION",
-                        path,
-                        "coalesce expressions require at least two arguments",
-                    )
-                    .into_core_error());
-                }
-                let mut result_type = ScalarType::Null;
-                for (index, expression) in expressions.iter().enumerate() {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}[{index}]"),
-                    )?;
-                    result_type = Self::merge_scalar_types(
-                        result_type,
-                        expression_type,
-                        format!("{path}[{index}]"),
-                        "coalesce arguments",
-                    )?;
-                }
-                Ok(result_type)
-            }
-            ScalarExpression::NullIf { expression, value } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                let value_type = self.infer_scoped_scalar_expression_type(
-                    value,
-                    scope,
-                    format!("{path}.value"),
-                )?;
-                Self::validate_compatible_scalar_types(
-                    expression_type,
-                    value_type,
-                    &path,
-                    "nullIf arguments",
-                )?;
-                Ok(expression_type)
-            }
-            ScalarExpression::Case {
-                alternatives,
+            _ => unreachable!("non-atomic scalar expression reached scoped atomic type inference"),
+        }
+    }
+
+    fn infer_scoped_coalesce_scalar_type<'b>(
+        &self,
+        expressions: &[ScalarExpression],
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        if expressions.len() < 2 {
+            return Err(Diagnostic::new(
+                "INVALID_SCALAR_EXPRESSION",
+                path,
+                "coalesce expressions require at least two arguments",
+            )
+            .into_core_error());
+        }
+        let mut result_type = ScalarType::Null;
+        for (index, expression) in expressions.iter().enumerate() {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}[{index}]"),
+            )?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                expression_type,
+                format!("{path}[{index}]"),
+                "coalesce arguments",
+            )?;
+        }
+        Ok(result_type)
+    }
+
+    fn infer_scoped_null_if_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        value: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        let value_type =
+            self.infer_scoped_scalar_expression_type(value, scope, format!("{path}.value"))?;
+        Self::validate_compatible_scalar_types(
+            expression_type,
+            value_type,
+            path,
+            "nullIf arguments",
+        )?;
+        Ok(expression_type)
+    }
+
+    fn infer_scoped_case_scalar_type<'b>(
+        &self,
+        alternatives: &[ScalarCaseAlternative],
+        else_expression: Option<&ScalarExpression>,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        if alternatives.is_empty() {
+            return Err(Diagnostic::new(
+                "INVALID_SCALAR_EXPRESSION",
+                path,
+                "CASE expressions require at least one WHEN/THEN alternative",
+            )
+            .into_core_error());
+        }
+        let mut result_type = ScalarType::Null;
+        for (index, alternative) in alternatives.iter().enumerate() {
+            self.validate_scoped_predicate_expression(
+                &alternative.when,
+                scope,
+                format!("{path}.alternatives[{index}].when"),
+            )?;
+            let then_type = self.infer_scoped_scalar_expression_type(
+                &alternative.then,
+                scope,
+                format!("{path}.alternatives[{index}].then"),
+            )?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                then_type,
+                format!("{path}.alternatives[{index}].then"),
+                "CASE result branches",
+            )?;
+        }
+        if let Some(else_expression) = else_expression {
+            let else_type = self.infer_scoped_scalar_expression_type(
                 else_expression,
-            } => {
-                if alternatives.is_empty() {
-                    return Err(Diagnostic::new(
-                        "INVALID_SCALAR_EXPRESSION",
-                        path,
-                        "CASE expressions require at least one WHEN/THEN alternative",
-                    )
-                    .into_core_error());
-                }
-                let mut result_type = ScalarType::Null;
-                for (index, alternative) in alternatives.iter().enumerate() {
-                    self.validate_scoped_predicate_expression(
-                        &alternative.when,
-                        scope,
-                        format!("{path}.alternatives[{index}].when"),
-                    )?;
-                    let then_type = self.infer_scoped_scalar_expression_type(
-                        &alternative.then,
-                        scope,
-                        format!("{path}.alternatives[{index}].then"),
-                    )?;
-                    result_type = Self::merge_scalar_types(
-                        result_type,
-                        then_type,
-                        format!("{path}.alternatives[{index}].then"),
-                        "CASE result branches",
-                    )?;
-                }
-                if let Some(else_expression) = else_expression {
-                    let else_type = self.infer_scoped_scalar_expression_type(
-                        else_expression,
-                        scope,
-                        format!("{path}.else"),
-                    )?;
-                    result_type = Self::merge_scalar_types(
-                        result_type,
-                        else_type,
-                        format!("{path}.else"),
-                        "CASE result branches",
-                    )?;
-                }
-                Ok(result_type)
-            }
+                scope,
+                format!("{path}.else"),
+            )?;
+            result_type = Self::merge_scalar_types(
+                result_type,
+                else_type,
+                format!("{path}.else"),
+                "CASE result branches",
+            )?;
+        }
+        Ok(result_type)
+    }
+
+    fn infer_scoped_scalar_function_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let string_scalar_type =
+            self.infer_scoped_string_scalar_function_type(expression, scope, path)?;
+        if let Some(scalar_type) = string_scalar_type {
+            return Ok(scalar_type);
+        }
+
+        match expression {
             ScalarExpression::ToString { expression }
             | ScalarExpression::ToStringOrNull { expression } => {
                 self.infer_scoped_scalar_expression_type(
@@ -792,24 +860,6 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Boolean)
             }
-            ScalarExpression::ToLower { expression }
-            | ScalarExpression::ToUpper { expression }
-            | ScalarExpression::Trim { expression }
-            | ScalarExpression::LTrim { expression }
-            | ScalarExpression::RTrim { expression }
-            | ScalarExpression::Reverse { expression } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_string_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "string function",
-                )?;
-                Ok(ScalarType::String)
-            }
             ScalarExpression::CharacterLength { expression } => {
                 let expression_type = self.infer_scoped_scalar_expression_type(
                     expression,
@@ -824,17 +874,7 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::Integer)
             }
             ScalarExpression::IsNaN { expression } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_numeric_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "isNaN",
-                )?;
-                Ok(ScalarType::Boolean)
+                self.infer_scoped_is_nan_scalar_type(expression, scope, path)
             }
             ScalarExpression::Abs { expression }
             | ScalarExpression::Ceil { expression }
@@ -854,88 +894,46 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Degrees { expression }
             | ScalarExpression::Radians { expression }
             | ScalarExpression::Negate { expression } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_numeric_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "numeric function",
-                )?;
-                Ok(numeric_result_type(expression_type))
+                self.infer_scoped_numeric_unary_scalar_type(expression, scope, path)
             }
             ScalarExpression::Round { expression, places } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_numeric_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "round",
-                )?;
-                if let Some(places) = places {
-                    let places_type = self.infer_scoped_scalar_expression_type(
-                        places,
-                        scope,
-                        format!("{path}.places"),
-                    )?;
-                    Self::require_integer_compatible_type(
-                        places_type,
-                        format!("{path}.places"),
-                        "round precision",
-                    )?;
-                }
-                Ok(numeric_result_type(expression_type))
+                self.infer_scoped_round_scalar_type(expression, places.as_deref(), scope, path)
             }
+            ScalarExpression::Arithmetic { left, right, .. } => {
+                self.infer_scoped_arithmetic_scalar_type(left, right, scope, path)
+            }
+            ScalarExpression::Atan2 { y, x } => {
+                self.infer_scoped_atan2_scalar_type(y, x, scope, path)
+            }
+            _ => unreachable!("non-function scalar expression reached function type inference"),
+        }
+    }
+
+    fn infer_scoped_string_scalar_function_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<Option<ScalarType>, CoreError> {
+        match expression {
+            ScalarExpression::ToLower { expression }
+            | ScalarExpression::ToUpper { expression }
+            | ScalarExpression::Trim { expression }
+            | ScalarExpression::LTrim { expression }
+            | ScalarExpression::RTrim { expression }
+            | ScalarExpression::Reverse { expression } => self
+                .infer_scoped_string_unary_scalar_type(expression, scope, path)
+                .map(Some),
             ScalarExpression::Left { expression, count }
-            | ScalarExpression::Right { expression, count } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
-                    expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_string_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "sized string function",
-                )?;
-                let count_type = self.infer_scoped_scalar_expression_type(
-                    count,
-                    scope,
-                    format!("{path}.count"),
-                )?;
-                Self::require_integer_compatible_type(
-                    count_type,
-                    format!("{path}.count"),
-                    "sized string count",
-                )?;
-                Ok(ScalarType::String)
-            }
+            | ScalarExpression::Right { expression, count } => self
+                .infer_scoped_sized_string_scalar_type(expression, count, scope, path)
+                .map(Some),
             ScalarExpression::StringIndices {
                 expression,
                 pattern,
-            } => {
-                for (name, expression) in [
-                    ("expression", expression.as_ref()),
-                    ("pattern", pattern.as_ref()),
-                ] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_string_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "indices",
-                    )?;
-                }
-                Ok(ScalarType::Other)
-            }
+            } => self
+                .infer_scoped_string_indices_scalar_type(expression, pattern, scope, path)
+                .map(Some),
             ScalarExpression::LPad {
                 expression,
                 length,
@@ -945,34 +943,9 @@ impl<'a> GraphPlanValidator<'a> {
                 expression,
                 length,
                 fill,
-            } => {
-                for (name, expression) in [
-                    ("expression", expression.as_ref()),
-                    ("fill", fill.as_ref()),
-                ] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_string_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "padding string function",
-                    )?;
-                }
-                let length_type = self.infer_scoped_scalar_expression_type(
-                    length,
-                    scope,
-                    format!("{path}.length"),
-                )?;
-                Self::require_integer_compatible_type(
-                    length_type,
-                    format!("{path}.length"),
-                    "padding length",
-                )?;
-                Ok(ScalarType::String)
-            }
+            } => self
+                .infer_scoped_padding_scalar_type(expression, length, fill, scope, path)
+                .map(Some),
             ScalarExpression::StringContains {
                 expression,
                 pattern: operand,
@@ -984,116 +957,314 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::StringEndsWith {
                 expression,
                 pattern: operand,
-            } => {
-                for (name, expression) in [
-                    ("expression", expression.as_ref()),
-                    ("pattern", operand.as_ref()),
-                ] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_string_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "string predicate function",
-                    )?;
-                }
-                Ok(ScalarType::Boolean)
-            }
+            } => self
+                .infer_scoped_string_predicate_function_scalar_type(
+                    expression, operand, scope, path,
+                )
+                .map(Some),
             ScalarExpression::Replace {
                 expression,
                 search,
                 replacement,
-            } => {
-                for (name, expression) in [
-                    ("expression", expression.as_ref()),
-                    ("search", search.as_ref()),
-                    ("replacement", replacement.as_ref()),
-                ] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_string_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "replace",
-                    )?;
-                }
-                Ok(ScalarType::String)
-            }
+            } => self
+                .infer_scoped_replace_scalar_type(expression, search, replacement, scope, path)
+                .map(Some),
             ScalarExpression::Substring {
                 expression,
                 start,
                 length,
-            } => {
-                let expression_type = self.infer_scoped_scalar_expression_type(
+            } => self
+                .infer_scoped_substring_scalar_type(
                     expression,
-                    scope,
-                    format!("{path}.expression"),
-                )?;
-                Self::require_string_compatible_type(
-                    expression_type,
-                    format!("{path}.expression"),
-                    "substring",
-                )?;
-                let start_type = self.infer_scoped_scalar_expression_type(
                     start,
+                    length.as_deref(),
                     scope,
-                    format!("{path}.start"),
-                )?;
-                Self::require_integer_compatible_type(
-                    start_type,
-                    format!("{path}.start"),
-                    "substring start",
-                )?;
-                if let Some(length) = length {
-                    let length_type = self.infer_scoped_scalar_expression_type(
-                        length,
-                        scope,
-                        format!("{path}.length"),
-                    )?;
-                    Self::require_integer_compatible_type(
-                        length_type,
-                        format!("{path}.length"),
-                        "substring length",
-                    )?;
-                }
-                Ok(ScalarType::String)
-            }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                let left_type =
-                    self.infer_scoped_scalar_expression_type(left, scope, format!("{path}.left"))?;
-                let right_type = self.infer_scoped_scalar_expression_type(
-                    right,
-                    scope,
-                    format!("{path}.right"),
-                )?;
-                Self::require_numeric_compatible_type(
-                    left_type,
-                    format!("{path}.left"),
-                    "arithmetic",
-                )?;
-                Self::require_numeric_compatible_type(
-                    right_type,
-                    format!("{path}.right"),
-                    "arithmetic",
-                )?;
-                Ok(numeric_binary_result_type(left_type, right_type))
-            }
-            ScalarExpression::Atan2 { y, x } => {
-                let y_type =
-                    self.infer_scoped_scalar_expression_type(y, scope, format!("{path}.y"))?;
-                let x_type =
-                    self.infer_scoped_scalar_expression_type(x, scope, format!("{path}.x"))?;
-                Self::require_numeric_compatible_type(y_type, format!("{path}.y"), "atan2")?;
-                Self::require_numeric_compatible_type(x_type, format!("{path}.x"), "atan2")?;
-                Ok(ScalarType::Float)
-            }
+                    path,
+                )
+                .map(Some),
+            _ => Ok(None),
         }
+    }
+
+    fn infer_scoped_string_unary_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "string function",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_scoped_sized_string_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        count: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "sized string function",
+        )?;
+        let count_type =
+            self.infer_scoped_scalar_expression_type(count, scope, format!("{path}.count"))?;
+        Self::require_integer_compatible_type(
+            count_type,
+            format!("{path}.count"),
+            "sized string count",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_scoped_string_indices_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        pattern: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("pattern", pattern)] {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}.{name}"),
+            )?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "indices",
+            )?;
+        }
+        Ok(ScalarType::Other)
+    }
+
+    fn infer_scoped_padding_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        length: &ScalarExpression,
+        fill: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("fill", fill)] {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}.{name}"),
+            )?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "padding string function",
+            )?;
+        }
+        let length_type =
+            self.infer_scoped_scalar_expression_type(length, scope, format!("{path}.length"))?;
+        Self::require_integer_compatible_type(
+            length_type,
+            format!("{path}.length"),
+            "padding length",
+        )?;
+        Ok(ScalarType::String)
+    }
+
+    fn infer_scoped_string_predicate_function_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        pattern: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("expression", expression), ("pattern", pattern)] {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}.{name}"),
+            )?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "string predicate function",
+            )?;
+        }
+        Ok(ScalarType::Boolean)
+    }
+
+    fn infer_scoped_replace_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        search: &ScalarExpression,
+        replacement: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [
+            ("expression", expression),
+            ("search", search),
+            ("replacement", replacement),
+        ] {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}.{name}"),
+            )?;
+            Self::require_string_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                "replace",
+            )?;
+        }
+        Ok(ScalarType::String)
+    }
+
+    fn infer_scoped_substring_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        start: &ScalarExpression,
+        length: Option<&ScalarExpression>,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_string_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "substring",
+        )?;
+        let start_type =
+            self.infer_scoped_scalar_expression_type(start, scope, format!("{path}.start"))?;
+        Self::require_integer_compatible_type(
+            start_type,
+            format!("{path}.start"),
+            "substring start",
+        )?;
+        if let Some(length) = length {
+            let length_type =
+                self.infer_scoped_scalar_expression_type(length, scope, format!("{path}.length"))?;
+            Self::require_integer_compatible_type(
+                length_type,
+                format!("{path}.length"),
+                "substring length",
+            )?;
+        }
+        Ok(ScalarType::String)
+    }
+
+    fn infer_scoped_is_nan_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "isNaN",
+        )?;
+        Ok(ScalarType::Boolean)
+    }
+
+    fn infer_scoped_numeric_unary_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "numeric function",
+        )?;
+        Ok(numeric_result_type(expression_type))
+    }
+
+    fn infer_scoped_round_scalar_type<'b>(
+        &self,
+        expression: &ScalarExpression,
+        places: Option<&ScalarExpression>,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type = self.infer_scoped_scalar_expression_type(
+            expression,
+            scope,
+            format!("{path}.expression"),
+        )?;
+        Self::require_numeric_compatible_type(
+            expression_type,
+            format!("{path}.expression"),
+            "round",
+        )?;
+        if let Some(places) = places {
+            let places_type =
+                self.infer_scoped_scalar_expression_type(places, scope, format!("{path}.places"))?;
+            Self::require_integer_compatible_type(
+                places_type,
+                format!("{path}.places"),
+                "round precision",
+            )?;
+        }
+        Ok(numeric_result_type(expression_type))
+    }
+
+    fn infer_scoped_arithmetic_scalar_type<'b>(
+        &self,
+        left: &ScalarExpression,
+        right: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let left_type =
+            self.infer_scoped_scalar_expression_type(left, scope, format!("{path}.left"))?;
+        let right_type =
+            self.infer_scoped_scalar_expression_type(right, scope, format!("{path}.right"))?;
+        Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
+        Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
+        Ok(numeric_binary_result_type(left_type, right_type))
+    }
+
+    fn infer_scoped_atan2_scalar_type<'b>(
+        &self,
+        y: &ScalarExpression,
+        x: &ScalarExpression,
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let y_type = self.infer_scoped_scalar_expression_type(y, scope, format!("{path}.y"))?;
+        let x_type = self.infer_scoped_scalar_expression_type(x, scope, format!("{path}.x"))?;
+        Self::require_numeric_compatible_type(y_type, format!("{path}.y"), "atan2")?;
+        Self::require_numeric_compatible_type(x_type, format!("{path}.x"), "atan2")?;
+        Ok(ScalarType::Float)
     }
 
     fn validate_scoped_variable<'b>(
