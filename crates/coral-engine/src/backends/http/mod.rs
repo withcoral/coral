@@ -9,6 +9,9 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result;
 use datafusion::prelude::SessionContext;
 
+use crate::backends::shared::source_observation::{
+    SourceObservationPublishers, source_observation_publishers,
+};
 use crate::backends::{
     BackendCompileRequest, BackendRegistration, BackendRegistrationContext,
     BackendSchemaRegistration, CompiledBackendSource, RegisteredSource, RegisteredTable,
@@ -16,10 +19,7 @@ use crate::backends::{
     build_registered_table_function, registered_columns_from_specs, required_filter_names,
     validate_lookup_key_filter_backend_support,
 };
-use crate::{
-    RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver,
-    SourceObservationPublisher,
-};
+use crate::{RequestAuthenticator, SourceInputResolutionContext, SourceInputResolver};
 use coral_spec::SourceBackend;
 use coral_spec::backends::http::{HttpSourceManifest, HttpTableSpec};
 pub(crate) mod auth;
@@ -53,7 +53,7 @@ struct HttpCompiledSource {
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    source_observation_publishers: SourceObservationPublishers,
 }
 
 pub(crate) fn compile_source(
@@ -63,7 +63,7 @@ pub(crate) fn compile_source(
     body_capture_max_bytes: Option<usize>,
     trace_context: Option<opentelemetry::Context>,
     source_input_resolver: Option<Arc<dyn SourceInputResolver>>,
-    source_observation_publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+    source_observation_publishers: SourceObservationPublishers,
 ) -> Box<dyn CompiledBackendSource> {
     Box::new(HttpCompiledSource {
         manifest,
@@ -87,7 +87,7 @@ pub(crate) fn compile_manifest(
         request.runtime_context.body_capture_max_bytes,
         request.runtime_context.trace_context.clone(),
         request.source_input_resolver.clone(),
-        request.source_observation_publishers.to_vec(),
+        source_observation_publishers(request.source_observation_publishers),
     )
 }
 
@@ -141,7 +141,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                 backend.clone(),
                 self.manifest.common.name.clone(),
                 table.clone(),
-                self.source_observation_publishers.clone(),
+                Arc::clone(&self.source_observation_publishers),
             )?);
             tables.insert(table.name().to_string(), provider);
             table_infos.push(registered_table(table));
@@ -153,7 +153,7 @@ impl CompiledBackendSource for HttpCompiledSource {
                     backend.clone(),
                     self.manifest.common.name.clone(),
                     function.clone(),
-                    self.source_observation_publishers.clone(),
+                    Arc::clone(&self.source_observation_publishers),
                 )?);
             table_function_infos.push(build_registered_table_function(
                 &self.manifest.common.name,
@@ -198,55 +198,20 @@ fn registered_table(table: &HttpTableSpec) -> RegisteredTable {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use coral_spec::parse_source_manifest_value;
-    use datafusion::arrow::array::{RecordBatch, StringArray};
+    use datafusion::arrow::array::StringArray;
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::backends::shared::source_observation::test_support::RecordingSourceObservationPublisher;
     use crate::{
         CoralQuery, EngineExtensions, QueryRuntimeConfig, QueryRuntimeContext, QuerySource,
-        SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation,
+        SourceObservationPublisher, SourceObservationSurfaceKind,
     };
-
-    #[derive(Default)]
-    struct RecordingSourceObservationPublisher {
-        observations: Mutex<Vec<RecordedSourceObservation>>,
-    }
-
-    struct RecordedSourceObservation {
-        source_name: String,
-        surface_kind: SourceObservationSurfaceKind,
-        surface_name: String,
-        column_names: Vec<String>,
-        row_count: usize,
-        batch: RecordBatch,
-    }
-
-    impl SourceObservationPublisher for RecordingSourceObservationPublisher {
-        fn publish_source_scan(&self, observation: SourceScanObservation<'_>) {
-            self.observations
-                .lock()
-                .expect("observations lock")
-                .push(RecordedSourceObservation {
-                    source_name: observation.source_name.to_string(),
-                    surface_kind: observation.surface_kind,
-                    surface_name: observation.surface_name.to_string(),
-                    column_names: observation
-                        .batch
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|field| field.name().clone())
-                        .collect(),
-                    row_count: observation.batch.num_rows(),
-                    batch: observation.batch.clone(),
-                });
-        }
-    }
 
     #[test]
     fn required_secret_names_come_from_declared_secret_inputs() {
@@ -329,6 +294,7 @@ mod tests {
             "tables": [{
                 "name": "people",
                 "description": "People",
+                "filters": [{ "name": "id" }],
                 "request": { "path": "/people" },
                 "response": { "rows_path": ["people"] },
                 "columns": [
@@ -369,7 +335,7 @@ mod tests {
             ["name"]
         );
 
-        let observations = publisher.observations.lock().expect("observations lock");
+        let observations = publisher.observations();
         let people_scan = observations
             .iter()
             .find(|observation| {
@@ -397,5 +363,91 @@ mod tests {
             observed_names,
             [Some("Ada"), Some("Grace"), Some("Katherine")]
         );
+    }
+
+    #[tokio::test]
+    async fn source_scan_observation_covers_dependent_join_fetches() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/people"))
+            .and(query_param("id", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "people": [
+                    { "id": "2", "name": "Grace", "role": "maintainer" }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let manifest = parse_source_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "people_api",
+            "version": "0.1.0",
+            "backend": "http",
+            "base_url": server.uri(),
+            "tables": [{
+                "name": "people",
+                "description": "People",
+                "filters": [{ "name": "id", "required": true, "lookup_key": true }],
+                "request": {
+                    "path": "/people",
+                    "query": [{ "name": "id", "from": "filter", "key": "id" }]
+                },
+                "response": { "rows_path": ["people"] },
+                "columns": [
+                    { "name": "id", "type": "Utf8" },
+                    { "name": "name", "type": "Utf8" },
+                    { "name": "role", "type": "Utf8" }
+                ]
+            }]
+        }))
+        .expect("manifest should deserialize");
+        let source = QuerySource::new(manifest, BTreeMap::new(), BTreeMap::new());
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let mut extensions = EngineExtensions::default();
+        extensions
+            .source_observation_publishers
+            .push(publisher.clone() as Arc<dyn SourceObservationPublisher>);
+
+        let execution = CoralQuery::execute_sql(
+            &[source],
+            QueryRuntimeConfig::new(QueryRuntimeContext::default(), extensions),
+            "SELECT p.name \
+             FROM (VALUES ('2')) AS ids(id) \
+             JOIN people_api.people AS p ON p.id = ids.id",
+        )
+        .await
+        .expect("query should execute");
+
+        let rendered = pretty_format_batches(execution.batches())
+            .expect("batches should render")
+            .to_string();
+        assert!(rendered.contains("| Grace"));
+
+        let observations = publisher.observations();
+        let people_scan = observations
+            .iter()
+            .find(|observation| {
+                observation.source_name == "people_api" && observation.surface_name == "people"
+            })
+            .expect("dependent people scan should be observed");
+
+        assert_eq!(
+            people_scan.surface_kind,
+            SourceObservationSurfaceKind::Table
+        );
+        assert_eq!(people_scan.column_names, ["id", "name", "role"]);
+        assert_eq!(people_scan.row_count, 1);
+
+        let observed_names = people_scan
+            .batch
+            .column_by_name("name")
+            .expect("name column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("name string array")
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(observed_names, [Some("Grace")]);
     }
 }

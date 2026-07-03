@@ -19,7 +19,10 @@ use datafusion::physical_plan::{
 use futures::{TryStreamExt, stream};
 use serde_json::Value;
 
-use crate::{SourceObservationPublisher, SourceObservationSurfaceKind, SourceScanObservation};
+use crate::SourceObservationSurfaceKind;
+use crate::backends::shared::source_observation::{
+    SourceObservationConfig, SourceObservationPublishers, publish_source_scan_batch,
+};
 
 /// Fetches raw JSON rows for one logical table scan.
 #[async_trait]
@@ -34,50 +37,23 @@ pub(crate) type Fetcher = Arc<dyn RowFetcher>;
 /// Converts fetched JSON rows into a projected `RecordBatch`.
 pub(crate) type Converter = Arc<dyn Fn(&[Value]) -> Result<RecordBatch> + Send + Sync>;
 
-#[derive(Clone)]
-struct SourceObservationConfig {
-    surface_kind: SourceObservationSurfaceKind,
-    publishers: Vec<Arc<dyn SourceObservationPublisher>>,
-}
-
 fn observe_source_scan_batch(
     source_name: String,
     surface_name: String,
     observation: SourceObservationConfig,
-    converter: Converter,
+    observation_converter: Converter,
+    output_converter: Converter,
 ) -> Converter {
     Arc::new(move |items| {
-        let batch = converter(items)?;
-        publish_source_scan_batch(&source_name, &surface_name, &observation, &batch);
-        Ok(batch)
+        let observation_batch = observation_converter(items)?;
+        publish_source_scan_batch(
+            &source_name,
+            &surface_name,
+            &observation,
+            &observation_batch,
+        );
+        output_converter(items)
     })
-}
-
-fn publish_source_scan_batch(
-    source_name: &str,
-    surface_name: &str,
-    observation: &SourceObservationConfig,
-    batch: &RecordBatch,
-) {
-    let event = SourceScanObservation {
-        source_name,
-        surface_kind: observation.surface_kind,
-        surface_name,
-        batch,
-    };
-    for publisher in &observation.publishers {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            publisher.publish_source_scan(event);
-        }))
-        .is_err()
-        {
-            tracing::warn!(
-                source = source_name,
-                surface = surface_name,
-                "source observation publisher panicked; dropping source-scan observation"
-            );
-        }
-    }
 }
 
 /// Execution-plan node for backends that fetch JSON rows and convert them into
@@ -90,7 +66,6 @@ pub(crate) struct JsonExec {
     fetcher: Fetcher,
     converter: Converter,
     projection: Option<Vec<usize>>,
-    source_observation: Option<SourceObservationConfig>,
 }
 
 impl fmt::Debug for JsonExec {
@@ -138,23 +113,45 @@ impl JsonExec {
             fetcher,
             converter,
             projection,
-            source_observation: None,
         })
     }
 
-    /// Publishes typed source-scan observations after JSON conversion and
-    /// before `DataFusion` projection. This is a shared execution hook; backend
-    /// adapters should only pass through metadata and publishers.
+    /// Publishes typed source-scan observations after JSON conversion, before
+    /// `DataFusion` projection, and once per emitted `batch_size` chunk. This
+    /// is a shared execution hook; backend adapters should only pass through
+    /// metadata and publishers.
     #[must_use]
     pub(crate) fn with_source_observation(
+        self,
+        surface_kind: SourceObservationSurfaceKind,
+        publishers: SourceObservationPublishers,
+    ) -> Self {
+        let observation_converter = self.converter.clone();
+        self.with_source_observation_converter(surface_kind, publishers, observation_converter)
+    }
+
+    /// Publishes typed source-scan observations using a converter that may see
+    /// a less-shaped view of the fetched rows than the query-output converter.
+    ///
+    /// HTTP scans use this to observe upstream rows before Coral-side local
+    /// filters and truncation while still returning the filtered query result.
+    #[must_use]
+    pub(crate) fn with_source_observation_converter(
         mut self,
         surface_kind: SourceObservationSurfaceKind,
-        publishers: Vec<Arc<dyn SourceObservationPublisher>>,
+        publishers: SourceObservationPublishers,
+        observation_converter: Converter,
     ) -> Self {
-        self.source_observation = (!publishers.is_empty()).then_some(SourceObservationConfig {
-            surface_kind,
-            publishers,
-        });
+        let Some(observation) = SourceObservationConfig::new(surface_kind, publishers) else {
+            return self;
+        };
+        self.converter = observe_source_scan_batch(
+            self.source_name.clone(),
+            self.table_name.clone(),
+            observation,
+            observation_converter,
+            self.converter.clone(),
+        );
         self
     }
 }
@@ -206,15 +203,7 @@ impl ExecutionPlan for JsonExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let fetcher = self.fetcher.clone();
-        let converter = match self.source_observation.clone() {
-            Some(observation) => observe_source_scan_batch(
-                self.source_name.clone(),
-                self.table_name.clone(),
-                observation,
-                self.converter.clone(),
-            ),
-            None => self.converter.clone(),
-        };
+        let converter = self.converter.clone();
         let projected_schema = self.projected_schema.clone();
         let projection = self.projection.clone();
         // Emit the fetched rows in `batch_size`-row chunks rather than a single
@@ -287,12 +276,23 @@ mod tests {
     use datafusion::arrow::array::RecordBatch;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use futures::TryStreamExt;
     use serde_json::Value;
 
     use super::{ChunkState, Converter, Fetcher, JsonExec, RowFetcher, next_projected_batch};
+    use crate::backends::shared::source_observation::{
+        source_observation_publishers, test_support::RecordingSourceObservationPublisher,
+    };
+    use crate::{SourceObservationPublisher, SourceObservationSurfaceKind};
 
     #[derive(Debug)]
     struct NoopFetcher;
+
+    #[derive(Debug)]
+    struct StaticFetcher {
+        rows: Vec<Value>,
+    }
 
     fn noop_fetcher() -> Fetcher {
         Arc::new(NoopFetcher)
@@ -302,6 +302,13 @@ mod tests {
     impl RowFetcher for NoopFetcher {
         async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
             Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl RowFetcher for StaticFetcher {
+        async fn fetch(&self) -> datafusion::error::Result<Vec<Value>> {
+            Ok(self.rows.clone())
         }
     }
 
@@ -373,6 +380,53 @@ mod tests {
             })
             .collect();
         assert_eq!(observed, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn source_observation_publishes_one_event_per_emitted_chunk() {
+        let schema = int_schema();
+        let publisher = Arc::new(RecordingSourceObservationPublisher::default());
+        let exec = JsonExec::new(
+            "demo",
+            "numbers",
+            schema.clone(),
+            Arc::new(StaticFetcher {
+                rows: (0..5).map(Value::from).collect(),
+            }),
+            int_converter(schema),
+            None,
+        )
+        .expect("exec should build")
+        .with_source_observation(
+            SourceObservationSurfaceKind::Table,
+            source_observation_publishers(&[
+                publisher.clone() as Arc<dyn SourceObservationPublisher>
+            ]),
+        );
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(2));
+
+        let batches = exec
+            .execute(0, ctx.task_ctx())
+            .expect("execute should create stream")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("stream should collect");
+
+        assert_eq!(
+            batches
+                .iter()
+                .map(RecordBatch::num_rows)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
+        assert_eq!(
+            publisher
+                .observations()
+                .iter()
+                .map(|observation| observation.row_count)
+                .collect::<Vec<_>>(),
+            vec![2, 2, 1]
+        );
     }
 
     #[test]
