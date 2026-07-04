@@ -4,14 +4,15 @@
   "minimum_feature_counts": {
     "Aggregation": 20,
     "BooleanFilters": 8,
-    "ErrorHandling": 16,
+    "ErrorHandling": 18,
     "GeneratedClientShape": 9,
     "IdentityFields": 32,
     "NestedRelationships": 15,
     "RelationshipExistence": 8,
     "RootSelection": 4,
     "RowModifiers": 17,
-    "ScalarFilters": 18
+    "ScalarFilters": 18,
+    "Temporal": 5
   },
   "scenarios": [
     {
@@ -2338,6 +2339,135 @@
             "name": "Eve"
           }
         ]
+      }
+    },
+    {
+      "id": "gql-temporal-select",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(where: { name: { eq: \"Ada\" } }) { name joined birthday } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Ada",
+            "joined": "2020-06-01T09:00:00Z",
+            "birthday": "1990-05-20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-orderby-timestamp",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(orderBy: [{ field: joined, direction: ASC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Eve"
+          },
+          {
+            "name": "Cee"
+          },
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Bea"
+          },
+          {
+            "name": "Dot"
+          },
+          {
+            "name": "Fay"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-orderby-date-desc",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(orderBy: [{ field: birthday, direction: DESC }]) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Cee"
+          },
+          {
+            "name": "Eve"
+          },
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Dot"
+          },
+          {
+            "name": "Bea"
+          },
+          {
+            "name": "Fay"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-minmax-timestamp",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person { earliest: _min(field: joined) latest: _max(field: joined) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "earliest": "2018-07-22T09:00:00Z",
+            "latest": "2023-09-05T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-minmax-date",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person { first: _min(field: birthday) last: _max(field: birthday) } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "first": "1979-01-25",
+            "last": "1995-08-15"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-sum-rejected",
+      "feature": "ErrorHandling",
+      "fixture": "rich",
+      "query": "query { Person { s: _sum(field: joined) } }",
+      "expected": {
+        "kind": "error",
+        "contains": "requires a numeric property"
+      }
+    },
+    {
+      "id": "gql-temporal-filter-rejected",
+      "feature": "ErrorHandling",
+      "fixture": "rich",
+      "query": "query { Person(where: { joined: { gt: \"2020-12-31T23:59:59Z\" } }) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "compatible scalar types"
       }
     }
   ]

@@ -1298,8 +1298,8 @@ mod tests {
             .expect("GraphQL baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 147);
-        assert_eq!(report.expected_error_count, 16);
+        assert_eq!(report.scenario_count, 154);
+        assert_eq!(report.expected_error_count, 18);
         assert_eq!(report.feature_counts.get("Aggregation"), Some(&20));
         assert_eq!(report.feature_counts.get("RootSelection"), Some(&4));
         assert_eq!(report.feature_counts.get("ScalarFilters"), Some(&18));
@@ -1317,9 +1317,9 @@ mod tests {
             .expect("GraphQL schema coverage report should build");
 
         assert_eq!(report.suite, "coral-graphql-read-baseline");
-        assert_eq!(report.scenario_count, 147);
-        assert_eq!(report.accepted_scenario_count, 131);
-        assert_eq!(report.error_scenario_count, 16);
+        assert_eq!(report.scenario_count, 154);
+        assert_eq!(report.accepted_scenario_count, 136);
+        assert_eq!(report.error_scenario_count, 18);
         assert_eq!(report.overall.covered, 110);
         assert_eq!(report.overall.total, 110);
         assert_eq!(report.overall.basis_points, 10_000);
