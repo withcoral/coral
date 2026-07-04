@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 35
+    "With": 38
   },
   "scenarios": [
     {
@@ -10929,6 +10929,48 @@
           {
             "a": "Bob",
             "b": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-scalar-alias-final-where",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a.id AS friendId ORDER BY a.age LIMIT 1 MATCH (b:Person) WHERE b.id = friendId RETURN b.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-skip-limit-string-scalar-alias",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a.name AS selectedName ORDER BY a.age SKIP 1 LIMIT 1 MATCH (b:Person) WHERE b.name = selectedName RETURN b.name AS name",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-scalar-alias-final-return",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a.id AS friendId ORDER BY a.age LIMIT 1 MATCH (b:Person) WHERE b.name = 'Alice' RETURN friendId AS id",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "id": 2
           }
         ]
       }

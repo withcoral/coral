@@ -949,12 +949,16 @@ fn compile_single_query_as_graph_query(
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
     let contains_static_unwind = single_query_contains_unwind(single_query);
+    let scalar_alias_final_target_unlabeled =
+        staged_scalar_alias_final_target_unlabeled(single_query);
     let mut variants = expand_single_query_static_branches(single_query, context, &path)?;
     if variants.len() == 1 {
         let variant = variants
             .first()
             .ok_or_else(|| CoreError::internal("Cypher query expansion produced no variants"))?;
-        if let Some(query) = compile_staged_single_query(&variant.query, context)? {
+        if !scalar_alias_final_target_unlabeled
+            && let Some(query) = compile_staged_single_query(&variant.query, context)?
+        {
             if variant.force_empty {
                 return Err(unsupported(
                     path,
@@ -5842,6 +5846,47 @@ fn function_relationships_path_variable(
         })
 }
 
+fn staged_scalar_alias_final_target_unlabeled(single_query: &SingleQuery) -> bool {
+    let SingleQueryKind::MultiPart(query) = &single_query.kind else {
+        return false;
+    };
+    let [part] = query.parts.as_slice() else {
+        return false;
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.order.is_none()
+        || part.with.limit.is_none()
+        || part.with.items.len() != 1
+    {
+        return false;
+    }
+    let Some(item) = part.with.items.first() else {
+        return false;
+    };
+    if item.alias.is_none() || staged_property_lookup(&item.expression).is_none() {
+        return false;
+    }
+    let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
+        return false;
+    };
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return false;
+    };
+    if match_clause.optional || pattern_part.variable.is_some() {
+        return false;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return false;
+    };
+    chains.is_empty()
+        && start.properties.is_none()
+        && start.labels.is_empty()
+        && path_node_variable(start).is_some()
+}
+
 fn compile_multi_part(
     query: &MultiPartQuery,
     context: &CypherCompileContext,
@@ -5860,6 +5905,9 @@ fn compile_staged_multi_part(
     context: &CypherCompileContext,
 ) -> Result<Option<GraphQuery>, CoreError> {
     if let Some(query) = compile_staged_order_limit_multi_part(query, context)? {
+        return Ok(Some(query));
+    }
+    if let Some(query) = compile_staged_scalar_alias_multi_part(query, context)? {
         return Ok(Some(query));
     }
     compile_staged_aggregation_multi_part(query, context)
@@ -5951,6 +5999,262 @@ struct StagedAggregationShape<'a> {
 
 struct StagedFinalMatchShape {
     target_variable: String,
+}
+
+struct StagedScalarAliasShape<'a> {
+    part: &'a MultiPartQueryPart,
+    return_clause: &'a Return,
+    scalar_item_index: usize,
+    scalar_alias: String,
+}
+
+fn compile_staged_scalar_alias_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some(shape) = staged_scalar_alias_multi_part_shape(query, context)? else {
+        return Ok(None);
+    };
+
+    let mut stage_plan = GraphPlan::default();
+    let mut stage_state = compile_state_for_multi_part(query, context);
+    compile_reading_clauses_into(
+        &shape.part.reading_clauses,
+        "parts[0].match",
+        &mut stage_plan,
+        &mut stage_state,
+        context,
+    )?;
+    if !stage_state.path_variables.is_empty()
+        || !stage_state.relationship_element_path_variables.is_empty()
+        || !stage_state.scalar_aliases.is_empty()
+    {
+        return Ok(None);
+    }
+    let scalar_item = shape
+        .part
+        .with
+        .items
+        .get(shape.scalar_item_index)
+        .ok_or_else(|| CoreError::internal("staged scalar item index was out of bounds"))?;
+    let scalar_projection = compile_projection(
+        scalar_item,
+        format!("parts[0].with.items[{}]", shape.scalar_item_index),
+        context,
+        &stage_plan,
+        &stage_state,
+    )?;
+    if scalar_projection.is_aggregate()
+        || projection_contains_correlated_subquery(&scalar_projection)
+    {
+        return Ok(None);
+    }
+    let scalar_column = scalar_projection.output_name();
+    stage_plan.projections.push(scalar_projection);
+    apply_terminal_graph_with_modifiers(&shape.part.with, &mut stage_plan, &stage_state, context)?;
+
+    let mut final_plan = GraphPlan::default();
+    let mut final_state = CypherCompileState::default();
+    final_state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue {
+            alias: shape.scalar_alias.clone(),
+        },
+        alias: shape.scalar_alias.clone(),
+    });
+    compile_reading_clauses_into(
+        &query.final_part.reading_clauses,
+        "final_part.match",
+        &mut final_plan,
+        &mut final_state,
+        context,
+    )?;
+    compile_return(shape.return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+
+    Ok(Some(GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: stage_plan,
+            exports: vec![GraphStageExport::ScalarValue {
+                alias: shape.scalar_alias,
+                source: scalar_column,
+            }],
+        }],
+        final_plan,
+    })))
+}
+
+fn staged_scalar_alias_multi_part_shape<'a>(
+    query: &'a MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<StagedScalarAliasShape<'a>>, CoreError> {
+    let [part] = query.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.order.is_none()
+        || part.with.limit.is_none()
+        || part.with.items.len() != 1
+    {
+        return Ok(None);
+    }
+    let Some(limit) = part.with.limit.as_ref() else {
+        return Ok(None);
+    };
+    if compile_limit(limit, "parts[0].with.limit", context)? == 0 {
+        return Ok(None);
+    }
+    if let Some(skip) = part.with.skip.as_ref() {
+        compile_skip(skip, "parts[0].with.skip", context)?;
+    }
+
+    let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if return_clause.distinct
+        || return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Ok(None);
+    }
+
+    let item = part
+        .with
+        .items
+        .first()
+        .ok_or_else(|| CoreError::internal("validated WITH item was missing"))?;
+    let Some(alias) = item.alias.as_ref().map(variable_name) else {
+        return Ok(None);
+    };
+    let Some((source_variable, _)) = staged_property_lookup(&item.expression) else {
+        return Ok(None);
+    };
+    let Some(final_variable) = staged_scalar_alias_final_match_variable(match_clause) else {
+        return Ok(None);
+    };
+    let final_variables = BTreeSet::from([final_variable]);
+    if final_variables.contains(&alias)
+        || !staged_initial_match_shape(part, &source_variable)
+        || !staged_with_order_shape(&part.with, &source_variable)
+        || !staged_scalar_alias_final_where_shape(match_clause, &alias, &final_variables)
+        || !staged_scalar_alias_return_shape(return_clause, &alias, &final_variables)
+    {
+        return Ok(None);
+    }
+    if !staged_scalar_alias_used_in_final_match(match_clause, return_clause, &alias) {
+        return Ok(None);
+    }
+
+    Ok(Some(StagedScalarAliasShape {
+        part,
+        return_clause,
+        scalar_item_index: 0,
+        scalar_alias: alias,
+    }))
+}
+
+fn staged_scalar_alias_final_match_variable(match_clause: &Match) -> Option<String> {
+    if match_clause.optional {
+        return None;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return None;
+    };
+    if pattern_part.variable.is_some() {
+        return None;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return None;
+    };
+    if !chains.is_empty()
+        || start.properties.is_some()
+        || !staged_single_static_label(&start.labels)
+    {
+        return None;
+    }
+    path_node_variable(start)
+}
+
+fn staged_scalar_alias_final_where_shape(
+    match_clause: &Match,
+    scalar_alias: &str,
+    final_variables: &BTreeSet<String>,
+) -> bool {
+    let Some(where_clause) = &match_clause.where_clause else {
+        return true;
+    };
+    if expression_uses_variable(where_clause, scalar_alias) {
+        return staged_scalar_alias_equality_where_shape(
+            where_clause,
+            scalar_alias,
+            final_variables,
+        );
+    }
+    expression_variables_subset(where_clause, final_variables)
+}
+
+fn staged_scalar_alias_equality_where_shape(
+    expression: &Expression,
+    scalar_alias: &str,
+    final_variables: &BTreeSet<String>,
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            staged_scalar_alias_equality_where_shape(inner, scalar_alias, final_variables)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            let [(operator, rhs)] = operators.as_slice() else {
+                return false;
+            };
+            *operator == CypherComparisonOperator::Eq
+                && (staged_property_alias_equality_side(lhs, rhs, scalar_alias, final_variables)
+                    || staged_property_alias_equality_side(rhs, lhs, scalar_alias, final_variables))
+        }
+        _ => false,
+    }
+}
+
+fn staged_property_alias_equality_side(
+    property_expression: &Expression,
+    alias_expression: &Expression,
+    scalar_alias: &str,
+    final_variables: &BTreeSet<String>,
+) -> bool {
+    staged_property_lookup(property_expression)
+        .is_some_and(|(variable, _)| final_variables.contains(&variable))
+        && expression_variable_name(alias_expression).as_deref() == Some(scalar_alias)
+}
+
+fn staged_scalar_alias_return_shape(
+    return_clause: &Return,
+    scalar_alias: &str,
+    final_variables: &BTreeSet<String>,
+) -> bool {
+    !return_clause.star
+        && return_clause.items.iter().all(|item| {
+            staged_property_lookup(&item.expression)
+                .is_some_and(|(variable, _)| final_variables.contains(&variable))
+                || expression_variable_name(&item.expression).as_deref() == Some(scalar_alias)
+        })
+}
+
+fn staged_scalar_alias_used_in_final_match(
+    match_clause: &Match,
+    return_clause: &Return,
+    scalar_alias: &str,
+) -> bool {
+    match_clause
+        .where_clause
+        .as_ref()
+        .is_some_and(|where_clause| expression_uses_variable(where_clause, scalar_alias))
+        || return_clause
+            .items
+            .iter()
+            .any(|item| expression_variable_name(&item.expression).as_deref() == Some(scalar_alias))
 }
 
 fn compile_staged_aggregation_multi_part(
@@ -6475,6 +6779,12 @@ fn expression_variables_subset(expression: &Expression, allowed: &BTreeSet<Strin
     let mut variables = BTreeSet::new();
     expression_variables(expression, &mut variables);
     variables.iter().all(|variable| allowed.contains(variable))
+}
+
+fn expression_uses_variable(expression: &Expression, variable: &str) -> bool {
+    let mut variables = BTreeSet::new();
+    expression_variables(expression, &mut variables);
+    variables.contains(variable)
 }
 
 fn staged_multi_part_shape<'a>(

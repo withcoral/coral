@@ -1794,6 +1794,13 @@ pub enum GraphStageExport {
         /// Output column name containing the aggregate value.
         column: String,
     },
+    /// Scalar value carried across the stage boundary.
+    ScalarValue {
+        /// Scalar alias visible to later stages.
+        alias: String,
+        /// Output column name containing the scalar value.
+        source: String,
+    },
 }
 
 impl GraphStageExport {
@@ -1802,6 +1809,7 @@ impl GraphStageExport {
     pub fn column(&self) -> &str {
         match self {
             Self::NodeKey { column, .. } | Self::AggregateValue { column, .. } => column,
+            Self::ScalarValue { source, .. } => source,
         }
     }
 }

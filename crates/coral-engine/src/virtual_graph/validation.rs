@@ -268,6 +268,14 @@ impl<'a> ValidatedGraphPlan<'a> {
             })
     }
 
+    pub(crate) fn scalar_stage_aliases(&self) -> BTreeSet<&str> {
+        self.stage_columns
+            .scalar_values
+            .values()
+            .map(|binding| binding.stage_alias.as_str())
+            .collect()
+    }
+
     pub(crate) fn relationship_is_optional(&self, index: usize) -> bool {
         self.plan
             .optional_relationships
@@ -885,15 +893,7 @@ fn stage_column_bindings_with_catalog(
                             "staged graph query exported non-aggregate column '{column}' as aggregate value",
                         )));
                     }
-                    let scalar_type =
-                        projection_types
-                            .get(projection_index)
-                            .copied()
-                            .ok_or_else(|| {
-                                CoreError::internal(
-                                    "staged graph query projection type index was out of bounds",
-                                )
-                            })?;
+                    let scalar_type = stage_projection_type(&projection_types, projection_index)?;
                     if bindings
                         .scalar_values
                         .insert(
@@ -911,10 +911,46 @@ fn stage_column_bindings_with_catalog(
                         )));
                     }
                 }
+                GraphStageExport::ScalarValue { alias, source } => {
+                    if projection.is_aggregate() {
+                        return Err(CoreError::internal(format!(
+                            "staged graph query exported aggregate column '{source}' as scalar value",
+                        )));
+                    }
+                    let scalar_type = stage_projection_type(&projection_types, projection_index)?;
+                    if bindings
+                        .scalar_values
+                        .insert(
+                            alias.clone(),
+                            StageScalarColumnBinding {
+                                stage_alias: stage_alias.clone(),
+                                value_column: source.clone(),
+                                scalar_type,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(CoreError::internal(format!(
+                            "staged graph query exported scalar value '{alias}' more than once",
+                        )));
+                    }
+                }
             }
         }
     }
     Ok(bindings)
+}
+
+fn stage_projection_type(
+    projection_types: &[ScalarType],
+    projection_index: usize,
+) -> Result<ScalarType, CoreError> {
+    projection_types
+        .get(projection_index)
+        .copied()
+        .ok_or_else(|| {
+            CoreError::internal("staged graph query projection type index was out of bounds")
+        })
 }
 
 fn validate_variable(path: impl Into<String>, variable: &str) -> Result<(), CoreError> {

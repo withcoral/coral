@@ -284,6 +284,94 @@ fn lower_graph_query_renders_staged_undirected_final_match() {
     );
 }
 
+#[test]
+fn lower_graph_query_renders_staged_scalar_alias_cte() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: GraphPlan {
+                nodes: vec![NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                }],
+                relationships: Vec::new(),
+                optional_relationships: Vec::new(),
+                optional_matches: Vec::new(),
+                distinct: false,
+                projections: vec![Projection::Property {
+                    property: PropertyRef {
+                        variable: "a".to_string(),
+                        property: "id".to_string(),
+                    },
+                    alias: Some("friendId".to_string()),
+                }],
+                predicates: Vec::new(),
+                predicate: None,
+                post_projection_predicate: None,
+                order_by: vec![OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "a".to_string(),
+                        property: "age".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                }],
+                skip: None,
+                limit: Some(1),
+            },
+            exports: vec![GraphStageExport::ScalarValue {
+                alias: "friendId".to_string(),
+                source: "friendId".to_string(),
+            }],
+        }],
+        final_plan: GraphPlan {
+            nodes: vec![NodePattern {
+                variable: "b".to_string(),
+                label: "Person".to_string(),
+            }],
+            relationships: Vec::new(),
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Property {
+                property: PropertyRef {
+                    variable: "b".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("name".to_string()),
+            }],
+            predicates: Vec::new(),
+            predicate: Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+                lhs: ScalarExpression::Property(PropertyRef {
+                    variable: "b".to_string(),
+                    property: "id".to_string(),
+                }),
+                operator: ComparisonOperator::Equal,
+                rhs: ScalarPredicateRhs::Expression(ScalarExpression::StageValue {
+                    alias: "friendId".to_string(),
+                }),
+            })),
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        },
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged scalar alias graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"friendId\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 1) \
+             SELECT \"n0\".\"full_name\" AS \"name\" \
+             FROM \"ops\".\"people\" AS \"n0\" CROSS JOIN \"stage0\" AS \"stage0\" \
+             WHERE \"n0\".\"id\" = \"stage0\".\"friendId\""
+    );
+}
+
 fn staged_order_limit_query(final_relationship: RelationshipPattern) -> GraphQuery {
     GraphQuery::Staged(GraphStagedQuery {
         stages: vec![GraphStage {

@@ -16,6 +16,7 @@ use super::*;
 pub(super) struct FromClauseBuilder<'a, 'r> {
     lowerer: &'r SqlRenderer<'a>,
     joined_nodes: BTreeSet<&'a str>,
+    joined_stage_aliases: BTreeSet<String>,
     optional_relationships_joined: bool,
     from_clause: String,
 }
@@ -304,6 +305,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         Self {
             lowerer,
             joined_nodes: BTreeSet::new(),
+            joined_stage_aliases: BTreeSet::new(),
             optional_relationships_joined: false,
             from_clause: String::new(),
         }
@@ -320,6 +322,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         self.join_mandatory_relationships()?;
         self.cross_join_isolated_nodes()?;
         self.ensure_optional_relationships_joined()?;
+        self.cross_join_scalar_stages()?;
 
         Ok(self.from_clause)
     }
@@ -339,6 +342,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
                 stage_alias,
                 key_column,
             } => {
+                self.joined_stage_aliases.insert(stage_alias.clone());
                 self.from_clause = format!(
                     "FROM {} AS {} JOIN {} AS {} ON {}.{} = {}.{}",
                     quote_ident(stage_alias),
@@ -379,6 +383,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
                 stage_alias,
                 key_column,
             } => {
+                self.joined_stage_aliases.insert(stage_alias.clone());
                 write!(
                     self.from_clause,
                     " CROSS JOIN {} AS {} JOIN {} AS {} ON {}.{} = {}.{}",
@@ -398,6 +403,23 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
             }
         }
         self.joined_nodes.insert(variable);
+        Ok(())
+    }
+
+    fn cross_join_scalar_stages(&mut self) -> Result<(), CoreError> {
+        for stage_alias in self.lowerer.validated.scalar_stage_aliases() {
+            if self.joined_stage_aliases.contains(stage_alias) {
+                continue;
+            }
+            write!(
+                self.from_clause,
+                " CROSS JOIN {} AS {}",
+                quote_ident(stage_alias),
+                quote_ident(stage_alias),
+            )
+            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+            self.joined_stage_aliases.insert(stage_alias.to_string());
+        }
         Ok(())
     }
 

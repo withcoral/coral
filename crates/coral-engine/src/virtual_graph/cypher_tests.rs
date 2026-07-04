@@ -78,6 +78,28 @@ relationships:
     .expect("staged planning test graph should parse")
 }
 
+fn single_label_person_knows_test_graph() -> Declaration {
+    Declaration::from_yaml(
+        r"
+version: 1
+name: single_label_person_knows_test
+nodes:
+  - label: Person
+    table: { schema: ops, name: people }
+    key: id
+    properties:
+      name: full_name
+      age: age
+relationships:
+  - type: KNOWS
+    table: { schema: ops, name: knows }
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+",
+    )
+    .expect("single-label Person/KNOWS test graph should parse")
+}
+
 fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
     Projection::Expression {
         expression: ScalarExpression::TypedLiteralList {
@@ -4629,6 +4651,174 @@ fn compiles_staged_with_multiple_carried_property_returns() {
 }
 
 #[test]
+fn compiles_staged_scalar_alias_with_order_limit_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+             MATCH (b:Person) WHERE b.id = friendId \
+             RETURN b.name AS name",
+    )
+    .expect("staged scalar alias WITH ORDER BY LIMIT before MATCH should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("scalar alias query should compile to a staged graph query");
+    };
+    assert_eq!(staged.stages.len(), 1);
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport::ScalarValue {
+            alias: "friendId".to_string(),
+            source: "friendId".to_string(),
+        }]
+    );
+    assert_eq!(
+        stage.plan.projections,
+        vec![Projection::Property {
+            property: PropertyRef {
+                variable: "a".to_string(),
+                property: "id".to_string(),
+            },
+            alias: Some("friendId".to_string()),
+        }]
+    );
+    assert_eq!(
+        stage.plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::Property(PropertyRef {
+                variable: "a".to_string(),
+                property: "age".to_string(),
+            }),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
+    );
+    assert_eq!(stage.plan.limit, Some(1));
+    assert_eq!(
+        staged.final_plan.predicate,
+        Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: ScalarExpression::Property(PropertyRef {
+                variable: "b".to_string(),
+                property: "id".to_string(),
+            }),
+            operator: ComparisonOperator::Equal,
+            rhs: ScalarPredicateRhs::Expression(ScalarExpression::StageValue {
+                alias: "friendId".to_string(),
+            }),
+        }))
+    );
+}
+
+#[test]
+fn compiles_staged_scalar_alias_with_labeled_final_target_on_single_label_graph() {
+    let graph = single_label_person_knows_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+             MATCH (b:Person) WHERE b.id = friendId \
+             RETURN b.name AS name",
+    )
+    .expect("explicitly labeled scalar alias target should compile to staged");
+
+    assert!(matches!(query, GraphQuery::Staged(_)));
+}
+
+#[test]
+fn rejects_staged_scalar_alias_unlabeled_final_target_on_single_label_graph() {
+    let graph = single_label_person_knows_test_graph();
+    let error = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.id AS y ORDER BY a.age LIMIT 1 \
+             MATCH (b) WHERE b.id = y \
+             RETURN b.name AS name",
+    )
+    .expect_err("unlabeled scalar alias target should require broader staged planning");
+
+    assert!(
+        error.to_string().contains("staged query planning"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiles_staged_string_scalar_alias_with_skip_limit_before_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.name AS selectedName ORDER BY a.age SKIP 1 LIMIT 1 \
+             MATCH (b:Person) WHERE b.name = selectedName \
+             RETURN b.name AS name",
+    )
+    .expect("staged string scalar alias WITH SKIP LIMIT before MATCH should compile");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("string scalar alias query should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(stage.plan.skip, Some(1));
+    assert_eq!(stage.plan.limit, Some(1));
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport::ScalarValue {
+            alias: "selectedName".to_string(),
+            source: "selectedName".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_staged_scalar_alias_return_after_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+             MATCH (b:Person) WHERE b.name = 'Alice' \
+             RETURN friendId AS id",
+    )
+    .expect("staged scalar alias should be usable in final RETURN");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("scalar alias return query should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::StageValue {
+                alias: "friendId".to_string(),
+            },
+            alias: "id".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn keeps_bare_scalar_alias_before_match_transparent() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a.id AS friendId \
+             MATCH (b:Person) WHERE b.id = friendId \
+             RETURN b.name AS name",
+    )
+    .expect("bare scalar alias without row modifiers should remain transparent");
+
+    assert!(matches!(query, GraphQuery::Plan(_)));
+}
+
+#[test]
 fn compiles_staged_with_count_aggregation_before_match() {
     let graph = staged_planning_test_graph();
     let query = compile_cypher_query_for_graph(
@@ -4977,11 +5167,61 @@ fn rejects_adjacent_staged_with_order_limit_shapes() {
              MATCH (a)-[:KNOWS]->(b:Person) \
              RETURN a.name AS a, b.name AS b",
         ),
+        (
+            "scalar alias DISTINCT stage",
+            "MATCH (a:Person) \
+             WITH DISTINCT a.id AS friendId ORDER BY friendId LIMIT 1 \
+             MATCH (b:Person) WHERE b.id = friendId \
+             RETURN b.name AS b",
+        ),
+        (
+            "subquery alias stage",
+            "MATCH (a:Person) \
+             WITH COUNT { MATCH (b:Person) } AS total ORDER BY total LIMIT 1 \
+             MATCH (b:Person) WHERE b.id = total \
+             RETURN b.name AS b",
+        ),
+        (
+            "scalar alias graph-object return",
+            "MATCH (a:Person) \
+             WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+             MATCH (b:Person) WHERE b.id = friendId \
+             RETURN b AS b",
+        ),
+        (
+            "scalar alias unlabeled final target",
+            "MATCH (a:Person) \
+             WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+             MATCH (b) WHERE b.id = friendId \
+             RETURN b.name AS b",
+        ),
     ];
 
     for (name, cypher) in cases {
         assert_staged_planning_reject(name, cypher);
     }
+}
+
+#[test]
+fn rejects_second_staged_scalar_alias_with() {
+    let graph = staged_planning_test_graph();
+    let error = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+         WITH a.id AS friendId ORDER BY a.age LIMIT 1 \
+         MATCH (b:Person) WHERE b.id = friendId \
+         WITH b.name AS name ORDER BY b.age LIMIT 1 \
+         MATCH (c:Person) WHERE c.name = name \
+         RETURN c.name AS c",
+    )
+    .expect_err("second staged scalar WITH should remain outside the narrow route");
+
+    assert!(
+        error
+            .to_string()
+            .contains("exactly one MATCH ... WITH ... RETURN query part"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -5032,10 +5272,11 @@ fn assert_staged_planning_reject(name: &str, cypher: &str) {
         panic!("{name} should require broader staged planning");
     };
 
+    let message = error.to_string();
     assert!(
-        error
-            .to_string()
-            .contains("WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"),
+        message.contains(
+            "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
+        ) || message.contains("staged query planning"),
         "{name}: {error}"
     );
 }
