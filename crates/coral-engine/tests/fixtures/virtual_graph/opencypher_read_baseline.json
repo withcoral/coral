@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 32
+    "With": 35
   },
   "scenarios": [
     {
@@ -10799,6 +10799,48 @@
       }
     },
     {
+      "id": "with-order-limit-incoming-final-match",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 2 MATCH (b:Person)-[:KNOWS]->(a) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Bob",
+            "b": "Alice"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-undirected-final-match",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 2 MATCH (a)-[:KNOWS]-(b:Person) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Alice",
+            "b": "Bob"
+          },
+          {
+            "a": "Alice",
+            "b": "Carol"
+          },
+          {
+            "a": "Bob",
+            "b": "Alice"
+          },
+          {
+            "a": "Bob",
+            "b": "Carol"
+          }
+        ]
+      }
+    },
+    {
       "id": "with-limit-zero-before-match-rejected",
       "feature": "With",
       "query": "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 0 MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name AS friend",
@@ -10826,6 +10868,22 @@
           {
             "name": "Bob",
             "deg": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-incoming-final-match",
+      "feature": "With",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WITH a, count(b) AS deg MATCH (c:Person)-[:KNOWS]->(a) RETURN a.name AS name, c.name AS c, deg",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "c": "Alice",
+            "deg": 1,
+            "name": "Bob"
           }
         ]
       }

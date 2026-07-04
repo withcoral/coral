@@ -213,6 +213,136 @@ fn lower_graph_query_renders_staged_with_order_limit_cte() {
 }
 
 #[test]
+fn lower_graph_query_renders_staged_incoming_final_match() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_order_limit_query(RelationshipPattern {
+        variable: None,
+        relationship_type: "KNOWS".to_string(),
+        left: "b".to_string(),
+        direction: Direction::Outgoing,
+        right: "a".to_string(),
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged incoming graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 2) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"friend_id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"person_id\" = \"n1\".\"id\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_undirected_final_match() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_order_limit_query(RelationshipPattern {
+        variable: None,
+        relationship_type: "KNOWS".to_string(),
+        left: "a".to_string(),
+        direction: Direction::Undirected,
+        right: "b".to_string(),
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged undirected graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 2) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON (\"r0\".\"person_id\" = \"stage0\".\"a_id\" OR \"r0\".\"friend_id\" = \"stage0\".\"a_id\") \
+             JOIN \"ops\".\"people\" AS \"n1\" ON ((\"r0\".\"person_id\" = \"stage0\".\"a_id\" AND \"r0\".\"friend_id\" = \"n1\".\"id\") OR (\"r0\".\"friend_id\" = \"stage0\".\"a_id\" AND \"r0\".\"person_id\" = \"n1\".\"id\"))"
+    );
+}
+
+fn staged_order_limit_query(final_relationship: RelationshipPattern) -> GraphQuery {
+    GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: GraphPlan {
+                nodes: vec![NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                }],
+                relationships: Vec::new(),
+                optional_relationships: Vec::new(),
+                optional_matches: Vec::new(),
+                distinct: false,
+                projections: vec![Projection::Key {
+                    variable: "a".to_string(),
+                    alias: "a_id".to_string(),
+                }],
+                predicates: Vec::new(),
+                predicate: None,
+                post_projection_predicate: None,
+                order_by: vec![OrderKey {
+                    expression: OrderExpression::Property(PropertyRef {
+                        variable: "a".to_string(),
+                        property: "age".to_string(),
+                    }),
+                    direction: OrderDirection::Ascending,
+                    nulls: None,
+                }],
+                skip: None,
+                limit: Some(2),
+            },
+            exports: vec![GraphStageExport::NodeKey {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            }],
+        }],
+        final_plan: GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "b".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![final_relationship],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "a".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("a".to_string()),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "b".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("b".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        },
+    })
+}
+
+#[test]
 fn lower_graph_query_renders_staged_aggregate_cte() {
     let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
     let query = staged_aggregate_query();

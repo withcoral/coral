@@ -163,6 +163,71 @@ async fn cypher_staged_with_order_limit_executes_with_second_relationship_type()
 }
 
 #[tokio::test]
+async fn cypher_staged_with_order_limit_incoming_final_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (b:Person)-[:KNOWS]->(a) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged incoming final match should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"friend_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows, vec![json!({"a": "Bob", "b": "Alice"})]);
+}
+
+#[tokio::test]
+async fn cypher_staged_with_order_limit_undirected_final_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:KNOWS]-(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged undirected final match should execute");
+
+    assert!(
+        execution.translated_sql().contains(" OR "),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"a": "Alice", "b": "Bob"}),
+            json!({"a": "Alice", "b": "Carol"}),
+            json!({"a": "Bob", "b": "Alice"}),
+            json!({"a": "Bob", "b": "Carol"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_staged_with_order_limit_rehydrates_multiple_carried_properties() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_fixture(temp.path());
@@ -243,6 +308,29 @@ async fn cypher_staged_count_aggregation_before_match_executes() {
             json!({"name": "Bob", "deg": 1}),
         ]
     );
+}
+
+#[tokio::test]
+async fn cypher_staged_count_aggregation_before_incoming_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (c:Person)-[:KNOWS]->(a) \
+         RETURN a.name AS name, c.name AS c, deg",
+    )
+    .await
+    .expect("staged aggregate query with incoming final match should execute");
+
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows, vec![json!({"name": "Bob", "c": "Alice", "deg": 1})]);
 }
 
 #[tokio::test]

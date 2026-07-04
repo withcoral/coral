@@ -5920,11 +5920,8 @@ fn compile_staged_order_limit_multi_part(
     )?;
     if !matches!(
         final_plan.relationships.as_slice(),
-        [RelationshipPattern {
-            left,
-            direction: Direction::Outgoing,
-            ..
-        }] if left == &carried_variable
+        [RelationshipPattern { left, right, .. }]
+            if left == &carried_variable || right == &carried_variable
     ) {
         return Ok(None);
     }
@@ -6258,7 +6255,7 @@ fn staged_aggregation_initial_match_shape(part: &MultiPartQueryPart) -> bool {
         return false;
     }
     staged_initial_match_nodes_are_labeled(match_clause)
-        && staged_single_outgoing_match_shape(match_clause, None).is_some()
+        && staged_single_outgoing_match_shape(match_clause, None)
 }
 
 fn staged_aggregation_with_order_shape(with: &With, aggregate_alias: &str) -> bool {
@@ -6275,7 +6272,7 @@ fn staged_aggregation_final_match_shape(
     match_clause: &Match,
     group_variables: &BTreeSet<String>,
 ) -> Option<StagedFinalMatchShape> {
-    let shape = staged_single_outgoing_match_shape(match_clause, Some(group_variables))?;
+    let shape = staged_single_final_match_shape(match_clause, Some(group_variables))?;
     if !group_variables.contains(&shape.anchor_variable) {
         return None;
     }
@@ -6314,16 +6311,16 @@ fn staged_aggregation_return_shape(
         })
 }
 
-struct StagedSingleOutgoingMatchShape {
+struct StagedSingleFinalMatchShape {
     anchor_variable: String,
     target_variable: String,
     target_labeled: bool,
 }
 
-fn staged_single_outgoing_match_shape(
+fn staged_single_final_match_shape(
     match_clause: &Match,
-    allowed_start_variables: Option<&BTreeSet<String>>,
-) -> Option<StagedSingleOutgoingMatchShape> {
+    allowed_anchor_variables: Option<&BTreeSet<String>>,
+) -> Option<StagedSingleFinalMatchShape> {
     if match_clause.optional {
         return None;
     }
@@ -6338,6 +6335,81 @@ fn staged_single_outgoing_match_shape(
     };
     let [chain] = chains.as_slice() else {
         return None;
+    };
+    if chain.relationship.quantifier.is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.range.as_ref())
+            .is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.variable.as_ref())
+            .is_some()
+        || !chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.types.as_ref())
+            .is_some_and(staged_static_label)
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.properties.as_ref())
+            .is_some()
+    {
+        return None;
+    }
+    let start_variable = path_node_variable(start)?;
+    let end_variable = path_node_variable(&chain.node)?;
+    if start_variable == end_variable
+        || start.properties.is_some()
+        || chain.node.properties.is_some()
+        || !(start.labels.is_empty() || staged_single_static_label(&start.labels))
+        || !(chain.node.labels.is_empty() || staged_single_static_label(&chain.node.labels))
+    {
+        return None;
+    }
+    [
+        StagedSingleFinalMatchShape {
+            anchor_variable: start_variable.clone(),
+            target_variable: end_variable.clone(),
+            target_labeled: !chain.node.labels.is_empty(),
+        },
+        StagedSingleFinalMatchShape {
+            anchor_variable: end_variable,
+            target_variable: start_variable,
+            target_labeled: !start.labels.is_empty(),
+        },
+    ]
+    .into_iter()
+    .find(|shape| {
+        allowed_anchor_variables.is_none_or(|variables| variables.contains(&shape.anchor_variable))
+    })
+}
+
+fn staged_single_outgoing_match_shape(
+    match_clause: &Match,
+    allowed_start_variables: Option<&BTreeSet<String>>,
+) -> bool {
+    if match_clause.optional {
+        return false;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return false;
+    };
+    if pattern_part.variable.is_some() {
+        return false;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return false;
+    };
+    let [chain] = chains.as_slice() else {
+        return false;
     };
     if chain.relationship.direction != CypherRelationshipDirection::Right
         || chain.relationship.quantifier.is_some()
@@ -6366,25 +6438,23 @@ fn staged_single_outgoing_match_shape(
             .and_then(|detail| detail.properties.as_ref())
             .is_some()
     {
-        return None;
+        return false;
     }
-    let anchor_variable = path_node_variable(start)?;
+    let Some(anchor_variable) = path_node_variable(start) else {
+        return false;
+    };
     if allowed_start_variables.is_some_and(|variables| !variables.contains(&anchor_variable)) {
-        return None;
+        return false;
     }
     if start.properties.is_some()
         || chain.node.properties.is_some()
         || !(start.labels.is_empty() || staged_single_static_label(&start.labels))
         || !(chain.node.labels.is_empty() || staged_single_static_label(&chain.node.labels))
     {
-        return None;
+        return false;
     }
-    let target_variable = path_node_variable(&chain.node)?;
-    (target_variable != anchor_variable).then_some(StagedSingleOutgoingMatchShape {
-        anchor_variable,
-        target_variable,
-        target_labeled: !chain.node.labels.is_empty(),
-    })
+    path_node_variable(&chain.node)
+        .is_some_and(|target_variable| target_variable != anchor_variable)
 }
 
 fn staged_initial_match_nodes_are_labeled(match_clause: &Match) -> bool {
@@ -6512,56 +6582,9 @@ fn staged_final_match_target(match_clause: &Match, carried_variable: &str) -> Op
     if match_clause.optional || match_clause.where_clause.is_some() {
         return None;
     }
-    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
-        return None;
-    };
-    if pattern_part.variable.is_some() {
-        return None;
-    }
-    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
-        return None;
-    };
-    let [chain] = chains.as_slice() else {
-        return None;
-    };
-    if chain.relationship.direction != CypherRelationshipDirection::Right
-        || chain.relationship.quantifier.is_some()
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.range.as_ref())
-            .is_some()
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.variable.as_ref())
-            .is_some()
-        || !chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.types.as_ref())
-            .is_some_and(staged_static_label)
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.properties.as_ref())
-            .is_some()
-    {
-        return None;
-    }
-    if start.properties.is_some()
-        || chain.node.properties.is_some()
-        || !staged_single_static_label(&chain.node.labels)
-        || path_node_variable(start).as_deref() != Some(carried_variable)
-    {
-        return None;
-    }
-    let target = path_node_variable(&chain.node)?;
-    (target != carried_variable).then_some(target)
+    let carried_variables = BTreeSet::from([carried_variable.to_string()]);
+    let shape = staged_single_final_match_shape(match_clause, Some(&carried_variables))?;
+    shape.target_labeled.then_some(shape.target_variable)
 }
 
 fn staged_return_shape(

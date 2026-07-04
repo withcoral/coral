@@ -4379,6 +4379,60 @@ fn compiles_staged_with_order_limit_before_match() {
 }
 
 #[test]
+fn compiles_staged_with_incoming_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (b:Person)-[:KNOWS]->(a) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged route should allow incoming final matches into carried variables");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("incoming final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "b".to_string(),
+            direction: Direction::Outgoing,
+            right: "a".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_staged_with_undirected_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]-(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged route should allow undirected final matches from carried variables");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("undirected final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Undirected,
+            right: "b".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn compiles_staged_with_second_relationship_type() {
     let graph = staged_planning_test_graph();
     let query = compile_cypher_query_for_graph(
@@ -4630,6 +4684,60 @@ fn compiles_staged_aggregate_order_limit_before_match() {
 }
 
 #[test]
+fn compiles_staged_aggregate_with_incoming_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (c:Person)-[:KNOWS]->(a) \
+         RETURN a.name AS name, deg",
+    )
+    .expect("staged aggregate route should allow incoming final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("incoming aggregate final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "c".to_string(),
+            direction: Direction::Outgoing,
+            right: "a".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_staged_aggregate_with_undirected_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]-(c:Person) \
+         RETURN a.name AS name, deg",
+    )
+    .expect("staged aggregate route should allow undirected final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("undirected aggregate final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Undirected,
+            right: "c".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn rejects_adjacent_staged_aggregation_shapes() {
     let cases = [
         (
@@ -4645,20 +4753,6 @@ fn rejects_adjacent_staged_aggregation_shapes() {
              WITH a.name AS name, count(b) AS deg \
              MATCH (a)-[:KNOWS]->(c:Person) \
              RETURN name, deg",
-        ),
-        (
-            "incoming final match",
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
-             WITH a, count(b) AS deg \
-             MATCH (c:Person)-[:KNOWS]->(a) \
-             RETURN a.name AS name, deg",
-        ),
-        (
-            "undirected final match",
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
-             WITH a, count(b) AS deg \
-             MATCH (a)-[:KNOWS]-(c:Person) \
-             RETURN a.name AS name, deg",
         ),
         (
             "multi-hop final match",
@@ -4728,20 +4822,6 @@ fn rejects_adjacent_staged_aggregation_shapes() {
 #[test]
 fn rejects_adjacent_staged_with_order_limit_shapes() {
     let cases = [
-        (
-            "incoming final match",
-            "MATCH (a:Person) \
-             WITH a ORDER BY a.age LIMIT 2 \
-             MATCH (b:Person)-[:KNOWS]->(a) \
-             RETURN a.name AS a, b.name AS b",
-        ),
-        (
-            "undirected final match",
-            "MATCH (a:Person) \
-             WITH a ORDER BY a.age LIMIT 2 \
-             MATCH (a)-[:KNOWS]-(b:Person) \
-             RETURN a.name AS a, b.name AS b",
-        ),
         (
             "initial WHERE before WITH",
             "MATCH (a:Person) \
