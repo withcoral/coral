@@ -2,12 +2,12 @@ use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
-    GraphUnwind, GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindProjection, KeyPredicate,
-    Literal, LiteralListElementType, NodePattern, OptionalMatchScope, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
+    GraphUnwind, GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindPipeline,
+    GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
 };
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
@@ -200,6 +200,97 @@ fn lower_graph_query_renders_empty_literal_unwind_row_source() {
     assert_eq!(
         translation.sql(),
         "SELECT UNNEST(array_resize(make_array(CAST(NULL AS BIGINT)), 0)) AS \"x\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_literal_unwind_aggregate_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind: GraphUnwind {
+            input: None,
+            list: ScalarExpression::TypedLiteralList {
+                literals: vec![
+                    Literal::Integer(1),
+                    Literal::Integer(2),
+                    Literal::Integer(3),
+                ],
+                element_type: LiteralListElementType::Integer,
+            },
+            element_type: LiteralListElementType::Integer,
+            variable: "x".to_string(),
+            projections: vec![GraphUnwindProjection::Variable {
+                alias: "x".to_string(),
+            }],
+        },
+        final_plan: GraphPlan {
+            projections: vec![Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::Expression(ScalarExpression::StageValue {
+                    alias: "x".to_string(),
+                }),
+                distinct: false,
+                alias: "c".to_string(),
+            }],
+            ..GraphPlan::default()
+        },
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("literal UNWIND aggregate projection should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT UNNEST(make_array(1, 2, 3)) AS \"x\") \
+         SELECT COUNT(\"stage0\".\"x\") AS \"c\" FROM \"stage0\" AS \"stage0\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_literal_unwind_ordered_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind: GraphUnwind {
+            input: None,
+            list: ScalarExpression::TypedLiteralList {
+                literals: vec![
+                    Literal::Integer(3),
+                    Literal::Integer(1),
+                    Literal::Integer(2),
+                ],
+                element_type: LiteralListElementType::Integer,
+            },
+            element_type: LiteralListElementType::Integer,
+            variable: "x".to_string(),
+            projections: vec![GraphUnwindProjection::Variable {
+                alias: "x".to_string(),
+            }],
+        },
+        final_plan: GraphPlan {
+            projections: vec![Projection::Expression {
+                expression: ScalarExpression::StageValue {
+                    alias: "x".to_string(),
+                },
+                alias: "x".to_string(),
+            }],
+            order_by: vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("x".to_string()),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }],
+            ..GraphPlan::default()
+        },
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("literal UNWIND ordered projection should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT UNNEST(make_array(3, 1, 2)) AS \"x\") \
+         SELECT \"stage0\".\"x\" AS \"x\" FROM \"stage0\" AS \"stage0\" ORDER BY \"x\" ASC"
     );
 }
 

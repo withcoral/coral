@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 21,
+    "Unwind": 27,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -6780,6 +6780,129 @@
           },
           {
             "x": 6
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-aggregate-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2, 3] AS x RETURN count(x) AS c, sum(x) AS s, collect(x) AS xs",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "c": 3,
+            "s": 6,
+            "xs": [
+              1,
+              2,
+              3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-ordered-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [3, 1, 2] AS x RETURN x ORDER BY x",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-distinct-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 1, 2, 2] AS x RETURN DISTINCT x ORDER BY x",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-expression-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2, 3] AS x RETURN x * 2 AS d, toString(x) AS text ORDER BY d",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "d": 2,
+            "text": "1"
+          },
+          {
+            "d": 4,
+            "text": "2"
+          },
+          {
+            "d": 6,
+            "text": "3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-with-alias-multi-column-row-source",
+      "feature": "Unwind",
+      "query": "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x, x + 10 AS y ORDER BY x",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "x": 1,
+            "y": 11
+          },
+          {
+            "x": 2,
+            "y": 12
+          },
+          {
+            "x": 3,
+            "y": 13
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-terminal-with-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2, 3] AS x WITH x * 2 AS d RETURN d ORDER BY d",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "d": 2
+          },
+          {
+            "d": 4
+          },
+          {
+            "d": 6
           }
         ]
       }

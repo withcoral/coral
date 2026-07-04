@@ -18672,6 +18672,111 @@ async fn cypher_dynamic_unwind_alias_sources_execute_against_synthetic_sources()
 }
 
 #[tokio::test]
+async fn cypher_unwind_non_bare_returns_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let aggregate = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [1, 2, 3] AS x RETURN count(x) AS c, sum(x) AS s, collect(x) AS xs",
+    )
+    .await
+    .expect("UNWIND aggregate return should execute");
+
+    assert!(
+        aggregate.translated_sql().contains("WITH \"stage0\" AS"),
+        "{}",
+        aggregate.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(aggregate.execution()),
+        vec![json!({"c": 3, "s": 6, "xs": [1, 2, 3]})]
+    );
+
+    let ordered = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [3, 1, 2] AS x RETURN x ORDER BY x",
+    )
+    .await
+    .expect("UNWIND ordered return should execute");
+
+    assert_eq!(
+        execution_to_rows(ordered.execution()),
+        vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})]
+    );
+
+    let distinct = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [1, 1, 2, 2] AS x RETURN DISTINCT x ORDER BY x",
+    )
+    .await
+    .expect("UNWIND distinct return should execute");
+
+    assert_eq!(
+        execution_to_rows(distinct.execution()),
+        vec![json!({"x": 1}), json!({"x": 2})]
+    );
+
+    let expressions = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [1, 2, 3] AS x RETURN x * 2 AS d, toString(x) AS text ORDER BY d",
+    )
+    .await
+    .expect("UNWIND expression return should execute");
+
+    assert_eq!(
+        execution_to_rows(expressions.execution()),
+        vec![
+            json!({"d": 2, "text": "1"}),
+            json!({"d": 4, "text": "2"}),
+            json!({"d": 6, "text": "3"}),
+        ]
+    );
+
+    let alias_source = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x, x + 10 AS y ORDER BY x",
+    )
+    .await
+    .expect("WITH alias UNWIND multi-column return should execute");
+
+    assert_eq!(
+        execution_to_rows(alias_source.execution()),
+        vec![
+            json!({"x": 1, "y": 11}),
+            json!({"x": 2, "y": 12}),
+            json!({"x": 3, "y": 13}),
+        ]
+    );
+
+    let terminal_with = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [1, 2, 3] AS x WITH x * 2 AS d RETURN d ORDER BY d",
+    )
+    .await
+    .expect("UNWIND terminal WITH return should execute");
+
+    assert_eq!(
+        execution_to_rows(terminal_with.execution()),
+        vec![json!({"d": 2}), json!({"d": 4}), json!({"d": 6})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_dynamic_unwind_alias_source_matches_static_unwind_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

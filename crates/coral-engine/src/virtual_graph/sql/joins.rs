@@ -356,11 +356,11 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
     pub(super) fn build(mut self) -> Result<String, CoreError> {
         let plan = self.lowerer.validated.plan();
         if !self.try_start_from_staged_relationship()? {
-            let first_node = plan
-                .nodes
-                .first()
-                .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
-            self.start_from_node(first_node.variable.as_str())?;
+            if let Some(first_node) = plan.nodes.first() {
+                self.start_from_node(first_node.variable.as_str())?;
+            } else {
+                self.start_from_scalar_stage()?;
+            }
         }
 
         self.join_mandatory_relationships()?;
@@ -369,6 +369,23 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         self.cross_join_scalar_stages()?;
 
         Ok(self.from_clause)
+    }
+
+    fn start_from_scalar_stage(&mut self) -> Result<(), CoreError> {
+        let stage_alias = self
+            .lowerer
+            .validated
+            .scalar_stage_aliases()
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
+        self.from_clause = format!(
+            "FROM {} AS {}",
+            quote_ident(stage_alias),
+            quote_ident(stage_alias)
+        );
+        self.joined_stage_aliases.insert(stage_alias.to_string());
+        Ok(())
     }
 
     fn try_start_from_staged_relationship(&mut self) -> Result<bool, CoreError> {

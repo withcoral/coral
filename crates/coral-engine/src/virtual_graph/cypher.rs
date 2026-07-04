@@ -980,10 +980,7 @@ fn compile_single_query_as_graph_query(
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
-    if let Some(unwind) = compile_literal_unwind_row_source(single_query, context, &path)? {
-        return Ok(GraphQuery::Unwind(unwind));
-    }
-    if let Some(query) = compile_dynamic_unwind_row_source(single_query, context, &path)? {
+    if let Some(query) = compile_direct_unwind_row_source(single_query, context, &path)? {
         return Ok(query);
     }
     let contains_static_unwind = single_query_contains_unwind(single_query);
@@ -1082,11 +1079,27 @@ fn compile_single_query_as_graph_query(
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
 }
 
+fn compile_direct_unwind_row_source(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphQuery>, CoreError> {
+    if let Some(query) = compile_literal_unwind_row_source(single_query, context, path)? {
+        return Ok(Some(query));
+    }
+    if let Some(query) =
+        compile_literal_unwind_terminal_with_row_source(single_query, context, path)?
+    {
+        return Ok(Some(query));
+    }
+    compile_dynamic_unwind_row_source(single_query, context, path)
+}
+
 fn compile_literal_unwind_row_source(
     single_query: &SingleQuery,
     context: &CypherCompileContext,
     path: &str,
-) -> Result<Option<GraphUnwind>, CoreError> {
+) -> Result<Option<GraphQuery>, CoreError> {
     let SingleQueryKind::SinglePart(single_part) = &single_query.kind else {
         return Ok(None);
     };
@@ -1099,10 +1112,6 @@ fn compile_literal_unwind_row_source(
 
     let variable = dynamic_unwind_variable_name(unwind, context);
     let return_clause = return_clause_from_single_part(single_part, path)?;
-    let Some(projections) = compile_literal_unwind_row_source_projections(return_clause, &variable)
-    else {
-        return Ok(None);
-    };
     let Some(list) = compile_optional_literal_unwind_row_source_list(
         &unwind.expression,
         format!("{path}.reading_clauses[0].unwind.expression"),
@@ -1113,13 +1122,8 @@ fn compile_literal_unwind_row_source(
     };
 
     let element_type = graph_unwind_list_element_type(&list)?;
-    Ok(Some(GraphUnwind {
-        input: None,
-        list,
-        element_type,
-        variable,
-        projections,
-    }))
+    compile_unwind_terminal_query(None, list, element_type, variable, return_clause, context)
+        .map(Some)
 }
 
 fn compile_dynamic_unwind_row_source(
@@ -1162,18 +1166,15 @@ fn compile_dynamic_unwind_row_source(
     if remaining.is_empty() {
         let return_clause =
             return_clause_from_single_part(&multi_part.final_part, format!("{path}.final_part"))?;
-        let Some(projections) =
-            compile_literal_unwind_row_source_projections(return_clause, &variable)
-        else {
-            return Ok(None);
-        };
-        return Ok(Some(GraphQuery::Unwind(GraphUnwind {
-            input: Some(input),
-            list: source.expression,
-            element_type: source.element_type,
+        return compile_unwind_terminal_query(
+            Some(input),
+            source.expression,
+            source.element_type,
             variable,
-            projections,
-        })));
+            return_clause,
+            context,
+        )
+        .map(Some);
     }
 
     let mut final_plan = GraphPlan::default();
@@ -1206,6 +1207,183 @@ fn compile_dynamic_unwind_row_source(
         },
         final_plan,
     })))
+}
+
+fn compile_literal_unwind_terminal_with_row_source(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let SingleQueryKind::MultiPart(multi_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    let [part] = multi_part.parts.as_slice() else {
+        return Ok(None);
+    };
+    let [ReadingClause::Unwind(unwind)] = part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty() || !multi_part.final_part.reading_clauses.is_empty() {
+        return Ok(None);
+    }
+
+    let variable = dynamic_unwind_variable_name(unwind, context);
+    let Some(list) = compile_optional_literal_unwind_row_source_list(
+        &unwind.expression,
+        format!("{path}.parts[0].reading_clauses[0].unwind.expression"),
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+    let element_type = graph_unwind_list_element_type(&list)?;
+    let unwind = GraphUnwind {
+        input: None,
+        list,
+        element_type,
+        variable: variable.clone(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: variable.clone(),
+        }],
+    };
+    let mut state = CypherCompileState::default();
+    state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue { alias: variable },
+        alias: unwind.variable.clone(),
+    });
+    let mut final_plan = GraphPlan::default();
+    compile_unwind_terminal_with_clause(&part.with, &mut final_plan, &state, context)?;
+    let return_clause = return_clause_from_single_part(&multi_part.final_part, "final_part")?;
+    apply_terminal_return_projection_aliases(
+        return_clause,
+        &mut final_plan,
+        &state,
+        context,
+        part.with.star,
+    )?;
+    apply_terminal_return_modifiers(return_clause, &mut final_plan, context)?;
+    reject_ignored_path_variable_references(&final_plan, &state, "with")?;
+
+    Ok(Some(GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind,
+        final_plan,
+    })))
+}
+
+fn compile_unwind_terminal_with_clause(
+    with: &With,
+    plan: &mut GraphPlan,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<(), CoreError> {
+    if with.star {
+        return Err(unsupported(
+            "with.star",
+            "WITH * over UNWIND row sources requires broader row-source scope planning and is not supported yet",
+        ));
+    }
+    plan.distinct = with.distinct;
+    if with.items.is_empty() {
+        return Err(unsupported(
+            "with.items",
+            "WITH must include at least one projection",
+        ));
+    }
+
+    let mut aliases = BTreeSet::new();
+    for (index, item) in with.items.iter().enumerate() {
+        let projection = if let Some(projection) =
+            compile_optional_scalar_alias_return_item(item, state, format!("with.items[{index}]"))?
+        {
+            projection
+        } else {
+            compile_projection(item, format!("with.items[{index}]"), context, plan, state)?
+        };
+        let alias = projection.output_name();
+        if !aliases.insert(alias.clone()) {
+            return Err(unsupported(
+                format!("with.items[{index}].alias"),
+                format!("WITH projection alias '{alias}' is defined more than once"),
+            ));
+        }
+        plan.projections.push(projection);
+    }
+    if let Some(where_clause) = &with.where_clause {
+        plan.post_projection_predicate = Some(compile_projection_predicate_expression(
+            where_clause,
+            "with.where",
+            context,
+        )?);
+    }
+    if let Some(order) = &with.order {
+        for (index, item) in order.items.iter().enumerate() {
+            plan.order_by.push(OrderKey {
+                expression: compile_terminal_alias_order_expression(
+                    &item.expression,
+                    &plan.projections,
+                    format!("with.order.items[{index}].expression"),
+                )?,
+                direction: match item.direction {
+                    Some(SortDirection::Descending) => OrderDirection::Descending,
+                    Some(SortDirection::Ascending) | None => OrderDirection::Ascending,
+                },
+                nulls: context.order_null_placement(item),
+            });
+        }
+    }
+    if let Some(skip) = &with.skip {
+        plan.skip = Some(compile_skip(skip, "with.skip", context)?);
+    }
+    if let Some(limit) = &with.limit {
+        plan.limit = Some(compile_limit(limit, "with.limit", context)?);
+    }
+    Ok(())
+}
+
+fn compile_unwind_terminal_query(
+    input: Option<GraphUnwindInput>,
+    list: ScalarExpression,
+    element_type: LiteralListElementType,
+    variable: String,
+    return_clause: &Return,
+    context: &CypherCompileContext,
+) -> Result<GraphQuery, CoreError> {
+    if let Some(projections) =
+        compile_literal_unwind_row_source_projections(return_clause, &variable)
+    {
+        return Ok(GraphQuery::Unwind(GraphUnwind {
+            input,
+            list,
+            element_type,
+            variable,
+            projections,
+        }));
+    }
+
+    let unwind = GraphUnwind {
+        input,
+        list,
+        element_type,
+        variable: variable.clone(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: variable.clone(),
+        }],
+    };
+    let mut final_plan = GraphPlan::default();
+    let mut final_state = CypherCompileState::default();
+    final_state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue {
+            alias: variable.clone(),
+        },
+        alias: variable,
+    });
+    compile_return(return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "return")?;
+
+    Ok(GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind,
+        final_plan,
+    }))
 }
 
 fn dynamic_unwind_variable_name(unwind: &Unwind, context: &CypherCompileContext) -> String {
@@ -3642,7 +3820,7 @@ fn compile_static_alternative_outer_aggregate_source_expression(
     context: &CypherCompileContext,
 ) -> Result<Expression, CoreError> {
     let target =
-        compile_function_aggregate_target(function, function_kind, item_path, None, context);
+        compile_function_aggregate_target(function, function_kind, item_path, None, None, context);
     match target {
         Ok(AggregateTarget::Property(_)) => {
             let [argument] = function.arguments.as_slice() else {
@@ -12226,6 +12404,7 @@ fn compile_function_call_order_expression_after_metadata_list_index(
             projections,
             path,
             plan,
+            state,
             context,
         );
     }
@@ -12945,6 +13124,7 @@ fn aggregate_order_expression_for_projection(
     projections: &[Projection],
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
@@ -12957,8 +13137,14 @@ fn aggregate_order_expression_for_projection(
             ),
         )
     })?;
-    let target =
-        compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
+    let target = compile_function_aggregate_target(
+        function,
+        function_kind,
+        &path,
+        Some(plan),
+        Some(state),
+        context,
+    )?;
     let aliases = projections
         .iter()
         .filter_map(|projection| match projection {
@@ -17976,7 +18162,7 @@ fn compile_other_function_projection(
         return Ok(projection);
     }
     if is_aggregate_function_call(function) {
-        return compile_aggregate_projection(function, item, path, plan, context);
+        return compile_aggregate_projection(function, item, path, plan, state, context);
     }
     Err(unsupported(
         format!("{path}.expression"),
@@ -20332,6 +20518,13 @@ fn compile_single_scalar_function_argument(
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     let [argument] = function.arguments.as_slice() else {
+        if function.arguments.is_empty()
+            && let Some(variable) = context.variable_function_argument(function)
+            && let Some(state) = mode.scalar_alias_state()
+            && let Some(projection) = scalar_alias_projection(state, variable)
+        {
+            return scalar_alias_projection_expression(projection, format!("{path}.arguments"));
+        }
         return Err(unsupported(
             format!("{path}.arguments"),
             format!("{function_name}() requires exactly one argument"),
@@ -23683,6 +23876,7 @@ fn compile_aggregate_projection(
     item: &ProjectionItem,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: &CypherCompileState,
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
@@ -23698,8 +23892,14 @@ fn compile_aggregate_projection(
                 )
             },
         )?;
-    let target =
-        compile_function_aggregate_target(function, function_kind, &path, Some(plan), context)?;
+    let target = compile_function_aggregate_target(
+        function,
+        function_kind,
+        &path,
+        Some(plan),
+        Some(state),
+        context,
+    )?;
     Ok(Projection::Aggregate {
         function: function_kind,
         target,
@@ -23716,8 +23916,20 @@ fn compile_function_aggregate_target(
     function_kind: AggregateFunction,
     path: &str,
     plan: Option<&GraphPlan>,
+    state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
+    if function.arguments.is_empty()
+        && let Some(variable) = context.variable_function_argument(function)
+        && let Some(target) = compile_optional_scalar_alias_aggregate_target(
+            variable,
+            format!("{path}.expression.arguments"),
+            state,
+        )?
+    {
+        return Ok(target);
+    }
+
     match function.arguments.as_slice() {
         [argument, _]
             if matches!(
@@ -23729,6 +23941,7 @@ fn compile_function_aggregate_target(
                 argument,
                 format!("{path}.expression.arguments[0]"),
                 plan,
+                state,
                 context,
             )
         }
@@ -23736,6 +23949,7 @@ fn compile_function_aggregate_target(
             argument,
             format!("{path}.expression.arguments[0]"),
             plan,
+            state,
             context,
         ),
         [] if matches!(
@@ -23754,6 +23968,13 @@ fn compile_function_aggregate_target(
                         ),
                     )
                 })?;
+            if let Some(target) = compile_optional_scalar_alias_aggregate_target(
+                variable,
+                format!("{path}.expression.arguments"),
+                state,
+            )? {
+                return Ok(target);
+            }
             Ok(AggregateTarget::VariableKey {
                 variable: variable.to_string(),
             })
@@ -23774,15 +23995,41 @@ struct OrderNullPlacementNormalization<'a> {
     placements: Vec<Option<NullOrder>>,
 }
 
+fn compile_optional_scalar_alias_aggregate_target(
+    alias: &str,
+    path: impl Into<String>,
+    state: Option<&CypherCompileState>,
+) -> Result<Option<AggregateTarget>, CoreError> {
+    let path = path.into();
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let Some(projection) = scalar_alias_projection(state, alias) else {
+        return Ok(None);
+    };
+    let expression = scalar_alias_projection_expression(projection, path.clone())?;
+    validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
+    Ok(Some(AggregateTarget::Expression(expression)))
+}
+
 fn compile_aggregate_target(
     expression: &Expression,
     path: impl Into<String>,
     plan: Option<&GraphPlan>,
+    state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
     let path = path.into();
+    if let Some(expression) =
+        compile_optional_scalar_alias_expression(expression, path.clone(), state)?
+    {
+        validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
+        return Ok(AggregateTarget::Expression(expression));
+    }
     match expression {
-        Expression::Parenthesized(inner) => compile_aggregate_target(inner, path, plan, context),
+        Expression::Parenthesized(inner) => {
+            compile_aggregate_target(inner, path, plan, state, context)
+        }
         Expression::Variable(variable) => Ok(AggregateTarget::VariableKey {
             variable: variable_name(variable),
         }),
@@ -23859,6 +24106,7 @@ fn compile_aggregate_target(
                 expression,
                 path.clone(),
                 plan,
+                state,
                 context,
             )?;
             validate_aggregate_scalar_target_correlated_subqueries(&expression, path)?;
@@ -23894,13 +24142,17 @@ fn compile_aggregate_scalar_target_expression(
     expression: &Expression,
     path: impl Into<String>,
     plan: &GraphPlan,
+    state: Option<&CypherCompileState>,
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     if is_boolean_scalar_expression(expression) {
-        return compile_boolean_scalar_expression(expression, path, plan, context);
+        return compile_predicate_expression_with_path_state(
+            expression, path, plan, state, context,
+        )
+        .map(|predicate| ScalarExpression::Predicate(Box::new(predicate)));
     }
-    compile_scalar_expression_with_path_state(expression, path, plan, None, context)
+    compile_scalar_expression_with_path_state(expression, path, plan, state, context)
 }
 
 fn compile_aggregate_function(

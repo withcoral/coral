@@ -572,6 +572,63 @@ fn compiles_empty_literal_unwind_row_source() {
 }
 
 #[test]
+fn compiles_literal_unwind_aggregate_return_as_pipeline() {
+    let query = compile_cypher_query("UNWIND [1, 2, 3] AS x RETURN count(x) AS c")
+        .expect("literal UNWIND aggregate row source should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected literal UNWIND aggregate to compile as a row-source pipeline");
+    };
+    assert_eq!(pipeline.unwind.variable, "x");
+    assert_eq!(
+        pipeline.unwind.projections,
+        vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }]
+    );
+    assert!(pipeline.final_plan.nodes.is_empty());
+    assert_eq!(
+        pipeline.final_plan.projections,
+        vec![Projection::Aggregate {
+            function: AggregateFunction::Count,
+            target: AggregateTarget::Expression(ScalarExpression::StageValue {
+                alias: "x".to_string(),
+            }),
+            distinct: false,
+            alias: "c".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_literal_unwind_ordered_return_as_pipeline() {
+    let query = compile_cypher_query("UNWIND [3, 1, 2] AS x RETURN x ORDER BY x")
+        .expect("literal UNWIND ordered row source should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected ordered literal UNWIND to compile as a row-source pipeline");
+    };
+    assert!(pipeline.final_plan.nodes.is_empty());
+    assert_eq!(
+        pipeline.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::StageValue {
+                alias: "x".to_string(),
+            },
+            alias: "x".to_string(),
+        }]
+    );
+    assert_eq!(
+        pipeline.final_plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("x".to_string()),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
+    );
+}
+
+#[test]
 fn compiles_with_alias_unwind_row_source() {
     let query = compile_cypher_query("WITH [1, 2, 3] AS list UNWIND list AS x RETURN x")
         .expect("WITH alias UNWIND row source should compile");
@@ -631,6 +688,62 @@ fn compiles_with_alias_list_concat_unwind_row_source() {
                 alias: "second".to_string(),
             }),
         }
+    );
+}
+
+#[test]
+fn compiles_with_alias_unwind_arithmetic_return_as_pipeline() {
+    let query = compile_cypher_query("WITH [1, 2, 3] AS list UNWIND list AS x RETURN x * 2 AS d")
+        .expect("WITH alias UNWIND arithmetic row source should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected arithmetic UNWIND return to compile as a row-source pipeline");
+    };
+    assert!(pipeline.final_plan.nodes.is_empty());
+    assert_eq!(
+        pipeline.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Multiply,
+                left: Box::new(ScalarExpression::StageValue {
+                    alias: "x".to_string(),
+                }),
+                right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            },
+            alias: "d".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_literal_unwind_terminal_with_return_as_pipeline() {
+    let query = compile_cypher_query("UNWIND [1, 2, 3] AS x WITH x * 2 AS d RETURN d ORDER BY d")
+        .expect("literal UNWIND terminal WITH row source should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected terminal WITH over UNWIND to compile as a row-source pipeline");
+    };
+    assert!(pipeline.final_plan.nodes.is_empty());
+    assert_eq!(
+        pipeline.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Multiply,
+                left: Box::new(ScalarExpression::StageValue {
+                    alias: "x".to_string(),
+                }),
+                right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+            },
+            alias: "d".to_string(),
+        }]
+    );
+    assert_eq!(
+        pipeline.final_plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("d".to_string()),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
     );
 }
 

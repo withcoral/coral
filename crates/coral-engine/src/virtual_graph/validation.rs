@@ -582,6 +582,9 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn bind_nodes(&mut self) -> Result<(), CoreError> {
         if self.plan.nodes.is_empty() {
+            if self.plan.relationships.is_empty() && !self.stage_columns.scalar_values.is_empty() {
+                return Ok(());
+            }
             return Err(Diagnostic::new(
                 diagnostic_codes::EMPTY_PLAN,
                 "nodes",
