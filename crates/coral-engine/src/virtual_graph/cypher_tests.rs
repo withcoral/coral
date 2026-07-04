@@ -572,6 +572,128 @@ fn compiles_empty_literal_unwind_row_source() {
 }
 
 #[test]
+fn compiles_with_alias_unwind_row_source() {
+    let query = compile_cypher_query("WITH [1, 2, 3] AS list UNWIND list AS x RETURN x")
+        .expect("WITH alias UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected dynamic UNWIND row source query");
+    };
+    assert_eq!(unwind.variable, "x");
+    assert_eq!(unwind.element_type, LiteralListElementType::Integer);
+    assert_eq!(
+        unwind
+            .input
+            .as_ref()
+            .expect("UNWIND input should exist")
+            .projections,
+        vec![GraphUnwindInputProjection {
+            expression: ScalarExpression::TypedLiteralList {
+                literals: vec![
+                    Literal::Integer(1),
+                    Literal::Integer(2),
+                    Literal::Integer(3),
+                ],
+                element_type: LiteralListElementType::Integer,
+            },
+            alias: "list".to_string(),
+            element_type: LiteralListElementType::Integer,
+        }]
+    );
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::StageValue {
+            alias: "list".to_string(),
+        }
+    );
+}
+
+#[test]
+fn compiles_with_alias_list_concat_unwind_row_source() {
+    let query = compile_cypher_query(
+        "WITH [1, 2, 3] AS first, [4, 5, 6] AS second \
+         UNWIND (first + second) AS x \
+         RETURN x",
+    )
+    .expect("WITH alias list concatenation UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected dynamic UNWIND row source query");
+    };
+    assert_eq!(unwind.element_type, LiteralListElementType::Integer);
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::ListConcat {
+            left: Box::new(ScalarExpression::StageValue {
+                alias: "first".to_string(),
+            }),
+            right: Box::new(ScalarExpression::StageValue {
+                alias: "second".to_string(),
+            }),
+        }
+    );
+}
+
+#[test]
+fn rejects_collect_unwind_row_source_for_later_widening() {
+    let error = compile_cypher_query(
+        "MATCH (person:Person) \
+         WITH collect(person.name) AS names \
+         UNWIND names AS x \
+         RETURN x",
+    )
+    .expect_err("collect-sourced UNWIND should remain out of scope");
+
+    assert!(
+        error.to_string().contains("UNSUPPORTED_CYPHER"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn rejects_property_key_unwind_row_source_for_later_widening() {
+    let error = compile_cypher_query(
+        "MATCH (person:Person) \
+         UNWIND keys(person) AS key \
+         RETURN key",
+    )
+    .expect_err("property-list-sourced UNWIND should remain out of scope");
+
+    assert!(
+        error.to_string().contains("UNSUPPORTED_CYPHER"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn compiles_with_alias_unwind_match_as_pipeline() {
+    let query = compile_cypher_query(
+        "WITH [1, 2, 3] AS ordinals \
+         UNWIND ordinals AS ordinal \
+         MATCH (service:Service) \
+         WHERE service.id = ordinal * 10 \
+         RETURN ordinal AS ordinal, service.name AS service \
+         ORDER BY ordinal",
+    )
+    .expect("WITH alias UNWIND feeding MATCH should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected dynamic UNWIND pipeline query");
+    };
+    assert_eq!(pipeline.unwind.variable, "ordinal");
+    assert_eq!(
+        pipeline.unwind.list,
+        ScalarExpression::StageValue {
+            alias: "ordinals".to_string(),
+        }
+    );
+    assert_eq!(
+        projection_names(&pipeline.final_plan),
+        vec!["ordinal".to_string(), "service".to_string()]
+    );
+}
+
+#[test]
 fn rejects_nested_literal_unwind_row_source() {
     assert_unsupported("UNWIND [[1], [2]] AS x RETURN x");
 }
@@ -636,6 +758,37 @@ fn compiles_static_unwind_as_union_all_branches() {
             operator: ComparisonOperator::Equal,
             rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
         }]
+    );
+}
+
+#[test]
+fn missing_branch_temporal_predicate_rewrite_fails_loudly() {
+    let graph = star_test_graph();
+    let mut nodes = BTreeMap::new();
+    nodes.insert("person".to_string(), "Person".to_string());
+
+    let error = missing_branch_property_predicate_expression(
+        PropertyPredicate {
+            property: PropertyRef {
+                variable: "person".to_string(),
+                property: "joined".to_string(),
+            },
+            operator: ComparisonOperator::Equal,
+            rhs: PredicateRhs::TemporalCoercion {
+                source: "2024-01-01".to_string(),
+            },
+        },
+        &graph,
+        &nodes,
+        &[],
+    )
+    .expect_err("temporal coercion must not be silently downgraded");
+
+    assert!(
+        error
+            .to_string()
+            .contains("static branch rewrite cannot preserve temporal predicate coercion"),
+        "unexpected error: {error}"
     );
 }
 

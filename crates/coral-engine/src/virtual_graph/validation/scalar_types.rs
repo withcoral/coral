@@ -88,6 +88,11 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Temporal(temporal) => {
                 self.infer_temporal_scalar_type(temporal, &path)
             }
+            ScalarExpression::ListConcat { left, right } => {
+                self.infer_scalar_expression_type(left, format!("{path}.left"))?;
+                self.infer_scalar_expression_type(right, format!("{path}.right"))?;
+                Ok(ScalarType::Other)
+            }
             _ => self.infer_scalar_function_type(expression, &path),
         }
     }

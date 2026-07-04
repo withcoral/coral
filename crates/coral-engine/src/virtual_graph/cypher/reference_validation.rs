@@ -619,6 +619,7 @@ fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::ListConcat { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => {
             unreachable!("structural scalar expressions handled before this path check")

@@ -252,6 +252,14 @@ pub enum ScalarExpression {
         /// Known non-null element type.
         element_type: LiteralListElementType,
     },
+    /// Runtime concatenation of two list expressions with compatible element
+    /// types.
+    ListConcat {
+        /// Left list operand.
+        left: Box<ScalarExpression>,
+        /// Right list operand.
+        right: Box<ScalarExpression>,
+    },
     /// Ordered mapped keys for graph variables that make up a materialized path
     /// element list such as `nodes(path)` or `relationships(path)`.
     GraphKeyList {
@@ -1448,6 +1456,7 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Replace { .. }
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::ListConcat { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => {
             structural_scalar_expression_references_outside_scope(expression, scope)
@@ -1686,13 +1695,11 @@ fn structural_scalar_expression_references_outside_scope(
                     .as_deref()
                     .is_some_and(|length| scalar_expression_references_outside_scope(length, scope))
         }
-        ScalarExpression::Arithmetic { left, right, .. } => {
+        ScalarExpression::Arithmetic { left, right, .. }
+        | ScalarExpression::ListConcat { left, right }
+        | ScalarExpression::Atan2 { y: left, x: right } => {
             scalar_expression_references_outside_scope(left, scope)
                 || scalar_expression_references_outside_scope(right, scope)
-        }
-        ScalarExpression::Atan2 { y, x } => {
-            scalar_expression_references_outside_scope(y, scope)
-                || scalar_expression_references_outside_scope(x, scope)
         }
         ScalarExpression::Case {
             alternatives,
@@ -2001,6 +2008,8 @@ pub enum GraphQuery {
     Plan(GraphPlan),
     /// A graph-free row source produced by `UNWIND <list> AS variable`.
     Unwind(GraphUnwind),
+    /// A dynamic `UNWIND` row source feeding a final graph plan.
+    UnwindPipeline(GraphUnwindPipeline),
     /// A staged chain of graph plans where non-terminal stages export row keys
     /// consumed by the final plan.
     Staged(GraphStagedQuery),
@@ -2011,8 +2020,12 @@ pub enum GraphQuery {
 /// Graph-free row source that expands a list expression into rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphUnwind {
-    /// Literal list expression rendered as the row source.
+    /// Optional single-row input stage that produces list-valued aliases.
+    pub input: Option<GraphUnwindInput>,
+    /// List expression rendered as the row source.
     pub list: ScalarExpression,
+    /// Known non-null element type of the `UNWIND` source.
+    pub element_type: LiteralListElementType,
     /// Variable bound by the `UNWIND` clause.
     pub variable: String,
     /// Terminal projections over the bound `UNWIND` value.
@@ -2028,6 +2041,24 @@ impl GraphUnwind {
             .map(GraphUnwindProjection::output_name)
             .collect()
     }
+}
+
+/// Single-row input stage for a dynamic `UNWIND` source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnwindInput {
+    /// List-valued aliases produced before the `UNWIND`.
+    pub projections: Vec<GraphUnwindInputProjection>,
+}
+
+/// Projection produced by a dynamic `UNWIND` input stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnwindInputProjection {
+    /// List-valued expression.
+    pub expression: ScalarExpression,
+    /// Alias visible to the `UNWIND` source expression.
+    pub alias: String,
+    /// Known non-null element type of the list value.
+    pub element_type: LiteralListElementType,
 }
 
 /// Projection over a graph-free `UNWIND` row source.
@@ -2048,6 +2079,15 @@ impl GraphUnwindProjection {
             Self::Variable { alias } => alias.clone(),
         }
     }
+}
+
+/// Dynamic `UNWIND` row source feeding a final graph plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnwindPipeline {
+    /// Row source that exports the `UNWIND` variable.
+    pub unwind: GraphUnwind,
+    /// Final graph plan that consumes the unwound value as a staged scalar.
+    pub final_plan: GraphPlan,
 }
 
 /// Staged graph query with one or more non-terminal row-source stages and a

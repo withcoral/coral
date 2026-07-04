@@ -148,6 +148,16 @@ pub(super) fn collect_unwind_expression_sources(cypher: &str) -> BTreeMap<(usize
         .collect()
 }
 
+pub(super) fn collect_unwind_variables(cypher: &str) -> BTreeMap<(usize, usize), String> {
+    let parse = decypher::parse_cst(cypher);
+    let tree = parse.tree();
+    tree.syntax()
+        .descendants()
+        .filter(|node| node.kind() == SyntaxKind::UNWIND_CLAUSE)
+        .filter_map(|node| unwind_variable_from_cst(cypher, &node))
+        .collect()
+}
+
 pub(super) fn collect_inline_property_value_sources(
     cypher: &str,
 ) -> BTreeMap<usize, InlinePropertyValueSource> {
@@ -202,6 +212,15 @@ fn unwind_expression_source_from_cst(
     Some(((start, end), expression.to_string()))
 }
 
+fn unwind_variable_from_cst(cypher: &str, node: &SyntaxNode) -> Option<((usize, usize), String)> {
+    let range = node.text_range();
+    let start: usize = range.start().into();
+    let end: usize = range.end().into();
+    let source = cypher.get(start..end)?;
+    let variable = parse_unwind_variable(source)?;
+    Some(((start, end), variable.to_string()))
+}
+
 fn parse_unwind_expression_source(source: &str) -> Option<&str> {
     const UNWIND_KEYWORD: &str = "UNWIND";
     let source = source.trim();
@@ -216,6 +235,29 @@ fn parse_unwind_expression_source(source: &str) -> Option<&str> {
     let as_index = find_top_level_keyword(after_unwind, "AS")?;
     let expression = after_unwind.get(..as_index)?.trim();
     (!expression.is_empty()).then_some(expression)
+}
+
+fn parse_unwind_variable(source: &str) -> Option<&str> {
+    const UNWIND_KEYWORD: &str = "UNWIND";
+    let source = source.trim();
+    if !source
+        .get(..UNWIND_KEYWORD.len())
+        .is_some_and(|value| value.eq_ignore_ascii_case(UNWIND_KEYWORD))
+        || !keyword_has_boundaries(source, 0, UNWIND_KEYWORD.len())
+    {
+        return None;
+    }
+    let after_unwind = source.get(UNWIND_KEYWORD.len()..)?.trim();
+    let as_index = find_top_level_keyword(after_unwind, "AS")?;
+    let after_as = after_unwind.get(as_index + "AS".len()..)?.trim_start();
+    let end = after_as
+        .char_indices()
+        .find_map(|(index, character)| {
+            (!matches!(character, '_' | 'a'..='z' | 'A'..='Z' | '0'..='9')).then_some(index)
+        })
+        .unwrap_or(after_as.len());
+    let variable = after_as.get(..end)?;
+    (!variable.is_empty()).then_some(variable)
 }
 
 fn list_comprehension_source_from_cst(

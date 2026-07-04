@@ -208,6 +208,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::Substring { .. }
             | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
+            | ScalarExpression::ListConcat { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => Self::scoped_structural_scalar_expression_is_inner(
                 expression,

@@ -16,13 +16,13 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphStageExport, GraphStagedQuery, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal,
-    LiteralListElementType, NodePattern, OptionalMatchScope, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
-    UndirectedRelationshipEndpoint,
+    GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindInputProjection, GraphUnwindPipeline,
+    GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -166,6 +166,7 @@ impl Declaration {
         match query {
             GraphQuery::Plan(plan) => self.validate_graph_plan(plan).map(|_| ()),
             GraphQuery::Unwind(unwind) => Self::validate_graph_unwind(unwind),
+            GraphQuery::UnwindPipeline(pipeline) => self.validate_graph_unwind_pipeline(pipeline),
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, None),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
@@ -205,6 +206,9 @@ impl Declaration {
                 .validate()
                 .map(|_| ()),
             GraphQuery::Unwind(unwind) => Self::validate_graph_unwind(unwind),
+            GraphQuery::UnwindPipeline(pipeline) => {
+                self.validate_graph_unwind_pipeline_against_catalog(pipeline, catalog)
+            }
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, Some(catalog)),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
@@ -235,22 +239,20 @@ impl Declaration {
 
     pub(crate) fn validate_graph_unwind(unwind: &GraphUnwind) -> Result<(), CoreError> {
         validate_variable("unwind.variable", &unwind.variable)?;
-        match &unwind.list {
-            ScalarExpression::TypedLiteralList {
-                literals,
-                element_type,
-            } => {
-                GraphPlanValidator::validate_typed_literal_list(
-                    literals,
-                    *element_type,
-                    "unwind.list",
-                )?;
-            }
-            _ => {
-                return Err(CoreError::internal(
-                    "UNWIND row source requires a typed literal-list expression",
-                ));
-            }
+        let input_aliases = validate_graph_unwind_input(unwind)?;
+        validate_graph_unwind_list_expression(&unwind.list, "unwind.list", &input_aliases)?;
+        validate_graph_unwind_element_type(
+            &unwind.list,
+            unwind.element_type,
+            "unwind.list",
+            &input_aliases,
+        )?;
+
+        if input_aliases.contains_key(unwind.variable.as_str()) {
+            return Err(CoreError::internal(format!(
+                "UNWIND variable '{}' conflicts with an input alias",
+                unwind.variable
+            )));
         }
 
         let [projection] = unwind.projections.as_slice() else {
@@ -263,6 +265,34 @@ impl Declaration {
                 validate_variable("unwind.projections[0].alias", alias)
             }
         }
+    }
+
+    fn validate_graph_unwind_pipeline(
+        &self,
+        pipeline: &GraphUnwindPipeline,
+    ) -> Result<(), CoreError> {
+        Self::validate_graph_unwind(&pipeline.unwind)?;
+        let stage_columns = unwind_stage_column_bindings(&pipeline.unwind, "stage0")?;
+        GraphPlanValidator::new_with_stage_columns(self, &pipeline.final_plan, None, stage_columns)
+            .validate()
+            .map(|_| ())
+    }
+
+    fn validate_graph_unwind_pipeline_against_catalog(
+        &self,
+        pipeline: &GraphUnwindPipeline,
+        catalog: &CatalogInfo,
+    ) -> Result<(), CoreError> {
+        Self::validate_graph_unwind(&pipeline.unwind)?;
+        let stage_columns = unwind_stage_column_bindings(&pipeline.unwind, "stage0")?;
+        GraphPlanValidator::new_with_stage_columns(
+            self,
+            &pipeline.final_plan,
+            Some(catalog),
+            stage_columns,
+        )
+        .validate()
+        .map(|_| ())
     }
 
     fn validate_graph_staged_query(
@@ -983,6 +1013,161 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error()),
         }
+    }
+}
+
+fn validate_graph_unwind_input(
+    unwind: &GraphUnwind,
+) -> Result<BTreeMap<String, LiteralListElementType>, CoreError> {
+    let mut aliases = BTreeMap::new();
+    let Some(input) = &unwind.input else {
+        return Ok(aliases);
+    };
+    if input.projections.is_empty() {
+        return Err(CoreError::internal("UNWIND input stage had no projections"));
+    }
+    for (index, projection) in input.projections.iter().enumerate() {
+        validate_graph_unwind_input_projection(projection, index)?;
+        if aliases
+            .insert(projection.alias.clone(), projection.element_type)
+            .is_some()
+        {
+            return Err(CoreError::internal(format!(
+                "UNWIND input alias '{}' was projected more than once",
+                projection.alias
+            )));
+        }
+    }
+    Ok(aliases)
+}
+
+fn validate_graph_unwind_input_projection(
+    projection: &GraphUnwindInputProjection,
+    index: usize,
+) -> Result<(), CoreError> {
+    validate_variable(
+        format!("unwind.input.projections[{index}].alias"),
+        &projection.alias,
+    )?;
+    let aliases = BTreeMap::new();
+    let path = format!("unwind.input.projections[{index}].expression");
+    validate_graph_unwind_list_expression(&projection.expression, &path, &aliases)?;
+    validate_graph_unwind_element_type(
+        &projection.expression,
+        projection.element_type,
+        &path,
+        &aliases,
+    )
+}
+
+fn validate_graph_unwind_list_expression(
+    expression: &ScalarExpression,
+    path: &str,
+    input_aliases: &BTreeMap<String, LiteralListElementType>,
+) -> Result<(), CoreError> {
+    match expression {
+        ScalarExpression::TypedLiteralList {
+            literals,
+            element_type,
+        } => GraphPlanValidator::validate_typed_literal_list(literals, *element_type, path),
+        ScalarExpression::StageValue { alias } => {
+            if input_aliases.contains_key(alias) {
+                Ok(())
+            } else {
+                Err(CoreError::internal(format!(
+                    "UNWIND list expression references unknown input alias '{alias}'",
+                )))
+            }
+        }
+        ScalarExpression::ListConcat { left, right } => {
+            validate_graph_unwind_list_expression(left, &format!("{path}.left"), input_aliases)?;
+            validate_graph_unwind_list_expression(right, &format!("{path}.right"), input_aliases)
+        }
+        _ => Err(CoreError::internal(
+            "UNWIND row source requires a list expression",
+        )),
+    }
+}
+
+fn validate_graph_unwind_element_type(
+    expression: &ScalarExpression,
+    expected: LiteralListElementType,
+    path: &str,
+    input_aliases: &BTreeMap<String, LiteralListElementType>,
+) -> Result<(), CoreError> {
+    match expression {
+        ScalarExpression::TypedLiteralList {
+            literals,
+            element_type,
+        } => {
+            if *element_type != expected {
+                return Err(CoreError::internal(format!(
+                    "UNWIND list element type mismatch at {path}",
+                )));
+            }
+            GraphPlanValidator::validate_typed_literal_list(literals, *element_type, path)
+        }
+        ScalarExpression::StageValue { alias } => {
+            let Some(actual) = input_aliases.get(alias) else {
+                return Err(CoreError::internal(format!(
+                    "UNWIND list expression references unknown input alias '{alias}'",
+                )));
+            };
+            if *actual != expected {
+                return Err(CoreError::internal(format!(
+                    "UNWIND input alias '{alias}' has incompatible element type at {path}",
+                )));
+            }
+            Ok(())
+        }
+        ScalarExpression::ListConcat { left, right } => {
+            validate_graph_unwind_element_type(
+                left,
+                expected,
+                &format!("{path}.left"),
+                input_aliases,
+            )?;
+            validate_graph_unwind_element_type(
+                right,
+                expected,
+                &format!("{path}.right"),
+                input_aliases,
+            )
+        }
+        _ => Err(CoreError::internal(
+            "UNWIND row source requires a list expression",
+        )),
+    }
+}
+
+pub(crate) fn unwind_stage_column_bindings(
+    unwind: &GraphUnwind,
+    stage_alias: &str,
+) -> Result<StageColumnBindings, CoreError> {
+    let [projection] = unwind.projections.as_slice() else {
+        return Err(CoreError::internal(
+            "UNWIND row source requires exactly one projection",
+        ));
+    };
+    let GraphUnwindProjection::Variable { alias } = projection;
+    let mut bindings = StageColumnBindings::default();
+    bindings.scalar_values.insert(
+        unwind.variable.clone(),
+        StageScalarColumnBinding {
+            stage_alias: stage_alias.to_string(),
+            value_column: alias.clone(),
+            scalar_type: scalar_type_for_literal_list_element(unwind.element_type),
+        },
+    );
+    Ok(bindings)
+}
+
+fn scalar_type_for_literal_list_element(element_type: LiteralListElementType) -> ScalarType {
+    match element_type {
+        LiteralListElementType::String => ScalarType::String,
+        LiteralListElementType::Integer => ScalarType::Integer,
+        LiteralListElementType::Float => ScalarType::Float,
+        LiteralListElementType::Boolean => ScalarType::Boolean,
     }
 }
 

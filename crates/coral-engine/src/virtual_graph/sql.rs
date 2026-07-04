@@ -16,15 +16,18 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphStagedQuery, GraphUnion, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
-    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
-    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
+    GraphQuery, GraphStagedQuery, GraphUnion, GraphUnionOuterProjectionItem, GraphUnwind,
+    GraphUnwindPipeline, KeyPredicate, Literal, LiteralListElementType, NodePattern, NullOrder,
+    OptionalMatchScope, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
+    UndirectedRelationshipEndpoint,
 };
-use super::validation::{ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings};
+use super::validation::{
+    ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings, unwind_stage_column_bindings,
+};
 use crate::{CatalogInfo, CoreError};
 
 mod joins;
@@ -104,12 +107,13 @@ impl Declaration {
         match query {
             GraphQuery::Plan(plan) => self.lower_graph_plan(plan),
             GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
+            GraphQuery::UnwindPipeline(pipeline) => self.lower_graph_unwind_pipeline(pipeline),
             GraphQuery::Staged(staged) => self.lower_graph_staged_query(staged),
             GraphQuery::Union(union) => self.lower_graph_union(union),
         }
     }
 
-    fn lower_graph_unwind(unwind: &super::ir::GraphUnwind) -> Result<SqlTranslation, CoreError> {
+    fn lower_graph_unwind(unwind: &GraphUnwind) -> Result<SqlTranslation, CoreError> {
         Self::validate_graph_unwind(unwind)?;
         let [projection] = unwind.projections.as_slice() else {
             return Err(CoreError::internal(
@@ -117,10 +121,40 @@ impl Declaration {
             ));
         };
         let super::ir::GraphUnwindProjection::Variable { alias } = projection;
-        let list_sql = render_unwind_list_expression(&unwind.list)?;
+        let input_alias = unwind.input.as_ref().map(|_| "__coral_unwind_input");
+        let list_sql = render_unwind_list_expression(&unwind.list, input_alias)?;
+        let input = unwind
+            .input
+            .as_ref()
+            .map(|input| render_unwind_input(input, input_alias.unwrap_or("__coral_unwind_input")))
+            .transpose()?
+            .unwrap_or_default();
         Ok(SqlTranslation::new(
-            format!("SELECT UNNEST({list_sql}) AS {}", quote_ident(alias)),
+            format!("SELECT UNNEST({list_sql}) AS {}{input}", quote_ident(alias)),
             Vec::new(),
+        ))
+    }
+
+    fn lower_graph_unwind_pipeline(
+        &self,
+        pipeline: &GraphUnwindPipeline,
+    ) -> Result<SqlTranslation, CoreError> {
+        Self::validate_graph_unwind(&pipeline.unwind)?;
+        let unwind = Self::lower_graph_unwind(&pipeline.unwind)?;
+        let stage_columns = unwind_stage_column_bindings(&pipeline.unwind, "stage0")?;
+        let final_validated =
+            self.validate_graph_plan_with_stage_columns(&pipeline.final_plan, stage_columns)?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        let mut diagnostics = unwind.diagnostics().to_vec();
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!(
+                "WITH {} AS ({}) {}",
+                quote_ident("stage0"),
+                unwind.sql(),
+                final_translation.sql()
+            ),
+            diagnostics,
         ))
     }
 
@@ -137,7 +171,37 @@ impl Declaration {
             }
             GraphQuery::Union(union) => self.lower_graph_union_against_catalog(union, catalog),
             GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
+            GraphQuery::UnwindPipeline(pipeline) => {
+                self.lower_graph_unwind_pipeline_against_catalog(pipeline, catalog)
+            }
         }
+    }
+
+    fn lower_graph_unwind_pipeline_against_catalog(
+        &self,
+        pipeline: &GraphUnwindPipeline,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        Self::validate_graph_unwind(&pipeline.unwind)?;
+        let unwind = Self::lower_graph_unwind(&pipeline.unwind)?;
+        let stage_columns = unwind_stage_column_bindings(&pipeline.unwind, "stage0")?;
+        let final_validated = self.validate_graph_plan_with_stage_columns_against_catalog(
+            &pipeline.final_plan,
+            stage_columns,
+            catalog,
+        )?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        let mut diagnostics = unwind.diagnostics().to_vec();
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!(
+                "WITH {} AS ({}) {}",
+                quote_ident("stage0"),
+                unwind.sql(),
+                final_translation.sql()
+            ),
+            diagnostics,
+        ))
     }
 
     fn lower_graph_staged_query(
@@ -275,14 +339,56 @@ impl Declaration {
     }
 }
 
-fn render_unwind_list_expression(expression: &ScalarExpression) -> Result<String, CoreError> {
+fn render_unwind_input(
+    input: &super::ir::GraphUnwindInput,
+    input_alias: &str,
+) -> Result<String, CoreError> {
+    if input.projections.is_empty() {
+        return Err(CoreError::internal("UNWIND input stage had no projections"));
+    }
+    let projections = input
+        .projections
+        .iter()
+        .map(|projection| {
+            let expression = render_unwind_list_expression(&projection.expression, None)?;
+            Ok(format!(
+                "{expression} AS {}",
+                quote_ident(&projection.alias)
+            ))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    Ok(format!(
+        " FROM (SELECT {}) AS {}",
+        projections.join(", "),
+        quote_ident(input_alias)
+    ))
+}
+
+fn render_unwind_list_expression(
+    expression: &ScalarExpression,
+    input_alias: Option<&str>,
+) -> Result<String, CoreError> {
     match expression {
         ScalarExpression::TypedLiteralList {
             literals,
             element_type,
         } => Ok(render_typed_literal_list(literals, *element_type)),
+        ScalarExpression::StageValue { alias } => {
+            let input_alias = input_alias
+                .ok_or_else(|| CoreError::internal("UNWIND stage value requires an input alias"))?;
+            Ok(format!(
+                "{}.{}",
+                quote_ident(input_alias),
+                quote_ident(alias)
+            ))
+        }
+        ScalarExpression::ListConcat { left, right } => Ok(format!(
+            "array_concat({}, {})",
+            render_unwind_list_expression(left, input_alias)?,
+            render_unwind_list_expression(right, input_alias)?
+        )),
         _ => Err(CoreError::internal(
-            "UNWIND row source requires a typed literal-list expression",
+            "UNWIND row source requires a list expression",
         )),
     }
 }

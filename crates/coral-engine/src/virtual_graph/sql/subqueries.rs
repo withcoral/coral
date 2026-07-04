@@ -410,7 +410,8 @@ impl<'a> SqlRenderer<'a> {
                 expression,
                 pattern,
             } => Some((expression, pattern)),
-            ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
+            ScalarExpression::Arithmetic { left, right, .. }
+            | ScalarExpression::ListConcat { left, right } => Some((left, right)),
             ScalarExpression::Atan2 { y, x } => Some((y, x)),
             ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
                 Some((start, end))

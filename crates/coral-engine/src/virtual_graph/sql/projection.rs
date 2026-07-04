@@ -237,6 +237,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::Substring { .. }
             | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
+            | ScalarExpression::ListConcat { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => {
                 self.reject_unprecomputed_projection_structural_subqueries(expression)?;

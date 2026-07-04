@@ -23,7 +23,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use decypher::ast::clause::{
     Match, Order, ProjectionItem, Return, SortDirection, SortItem, Unwind, With,
@@ -57,13 +57,14 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphUnion, GraphUnionBranch,
-    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindProjection,
-    KeyPredicate, Literal, LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope,
-    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
+    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindInput,
+    GraphUnwindInputProjection, GraphUnwindPipeline, GraphUnwindProjection, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
     UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
@@ -504,6 +505,7 @@ struct CypherCompileContext {
     static_reduce_sources: BTreeMap<(usize, usize), StaticReduceSource>,
     static_list_function_sources: BTreeMap<(usize, usize), StaticListFunctionSource>,
     unwind_expression_sources: BTreeMap<(usize, usize), String>,
+    unwind_variables: BTreeMap<(usize, usize), String>,
     inline_property_value_sources: BTreeMap<usize, InlinePropertyValueSource>,
     compact_exists_pattern_queries: BTreeMap<(usize, usize), String>,
     order_null_placements: BTreeMap<(usize, usize), NullOrder>,
@@ -529,6 +531,7 @@ impl CypherCompileContext {
             static_reduce_sources: collect_static_reduce_sources(cypher),
             static_list_function_sources: collect_static_list_function_sources(cypher),
             unwind_expression_sources: collect_unwind_expression_sources(cypher),
+            unwind_variables: collect_unwind_variables(cypher),
             inline_property_value_sources: collect_inline_property_value_sources(cypher),
             compact_exists_pattern_queries: collect_compact_exists_pattern_queries(cypher),
             order_null_placements,
@@ -598,6 +601,12 @@ impl CypherCompileContext {
 
     fn unwind_expression_source(&self, unwind: &Unwind) -> Option<&str> {
         self.unwind_expression_sources
+            .get(&(unwind.span.start, unwind.span.end))
+            .map(String::as_str)
+    }
+
+    fn unwind_variable(&self, unwind: &Unwind) -> Option<&str> {
+        self.unwind_variables
             .get(&(unwind.span.start, unwind.span.end))
             .map(String::as_str)
     }
@@ -778,7 +787,7 @@ pub fn compile_cypher_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_with_parameters(cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
-        GraphQuery::Unwind(_) => Err(unsupported(
+        GraphQuery::Unwind(_) | GraphQuery::UnwindPipeline(_) => Err(unsupported(
             "query.unwind",
             "compile_cypher returns a single graph plan; use compile_cypher_query for UNWIND row-source queries",
         )),
@@ -822,7 +831,7 @@ pub fn compile_cypher_for_graph_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
-        GraphQuery::Unwind(_) => Err(unsupported(
+        GraphQuery::Unwind(_) | GraphQuery::UnwindPipeline(_) => Err(unsupported(
             "query.unwind",
             "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for UNWIND row-source queries",
         )),
@@ -974,6 +983,9 @@ fn compile_single_query_as_graph_query(
     if let Some(unwind) = compile_literal_unwind_row_source(single_query, context, &path)? {
         return Ok(GraphQuery::Unwind(unwind));
     }
+    if let Some(query) = compile_dynamic_unwind_row_source(single_query, context, &path)? {
+        return Ok(query);
+    }
     let contains_static_unwind = single_query_contains_unwind(single_query);
     let scalar_alias_final_target_unlabeled =
         staged_scalar_alias_final_target_unlabeled(single_query);
@@ -1039,7 +1051,7 @@ fn compile_single_query_as_graph_query(
         })
         .collect::<Result<Vec<_>, CoreError>>()?;
     let mut plans = plans;
-    rewrite_missing_branch_properties_as_null(&mut plans, context);
+    rewrite_missing_branch_properties_as_null(&mut plans, context)?;
     let projection_names = plans
         .first()
         .map(GraphPlan::projection_output_names)
@@ -1085,7 +1097,7 @@ fn compile_literal_unwind_row_source(
         return Ok(None);
     };
 
-    let variable = variable_name(&unwind.variable);
+    let variable = dynamic_unwind_variable_name(unwind, context);
     let return_clause = return_clause_from_single_part(single_part, path)?;
     let Some(projections) = compile_literal_unwind_row_source_projections(return_clause, &variable)
     else {
@@ -1100,11 +1112,291 @@ fn compile_literal_unwind_row_source(
         return Ok(None);
     };
 
+    let element_type = graph_unwind_list_element_type(&list)?;
     Ok(Some(GraphUnwind {
+        input: None,
         list,
+        element_type,
         variable,
         projections,
     }))
+}
+
+fn compile_dynamic_unwind_row_source(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let SingleQueryKind::MultiPart(multi_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    let Some((input, input_types)) = compile_dynamic_unwind_input(multi_part, context)? else {
+        return Ok(None);
+    };
+    let [ReadingClause::Unwind(unwind), remaining @ ..] =
+        multi_part.final_part.reading_clauses.as_slice()
+    else {
+        return Ok(None);
+    };
+
+    let variable = dynamic_unwind_variable_name(unwind, context);
+    if input_types.contains_key(&variable) {
+        return Err(unsupported(
+            format!("{path}.final_part.reading_clauses[0].unwind.variable"),
+            format!("UNWIND variable '{variable}' conflicts with an in-scope WITH alias"),
+        ));
+    }
+    let source = compile_dynamic_unwind_source_expression(
+        unwind,
+        format!("{path}.final_part.reading_clauses[0].unwind.expression"),
+        &input_types,
+        context,
+    )?
+    .ok_or_else(|| {
+        unsupported(
+            format!("{path}.final_part.reading_clauses[0].unwind.expression"),
+            "dynamic UNWIND currently supports WITH list aliases and concatenations of those aliases",
+        )
+    })?;
+
+    if remaining.is_empty() {
+        let return_clause =
+            return_clause_from_single_part(&multi_part.final_part, format!("{path}.final_part"))?;
+        let Some(projections) =
+            compile_literal_unwind_row_source_projections(return_clause, &variable)
+        else {
+            return Ok(None);
+        };
+        return Ok(Some(GraphQuery::Unwind(GraphUnwind {
+            input: Some(input),
+            list: source.expression,
+            element_type: source.element_type,
+            variable,
+            projections,
+        })));
+    }
+
+    let mut final_plan = GraphPlan::default();
+    let mut final_state = CypherCompileState::default();
+    final_state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue {
+            alias: variable.clone(),
+        },
+        alias: variable.clone(),
+    });
+    compile_reading_clauses_into(
+        remaining,
+        format!("{path}.final_part.reading_clauses"),
+        &mut final_plan,
+        &mut final_state,
+        context,
+    )?;
+    let return_clause =
+        return_clause_from_single_part(&multi_part.final_part, format!("{path}.final_part"))?;
+    compile_return(return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+
+    Ok(Some(GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind: GraphUnwind {
+            input: Some(input),
+            list: source.expression,
+            element_type: source.element_type,
+            variable: variable.clone(),
+            projections: vec![GraphUnwindProjection::Variable { alias: variable }],
+        },
+        final_plan,
+    })))
+}
+
+fn dynamic_unwind_variable_name(unwind: &Unwind, context: &CypherCompileContext) -> String {
+    context
+        .unwind_variable(unwind)
+        .map_or_else(|| variable_name(&unwind.variable), ToString::to_string)
+}
+
+fn compile_dynamic_unwind_source_expression(
+    unwind: &Unwind,
+    path: impl Into<String>,
+    input_types: &BTreeMap<String, LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<DynamicUnwindListExpression>, CoreError> {
+    let path = path.into();
+    if let Some(source) = context.unwind_expression_source(unwind) {
+        let (expression, fragment_context) =
+            parse_cypher_expression_fragment(source, path.clone(), context)?;
+        return compile_dynamic_unwind_list_expression(
+            &expression,
+            path,
+            input_types,
+            &fragment_context,
+        );
+    }
+    compile_dynamic_unwind_list_expression(&unwind.expression, path, input_types, context)
+}
+
+type DynamicUnwindInput = (GraphUnwindInput, BTreeMap<String, LiteralListElementType>);
+
+fn compile_dynamic_unwind_input(
+    multi_part: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<DynamicUnwindInput>, CoreError> {
+    let [part] = multi_part.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.reading_clauses.is_empty()
+        || !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.order.is_some()
+        || part.with.skip.is_some()
+        || part.with.limit.is_some()
+        || part.with.items.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let mut projections = Vec::with_capacity(part.with.items.len());
+    let mut aliases = BTreeMap::new();
+    for (index, item) in part.with.items.iter().enumerate() {
+        let Some(alias) = item.alias.as_ref().map(variable_name) else {
+            return Ok(None);
+        };
+        let path = format!("parts[0].with.items[{index}].expression");
+        let Some(value) =
+            compile_optional_static_list_value(&item.expression, path.clone(), None, context)?
+        else {
+            return Ok(None);
+        };
+        let (expression, element_type) = graph_unwind_static_list_expression(value, &path)?;
+        match aliases.entry(alias.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(element_type);
+            }
+            Entry::Occupied(_) => {
+                return Err(unsupported(
+                    format!("parts[0].with.items[{index}].alias"),
+                    format!("WITH alias '{alias}' is projected more than once"),
+                ));
+            }
+        }
+        projections.push(GraphUnwindInputProjection {
+            expression,
+            alias,
+            element_type,
+        });
+    }
+
+    Ok(Some((GraphUnwindInput { projections }, aliases)))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DynamicUnwindListExpression {
+    expression: ScalarExpression,
+    element_type: LiteralListElementType,
+}
+
+fn compile_dynamic_unwind_list_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    input_types: &BTreeMap<String, LiteralListElementType>,
+    context: &CypherCompileContext,
+) -> Result<Option<DynamicUnwindListExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_dynamic_unwind_list_expression(inner, path, input_types, context)
+        }
+        Expression::Variable(variable) => {
+            let alias = variable_name(variable);
+            let Some(element_type) = input_types.get(&alias).copied() else {
+                return Ok(None);
+            };
+            Ok(Some(DynamicUnwindListExpression {
+                expression: ScalarExpression::StageValue { alias },
+                element_type,
+            }))
+        }
+        Expression::BinaryOp {
+            op: CypherBinaryOperator::Add,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let Some(left) = compile_dynamic_unwind_list_expression(
+                lhs,
+                format!("{path}.lhs"),
+                input_types,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            let Some(right) = compile_dynamic_unwind_list_expression(
+                rhs,
+                format!("{path}.rhs"),
+                input_types,
+                context,
+            )?
+            else {
+                return Ok(None);
+            };
+            if left.element_type != right.element_type {
+                return Err(unsupported(
+                    path,
+                    "UNWIND list alias concatenation requires both operands to have the same element type",
+                ));
+            }
+            Ok(Some(DynamicUnwindListExpression {
+                expression: ScalarExpression::ListConcat {
+                    left: Box::new(left.expression),
+                    right: Box::new(right.expression),
+                },
+                element_type: left.element_type,
+            }))
+        }
+        _ => {
+            let Some(value) =
+                compile_optional_static_list_value(expression, path.clone(), None, context)?
+            else {
+                return Ok(None);
+            };
+            let (expression, element_type) = graph_unwind_static_list_expression(value, &path)?;
+            Ok(Some(DynamicUnwindListExpression {
+                expression,
+                element_type,
+            }))
+        }
+    }
+}
+
+fn graph_unwind_static_list_expression(
+    value: StaticListValue,
+    path: &str,
+) -> Result<(ScalarExpression, LiteralListElementType), CoreError> {
+    let element_type = value.element_type.map_or_else(
+        || literal_unwind_row_source_element_type(&value.literals, path),
+        Ok,
+    )?;
+    let expression = presence_gate_scalar_expression(
+        value.presence_variable,
+        ScalarExpression::TypedLiteralList {
+            literals: value.literals,
+            element_type,
+        },
+    );
+    Ok((expression, element_type))
+}
+
+fn graph_unwind_list_element_type(
+    expression: &ScalarExpression,
+) -> Result<LiteralListElementType, CoreError> {
+    match expression {
+        ScalarExpression::TypedLiteralList { element_type, .. } => Ok(*element_type),
+        _ => Err(CoreError::internal(
+            "UNWIND row source requires a typed literal-list expression",
+        )),
+    }
 }
 
 fn compile_literal_unwind_row_source_projections(
@@ -2173,9 +2465,9 @@ fn graph_query_from_alternative_plans(
 fn rewrite_missing_branch_properties_as_null(
     plans: &mut [GraphPlan],
     context: &CypherCompileContext,
-) {
+) -> Result<(), CoreError> {
     let Some(graph) = context.graph.as_ref() else {
-        return;
+        return Ok(());
     };
     for plan in plans {
         let nodes = plan
@@ -2184,8 +2476,8 @@ fn rewrite_missing_branch_properties_as_null(
             .map(|node| (node.variable.clone(), node.label.clone()))
             .collect::<BTreeMap<_, _>>();
         let relationships = plan.relationships.clone();
-        rewrite_missing_branch_scalar_expressions_as_null(plan, graph, &nodes, &relationships);
-        rewrite_missing_branch_property_predicates_as_null(plan, graph, &nodes, &relationships);
+        rewrite_missing_branch_scalar_expressions_as_null(plan, graph, &nodes, &relationships)?;
+        rewrite_missing_branch_property_predicates_as_null(plan, graph, &nodes, &relationships)?;
         for projection in &mut plan.projections {
             let (property, alias) = match projection {
                 Projection::Property { property, alias } => {
@@ -2205,6 +2497,7 @@ fn rewrite_missing_branch_properties_as_null(
             };
         }
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_scalar_expressions_as_null(
@@ -2212,7 +2505,7 @@ fn rewrite_missing_branch_scalar_expressions_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     for projection in &mut plan.projections {
         match projection {
             Projection::Expression { expression, .. } => {
@@ -2221,7 +2514,7 @@ fn rewrite_missing_branch_scalar_expressions_as_null(
                     graph,
                     nodes,
                     relationships,
-                );
+                )?;
             }
             Projection::Aggregate { target, .. } => {
                 rewrite_missing_branch_aggregate_target_as_null(
@@ -2229,7 +2522,7 @@ fn rewrite_missing_branch_scalar_expressions_as_null(
                     graph,
                     nodes,
                     relationships,
-                );
+                )?;
             }
             Projection::Property { .. }
             | Projection::Key { .. }
@@ -2250,9 +2543,10 @@ fn rewrite_missing_branch_scalar_expressions_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_aggregate_target_as_null(
@@ -2260,7 +2554,7 @@ fn rewrite_missing_branch_aggregate_target_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     match target {
         AggregateTarget::Expression(expression) => {
             rewrite_missing_branch_scalar_expression_as_null(
@@ -2268,13 +2562,14 @@ fn rewrite_missing_branch_aggregate_target_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
+            )?;
         }
         AggregateTarget::Property(_)
         | AggregateTarget::PresenceGatedProperty { .. }
         | AggregateTarget::VariableKey { .. }
         | AggregateTarget::PresenceGatedVariableKey { .. } => {}
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_property_predicates_as_null(
@@ -2282,20 +2577,20 @@ fn rewrite_missing_branch_property_predicates_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     if let Some(predicate) = plan.predicate.take() {
         plan.predicate = Some(rewrite_missing_branch_property_predicate_expression(
             predicate,
             graph,
             nodes,
             relationships,
-        ));
+        )?);
     }
 
     let mut retained = Vec::with_capacity(plan.predicates.len());
     let predicates = std::mem::take(&mut plan.predicates);
     for predicate in predicates {
-        match rewrite_missing_branch_property_predicate(predicate, graph, nodes, relationships) {
+        match rewrite_missing_branch_property_predicate(predicate, graph, nodes, relationships)? {
             BranchPropertyPredicateRewrite::Keep(predicate) => retained.push(predicate),
             BranchPropertyPredicateRewrite::Rewrite(expression) => {
                 append_predicate_expression(expression, plan);
@@ -2311,9 +2606,10 @@ fn rewrite_missing_branch_property_predicates_as_null(
                 graph,
                 nodes,
                 relationships,
-            ));
+            )?);
         }
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_property_predicate_expression(
@@ -2321,80 +2617,80 @@ fn rewrite_missing_branch_property_predicate_expression(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> PredicateExpression {
+) -> Result<PredicateExpression, CoreError> {
     match expression {
         PredicateExpression::Comparison(predicate) => {
-            match rewrite_missing_branch_property_predicate(predicate, graph, nodes, relationships)
+            match rewrite_missing_branch_property_predicate(predicate, graph, nodes, relationships)?
             {
                 BranchPropertyPredicateRewrite::Keep(predicate) => {
-                    PredicateExpression::Comparison(predicate)
+                    Ok(PredicateExpression::Comparison(predicate))
                 }
-                BranchPropertyPredicateRewrite::Rewrite(expression) => expression,
+                BranchPropertyPredicateRewrite::Rewrite(expression) => Ok(expression),
             }
         }
         PredicateExpression::ScalarComparison(predicate) => {
             rewrite_missing_branch_scalar_predicate(predicate, graph, nodes, relationships)
         }
-        PredicateExpression::And { left, right } => PredicateExpression::And {
+        PredicateExpression::And { left, right } => Ok(PredicateExpression::And {
             left: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *left,
                 graph,
                 nodes,
                 relationships,
-            )),
+            )?),
             right: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *right,
                 graph,
                 nodes,
                 relationships,
-            )),
-        },
-        PredicateExpression::Or { left, right } => PredicateExpression::Or {
+            )?),
+        }),
+        PredicateExpression::Or { left, right } => Ok(PredicateExpression::Or {
             left: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *left,
                 graph,
                 nodes,
                 relationships,
-            )),
+            )?),
             right: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *right,
                 graph,
                 nodes,
                 relationships,
-            )),
-        },
-        PredicateExpression::Xor { left, right } => PredicateExpression::Xor {
+            )?),
+        }),
+        PredicateExpression::Xor { left, right } => Ok(PredicateExpression::Xor {
             left: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *left,
                 graph,
                 nodes,
                 relationships,
-            )),
+            )?),
             right: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *right,
                 graph,
                 nodes,
                 relationships,
-            )),
-        },
-        PredicateExpression::Not { expression } => PredicateExpression::Not {
+            )?),
+        }),
+        PredicateExpression::Not { expression } => Ok(PredicateExpression::Not {
             expression: Box::new(rewrite_missing_branch_property_predicate_expression(
                 *expression,
                 graph,
                 nodes,
                 relationships,
-            )),
-        },
+            )?),
+        }),
         PredicateExpression::ExistsPattern(mut predicate) => {
             rewrite_missing_branch_exists_pattern_as_null(
                 &mut predicate,
                 graph,
                 nodes,
                 relationships,
-            );
-            PredicateExpression::ExistsPattern(predicate)
+            )?;
+            Ok(PredicateExpression::ExistsPattern(predicate))
         }
-        _ => expression,
+        _ => Ok(expression),
     }
 }
 
@@ -2403,19 +2699,19 @@ fn rewrite_missing_branch_scalar_predicate(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> PredicateExpression {
+) -> Result<PredicateExpression, CoreError> {
     let lhs_was_missing = rewrite_missing_branch_scalar_expression_as_null(
         &mut predicate.lhs,
         graph,
         nodes,
         relationships,
-    );
+    )?;
     let rhs_was_missing = rewrite_missing_branch_scalar_predicate_rhs_as_null(
         &mut predicate.rhs,
         graph,
         nodes,
         relationships,
-    );
+    )?;
     if rhs_was_missing
         || (lhs_was_missing
             && scalar_predicate_rhs_is_literal_null(&predicate.rhs)
@@ -2424,9 +2720,9 @@ fn rewrite_missing_branch_scalar_predicate(
                 ComparisonOperator::Equal | ComparisonOperator::NotEqual
             ) || is_range_comparison_operator(predicate.operator)))
     {
-        return unknown_boolean_predicate();
+        return Ok(unknown_boolean_predicate());
     }
-    PredicateExpression::ScalarComparison(predicate)
+    Ok(PredicateExpression::ScalarComparison(predicate))
 }
 
 fn rewrite_missing_branch_scalar_predicate_rhs_as_null(
@@ -2434,7 +2730,7 @@ fn rewrite_missing_branch_scalar_predicate_rhs_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> bool {
+) -> Result<bool, CoreError> {
     match rhs {
         ScalarPredicateRhs::Expression(expression) => {
             rewrite_missing_branch_scalar_expression_as_null(
@@ -2444,7 +2740,7 @@ fn rewrite_missing_branch_scalar_predicate_rhs_as_null(
                 relationships,
             )
         }
-        ScalarPredicateRhs::List(_) => false,
+        ScalarPredicateRhs::List(_) => Ok(false),
     }
 }
 
@@ -2460,17 +2756,17 @@ fn rewrite_missing_branch_scalar_expression_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> bool {
+) -> Result<bool, CoreError> {
     if let ScalarExpression::Property(property) = expression
         && branch_property_is_missing(graph, nodes, relationships, property)
     {
         *expression = ScalarExpression::Literal(Literal::Null);
-        return true;
+        return Ok(true);
     }
 
     if let Some(expression) = unary_scalar_expression_operand_mut(expression) {
-        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes, relationships);
-        return false;
+        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes, relationships)?;
+        return Ok(false);
     }
 
     rewrite_nested_missing_branch_scalar_expressions_as_null(
@@ -2478,8 +2774,8 @@ fn rewrite_missing_branch_scalar_expression_as_null(
         graph,
         nodes,
         relationships,
-    );
-    false
+    )?;
+    Ok(false)
 }
 
 fn rewrite_nested_missing_branch_scalar_expressions_as_null(
@@ -2487,16 +2783,16 @@ fn rewrite_nested_missing_branch_scalar_expressions_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
-    if rewrite_missing_branch_scalar_leaf_as_null(expression, graph, nodes, relationships) {
-        return;
+) -> Result<(), CoreError> {
+    if rewrite_missing_branch_scalar_leaf_as_null(expression, graph, nodes, relationships)? {
+        return Ok(());
     }
     rewrite_missing_branch_compound_scalar_expression_as_null(
         expression,
         graph,
         nodes,
         relationships,
-    );
+    )
 }
 
 fn rewrite_missing_branch_scalar_leaf_as_null(
@@ -2504,7 +2800,7 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> bool {
+) -> Result<bool, CoreError> {
     match expression {
         ScalarExpression::Property(_)
         | ScalarExpression::UndirectedEndpointProperty { .. }
@@ -2521,21 +2817,21 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
         | ScalarExpression::GraphPresence { .. }
         | ScalarExpression::NodeLabels { .. }
         | ScalarExpression::PropertyKeys { .. }
-        | ScalarExpression::RelationshipType { .. } => true,
+        | ScalarExpression::RelationshipType { .. } => Ok(true),
         ScalarExpression::CountSubquery {
             pattern,
             distinct_target,
         } => {
-            rewrite_missing_branch_count_subquery_as_null(pattern, graph, nodes, relationships);
+            rewrite_missing_branch_count_subquery_as_null(pattern, graph, nodes, relationships)?;
             if let Some(target) = distinct_target {
                 rewrite_missing_branch_scalar_expression_as_null(
                     target,
                     graph,
                     nodes,
                     relationships,
-                );
+                )?;
             }
-            true
+            Ok(true)
         }
         ScalarExpression::Predicate(predicate) => {
             **predicate = rewrite_missing_branch_property_predicate_expression(
@@ -2543,10 +2839,10 @@ fn rewrite_missing_branch_scalar_leaf_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            true
+            )?;
+            Ok(true)
         }
-        _ => false,
+        _ => Ok(false),
     }
 }
 
@@ -2555,21 +2851,21 @@ fn rewrite_missing_branch_compound_scalar_expression_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     if rewrite_missing_branch_primary_compound_scalar_expression_as_null(
         expression,
         graph,
         nodes,
         relationships,
-    ) {
-        return;
+    )? {
+        return Ok(());
     }
     rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
         expression,
         graph,
         nodes,
         relationships,
-    );
+    )
 }
 
 fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
@@ -2577,7 +2873,7 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> bool {
+) -> Result<bool, CoreError> {
     match expression {
         ScalarExpression::PresenceGated { expression, .. } => {
             rewrite_missing_branch_scalar_expression_as_null(
@@ -2585,8 +2881,8 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            true
+            )?;
+            Ok(true)
         }
         ScalarExpression::Coalesce { expressions } => {
             rewrite_missing_branch_scalar_expression_list_as_null(
@@ -2594,8 +2890,8 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            true
+            )?;
+            Ok(true)
         }
         ScalarExpression::NullIf { expression, value } => {
             rewrite_missing_branch_scalar_expression_as_null(
@@ -2603,9 +2899,9 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            rewrite_missing_branch_scalar_expression_as_null(value, graph, nodes, relationships);
-            true
+            )?;
+            rewrite_missing_branch_scalar_expression_as_null(value, graph, nodes, relationships)?;
+            Ok(true)
         }
         ScalarExpression::Round { expression, places } => {
             rewrite_missing_branch_scalar_expression_as_null(
@@ -2613,16 +2909,16 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
+            )?;
             if let Some(places) = places {
                 rewrite_missing_branch_scalar_expression_as_null(
                     places,
                     graph,
                     nodes,
                     relationships,
-                );
+                )?;
             }
-            true
+            Ok(true)
         }
         ScalarExpression::Left { expression, count }
         | ScalarExpression::Right { expression, count } => {
@@ -2631,9 +2927,9 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            rewrite_missing_branch_scalar_expression_as_null(count, graph, nodes, relationships);
-            true
+            )?;
+            rewrite_missing_branch_scalar_expression_as_null(count, graph, nodes, relationships)?;
+            Ok(true)
         }
         ScalarExpression::StringContains {
             expression,
@@ -2652,11 +2948,11 @@ fn rewrite_missing_branch_primary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            rewrite_missing_branch_scalar_expression_as_null(operand, graph, nodes, relationships);
-            true
+            )?;
+            rewrite_missing_branch_scalar_expression_as_null(operand, graph, nodes, relationships)?;
+            Ok(true)
         }
-        _ => false,
+        _ => Ok(false),
     }
 }
 
@@ -2665,7 +2961,7 @@ fn rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     match expression {
         ScalarExpression::Replace {
             expression,
@@ -2677,14 +2973,14 @@ fn rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            rewrite_missing_branch_scalar_expression_as_null(search, graph, nodes, relationships);
+            )?;
+            rewrite_missing_branch_scalar_expression_as_null(search, graph, nodes, relationships)?;
             rewrite_missing_branch_scalar_expression_as_null(
                 replacement,
                 graph,
                 nodes,
                 relationships,
-            );
+            )?;
         }
         ScalarExpression::Substring {
             expression,
@@ -2696,24 +2992,24 @@ fn rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
                 graph,
                 nodes,
                 relationships,
-            );
-            rewrite_missing_branch_scalar_expression_as_null(start, graph, nodes, relationships);
+            )?;
+            rewrite_missing_branch_scalar_expression_as_null(start, graph, nodes, relationships)?;
             if let Some(length) = length {
                 rewrite_missing_branch_scalar_expression_as_null(
                     length,
                     graph,
                     nodes,
                     relationships,
-                );
+                )?;
             }
         }
         ScalarExpression::Arithmetic { left, right, .. } => {
-            rewrite_missing_branch_scalar_expression_as_null(left, graph, nodes, relationships);
-            rewrite_missing_branch_scalar_expression_as_null(right, graph, nodes, relationships);
+            rewrite_missing_branch_scalar_expression_as_null(left, graph, nodes, relationships)?;
+            rewrite_missing_branch_scalar_expression_as_null(right, graph, nodes, relationships)?;
         }
         ScalarExpression::Atan2 { y, x } => {
-            rewrite_missing_branch_scalar_expression_as_null(y, graph, nodes, relationships);
-            rewrite_missing_branch_scalar_expression_as_null(x, graph, nodes, relationships);
+            rewrite_missing_branch_scalar_expression_as_null(y, graph, nodes, relationships)?;
+            rewrite_missing_branch_scalar_expression_as_null(x, graph, nodes, relationships)?;
         }
         ScalarExpression::Case {
             alternatives,
@@ -2724,9 +3020,10 @@ fn rewrite_missing_branch_secondary_compound_scalar_expression_as_null(
             graph,
             nodes,
             relationships,
-        ),
+        )?,
         _ => unreachable!("scalar leaves and unary expressions handled before compound rewrite"),
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_count_subquery_as_null(
@@ -2734,10 +3031,10 @@ fn rewrite_missing_branch_count_subquery_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     match pattern {
         CountSubqueryPattern::Relationships(pattern) => {
-            rewrite_missing_branch_exists_pattern_as_null(pattern, graph, nodes, relationships);
+            rewrite_missing_branch_exists_pattern_as_null(pattern, graph, nodes, relationships)?;
         }
         CountSubqueryPattern::Nodes {
             nodes: local_nodes,
@@ -2752,9 +3049,10 @@ fn rewrite_missing_branch_count_subquery_as_null(
                 graph,
                 &scoped_nodes,
                 &scoped_relationships,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_exists_pattern_as_null(
@@ -2762,7 +3060,7 @@ fn rewrite_missing_branch_exists_pattern_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     let scoped_nodes = scoped_branch_nodes(nodes, &pattern.nodes);
     let scoped_relationships = scoped_branch_relationships(relationships, &pattern.relationships);
     rewrite_missing_branch_property_predicate_list_as_null(
@@ -2771,7 +3069,7 @@ fn rewrite_missing_branch_exists_pattern_as_null(
         graph,
         &scoped_nodes,
         &scoped_relationships,
-    );
+    )
 }
 
 fn scoped_branch_nodes(
@@ -2800,7 +3098,7 @@ fn rewrite_missing_branch_property_predicate_list_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     let mut retained = Vec::with_capacity(predicates.len());
     for property_predicate in std::mem::take(predicates) {
         match rewrite_missing_branch_property_predicate(
@@ -2808,7 +3106,7 @@ fn rewrite_missing_branch_property_predicate_list_as_null(
             graph,
             nodes,
             relationships,
-        ) {
+        )? {
             BranchPropertyPredicateRewrite::Keep(property_predicate) => {
                 retained.push(property_predicate);
             }
@@ -2826,9 +3124,10 @@ fn rewrite_missing_branch_property_predicate_list_as_null(
                 graph,
                 nodes,
                 relationships,
-            ),
+            )?,
         ));
     }
+    Ok(())
 }
 
 fn append_scoped_predicate_expression(
@@ -2850,10 +3149,11 @@ fn rewrite_missing_branch_scalar_expression_list_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     for expression in expressions {
-        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes, relationships);
+        rewrite_missing_branch_scalar_expression_as_null(expression, graph, nodes, relationships)?;
     }
+    Ok(())
 }
 
 fn rewrite_missing_branch_case_expression_as_null(
@@ -2862,7 +3162,7 @@ fn rewrite_missing_branch_case_expression_as_null(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) {
+) -> Result<(), CoreError> {
     for alternative in alternatives {
         let original = std::mem::replace(&mut alternative.when, PredicateExpression::Boolean(true));
         alternative.when = rewrite_missing_branch_property_predicate_expression(
@@ -2870,13 +3170,13 @@ fn rewrite_missing_branch_case_expression_as_null(
             graph,
             nodes,
             relationships,
-        );
+        )?;
         rewrite_missing_branch_scalar_expression_as_null(
             &mut alternative.then,
             graph,
             nodes,
             relationships,
-        );
+        )?;
     }
     if let Some(else_expression) = else_expression {
         rewrite_missing_branch_scalar_expression_as_null(
@@ -2884,8 +3184,9 @@ fn rewrite_missing_branch_case_expression_as_null(
             graph,
             nodes,
             relationships,
-        );
+        )?;
     }
+    Ok(())
 }
 
 enum BranchPropertyPredicateRewrite {
@@ -2898,16 +3199,18 @@ fn rewrite_missing_branch_property_predicate(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> BranchPropertyPredicateRewrite {
+) -> Result<BranchPropertyPredicateRewrite, CoreError> {
     if branch_property_is_missing(graph, nodes, relationships, &predicate.property) {
-        return BranchPropertyPredicateRewrite::Rewrite(
-            missing_branch_property_predicate_expression(predicate, graph, nodes, relationships),
-        );
+        return Ok(BranchPropertyPredicateRewrite::Rewrite(
+            missing_branch_property_predicate_expression(predicate, graph, nodes, relationships)?,
+        ));
     }
     if branch_predicate_rhs_is_missing_property(&predicate.rhs, graph, nodes, relationships) {
-        return BranchPropertyPredicateRewrite::Rewrite(unknown_boolean_predicate());
+        return Ok(BranchPropertyPredicateRewrite::Rewrite(
+            unknown_boolean_predicate(),
+        ));
     }
-    BranchPropertyPredicateRewrite::Keep(predicate)
+    Ok(BranchPropertyPredicateRewrite::Keep(predicate))
 }
 
 fn missing_branch_property_predicate_expression(
@@ -2915,18 +3218,18 @@ fn missing_branch_property_predicate_expression(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> PredicateExpression {
-    let rhs = branch_predicate_rhs_as_scalar_rhs(predicate.rhs, graph, nodes, relationships);
+) -> Result<PredicateExpression, CoreError> {
+    let rhs = branch_predicate_rhs_as_scalar_rhs(predicate.rhs, graph, nodes, relationships)?;
     if rhs.was_missing_property
         || (rhs.is_null_literal && is_range_comparison_operator(predicate.operator))
     {
-        return unknown_boolean_predicate();
+        return Ok(unknown_boolean_predicate());
     }
-    PredicateExpression::ScalarComparison(ScalarPredicate {
+    Ok(PredicateExpression::ScalarComparison(ScalarPredicate {
         lhs: ScalarExpression::Literal(Literal::Null),
         operator: predicate.operator,
         rhs: rhs.value,
-    })
+    }))
 }
 
 struct BranchScalarPredicateRhs {
@@ -2940,52 +3243,48 @@ fn branch_predicate_rhs_as_scalar_rhs(
     graph: &Declaration,
     nodes: &BTreeMap<String, String>,
     relationships: &[RelationshipPattern],
-) -> BranchScalarPredicateRhs {
+) -> Result<BranchScalarPredicateRhs, CoreError> {
     match rhs {
         PredicateRhs::Literal(literal) => {
             let is_null = matches!(literal, Literal::Null);
-            BranchScalarPredicateRhs {
+            Ok(BranchScalarPredicateRhs {
                 value: ScalarPredicateRhs::Expression(ScalarExpression::Literal(literal)),
                 is_null_literal: is_null,
                 was_missing_property: false,
-            }
+            })
         }
-        PredicateRhs::TemporalCoercion { source } => BranchScalarPredicateRhs {
-            value: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
-                source,
-            ))),
-            is_null_literal: false,
-            was_missing_property: false,
-        },
+        PredicateRhs::TemporalCoercion { .. } => Err(CoreError::internal(
+            "static branch rewrite cannot preserve temporal predicate coercion",
+        )),
         PredicateRhs::Property(property)
             if branch_property_is_missing(graph, nodes, relationships, &property) =>
         {
-            BranchScalarPredicateRhs {
+            Ok(BranchScalarPredicateRhs {
                 value: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
                 is_null_literal: true,
                 was_missing_property: true,
-            }
+            })
         }
-        PredicateRhs::Property(property) => BranchScalarPredicateRhs {
+        PredicateRhs::Property(property) => Ok(BranchScalarPredicateRhs {
             value: ScalarPredicateRhs::Expression(ScalarExpression::Property(property)),
             is_null_literal: false,
             was_missing_property: false,
-        },
-        PredicateRhs::Key { variable } => BranchScalarPredicateRhs {
+        }),
+        PredicateRhs::Key { variable } => Ok(BranchScalarPredicateRhs {
             value: ScalarPredicateRhs::Expression(ScalarExpression::Key { variable }),
             is_null_literal: false,
             was_missing_property: false,
-        },
-        PredicateRhs::ElementId { variable } => BranchScalarPredicateRhs {
+        }),
+        PredicateRhs::ElementId { variable } => Ok(BranchScalarPredicateRhs {
             value: ScalarPredicateRhs::Expression(ScalarExpression::ElementId { variable }),
             is_null_literal: false,
             was_missing_property: false,
-        },
-        PredicateRhs::List(literals) => BranchScalarPredicateRhs {
+        }),
+        PredicateRhs::List(literals) => Ok(BranchScalarPredicateRhs {
             value: ScalarPredicateRhs::List(literals),
             is_null_literal: false,
             was_missing_property: false,
-        },
+        }),
     }
 }
 
@@ -4340,7 +4639,7 @@ fn append_explicit_union_component(
             output.push((leading_all, plan));
             Ok(())
         }
-        GraphQuery::Unwind(_) => Err(unsupported(
+        GraphQuery::Unwind(_) | GraphQuery::UnwindPipeline(_) => Err(unsupported(
             path,
             "UNWIND row-source queries with UNION require row-source union planning and are not supported yet",
         )),
@@ -12078,6 +12377,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Round { .. }
         | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::ListConcat { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => None,
         ScalarExpression::ToString { .. }
@@ -12197,7 +12497,8 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
                 && hidden_subquery_order_expression_can_be_precomputed(start)
                 && optional_hidden_subquery_order_expression_can_be_precomputed(length.as_deref())
         }
-        ScalarExpression::Arithmetic { left, right, .. } => {
+        ScalarExpression::Arithmetic { left, right, .. }
+        | ScalarExpression::ListConcat { left, right } => {
             hidden_subquery_order_expression_can_be_precomputed(left)
                 && hidden_subquery_order_expression_can_be_precomputed(right)
         }
@@ -12413,7 +12714,8 @@ fn compound_scalar_expression_correlated_subquery_count(
                 + scalar_expression_correlated_subquery_count(start)
                 + optional_scalar_expression_correlated_subquery_count(length.as_deref()),
         ),
-        ScalarExpression::Arithmetic { left, right, .. } => Some(
+        ScalarExpression::Arithmetic { left, right, .. }
+        | ScalarExpression::ListConcat { left, right } => Some(
             scalar_expression_correlated_subquery_count(left)
                 + scalar_expression_correlated_subquery_count(right),
         ),
@@ -12531,6 +12833,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Round { .. }
         | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
+        | ScalarExpression::ListConcat { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::ToString { .. }
         | ScalarExpression::ToInteger { .. }

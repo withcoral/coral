@@ -18605,6 +18605,119 @@ async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_dynamic_unwind_alias_sources_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x",
+    )
+    .await
+    .expect("WITH alias UNWIND row source should execute");
+
+    assert!(
+        execution.translated_sql().contains("UNNEST"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})]
+    );
+
+    let empty = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "WITH [] AS list UNWIND list AS x RETURN x",
+    )
+    .await
+    .expect("empty WITH alias UNWIND row source should execute");
+
+    assert_eq!(empty.execution().row_count(), 0);
+    assert!(execution_to_rows(empty.execution()).is_empty());
+
+    let concatenated = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "WITH [1, 2, 3] AS first, [4, 5, 6] AS second \
+         UNWIND (first + second) AS x \
+         RETURN x",
+    )
+    .await
+    .expect("WITH alias list concatenation UNWIND row source should execute");
+
+    assert!(
+        concatenated.translated_sql().contains("array_concat"),
+        "{}",
+        concatenated.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(concatenated.execution()),
+        vec![
+            json!({"x": 1}),
+            json!({"x": 2}),
+            json!({"x": 3}),
+            json!({"x": 4}),
+            json!({"x": 5}),
+            json!({"x": 6}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_dynamic_unwind_alias_source_matches_static_unwind_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let static_execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [1, 2, 3] AS ordinal \
+         MATCH (service:Service) \
+         WHERE service.id = ordinal * 10 \
+         RETURN ordinal AS ordinal, service.name AS service \
+         ORDER BY ordinal",
+    )
+    .await
+    .expect("static UNWIND route should execute");
+    let dynamic_execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "WITH [1, 2, 3] AS ordinals \
+         UNWIND ordinals AS ordinal \
+         MATCH (service:Service) \
+         WHERE service.id = ordinal * 10 \
+         RETURN ordinal AS ordinal, service.name AS service \
+         ORDER BY ordinal",
+    )
+    .await
+    .expect("dynamic WITH alias UNWIND route should execute");
+
+    let static_rows = execution_to_rows(static_execution.execution());
+    let dynamic_rows = execution_to_rows(dynamic_execution.execution());
+    assert_eq!(dynamic_rows, static_rows);
+    assert_eq!(
+        dynamic_rows,
+        vec![
+            json!({"ordinal": 1, "service": "billing-api"}),
+            json!({"ordinal": 2, "service": "deployments"}),
+            json!({"ordinal": 3, "service": "experiments"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_static_list_scalar_concatenation_unwinds_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

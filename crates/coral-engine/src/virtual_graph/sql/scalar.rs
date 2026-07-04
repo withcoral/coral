@@ -72,6 +72,11 @@ impl<'a> SqlRenderer<'a> {
                 literals,
                 element_type,
             } => Ok(render_typed_literal_list(literals, *element_type)),
+            ScalarExpression::ListConcat { left, right } => Ok(format!(
+                "array_concat({}, {})",
+                self.render_scalar_expression(left)?,
+                self.render_scalar_expression(right)?
+            )),
             ScalarExpression::Predicate(predicate) => {
                 self.render_scalar_predicate_expression(predicate)
             }

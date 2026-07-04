@@ -2,11 +2,12 @@ use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
-    GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
+    GraphUnwind, GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindProjection, KeyPredicate,
+    Literal, LiteralListElementType, NodePattern, OptionalMatchScope, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
 };
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
@@ -150,6 +151,7 @@ fn temporal_component_expression(
 fn lower_graph_query_renders_literal_unwind_row_source() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let query = GraphQuery::Unwind(GraphUnwind {
+        input: None,
         list: ScalarExpression::TypedLiteralList {
             literals: vec![
                 Literal::Integer(1),
@@ -158,6 +160,7 @@ fn lower_graph_query_renders_literal_unwind_row_source() {
             ],
             element_type: LiteralListElementType::Integer,
         },
+        element_type: LiteralListElementType::Integer,
         variable: "x".to_string(),
         projections: vec![GraphUnwindProjection::Variable {
             alias: "x".to_string(),
@@ -178,10 +181,12 @@ fn lower_graph_query_renders_literal_unwind_row_source() {
 fn lower_graph_query_renders_empty_literal_unwind_row_source() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let query = GraphQuery::Unwind(GraphUnwind {
+        input: None,
         list: ScalarExpression::TypedLiteralList {
             literals: Vec::new(),
             element_type: LiteralListElementType::Integer,
         },
+        element_type: LiteralListElementType::Integer,
         variable: "x".to_string(),
         projections: vec![GraphUnwindProjection::Variable {
             alias: "x".to_string(),
@@ -195,6 +200,95 @@ fn lower_graph_query_renders_empty_literal_unwind_row_source() {
     assert_eq!(
         translation.sql(),
         "SELECT UNNEST(array_resize(make_array(CAST(NULL AS BIGINT)), 0)) AS \"x\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_with_alias_unwind_row_source() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::Unwind(GraphUnwind {
+        input: Some(GraphUnwindInput {
+            projections: vec![GraphUnwindInputProjection {
+                expression: ScalarExpression::TypedLiteralList {
+                    literals: vec![
+                        Literal::Integer(1),
+                        Literal::Integer(2),
+                        Literal::Integer(3),
+                    ],
+                    element_type: LiteralListElementType::Integer,
+                },
+                alias: "list".to_string(),
+                element_type: LiteralListElementType::Integer,
+            }],
+        }),
+        list: ScalarExpression::StageValue {
+            alias: "list".to_string(),
+        },
+        element_type: LiteralListElementType::Integer,
+        variable: "x".to_string(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }],
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("WITH alias UNWIND row source should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT UNNEST(\"__coral_unwind_input\".\"list\") AS \"x\" \
+         FROM (SELECT make_array(1, 2, 3) AS \"list\") AS \"__coral_unwind_input\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_with_alias_concat_unwind_row_source() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::Unwind(GraphUnwind {
+        input: Some(GraphUnwindInput {
+            projections: vec![
+                GraphUnwindInputProjection {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(1), Literal::Integer(2)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "first".to_string(),
+                    element_type: LiteralListElementType::Integer,
+                },
+                GraphUnwindInputProjection {
+                    expression: ScalarExpression::TypedLiteralList {
+                        literals: vec![Literal::Integer(3), Literal::Integer(4)],
+                        element_type: LiteralListElementType::Integer,
+                    },
+                    alias: "second".to_string(),
+                    element_type: LiteralListElementType::Integer,
+                },
+            ],
+        }),
+        list: ScalarExpression::ListConcat {
+            left: Box::new(ScalarExpression::StageValue {
+                alias: "first".to_string(),
+            }),
+            right: Box::new(ScalarExpression::StageValue {
+                alias: "second".to_string(),
+            }),
+        },
+        element_type: LiteralListElementType::Integer,
+        variable: "x".to_string(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }],
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("WITH alias concat UNWIND row source should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT UNNEST(array_concat(\"__coral_unwind_input\".\"first\", \"__coral_unwind_input\".\"second\")) AS \"x\" \
+         FROM (SELECT make_array(1, 2) AS \"first\", make_array(3, 4) AS \"second\") AS \"__coral_unwind_input\""
     );
 }
 

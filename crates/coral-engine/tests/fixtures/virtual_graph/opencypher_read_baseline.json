@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 16,
+    "Unwind": 21,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -6723,6 +6723,294 @@
         "kind": "rows",
         "ordered": false,
         "rows": []
+      }
+    },
+    {
+      "id": "unwind-with-alias-row-source",
+      "feature": "Unwind",
+      "query": "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-empty-with-alias-row-source",
+      "feature": "Unwind",
+      "query": "WITH [] AS list UNWIND list AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": []
+      }
+    },
+    {
+      "id": "unwind-with-alias-list-concatenation",
+      "feature": "Unwind",
+      "query": "WITH [1, 2, 3] AS first, [4, 5, 6] AS second UNWIND (first + second) AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 3
+          },
+          {
+            "x": 4
+          },
+          {
+            "x": 5
+          },
+          {
+            "x": 6
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-large-literal-row-source-dynamic-boundary",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65] AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 3
+          },
+          {
+            "x": 4
+          },
+          {
+            "x": 5
+          },
+          {
+            "x": 6
+          },
+          {
+            "x": 7
+          },
+          {
+            "x": 8
+          },
+          {
+            "x": 9
+          },
+          {
+            "x": 10
+          },
+          {
+            "x": 11
+          },
+          {
+            "x": 12
+          },
+          {
+            "x": 13
+          },
+          {
+            "x": 14
+          },
+          {
+            "x": 15
+          },
+          {
+            "x": 16
+          },
+          {
+            "x": 17
+          },
+          {
+            "x": 18
+          },
+          {
+            "x": 19
+          },
+          {
+            "x": 20
+          },
+          {
+            "x": 21
+          },
+          {
+            "x": 22
+          },
+          {
+            "x": 23
+          },
+          {
+            "x": 24
+          },
+          {
+            "x": 25
+          },
+          {
+            "x": 26
+          },
+          {
+            "x": 27
+          },
+          {
+            "x": 28
+          },
+          {
+            "x": 29
+          },
+          {
+            "x": 30
+          },
+          {
+            "x": 31
+          },
+          {
+            "x": 32
+          },
+          {
+            "x": 33
+          },
+          {
+            "x": 34
+          },
+          {
+            "x": 35
+          },
+          {
+            "x": 36
+          },
+          {
+            "x": 37
+          },
+          {
+            "x": 38
+          },
+          {
+            "x": 39
+          },
+          {
+            "x": 40
+          },
+          {
+            "x": 41
+          },
+          {
+            "x": 42
+          },
+          {
+            "x": 43
+          },
+          {
+            "x": 44
+          },
+          {
+            "x": 45
+          },
+          {
+            "x": 46
+          },
+          {
+            "x": 47
+          },
+          {
+            "x": 48
+          },
+          {
+            "x": 49
+          },
+          {
+            "x": 50
+          },
+          {
+            "x": 51
+          },
+          {
+            "x": 52
+          },
+          {
+            "x": 53
+          },
+          {
+            "x": 54
+          },
+          {
+            "x": 55
+          },
+          {
+            "x": 56
+          },
+          {
+            "x": 57
+          },
+          {
+            "x": 58
+          },
+          {
+            "x": 59
+          },
+          {
+            "x": 60
+          },
+          {
+            "x": 61
+          },
+          {
+            "x": 62
+          },
+          {
+            "x": 63
+          },
+          {
+            "x": 64
+          },
+          {
+            "x": 65
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-with-alias-matches-static-unwind-route",
+      "feature": "Unwind",
+      "query": "WITH [29, 34, 41] AS ages UNWIND ages AS age MATCH (p:Person) WHERE p.age = age RETURN age AS age, p.name AS name ORDER BY age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 29,
+            "name": "Bob"
+          },
+          {
+            "age": 34,
+            "name": "Alice"
+          },
+          {
+            "age": 41,
+            "name": "Carol"
+          }
+        ]
       }
     },
     {
