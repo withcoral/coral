@@ -86,6 +86,8 @@ fn default_config_version() -> u32 {
     1
 }
 
+const DATABASE_MIGRATED_CONFIG_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
@@ -495,6 +497,15 @@ impl ConfigStore {
         self.save_unlocked(&config)
     }
 
+    pub(crate) fn mark_database_migrated_unlocked(&self) -> Result<(), AppError> {
+        let mut config = self.load_unlocked()?;
+        if config.version >= DATABASE_MIGRATED_CONFIG_VERSION {
+            return Ok(());
+        }
+        config.version = DATABASE_MIGRATED_CONFIG_VERSION;
+        self.save_unlocked(&config)
+    }
+
     fn update_config_unlocked<T>(
         &self,
         update: impl FnOnce(&mut AppConfig) -> Result<T, AppError>,
@@ -803,6 +814,12 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
     type Error = AppError;
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
+        if !matches!(value.version, 1 | DATABASE_MIGRATED_CONFIG_VERSION) {
+            return Err(AppError::FailedPrecondition(format!(
+                "unsupported config.toml version {}; upgrade Coral or use a compatible state directory",
+                value.version
+            )));
+        }
         let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
         for (workspace_name, workspace_config) in value.workspaces {
@@ -1090,6 +1107,23 @@ mod tests {
     #[test]
     fn default_config_uses_canonical_version() {
         assert_eq!(AppConfig::default().version, 1);
+    }
+
+    #[test]
+    fn rejects_unsupported_config_version() {
+        let raw = "version = 3\n";
+
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("config should parse"),
+        )
+        .expect_err("unsupported config version should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported config.toml version 3"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

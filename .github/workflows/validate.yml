@@ -204,56 +204,8 @@ jobs:
           PGPASSWORD: postgres
         run: |
           cargo test --locked -p coral-app \
-            state::db::repositories \
+            --lib \
             -- --ignored --test-threads=1
-          cargo test --locked -p coral-app \
-            state::db::repositories::sources::tests::source_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::sources::tests::source_repository_rejects_source_without_workspace_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::sources::tests::source_repository_rejects_invalid_persisted_source_name_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::sources::tests::source_delete_upsert_race_cannot_resurrect_database_credentials_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::feedback_reports::tests::feedback_report_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::import::tests::concurrent_feedback_report_import_race_is_benign_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::import::tests::concurrent_episode_import_race_serializes_on_workspace_lock_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::episodes::tests::episode_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            episode::store::tests::open_episode_in_db_runtime_path_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::credential_documents::tests::credential_document_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::repositories::trace_summaries::tests::trace_summary_repository_round_trips_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            telemetry::service::tests::backfill_summaries_preserves_existing_postgres_rows \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::import::tests::concurrent_credential_import_race_is_benign_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            --test grpc source_lifecycle_tests::postgres_database_credentials_survive_restart_and_query \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::migrations::tests::source_catalog_migration_contract_against_postgres \
-            -- --ignored
-          cargo test --locked -p coral-app \
-            state::db::import::tests::concurrent_v4_materialization_backfill_race_is_benign_postgres \
-            -- --ignored
 
           cleanup_lifecycle_db() {
             psql --host localhost --username postgres --dbname postgres \
@@ -266,8 +218,8 @@ jobs:
 
           CORAL_TEST_POSTGRES_URL="${CORAL_TEST_POSTGRES_SERVER_LIFECYCLE_URL}" \
             cargo test --locked -p coral-app \
-            --test grpc server_lifecycle_can_start_with_postgres_database_config \
-            -- --ignored
+              --test grpc \
+              -- --ignored --test-threads=1
 
   windows-rust-smoke:
     name: Windows Rust smoke

@@ -223,7 +223,7 @@ Important files include:
 
 - `config.toml` for runtime settings such as feature flags, tracing, and database bootstrap configuration. See [Configuration](/reference/configuration).
 - `coral.db`, the default local Coral database for installed-source metadata, imported source specs, DSL v4 materialization metadata, feedback reports, episode records, trace summaries, and non-secret variables
-- `credentials/encryption.key`, the local key material used to protect encrypted credential documents
+- `credentials/encryption.key`, the local file-backed key material used to protect encrypted credential documents when file KEK sourcing is active
 - `telemetry/traces`, the local raw trace span store when trace history is enabled
 
 <Note>

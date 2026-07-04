@@ -68,6 +68,7 @@ pub(crate) async fn import_config_source_catalog(
         import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
         import_filesystem_v4_materializations(db, layout, now_unix_nanos).await?;
         clear_legacy_source_catalog_config(config_store, entries.len());
+        mark_database_migrated_config(config_store);
         return Ok(SourceCatalogImportReport {
             workspace_count: 0,
             source_count: 0,
@@ -128,6 +129,7 @@ pub(crate) async fn import_config_source_catalog(
     import_filesystem_source_manifests(db, layout, now_unix_nanos).await?;
     import_filesystem_v4_materializations(db, layout, now_unix_nanos).await?;
     clear_legacy_source_catalog_config(config_store, entries.len());
+    mark_database_migrated_config(config_store);
 
     Ok(SourceCatalogImportReport {
         workspace_count: workspaces.len(),
@@ -1059,6 +1061,15 @@ fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: 
     }
 }
 
+fn mark_database_migrated_config(config_store: &ConfigStore) {
+    if let Err(error) = config_store.mark_database_migrated_unlocked() {
+        tracing::warn!(
+            detail = %error,
+            "database migration completed but config version stamp failed"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1174,6 +1185,15 @@ mod tests {
             layout.manifest_file(&workspace, &source.name).exists(),
             "legacy manifest file should be preserved for rollback compatibility"
         );
+        let raw_config =
+            fs::read_to_string(layout.config_file()).expect("read migrated config.toml");
+        assert!(
+            raw_config.contains("version = 2"),
+            "successful database import should stamp migrated config version: {raw_config}"
+        );
+        config_store
+            .load_config_unlocked()
+            .expect("current config reader should accept migrated version");
     }
 
     #[tokio::test]

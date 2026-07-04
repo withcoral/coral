@@ -36,8 +36,10 @@ Current builds persist installed sources in the database. Older
 `[workspaces.<name>.sources.<source>]` entries are legacy source-catalog inputs
 that Coral imports into the database on startup and removes from `config.toml`
 after the import is validated. This source-catalog migration is one-way for
-current releases: downgrading to an older config-backed Coral build does not
-automatically restore those config entries.
+current releases: the first successful database-backed startup stamps
+`config.toml` with the migrated config version, and unsupported future config
+versions fail closed instead of being interpreted as older filesystem-backed
+state.
 
 There is no separate active-workspace key in `config.toml`; use
 `CORAL_WORKSPACE` for a shell default or `--workspace <NAME>` for one command.
@@ -45,10 +47,13 @@ Installed source specs and source credential material remain scoped to the
 source installation in a workspace. Reusable global source specs and reusable
 credential references are not config objects today.
 
-If you need to run an older build after this migration, re-add bundled sources
-with `coral source add <NAME>`. Re-add imported sources with
-`coral source add --file <PATH>`, using the original source-spec file you used
-for installation.
+Successful startup import also deletes verified legacy credential and state
+artifacts after their database rows are written. That includes file-backed
+`secrets.env` material, migrated keychain entries, and imported local history
+files such as episode and feedback JSONL. If you roll back to an older build,
+use a separate state directory or re-add bundled sources with
+`coral source add <NAME>`, re-add imported sources with
+`coral source add --file <PATH>`, and re-provide credentials.
 
 Raw trace span JSONL and optional HTTP/MCP body captures remain outside the
 database. Trace summaries are indexed in the database from the local trace span
@@ -85,6 +90,38 @@ non-secret variables, trace summaries, and encrypted credential documents to
 the configured database. Keep the connection URL secret, use a Postgres host
 and network path you trust, and use hostname-verified TLS for non-loopback
 servers.
+
+## Credential encryption keys
+
+Encrypted database credential documents are protected by a key-encryption key
+(KEK). Configure that KEK before enabling shared Postgres:
+
+```toml
+[credentials]
+encryption_key_env = "CORAL_CREDENTIAL_KEK"
+encryption_key_source = "auto"
+```
+
+If `encryption_key_env` is set, Coral reads that environment variable first.
+The value must be `v1:<base64>`, where the base64 payload decodes to 32 bytes
+of key material. Missing or invalid environment material fails closed; Coral
+does not fall back to another KEK source after an explicit env key is
+configured.
+
+If no env key is configured, `encryption_key_source` controls local KEK
+selection:
+
+| Value | Behavior |
+| ----- | -------- |
+| `auto` | Reuses an existing `credentials/encryption.key` file if one exists. Otherwise prefers the OS keychain. If keychain access is unavailable, logs a warning and creates the file key. |
+| `keychain` | Uses the OS keychain and fails closed when keychain access is unavailable. Keychains are per host, so shared-Postgres deployments must pre-seed every server with the same key material before use. |
+| `file` | Uses `credentials/encryption.key` under the local state directory. |
+| `vault` | Reserved for external vault-backed KEKs and currently fails closed because it is not implemented. |
+
+For shared Postgres, every Coral server that can read or write encrypted
+credential documents must use the same KEK before Postgres is enabled. If two
+servers create different auto-generated local keys, each server can create
+documents the other cannot decrypt.
 
 ## Runtime features
 
