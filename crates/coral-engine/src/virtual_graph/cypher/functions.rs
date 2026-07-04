@@ -282,6 +282,13 @@ pub(super) fn is_localtime_function(function: &FunctionInvocation) -> bool {
     )
 }
 
+pub(super) fn is_duration_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("duration")
+    )
+}
+
 pub(super) fn is_to_integer_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),

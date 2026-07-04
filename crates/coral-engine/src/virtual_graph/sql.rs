@@ -12,6 +12,7 @@ use std::fmt::Write as _;
 
 use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
+use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
@@ -21,7 +22,7 @@ use super::ir::{
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr, UndirectedRelationshipEndpoint,
+    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings};
 use crate::CoreError;

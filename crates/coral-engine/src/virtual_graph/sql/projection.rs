@@ -175,6 +175,14 @@ impl<'a> SqlRenderer<'a> {
         &self,
         expression: &ScalarExpression,
     ) -> Result<String, CoreError> {
+        if scalar_expression_projects_duration(expression) {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                "projection.expression",
+                "bare duration result rendering is not supported yet",
+            )
+            .into_core_error());
+        }
         self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
         self.render_scalar_expression(expression)
     }
@@ -375,6 +383,7 @@ impl<'a> SqlRenderer<'a> {
                     self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -555,5 +564,60 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         let target = self.render_aggregate_target(function, target)?;
         Ok(render_aggregate_invocation_sql(function, &target, distinct))
+    }
+}
+
+fn scalar_expression_projects_duration(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => arithmetic_expression_projects_duration(*operator, left, right),
+        _ => false,
+    }
+}
+
+fn arithmetic_expression_projects_duration(
+    operator: ArithmeticOperator,
+    left: &ScalarExpression,
+    right: &ScalarExpression,
+) -> bool {
+    let arithmetic_result_is_duration = match operator {
+        ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
+            scalar_expression_projects_duration(left) && scalar_expression_projects_duration(right)
+        }
+        ArithmeticOperator::Multiply => scalar_expression_projects_duration(left),
+        ArithmeticOperator::Divide | ArithmeticOperator::Modulo | ArithmeticOperator::Power => {
+            false
+        }
+    };
+    arithmetic_result_is_duration
+        || matches!(
+            (operator, temporal_scalar_kind(left), temporal_scalar_kind(right)),
+            (
+                ArithmeticOperator::Subtract,
+                Some(left_kind),
+                Some(right_kind)
+            ) if left_kind == right_kind && left_kind != TemporalKind::Duration
+        )
+}
+
+fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
+    match expression {
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDate { .. } | TemporalExpr::DateFromString { .. },
+        ) => Some(TemporalKind::Date),
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. },
+        ) => Some(TemporalKind::LocalDateTime),
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. },
+        ) => Some(TemporalKind::LocalTime),
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {
+            Some(TemporalKind::Duration)
+        }
+        _ => None,
     }
 }

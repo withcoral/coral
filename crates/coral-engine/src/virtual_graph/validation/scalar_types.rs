@@ -289,9 +289,11 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Round { expression, places } => {
                 self.infer_round_scalar_type(expression, places.as_deref(), path)
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                self.infer_arithmetic_scalar_type(left, right, path)
-            }
+            ScalarExpression::Arithmetic {
+                operator,
+                left,
+                right,
+            } => self.infer_arithmetic_scalar_type(*operator, left, right, path),
             ScalarExpression::Atan2 { y, x } => self.infer_atan2_scalar_type(y, x, path),
             _ => unreachable!("non-function scalar expression reached function type inference"),
         }
@@ -404,6 +406,7 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
             }
+            TemporalExpr::MakeDuration { .. } => Ok(ScalarType::Temporal(TemporalKind::Duration)),
             TemporalExpr::Component { expression, unit } => {
                 self.validate_temporal_component_expression(expression, *unit, path)
             }
@@ -829,12 +832,17 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn infer_arithmetic_scalar_type(
         &self,
+        operator: ArithmeticOperator,
         left: &ScalarExpression,
         right: &ScalarExpression,
         path: &str,
     ) -> Result<ScalarType, CoreError> {
         let left_type = self.infer_scalar_expression_type(left, format!("{path}.left"))?;
         let right_type = self.infer_scalar_expression_type(right, format!("{path}.right"))?;
+        if let Some(result) = temporal_arithmetic_result_type(operator, left_type, right_type, path)
+        {
+            return result;
+        }
         Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
         Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
         numeric_binary_result_type(left_type, right_type, path, "arithmetic")

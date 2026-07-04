@@ -12100,6 +12100,7 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         }) => [hour, minute, second, millisecond, microsecond, nanosecond]
             .iter()
             .all(|expression| hidden_subquery_order_expression_can_be_precomputed(expression)),
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -12317,6 +12318,7 @@ fn compound_scalar_expression_correlated_subquery_count(
                 .map(|expression| scalar_expression_correlated_subquery_count(expression))
                 .sum(),
         ),
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => Some(0),
         _ => None,
     }
 }
@@ -20068,6 +20070,8 @@ fn compile_temporal_scalar_function_expression(
         compile_localdatetime_scalar_expression(function, path).map(Some)
     } else if is_localtime_function(function) {
         compile_localtime_scalar_expression(function, path).map(Some)
+    } else if is_duration_function(function) {
+        compile_duration_scalar_expression(function, path).map(Some)
     } else {
         Ok(None)
     }
@@ -20464,6 +20468,496 @@ fn without_zone_contains_time(text: &str) -> bool {
 fn make_localtime_from_string_scalar_expression(text: String) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
         text: Box::new(ScalarExpression::Literal(Literal::String(text))),
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DurationParts {
+    months: i64,
+    days: i64,
+    seconds: i64,
+    nanos: i64,
+}
+
+impl DurationParts {
+    fn into_scalar_expression(self) -> ScalarExpression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+            months: self.months,
+            days: self.days,
+            seconds: self.seconds,
+            nanos: self.nanos,
+        })
+    }
+}
+
+fn compile_duration_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "duration() requires exactly one argument",
+        ));
+    };
+    compile_duration_argument_scalar_expression(argument, format!("{path}.arguments[0]"))
+}
+
+fn compile_duration_argument_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match argument {
+        Expression::Parenthesized(inner) => {
+            compile_duration_argument_scalar_expression(inner, path)
+        }
+        Expression::Literal(CypherLiteral::Map(map)) => {
+            compile_duration_map_scalar_expression(map, path)
+        }
+        Expression::Literal(CypherLiteral::String(value)) => {
+            parse_iso_duration_literal(&value.value, &path)
+                .map(DurationParts::into_scalar_expression)
+        }
+        Expression::Literal(_) => Err(unsupported(
+            path,
+            "duration() requires a literal map or string argument",
+        )),
+        _ => Err(unsupported(
+            path,
+            "dynamic duration() argument not supported yet",
+        )),
+    }
+}
+
+fn compile_duration_map_scalar_expression(
+    map: &MapLiteral,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut parts = DurationParts::default();
+    for (key, value) in &map.entries {
+        let field = key.name.name.as_str();
+        let field_path = format!("{path}.{field}");
+        let value = compile_duration_integer_field(value, &field_path)?;
+        match field {
+            "years" => add_duration_months(
+                &mut parts,
+                multiply_duration_field(value, 12, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "months" => add_duration_months(&mut parts, value, &field_path, field)?,
+            "weeks" => add_duration_days(
+                &mut parts,
+                multiply_duration_field(value, 7, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "days" => add_duration_days(&mut parts, value, &field_path, field)?,
+            "hours" => add_duration_seconds(
+                &mut parts,
+                multiply_duration_field(value, 3_600, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "minutes" => add_duration_seconds(
+                &mut parts,
+                multiply_duration_field(value, 60, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "seconds" => add_duration_seconds(&mut parts, value, &field_path, field)?,
+            "milliseconds" => add_duration_nanos(
+                &mut parts,
+                multiply_duration_field(value, 1_000_000, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "microseconds" => add_duration_nanos(
+                &mut parts,
+                multiply_duration_field(value, 1_000, &field_path, field)?,
+                &field_path,
+                field,
+            )?,
+            "nanoseconds" => add_duration_nanos(&mut parts, value, &field_path, field)?,
+            _ => {
+                return Err(unsupported(
+                    field_path,
+                    format!("duration() temporal field '{field}' is not supported yet"),
+                ));
+            }
+        }
+    }
+    Ok(parts.into_scalar_expression())
+}
+
+fn compile_duration_integer_field(
+    value: &Expression,
+    path: impl Into<String>,
+) -> Result<i64, CoreError> {
+    let path = path.into();
+    match value {
+        Expression::Parenthesized(inner) => compile_duration_integer_field(inner, path),
+        Expression::Literal(CypherLiteral::Number(NumberLiteral::Integer(value))) => Ok(*value),
+        Expression::UnaryOp {
+            op: UnaryOperator::Negate,
+            operand,
+            ..
+        } => compile_duration_integer_field(operand, &path)?
+            .checked_neg()
+            .ok_or_else(|| unsupported(path, "duration() field is out of range")),
+        _ => Err(unsupported(
+            path,
+            "dynamic duration fields not supported yet",
+        )),
+    }
+}
+
+fn parse_iso_duration_literal(text: &str, path: &str) -> Result<DurationParts, CoreError> {
+    let (sign, rest) = if let Some(rest) = text.strip_prefix('-') {
+        (-1, rest)
+    } else {
+        (1, text)
+    };
+    let Some(mut rest) = rest.strip_prefix('P').or_else(|| rest.strip_prefix('p')) else {
+        return Err(invalid_duration_literal(path));
+    };
+    if rest.is_empty() {
+        return Err(invalid_duration_literal(path));
+    }
+
+    let mut parts = DurationParts::default();
+    let mut in_time = false;
+    let mut saw_component = false;
+    while !rest.is_empty() {
+        if let Some(after_time_marker) = rest.strip_prefix('T').or_else(|| rest.strip_prefix('t')) {
+            if in_time {
+                return Err(invalid_duration_literal(path));
+            }
+            in_time = true;
+            rest = after_time_marker;
+            continue;
+        }
+
+        let number_end = rest
+            .char_indices()
+            .find_map(|(index, character)| {
+                (!character.is_ascii_digit() && character != '.').then_some(index)
+            })
+            .ok_or_else(|| invalid_duration_literal(path))?;
+        if number_end == 0 {
+            return Err(invalid_duration_literal(path));
+        }
+        let (number, after_number) = rest.split_at(number_end);
+        let unit = after_number
+            .chars()
+            .next()
+            .ok_or_else(|| invalid_duration_literal(path))?;
+        rest = after_number
+            .strip_prefix(unit)
+            .ok_or_else(|| invalid_duration_literal(path))?;
+        saw_component = true;
+
+        match (unit, in_time) {
+            ('Y' | 'y', false) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let months = multiply_duration_field(value, 12 * sign, path, "years")?;
+                add_duration_months(&mut parts, months, path, "years")?;
+            }
+            ('M' | 'm', false) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let months = multiply_duration_field(value, sign, path, "months")?;
+                add_duration_months(&mut parts, months, path, "months")?;
+            }
+            ('W' | 'w', false) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let days = multiply_duration_field(value, 7 * sign, path, "weeks")?;
+                add_duration_days(&mut parts, days, path, "weeks")?;
+            }
+            ('D' | 'd', false) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let days = multiply_duration_field(value, sign, path, "days")?;
+                add_duration_days(&mut parts, days, path, "days")?;
+            }
+            ('H' | 'h', true) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let seconds = multiply_duration_field(value, 3_600 * sign, path, "hours")?;
+                add_duration_seconds(&mut parts, seconds, path, "hours")?;
+            }
+            ('M' | 'm', true) => {
+                let value = parse_duration_integer_component(number, path)?;
+                let seconds = multiply_duration_field(value, 60 * sign, path, "minutes")?;
+                add_duration_seconds(&mut parts, seconds, path, "minutes")?;
+            }
+            ('S' | 's', true) => {
+                let (seconds, nanos) = parse_duration_seconds_component(number, sign, path)?;
+                add_duration_seconds(&mut parts, seconds, path, "seconds")?;
+                add_duration_nanos(&mut parts, nanos, path, "seconds")?;
+            }
+            _ => return Err(invalid_duration_literal(path)),
+        }
+    }
+
+    if !saw_component {
+        return Err(invalid_duration_literal(path));
+    }
+    Ok(parts)
+}
+
+fn parse_duration_integer_component(text: &str, path: &str) -> Result<i64, CoreError> {
+    if text.contains('.') {
+        return Err(invalid_duration_literal(path));
+    }
+    text.parse::<i64>()
+        .map_err(|_error| invalid_duration_literal(path))
+}
+
+fn parse_duration_seconds_component(
+    text: &str,
+    sign: i64,
+    path: &str,
+) -> Result<(i64, i64), CoreError> {
+    let (whole, fractional) = text
+        .split_once('.')
+        .map_or((text, ""), |(whole, fractional)| (whole, fractional));
+    if whole.is_empty() || fractional.len() > 9 || !fractional.chars().all(|c| c.is_ascii_digit()) {
+        return Err(invalid_duration_literal(path));
+    }
+    let seconds = whole
+        .parse::<i64>()
+        .map_err(|_error| invalid_duration_literal(path))?
+        .checked_mul(sign)
+        .ok_or_else(|| invalid_duration_literal(path))?;
+    let nanos = if fractional.is_empty() {
+        0
+    } else {
+        let mut nanos = fractional.to_string();
+        while nanos.len() < 9 {
+            nanos.push('0');
+        }
+        nanos
+            .parse::<i64>()
+            .map_err(|_error| invalid_duration_literal(path))?
+            .checked_mul(sign)
+            .ok_or_else(|| invalid_duration_literal(path))?
+    };
+    Ok((seconds, nanos))
+}
+
+fn invalid_duration_literal(path: &str) -> CoreError {
+    unsupported(
+        path.to_string(),
+        "duration() requires an ISO-8601 duration string literal",
+    )
+}
+
+fn multiply_duration_field(
+    value: i64,
+    multiplier: i64,
+    path: &str,
+    field: &str,
+) -> Result<i64, CoreError> {
+    value.checked_mul(multiplier).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })
+}
+
+fn add_duration_months(
+    parts: &mut DurationParts,
+    value: i64,
+    path: &str,
+    field: &str,
+) -> Result<(), CoreError> {
+    parts.months = parts.months.checked_add(value).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })?;
+    Ok(())
+}
+
+fn add_duration_days(
+    parts: &mut DurationParts,
+    value: i64,
+    path: &str,
+    field: &str,
+) -> Result<(), CoreError> {
+    parts.days = parts.days.checked_add(value).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })?;
+    Ok(())
+}
+
+fn add_duration_seconds(
+    parts: &mut DurationParts,
+    value: i64,
+    path: &str,
+    field: &str,
+) -> Result<(), CoreError> {
+    parts.seconds = parts.seconds.checked_add(value).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })?;
+    Ok(())
+}
+
+fn add_duration_nanos(
+    parts: &mut DurationParts,
+    value: i64,
+    path: &str,
+    field: &str,
+) -> Result<(), CoreError> {
+    let total_nanos =
+        i128::from(parts.seconds) * 1_000_000_000 + i128::from(parts.nanos) + i128::from(value);
+    let (seconds, nanos) = normalize_duration_nanos(total_nanos, path, field)?;
+    parts.seconds = seconds;
+    parts.nanos = nanos;
+    Ok(())
+}
+
+fn normalize_duration_nanos(
+    total_nanos: i128,
+    path: &str,
+    field: &str,
+) -> Result<(i64, i64), CoreError> {
+    let seconds = total_nanos.div_euclid(1_000_000_000);
+    let nanos = total_nanos.rem_euclid(1_000_000_000);
+    let seconds = i64::try_from(seconds).map_err(|_error| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })?;
+    let nanos = i64::try_from(nanos).map_err(|_error| {
+        unsupported(
+            path.to_string(),
+            format!("duration() field '{field}' is out of range"),
+        )
+    })?;
+    Ok((seconds, nanos))
+}
+
+fn compile_duration_multiply_expression(
+    operator: ArithmeticOperator,
+    left: &ScalarExpression,
+    right: &ScalarExpression,
+    path: &str,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    if !matches!(operator, ArithmeticOperator::Multiply) {
+        return Ok(None);
+    }
+    let Some(duration) = duration_parts_from_scalar_expression(left) else {
+        if duration_parts_from_scalar_expression(right).is_some() {
+            return Err(unsupported(
+                path.to_string(),
+                "duration multiplication requires duration * numeric literal",
+            ));
+        }
+        return Ok(None);
+    };
+    let factor = duration_integer_factor(right, format!("{path}.rhs"))?;
+    Ok(Some(
+        scale_duration_parts(duration, factor, path)?.into_scalar_expression(),
+    ))
+}
+
+fn duration_parts_from_scalar_expression(expression: &ScalarExpression) -> Option<DurationParts> {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+            months,
+            days,
+            seconds,
+            nanos,
+        }) => Some(DurationParts {
+            months: *months,
+            days: *days,
+            seconds: *seconds,
+            nanos: *nanos,
+        }),
+        _ => None,
+    }
+}
+
+fn duration_integer_factor(
+    expression: &ScalarExpression,
+    path: impl Into<String>,
+) -> Result<i64, CoreError> {
+    let path = path.into();
+    match expression {
+        ScalarExpression::Literal(Literal::Integer(value)) => Ok(*value),
+        ScalarExpression::Literal(Literal::Float(value)) => {
+            integral_float_to_i64(value.into_inner(), &path)
+        }
+        _ => Err(unsupported(
+            path,
+            "duration multiplication requires a numeric literal factor",
+        )),
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "Duration scaling accepts float literals only after integral and bounds checks."
+)]
+fn integral_float_to_i64(value: f64, path: &str) -> Result<i64, CoreError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(unsupported(
+            path.to_string(),
+            "duration multiplication requires an integral numeric literal factor",
+        ));
+    }
+    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err(unsupported(
+            path.to_string(),
+            "duration multiplication factor is out of range",
+        ));
+    }
+    Ok(value as i64)
+}
+
+fn scale_duration_parts(
+    duration: DurationParts,
+    factor: i64,
+    path: &str,
+) -> Result<DurationParts, CoreError> {
+    let months = duration.months.checked_mul(factor).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            "duration multiplication result is out of range",
+        )
+    })?;
+    let days = duration.days.checked_mul(factor).ok_or_else(|| {
+        unsupported(
+            path.to_string(),
+            "duration multiplication result is out of range",
+        )
+    })?;
+    let total_nanos = (i128::from(duration.seconds) * 1_000_000_000 + i128::from(duration.nanos))
+        .checked_mul(i128::from(factor))
+        .ok_or_else(|| {
+            unsupported(
+                path.to_string(),
+                "duration multiplication result is out of range",
+            )
+        })?;
+    let (seconds, nanos) = normalize_duration_nanos(total_nanos, path, "seconds")?;
+    Ok(DurationParts {
+        months,
+        days,
+        seconds,
+        nanos,
     })
 }
 
@@ -20864,31 +21358,9 @@ fn compile_scalar_expression_in_predicate_mode(
         expression if is_literal_expression(expression) => Ok(ScalarExpression::Literal(
             compile_literal(expression, path, context)?,
         )),
-        Expression::BinaryOp { op, lhs, rhs, .. } => {
-            if let Some(expression) = compile_optional_static_list_scalar_expression(
-                expression,
-                path.clone(),
-                plan,
-                context,
-            )? {
-                return Ok(expression);
-            }
-            Ok(ScalarExpression::Arithmetic {
-                operator: compile_arithmetic_operator(*op, format!("{path}.operator"))?,
-                left: Box::new(compile_scalar_expression_in_predicate_mode(
-                    lhs,
-                    format!("{path}.lhs"),
-                    mode,
-                    context,
-                )?),
-                right: Box::new(compile_scalar_expression_in_predicate_mode(
-                    rhs,
-                    format!("{path}.rhs"),
-                    mode,
-                    context,
-                )?),
-            })
-        }
+        Expression::BinaryOp { .. } => compile_binary_scalar_expression_in_predicate_mode(
+            expression, &path, mode, plan, context,
+        ),
         Expression::UnaryOp {
             op: UnaryOperator::Negate,
             operand,
@@ -20933,9 +21405,41 @@ fn compile_scalar_expression_in_predicate_mode(
         }
         _ => Err(unsupported(
             path,
-            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), date(), localdatetime(), localtime(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
+            "scalar expressions must be variable.property expressions, scalar literals, scalar parameters, arithmetic expressions, unary negation, nested coalesce(), nullIf(), date(), localdatetime(), localtime(), duration(), toString(), toInteger(), toFloat(), toBoolean(), nullable scalar casts, toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), head(), last(), tail(), reduce(), size(), char_length(), character_length(), substring(), left(), right(), reverse(), abs(), ceil(), floor(), round(), sqrt(), sign(), exp(), log(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), or haversin() expressions",
         )),
     }
+}
+
+fn compile_binary_scalar_expression_in_predicate_mode(
+    expression: &Expression,
+    path: &str,
+    mode: PredicateCompileMode<'_>,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let Expression::BinaryOp { op, lhs, rhs, .. } = expression else {
+        return Err(CoreError::internal(
+            "binary scalar expression compiler received a non-binary expression",
+        ));
+    };
+    if let Some(expression) =
+        compile_optional_static_list_scalar_expression(expression, path.to_string(), plan, context)?
+    {
+        return Ok(expression);
+    }
+    let operator = compile_arithmetic_operator(*op, format!("{path}.operator"))?;
+    let left =
+        compile_scalar_expression_in_predicate_mode(lhs, format!("{path}.lhs"), mode, context)?;
+    let right =
+        compile_scalar_expression_in_predicate_mode(rhs, format!("{path}.rhs"), mode, context)?;
+    if let Some(expression) = compile_duration_multiply_expression(operator, &left, &right, path)? {
+        return Ok(expression);
+    }
+    Ok(ScalarExpression::Arithmetic {
+        operator,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
 }
 
 fn compile_property_lookup_scalar_expression_in_mode(
@@ -21297,6 +21801,7 @@ fn temporal_expression_value_kind(expression: &TemporalExpr) -> Option<TemporalK
         TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. } => {
             Some(TemporalKind::LocalTime)
         }
+        TemporalExpr::MakeDuration { .. } => Some(TemporalKind::Duration),
         TemporalExpr::Component { .. } => None,
     }
 }

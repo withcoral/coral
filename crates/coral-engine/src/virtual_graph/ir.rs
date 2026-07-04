@@ -706,6 +706,17 @@ pub enum TemporalExpr {
         /// ISO local time string expression.
         text: Box<ScalarExpression>,
     },
+    /// Construct a native duration value from folded calendar and clock components.
+    MakeDuration {
+        /// Calendar month component, with years folded into months.
+        months: i64,
+        /// Calendar day component, with weeks folded into days.
+        days: i64,
+        /// Whole-second clock component.
+        seconds: i64,
+        /// Nanosecond clock component within the current second.
+        nanos: i64,
+    },
     /// Extract an integer component from a native temporal value.
     Component {
         /// Temporal value expression.
@@ -724,6 +735,8 @@ pub(super) enum TemporalKind {
     LocalDateTime,
     /// Native local time value.
     LocalTime,
+    /// Native duration value.
+    Duration,
 }
 
 impl TemporalKind {
@@ -732,6 +745,7 @@ impl TemporalKind {
             Self::Date => "date",
             Self::LocalDateTime => "localdatetime",
             Self::LocalTime => "localtime",
+            Self::Duration => "duration",
         }
     }
 }
@@ -1591,6 +1605,7 @@ fn temporal_expression_references_outside_scope(
         } => [hour, minute, second, millisecond, microsecond, nanosecond]
             .iter()
             .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
+        TemporalExpr::MakeDuration { .. } => false,
         TemporalExpr::Component { expression, .. } => {
             scalar_expression_references_outside_scope(expression, scope)
         }

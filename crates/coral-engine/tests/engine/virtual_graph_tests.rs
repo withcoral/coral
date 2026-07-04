@@ -907,6 +907,64 @@ async fn cypher_temporal_components_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_temporal_duration_arithmetic_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN date('2020-01-31') + duration('P1M') AS month_clamp, \
+                date('2020-01-15') + duration('P10D') AS plus_days, \
+                date('2020-03-15') - duration('P1M') AS minus_month, \
+                localdatetime('2020-01-01T00:00:00') + duration('PT1H30M') AS shifted_datetime, \
+                localtime('12:00:00') + duration('PT90M') AS shifted_time",
+    )
+    .await
+    .expect("Cypher temporal duration arithmetic should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT CAST('2020-01-31' AS DATE) + CAST('1 months 0 days 0 seconds' AS INTERVAL) AS month_clamp, \
+                    CAST('2020-01-15' AS DATE) + CAST('0 months 10 days 0 seconds' AS INTERVAL) AS plus_days, \
+                    CAST('2020-03-15' AS DATE) - CAST('1 months 0 days 0 seconds' AS INTERVAL) AS minus_month, \
+                    CAST('2020-01-01T00:00:00' AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL) AS shifted_datetime, \
+                    CAST(CAST(concat('1970-01-01T', CAST(CAST('12:00:00' AS TIME) AS VARCHAR)) AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL) AS TIME) AS shifted_time \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent temporal duration SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST('1 months 0 days 0 seconds' AS INTERVAL)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "month_clamp": "2020-02-29",
+            "plus_days": "2020-01-25",
+            "minus_month": "2020-02-15",
+            "shifted_datetime": "2020-01-01T01:30:00",
+            "shifted_time": "13:30:00"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_stored_temporal_components_execute_against_rich_fixture() {
     let temp = TempDir::new().expect("temp dir");
     write_rich_fixture(temp.path());

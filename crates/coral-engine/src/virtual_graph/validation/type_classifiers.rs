@@ -5,8 +5,8 @@
 //! extraction. Pure helpers with no validator state, unlike the sibling `validation/*` impls.
 
 use super::{
-    AggregateFunction, CoreError, Diagnostic, Literal, LiteralListElementType, Projection,
-    ScalarType, TemporalKind, diagnostic_codes,
+    AggregateFunction, ArithmeticOperator, CoreError, Diagnostic, Literal, LiteralListElementType,
+    Projection, ScalarType, TemporalKind, diagnostic_codes,
 };
 
 pub(super) fn projection_alias_name(projection: &Projection) -> Option<&str> {
@@ -96,6 +96,62 @@ pub(super) fn numeric_binary_result_type(
             ),
         )
         .into_core_error()),
+    }
+}
+
+pub(super) fn temporal_arithmetic_result_type(
+    operator: ArithmeticOperator,
+    left: ScalarType,
+    right: ScalarType,
+    path: impl Into<String>,
+) -> Option<Result<ScalarType, CoreError>> {
+    let path = path.into();
+    match (operator, left, right) {
+        (
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract,
+            ScalarType::Temporal(kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
+            ScalarType::Temporal(TemporalKind::Duration),
+        ) => Some(Ok(ScalarType::Temporal(kind))),
+        (
+            ArithmeticOperator::Subtract,
+            ScalarType::Temporal(left_kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
+            ScalarType::Temporal(right_kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
+        ) if left_kind == right_kind => Some(Ok(ScalarType::Temporal(TemporalKind::Duration))),
+        (
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract,
+            ScalarType::Temporal(TemporalKind::Duration),
+            ScalarType::Temporal(TemporalKind::Duration),
+        )
+        | (
+            ArithmeticOperator::Multiply,
+            ScalarType::Temporal(TemporalKind::Duration),
+            ScalarType::Integer | ScalarType::Float,
+        ) => Some(Ok(ScalarType::Temporal(TemporalKind::Duration))),
+        (_, ScalarType::Temporal(_), _) | (_, _, ScalarType::Temporal(_)) => Some(Err(
+            Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                path,
+                format!(
+                    "temporal arithmetic does not support {} {} {}; supported forms are temporal +/- duration, same-kind temporal - temporal, duration +/- duration, and duration * numeric literal",
+                    left.name(),
+                    arithmetic_operator_name(operator),
+                    right.name()
+                ),
+            )
+            .into_core_error(),
+        )),
+        _ => None,
+    }
+}
+
+fn arithmetic_operator_name(operator: ArithmeticOperator) -> &'static str {
+    match operator {
+        ArithmeticOperator::Add => "+",
+        ArithmeticOperator::Subtract => "-",
+        ArithmeticOperator::Multiply => "*",
+        ArithmeticOperator::Divide => "/",
+        ArithmeticOperator::Modulo => "%",
+        ArithmeticOperator::Power => "^",
     }
 }
 

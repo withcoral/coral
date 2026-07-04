@@ -904,9 +904,11 @@ impl<'a> GraphPlanValidator<'a> {
             ScalarExpression::Round { expression, places } => {
                 self.infer_scoped_round_scalar_type(expression, places.as_deref(), scope, path)
             }
-            ScalarExpression::Arithmetic { left, right, .. } => {
-                self.infer_scoped_arithmetic_scalar_type(left, right, scope, path)
-            }
+            ScalarExpression::Arithmetic {
+                operator,
+                left,
+                right,
+            } => self.infer_scoped_arithmetic_scalar_type(*operator, left, right, scope, path),
             ScalarExpression::Atan2 { y, x } => {
                 self.infer_scoped_atan2_scalar_type(y, x, scope, path)
             }
@@ -1016,6 +1018,7 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
             }
+            TemporalExpr::MakeDuration { .. } => Ok(ScalarType::Temporal(TemporalKind::Duration)),
             TemporalExpr::Component { expression, unit } => {
                 let expression_type = self.infer_scoped_scalar_expression_type(
                     expression,
@@ -1394,6 +1397,7 @@ impl<'a> GraphPlanValidator<'a> {
 
     fn infer_scoped_arithmetic_scalar_type<'b>(
         &self,
+        operator: ArithmeticOperator,
         left: &ScalarExpression,
         right: &ScalarExpression,
         scope: ExistsPredicateValidationContext<'a, 'b>,
@@ -1403,6 +1407,10 @@ impl<'a> GraphPlanValidator<'a> {
             self.infer_scoped_scalar_expression_type(left, scope, format!("{path}.left"))?;
         let right_type =
             self.infer_scoped_scalar_expression_type(right, scope, format!("{path}.right"))?;
+        if let Some(result) = temporal_arithmetic_result_type(operator, left_type, right_type, path)
+        {
+            return result;
+        }
         Self::require_numeric_compatible_type(left_type, format!("{path}.left"), "arithmetic")?;
         Self::require_numeric_compatible_type(right_type, format!("{path}.right"), "arithmetic")?;
         numeric_binary_result_type(left_type, right_type, path, "arithmetic")

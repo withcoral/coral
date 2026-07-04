@@ -114,6 +114,15 @@ fn localtime_expression(
     })
 }
 
+fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+        months,
+        days,
+        seconds,
+        nanos,
+    })
+}
+
 fn temporal_component_expression(
     expression: ScalarExpression,
     unit: TemporalComponentUnit,
@@ -2800,6 +2809,98 @@ fn lower_graph_plan_renders_temporal_localtime_expressions() {
         translation
             .sql()
             .contains("ORDER BY CAST('12:34:56' AS TIME) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(date_from_string_expression("2020-01-31")),
+                right: Box::new(duration_expression(1, 0, 0, 0)),
+            },
+            alias: "date_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(localdatetime_from_string_expression("2020-01-01T00:00:00")),
+                right: Box::new(duration_expression(0, 0, 5_400, 0)),
+            },
+            alias: "datetime_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(localtime_from_string_expression("12:00:00")),
+                right: Box::new(duration_expression(0, 0, 5_400, 0)),
+            },
+            alias: "time_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(date_from_string_expression("2020-01-01")),
+                right: Box::new(ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Multiply,
+                    left: Box::new(duration_expression(0, 1, 0, 0)),
+                    right: Box::new(ScalarExpression::Literal(Literal::Integer(2))),
+                }),
+            },
+            alias: "scaled_date_shift".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Subtract,
+            left: Box::new(date_from_string_expression("2020-03-15")),
+            right: Box::new(duration_expression(1, 0, 0, 0)),
+        },
+        operator: ComparisonOperator::GreaterThan,
+        rhs: ScalarPredicateRhs::Expression(date_from_string_expression("2020-02-01")),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Add,
+            left: Box::new(date_from_string_expression("2020-01-01")),
+            right: Box::new(duration_expression(0, 1, 0, 0)),
+        }),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("temporal duration arithmetic should lower");
+
+    assert!(
+        translation.sql().contains(
+             "SELECT (CAST('2020-01-31' AS DATE) + CAST('1 months 0 days 0 seconds' AS INTERVAL)) AS \"date_shift\", \
+             (CAST('2020-01-01T00:00:00' AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS \"datetime_shift\", \
+             CAST((CAST(concat('1970-01-01T', CAST(CAST('12:00:00' AS TIME) AS VARCHAR)) AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS TIME) AS \"time_shift\", \
+             (CAST('2020-01-01' AS DATE) + CAST('0 months 2 days 0 seconds' AS INTERVAL)) AS \"scaled_date_shift\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "WHERE (CAST('2020-03-15' AS DATE) - CAST('1 months 0 days 0 seconds' AS INTERVAL)) > CAST('2020-02-01' AS DATE)"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "ORDER BY (CAST('2020-01-01' AS DATE) + CAST('0 months 1 days 0 seconds' AS INTERVAL)) ASC"
+        ),
         "{}",
         translation.sql()
     );

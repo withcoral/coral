@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 56,
+    "Temporal": 62,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10508,7 +10508,7 @@
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1Y2M3DT4H') AS dur",
       "expected": {
         "kind": "error",
-        "contains": "RETURN function 'duration' is not supported yet"
+        "contains": "bare duration result rendering is not supported yet"
       }
     },
     {
@@ -10944,8 +10944,87 @@
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') AS shifted",
       "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "shifted": "2020-01-02"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-duration-add-days",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15') + duration('P10D') AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-25"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-duration-subtract-month",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-03-15') - duration('P1M') AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-02-15"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-duration-add",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-01T00:00:00') + duration('PT1H30M') AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "2020-01-01T01:30:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-duration-add",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:00:00') + duration('PT90M') AS t",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "t": "13:30:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-date-arithmetic-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + date('2020-01-02') AS d",
+      "expected": {
         "kind": "error",
-        "contains": "scalar function 'duration' is not supported here"
+        "contains": "temporal arithmetic does not support date + date"
+      }
+    },
+    {
+      "id": "temporal-duration-nonliteral-multiply-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') * p.age AS shifted",
+      "expected": {
+        "kind": "error",
+        "contains": "duration multiplication requires a numeric literal factor"
       }
     },
     {

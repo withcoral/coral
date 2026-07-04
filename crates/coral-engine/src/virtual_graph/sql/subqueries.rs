@@ -365,6 +365,7 @@ impl<'a> SqlRenderer<'a> {
                     );
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
             ScalarExpression::Case {
                 alternatives,
                 else_expression,

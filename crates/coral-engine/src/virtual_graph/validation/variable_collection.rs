@@ -290,7 +290,8 @@ impl<'a> GraphPlanValidator<'a> {
         match expression {
             ScalarExpression::Literal(_)
             | ScalarExpression::LiteralList { .. }
-            | ScalarExpression::TypedLiteralList { .. } => {}
+            | ScalarExpression::TypedLiteralList { .. }
+            | ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }

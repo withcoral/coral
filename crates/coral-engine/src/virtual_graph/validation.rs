@@ -13,15 +13,15 @@ use super::declaration::{Declaration, Node, Relationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::diagnostic_codes;
 use super::ir::{
-    AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
-    ElementIdPredicate, ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStageExport,
-    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
-    LiteralListElementType, NodePattern, OptionalMatchScope, OrderExpression, PredicateExpression,
-    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
-    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
-    UndirectedRelationshipEndpoint,
+    AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
+    CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
+    GraphQuery, GraphStageExport, GraphUnionOuterProjection, GraphUnionOuterProjectionItem,
+    KeyPredicate, Literal, LiteralListElementType, NodePattern, OptionalMatchScope,
+    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -1196,6 +1196,7 @@ impl ScalarType {
             Self::Temporal(TemporalKind::Date) => "date",
             Self::Temporal(TemporalKind::LocalDateTime) => "localdatetime",
             Self::Temporal(TemporalKind::LocalTime) => "localtime",
+            Self::Temporal(TemporalKind::Duration) => "duration",
             Self::Other => "non-scalar",
         }
     }

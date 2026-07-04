@@ -103,6 +103,15 @@ fn localtime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+        months,
+        days,
+        seconds,
+        nanos,
+    })
+}
+
 fn temporal_component_expression(
     expression: ScalarExpression,
     unit: TemporalComponentUnit,
@@ -828,7 +837,7 @@ fn validate_graph_plan_rejects_date_string_constructor_with_non_string_text() {
 }
 
 #[test]
-fn validate_graph_plan_rejects_temporal_date_as_numeric() {
+fn validate_graph_plan_rejects_invalid_temporal_date_arithmetic() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan();
     plan.projections = vec![Projection::Expression {
@@ -847,9 +856,110 @@ fn validate_graph_plan_rejects_temporal_date_as_numeric() {
     assert!(
         error
             .to_string()
-            .contains("arithmetic requires a numeric scalar expression, got date"),
+            .contains("temporal arithmetic does not support date + integer"),
         "{error}"
     );
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_duration_arithmetic() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(date_from_string_expression("2020-01-31")),
+                right: Box::new(duration_expression(1, 0, 0, 0)),
+            },
+            alias: "date_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Subtract,
+                left: Box::new(localdatetime_from_string_expression("2020-01-02T00:00:00")),
+                right: Box::new(duration_expression(0, 1, 0, 0)),
+            },
+            alias: "datetime_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(localtime_from_string_expression("12:00:00")),
+                right: Box::new(duration_expression(0, 0, 5_400, 0)),
+            },
+            alias: "time_shift".to_string(),
+        },
+    ];
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("temporal +/- duration should validate");
+}
+
+#[test]
+fn lower_graph_plan_rejects_bare_duration_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: duration_expression(0, 1, 0, 0),
+        alias: "duration_value".to_string(),
+    }];
+
+    let error = graph
+        .lower_graph_plan(&plan)
+        .expect_err("bare duration projection should reject until rendering is supported");
+
+    assert!(
+        error
+            .to_string()
+            .contains("bare duration result rendering is not supported yet"),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_invalid_temporal_arithmetic_combinations() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    for (expression, expected) in [
+        (
+            ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(date_from_string_expression("2020-01-01")),
+                right: Box::new(date_from_string_expression("2020-01-02")),
+            },
+            "temporal arithmetic does not support date + date",
+        ),
+        (
+            ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Subtract,
+                left: Box::new(date_from_string_expression("2020-01-01")),
+                right: Box::new(localdatetime_from_string_expression("2020-01-02T00:00:00")),
+            },
+            "temporal arithmetic does not support date - localdatetime",
+        ),
+        (
+            ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Multiply,
+                left: Box::new(date_from_string_expression("2020-01-01")),
+                right: Box::new(duration_expression(0, 1, 0, 0)),
+            },
+            "temporal arithmetic does not support date * duration",
+        ),
+    ] {
+        let mut plan = ownership_plan();
+        plan.projections = vec![Projection::Expression {
+            expression,
+            alias: "value".to_string(),
+        }];
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("invalid temporal arithmetic should reject");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
 }
 
 #[test]
@@ -952,7 +1062,7 @@ fn validate_graph_plan_rejects_temporal_localdatetime_as_numeric() {
     assert!(
         error
             .to_string()
-            .contains("arithmetic requires a numeric scalar expression, got localdatetime"),
+            .contains("temporal arithmetic does not support localdatetime + integer"),
         "{error}"
     );
 }
@@ -1053,7 +1163,7 @@ fn validate_graph_plan_rejects_temporal_localtime_as_numeric() {
     assert!(
         error
             .to_string()
-            .contains("arithmetic requires a numeric scalar expression, got localtime"),
+            .contains("temporal arithmetic does not support localtime + integer"),
         "{error}"
     );
 }

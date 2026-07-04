@@ -484,6 +484,14 @@ impl<'a> SqlRenderer<'a> {
             TemporalExpr::LocalTimeFromString { text } => {
                 self.render_localtime_from_string_expression(text, scope)
             }
+            TemporalExpr::MakeDuration {
+                months,
+                days,
+                seconds,
+                nanos,
+            } => Ok(render_make_duration_expression(
+                *months, *days, *seconds, *nanos,
+            )),
             TemporalExpr::Component { expression, unit } => {
                 self.render_temporal_component_expression(expression, *unit, scope)
             }
@@ -693,6 +701,22 @@ impl<'a> SqlRenderer<'a> {
         right: &ScalarExpression,
         scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
+        if let Some(expression) = render_folded_duration_multiply_expression(operator, left, right)?
+        {
+            return Ok(expression);
+        }
+        let casts_to_time = matches!(
+            (
+                operator,
+                temporal_scalar_kind(left),
+                scalar_expression_is_duration(right)
+            ),
+            (
+                ArithmeticOperator::Add | ArithmeticOperator::Subtract,
+                Some(TemporalKind::LocalTime),
+                true
+            )
+        );
         let left = self.render_scalar_in_scope(left, scope)?;
         let right = self.render_scalar_in_scope(right, scope)?;
         let op = match operator {
@@ -703,6 +727,14 @@ impl<'a> SqlRenderer<'a> {
             ArithmeticOperator::Divide => InfixArithmeticOperator::Divide,
             ArithmeticOperator::Modulo => InfixArithmeticOperator::Modulo,
         };
+        if casts_to_time {
+            let operator = render_arithmetic_operator(op);
+            let anchored_time =
+                format!("CAST(concat('1970-01-01T', CAST({left} AS VARCHAR)) AS TIMESTAMP)");
+            return Ok(format!(
+                "CAST(({anchored_time} {operator} {right}) AS TIME)"
+            ));
+        }
         Ok(format!(
             "({left} {} {right})",
             render_arithmetic_operator(op)
@@ -837,6 +869,168 @@ fn literal_localtime(
         time.push_str(&fractional);
     }
     Some(time)
+}
+
+fn render_make_duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> String {
+    let seconds = render_duration_seconds(seconds, nanos);
+    let interval = format!("{months} months {days} days {seconds} seconds");
+    format!("CAST({} AS INTERVAL)", quote_string_literal(&interval))
+}
+
+fn render_folded_duration_multiply_expression(
+    operator: ArithmeticOperator,
+    left: &ScalarExpression,
+    right: &ScalarExpression,
+) -> Result<Option<String>, CoreError> {
+    if operator != ArithmeticOperator::Multiply {
+        return Ok(None);
+    }
+    let Some((months, days, seconds, nanos)) = duration_parts(left) else {
+        if scalar_expression_is_duration(right) {
+            return Err(duration_multiply_error(
+                "duration multiplication requires duration * numeric literal",
+            ));
+        }
+        return Ok(None);
+    };
+    let factor = duration_multiply_factor(right)?;
+    let (months, days, seconds, nanos) =
+        scale_duration_parts(months, days, seconds, nanos, factor)?;
+    Ok(Some(render_make_duration_expression(
+        months, days, seconds, nanos,
+    )))
+}
+
+fn duration_parts(expression: &ScalarExpression) -> Option<(i64, i64, i64, i64)> {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+            months,
+            days,
+            seconds,
+            nanos,
+        }) => Some((*months, *days, *seconds, *nanos)),
+        _ => None,
+    }
+}
+
+fn duration_multiply_factor(expression: &ScalarExpression) -> Result<i64, CoreError> {
+    match expression {
+        ScalarExpression::Literal(Literal::Integer(value)) => Ok(*value),
+        ScalarExpression::Literal(Literal::Float(value)) => {
+            integral_duration_factor(value.into_inner())
+        }
+        _ => Err(duration_multiply_error(
+            "duration multiplication requires a numeric literal factor",
+        )),
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "Duration scaling accepts float literals only after integral and bounds checks."
+)]
+fn integral_duration_factor(value: f64) -> Result<i64, CoreError> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(duration_multiply_error(
+            "duration multiplication requires an integral numeric literal factor",
+        ));
+    }
+    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err(duration_multiply_error(
+            "duration multiplication factor is out of range",
+        ));
+    }
+    Ok(value as i64)
+}
+
+fn scale_duration_parts(
+    months: i64,
+    days: i64,
+    seconds: i64,
+    nanos: i64,
+    factor: i64,
+) -> Result<(i64, i64, i64, i64), CoreError> {
+    let months = months
+        .checked_mul(factor)
+        .ok_or_else(|| duration_multiply_error("duration multiplication result is out of range"))?;
+    let days = days
+        .checked_mul(factor)
+        .ok_or_else(|| duration_multiply_error("duration multiplication result is out of range"))?;
+    let total_nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
+    let total_nanos = total_nanos
+        .checked_mul(i128::from(factor))
+        .ok_or_else(|| duration_multiply_error("duration multiplication result is out of range"))?;
+    let seconds = i64::try_from(total_nanos.div_euclid(1_000_000_000)).map_err(|_error| {
+        duration_multiply_error("duration multiplication result is out of range")
+    })?;
+    let nanos = i64::try_from(total_nanos.rem_euclid(1_000_000_000)).map_err(|_error| {
+        duration_multiply_error("duration multiplication result is out of range")
+    })?;
+    Ok((months, days, seconds, nanos))
+}
+
+fn duration_multiply_error(message: &'static str) -> CoreError {
+    Diagnostic::new(
+        diagnostic_codes::INVALID_SCALAR_TYPE,
+        "scalar.expression",
+        message,
+    )
+    .into_core_error()
+}
+
+fn render_duration_seconds(seconds: i64, nanos: i64) -> String {
+    let total_nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
+    let sign = if total_nanos < 0 { "-" } else { "" };
+    let absolute = total_nanos.abs();
+    let whole_seconds = absolute / 1_000_000_000;
+    let fractional_nanos = absolute % 1_000_000_000;
+    if fractional_nanos == 0 {
+        return format!("{sign}{whole_seconds}");
+    }
+    let mut fractional = format!("{fractional_nanos:09}");
+    while fractional.ends_with('0') {
+        fractional.pop();
+    }
+    format!("{sign}{whole_seconds}.{fractional}")
+}
+
+fn scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => match operator {
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
+                scalar_expression_is_duration(left) && scalar_expression_is_duration(right)
+            }
+            ArithmeticOperator::Multiply => scalar_expression_is_duration(left),
+            ArithmeticOperator::Divide | ArithmeticOperator::Modulo | ArithmeticOperator::Power => {
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
+fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
+    match expression {
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDate { .. } | TemporalExpr::DateFromString { .. },
+        ) => Some(TemporalKind::Date),
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. },
+        ) => Some(TemporalKind::LocalDateTime),
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. },
+        ) => Some(TemporalKind::LocalTime),
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {
+            Some(TemporalKind::Duration)
+        }
+        _ => None,
+    }
 }
 
 fn literal_integer(expression: &ScalarExpression) -> Option<i64> {

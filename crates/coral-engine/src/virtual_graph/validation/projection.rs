@@ -81,9 +81,19 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_literal_list_projection(literals, &path)?;
                 Ok(ScalarType::Other)
             }
-            Projection::Expression { expression, .. } => {
-                self.infer_scalar_expression_type(expression, &path)
-            }
+            Projection::Expression { expression, .. } => self
+                .infer_scalar_expression_type(expression, &path)
+                .and_then(|scalar_type| {
+                    if matches!(scalar_type, ScalarType::Temporal(TemporalKind::Duration)) {
+                        return Err(Diagnostic::new(
+                            diagnostic_codes::INVALID_SCALAR_TYPE,
+                            path,
+                            "bare duration result rendering is not supported yet",
+                        )
+                        .into_core_error());
+                    }
+                    Ok(scalar_type)
+                }),
             Projection::CountAll { .. } => Ok(ScalarType::Integer),
             Projection::Aggregate {
                 function, target, ..

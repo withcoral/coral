@@ -238,6 +238,15 @@ fn localtime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeDuration {
+        months,
+        days,
+        seconds,
+        nanos,
+    })
+}
+
 fn temporal_component_expression(
     expression: ScalarExpression,
     unit: TemporalComponentUnit,
@@ -2470,6 +2479,125 @@ fn rejects_unsupported_localtime_constructor_forms() {
     ] {
         let error =
             compile_cypher(cypher).expect_err("unsupported localtime form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn compiles_duration_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN duration('P1Y2M3DT4H') AS iso, \
+                duration({years: 1, months: 2, weeks: 1, days: 3, hours: 4, minutes: 5, seconds: 6, milliseconds: 7, microseconds: 8, nanoseconds: 9}) AS map",
+    )
+    .expect("literal duration constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: duration_expression(14, 3, 14_400, 0),
+                alias: "iso".to_string(),
+            },
+            Projection::Expression {
+                expression: duration_expression(14, 10, 14_706, 7_008_009),
+                alias: "map".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_temporal_duration_arithmetic_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN date('2020-01-31') + duration('P1M') AS dateShift, \
+                date('2020-03-15') - duration({months: 1}) AS dateBack, \
+                localdatetime('2020-01-01T00:00:00') + duration('PT1H30M') AS datetimeShift, \
+                localtime('12:00:00') + duration('PT90M') AS timeShift, \
+                date('2020-01-01') + duration('P1D') * 2 AS scaled",
+    )
+    .expect("temporal duration arithmetic should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(date_from_string_expression("2020-01-31")),
+                    right: Box::new(duration_expression(1, 0, 0, 0)),
+                },
+                alias: "dateShift".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Subtract,
+                    left: Box::new(date_from_string_expression("2020-03-15")),
+                    right: Box::new(duration_expression(1, 0, 0, 0)),
+                },
+                alias: "dateBack".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(localdatetime_from_string_expression("2020-01-01T00:00:00",)),
+                    right: Box::new(duration_expression(0, 0, 5_400, 0)),
+                },
+                alias: "datetimeShift".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(localtime_from_string_expression("12:00:00")),
+                    right: Box::new(duration_expression(0, 0, 5_400, 0)),
+                },
+                alias: "timeShift".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(date_from_string_expression("2020-01-01")),
+                    right: Box::new(duration_expression(0, 2, 0, 0)),
+                },
+                alias: "scaled".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_duration_constructor_and_multiply_forms() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN duration(person.name) AS d",
+            "dynamic duration() argument not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration(1) AS d",
+            "duration() requires a literal map or string argument",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration({days: person.age}) AS d",
+            "dynamic duration fields not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration({quarters: 1}) AS d",
+            "duration() temporal field 'quarters' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration('P') AS d",
+            "duration() requires an ISO-8601 duration string literal",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-01') + duration('P1D') * person.age AS shifted",
+            "duration multiplication requires a numeric literal factor",
+        ),
+    ] {
+        let error = compile_cypher(cypher).expect_err("unsupported duration form should reject");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?}, got {error}"

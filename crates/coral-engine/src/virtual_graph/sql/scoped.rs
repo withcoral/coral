@@ -382,6 +382,7 @@ impl<'a> SqlRenderer<'a> {
                         local_nodes,
                     )
                 }),
+            ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
             ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
                 Self::scoped_scalar_expression_is_inner(
                     expression,
