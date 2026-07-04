@@ -16,9 +16,9 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphStageExport, GraphUnionOuterProjection, GraphUnionOuterProjectionItem,
-    KeyPredicate, Literal, LiteralListElementType, NodePattern, OptionalMatchScope,
-    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
+    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
@@ -135,6 +135,7 @@ impl Declaration {
     pub(crate) fn validate_graph_query(&self, query: &GraphQuery) -> Result<(), CoreError> {
         match query {
             GraphQuery::Plan(plan) => self.validate_graph_plan(plan).map(|_| ()),
+            GraphQuery::Unwind(unwind) => Self::validate_graph_unwind(unwind),
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, None),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
@@ -173,6 +174,7 @@ impl Declaration {
             GraphQuery::Plan(plan) => GraphPlanValidator::new(self, plan, Some(catalog))
                 .validate()
                 .map(|_| ()),
+            GraphQuery::Unwind(unwind) => Self::validate_graph_unwind(unwind),
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, Some(catalog)),
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
@@ -197,6 +199,38 @@ impl Declaration {
                     )?;
                 }
                 Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn validate_graph_unwind(unwind: &GraphUnwind) -> Result<(), CoreError> {
+        validate_variable("unwind.variable", &unwind.variable)?;
+        match &unwind.list {
+            ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            } => {
+                GraphPlanValidator::validate_typed_literal_list(
+                    literals,
+                    *element_type,
+                    "unwind.list",
+                )?;
+            }
+            _ => {
+                return Err(CoreError::internal(
+                    "UNWIND row source requires a typed literal-list expression",
+                ));
+            }
+        }
+
+        let [projection] = unwind.projections.as_slice() else {
+            return Err(CoreError::internal(
+                "UNWIND row source requires exactly one projection",
+            ));
+        };
+        match projection {
+            GraphUnwindProjection::Variable { alias } => {
+                validate_variable("unwind.projections[0].alias", alias)
             }
         }
     }

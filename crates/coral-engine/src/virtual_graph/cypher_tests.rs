@@ -501,6 +501,96 @@ fn compiles_union_all_query() {
 }
 
 #[test]
+fn compiles_literal_unwind_row_source() {
+    let query = compile_cypher_query("UNWIND [1, 2, 3] AS x RETURN x")
+        .expect("literal UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected literal UNWIND row source query");
+    };
+    assert_eq!(unwind.variable, "x");
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::TypedLiteralList {
+            literals: vec![
+                Literal::Integer(1),
+                Literal::Integer(2),
+                Literal::Integer(3),
+            ],
+            element_type: LiteralListElementType::Integer,
+        }
+    );
+    assert_eq!(
+        unwind.projections,
+        vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_string_literal_unwind_row_source() {
+    let query = compile_cypher_query("UNWIND ['a', 'b'] AS n RETURN n")
+        .expect("string literal UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected literal UNWIND row source query");
+    };
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::TypedLiteralList {
+            literals: vec![
+                Literal::String("a".to_string()),
+                Literal::String("b".to_string()),
+            ],
+            element_type: LiteralListElementType::String,
+        }
+    );
+    assert_eq!(
+        unwind.projections,
+        vec![GraphUnwindProjection::Variable {
+            alias: "n".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_empty_literal_unwind_row_source() {
+    let query = compile_cypher_query("UNWIND [] AS x RETURN x")
+        .expect("empty literal UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected literal UNWIND row source query");
+    };
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::TypedLiteralList {
+            literals: Vec::new(),
+            element_type: LiteralListElementType::Integer,
+        }
+    );
+}
+
+#[test]
+fn rejects_nested_literal_unwind_row_source() {
+    assert_unsupported("UNWIND [[1], [2]] AS x RETURN x");
+}
+
+#[test]
+fn leaves_static_unwind_with_downstream_match_on_existing_expansion_path() {
+    let query = compile_cypher_query(
+        "UNWIND ['prod', 'dev'] AS tier \
+             MATCH (service:Service) \
+             WHERE service.tier = tier \
+             RETURN tier AS tier, service.name AS service \
+             ORDER BY tier, service",
+    )
+    .expect("static UNWIND with downstream MATCH should still compile");
+
+    assert!(matches!(query, GraphQuery::Union(_)));
+}
+
+#[test]
 fn compiles_static_unwind_as_union_all_branches() {
     let query = compile_cypher_query(
         "UNWIND ['prod', 'dev'] AS tier \

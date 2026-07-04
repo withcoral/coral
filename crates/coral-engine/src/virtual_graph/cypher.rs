@@ -57,13 +57,13 @@ use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphUnion, GraphUnionBranch,
-    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate, Literal,
-    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
-    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
+    GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindProjection,
+    KeyPredicate, Literal, LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
+    ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
     UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
@@ -778,6 +778,10 @@ pub fn compile_cypher_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_with_parameters(cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Unwind(_) => Err(unsupported(
+            "query.unwind",
+            "compile_cypher returns a single graph plan; use compile_cypher_query for UNWIND row-source queries",
+        )),
         GraphQuery::Staged(_) => Err(unsupported(
             "query.staged",
             "compile_cypher returns a single graph plan; use compile_cypher_query for staged queries",
@@ -818,6 +822,10 @@ pub fn compile_cypher_for_graph_with_parameters(
 ) -> Result<GraphPlan, CoreError> {
     match compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)? {
         GraphQuery::Plan(plan) => Ok(plan),
+        GraphQuery::Unwind(_) => Err(unsupported(
+            "query.unwind",
+            "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for UNWIND row-source queries",
+        )),
         GraphQuery::Staged(_) => Err(unsupported(
             "query.staged",
             "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for staged queries",
@@ -963,6 +971,9 @@ fn compile_single_query_as_graph_query(
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
+    if let Some(unwind) = compile_literal_unwind_row_source(single_query, context, &path)? {
+        return Ok(GraphQuery::Unwind(unwind));
+    }
     let contains_static_unwind = single_query_contains_unwind(single_query);
     let scalar_alias_final_target_unlabeled =
         staged_scalar_alias_final_target_unlabeled(single_query);
@@ -1057,6 +1068,119 @@ fn compile_single_query_as_graph_query(
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+}
+
+fn compile_literal_unwind_row_source(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphUnwind>, CoreError> {
+    let SingleQueryKind::SinglePart(single_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    let [reading_clause] = single_part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    let ReadingClause::Unwind(unwind) = reading_clause else {
+        return Ok(None);
+    };
+
+    let variable = variable_name(&unwind.variable);
+    let return_clause = return_clause_from_single_part(single_part, path)?;
+    let Some(projections) = compile_literal_unwind_row_source_projections(return_clause, &variable)
+    else {
+        return Ok(None);
+    };
+    let Some(list) = compile_optional_literal_unwind_row_source_list(
+        &unwind.expression,
+        format!("{path}.reading_clauses[0].unwind.expression"),
+        context,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(GraphUnwind {
+        list,
+        variable,
+        projections,
+    }))
+}
+
+fn compile_literal_unwind_row_source_projections(
+    return_clause: &Return,
+    variable: &str,
+) -> Option<Vec<GraphUnwindProjection>> {
+    if return_clause.star
+        || return_clause.distinct
+        || return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+        || return_clause.items.len() != 1
+    {
+        return None;
+    }
+
+    let item = return_clause.items.first()?;
+    let projected_variable = expression_variable_name(&item.expression)?;
+    if projected_variable != variable {
+        return None;
+    }
+
+    Some(vec![GraphUnwindProjection::Variable {
+        alias: item
+            .alias
+            .as_ref()
+            .map_or_else(|| variable.to_string(), variable_name),
+    }])
+}
+
+fn compile_optional_literal_unwind_row_source_list(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_literal_unwind_row_source_list(inner, path, context)
+        }
+        Expression::Literal(CypherLiteral::List(list)) => {
+            let literals = list
+                .elements
+                .iter()
+                .enumerate()
+                .map(|(index, expression)| {
+                    compile_literal(expression, format!("{path}[{index}]"), context)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let element_type = literal_unwind_row_source_element_type(&literals, &path)?;
+            Ok(Some(ScalarExpression::TypedLiteralList {
+                literals,
+                element_type,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn literal_unwind_row_source_element_type(
+    literals: &[Literal],
+    path: &str,
+) -> Result<LiteralListElementType, CoreError> {
+    if let Some(element_type) = infer_literal_list_element_type(literals) {
+        return Ok(element_type);
+    }
+    if literals
+        .iter()
+        .all(|literal| matches!(literal, Literal::Null))
+    {
+        return Ok(LiteralListElementType::Integer);
+    }
+    Err(unsupported(
+        path,
+        "literal UNWIND row-source lists require all non-null elements to have the same scalar type",
+    ))
 }
 
 fn compile_static_branch_hidden_order_plans(
@@ -4208,6 +4332,10 @@ fn append_explicit_union_component(
             output.push((leading_all, plan));
             Ok(())
         }
+        GraphQuery::Unwind(_) => Err(unsupported(
+            path,
+            "UNWIND row-source queries with UNION require row-source union planning and are not supported yet",
+        )),
         GraphQuery::Staged(_) => Err(unsupported(
             path,
             "staged queries with UNION require staged subquery planning and are not supported yet",

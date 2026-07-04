@@ -2,11 +2,11 @@ use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
-    KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression,
-    OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
+    GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
+    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
 };
 
 const GRAPH: &str = r"
@@ -143,6 +143,58 @@ fn temporal_component_expression(
         expression: Box::new(expression),
         unit,
     })
+}
+
+#[test]
+fn lower_graph_query_renders_literal_unwind_row_source() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::Unwind(GraphUnwind {
+        list: ScalarExpression::TypedLiteralList {
+            literals: vec![
+                Literal::Integer(1),
+                Literal::Integer(2),
+                Literal::Integer(3),
+            ],
+            element_type: LiteralListElementType::Integer,
+        },
+        variable: "x".to_string(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }],
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("literal UNWIND row source should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT UNNEST(make_array(1, 2, 3)) AS \"x\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_empty_literal_unwind_row_source() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::Unwind(GraphUnwind {
+        list: ScalarExpression::TypedLiteralList {
+            literals: Vec::new(),
+            element_type: LiteralListElementType::Integer,
+        },
+        variable: "x".to_string(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: "x".to_string(),
+        }],
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("empty literal UNWIND row source should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT UNNEST(array_resize(make_array(CAST(NULL AS BIGINT)), 0)) AS \"x\""
+    );
 }
 
 #[test]

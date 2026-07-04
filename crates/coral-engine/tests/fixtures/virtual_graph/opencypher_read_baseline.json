@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 13,
+    "Unwind": 16,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -6676,6 +6676,53 @@
       "expected": {
         "kind": "error",
         "contains": "MISSING_PARAMETER"
+      }
+    },
+    {
+      "id": "unwind-literal-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [1, 2, 3] AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "x": 1
+          },
+          {
+            "x": 2
+          },
+          {
+            "x": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-string-literal-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND ['a', 'b'] AS n RETURN n",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "n": "a"
+          },
+          {
+            "n": "b"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-empty-literal-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [] AS x RETURN x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": []
       }
     },
     {

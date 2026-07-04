@@ -1991,11 +1991,55 @@ impl GraphPlan {
 pub enum GraphQuery {
     /// A single graph query plan.
     Plan(GraphPlan),
+    /// A graph-free row source produced by `UNWIND <list> AS variable`.
+    Unwind(GraphUnwind),
     /// A staged chain of graph plans where non-terminal stages export row keys
     /// consumed by the final plan.
     Staged(GraphStagedQuery),
     /// A top-level set union of graph query plans.
     Union(GraphUnion),
+}
+
+/// Graph-free row source that expands a list expression into rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphUnwind {
+    /// Literal list expression rendered as the row source.
+    pub list: ScalarExpression,
+    /// Variable bound by the `UNWIND` clause.
+    pub variable: String,
+    /// Terminal projections over the bound `UNWIND` value.
+    pub projections: Vec<GraphUnwindProjection>,
+}
+
+impl GraphUnwind {
+    /// Returns the tabular output names rendered for this row source.
+    #[must_use]
+    pub fn projection_output_names(&self) -> Vec<String> {
+        self.projections
+            .iter()
+            .map(GraphUnwindProjection::output_name)
+            .collect()
+    }
+}
+
+/// Projection over a graph-free `UNWIND` row source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphUnwindProjection {
+    /// Project the bound `UNWIND` variable.
+    Variable {
+        /// Output alias.
+        alias: String,
+    },
+}
+
+impl GraphUnwindProjection {
+    /// Returns the tabular output name rendered for this projection.
+    #[must_use]
+    pub fn output_name(&self) -> String {
+        match self {
+            Self::Variable { alias } => alias.clone(),
+        }
+    }
 }
 
 /// Staged graph query with one or more non-terminal row-source stages and a

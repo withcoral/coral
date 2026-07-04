@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-652 scenarios, which is 40.37% of the full upstream scenario-definition inventory
-and 50.39% of the read-candidate inventory.
+655 scenarios, which is 40.56% of the full upstream scenario-definition inventory
+and 50.62% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 652 representative read-only scenarios:
+The baseline currently contains 655 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -271,10 +271,11 @@ The baseline currently contains 652 representative read-only scenarios:
 - `Parameters`: 14 scenarios for scalar/list/limit parameter binding,
   compile-time dynamic label-list parameters, and missing parameter rejection
   through the public parameterized Cypher execution API.
-- `Unwind`: 13 scenarios for `UNWIND` list expansion, including range, split,
-  list-parameter, concatenated-list, duplicate, distinct, empty-list,
-  chained-unwind, filtered, matched, aggregated, sliced static `CASE`, and
-  static expansion after transparent `WITH` sources.
+- `Unwind`: 16 scenarios for `UNWIND` list expansion, including graph-free
+  literal-list row sources, range, split, list-parameter, concatenated-list,
+  duplicate, distinct, empty-list, chained-unwind, filtered, matched,
+  aggregated, sliced static `CASE`, and static expansion after transparent
+  `WITH` sources.
 - `ReturnDistinct`: 3 scenarios for `RETURN DISTINCT`, including computed
   expressions and grouped aggregate projections.
 - `ReturnProjection`: 12 scenarios for `RETURN *`, aliased projections,

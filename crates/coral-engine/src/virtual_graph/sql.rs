@@ -94,9 +94,25 @@ impl Declaration {
     pub fn lower_graph_query(&self, query: &GraphQuery) -> Result<SqlTranslation, CoreError> {
         match query {
             GraphQuery::Plan(plan) => self.lower_graph_plan(plan),
+            GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
             GraphQuery::Staged(staged) => self.lower_graph_staged_query(staged),
             GraphQuery::Union(union) => self.lower_graph_union(union),
         }
+    }
+
+    fn lower_graph_unwind(unwind: &super::ir::GraphUnwind) -> Result<SqlTranslation, CoreError> {
+        Self::validate_graph_unwind(unwind)?;
+        let [projection] = unwind.projections.as_slice() else {
+            return Err(CoreError::internal(
+                "UNWIND row source requires exactly one projection",
+            ));
+        };
+        let super::ir::GraphUnwindProjection::Variable { alias } = projection;
+        let list_sql = render_unwind_list_expression(&unwind.list)?;
+        Ok(SqlTranslation::new(
+            format!("SELECT UNNEST({list_sql}) AS {}", quote_ident(alias)),
+            Vec::new(),
+        ))
     }
 
     fn lower_graph_staged_query(
@@ -160,6 +176,18 @@ impl Declaration {
 
         let sql = render_union_outer_sql(sql, union)?;
         Ok(SqlTranslation::new(sql, diagnostics))
+    }
+}
+
+fn render_unwind_list_expression(expression: &ScalarExpression) -> Result<String, CoreError> {
+    match expression {
+        ScalarExpression::TypedLiteralList {
+            literals,
+            element_type,
+        } => Ok(render_typed_literal_list(literals, *element_type)),
+        _ => Err(CoreError::internal(
+            "UNWIND row source requires a typed literal-list expression",
+        )),
     }
 }
 

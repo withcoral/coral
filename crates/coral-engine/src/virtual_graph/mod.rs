@@ -38,10 +38,11 @@ pub use graphql_schema::graphql_schema_sdl_for_graph;
 pub use ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, Direction, ElementIdPredicate,
     GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphUnion,
-    GraphUnionBranch, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, KeyPredicate,
-    Literal, NodePattern, NullOrder, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
-    PredicateExpression, PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
-    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern, UndirectedRelationshipEndpoint,
+    GraphUnionBranch, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind,
+    GraphUnwindProjection, KeyPredicate, Literal, NodePattern, NullOrder, OptionalMatchScope,
+    OrderDirection, OrderExpression, OrderKey, PredicateExpression, PredicateRhs,
+    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
+    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern,
+    UndirectedRelationshipEndpoint,
 };
 pub use sql::SqlTranslation;
