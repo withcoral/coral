@@ -15,14 +15,15 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphStageExport, GraphStagedQuery, GraphUnionOuterProjection,
-    GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindInputProjection, GraphUnwindPipeline,
-    GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
+    GraphQuery, GraphStageExport, GraphStagedQuery, GraphStagedUnwindBinding,
+    GraphStagedUnwindQuery, GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind,
+    GraphUnwindInputProjection, GraphUnwindPipeline, GraphUnwindProjection, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, OptionalMatchScope, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
+    UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -168,6 +169,9 @@ impl Declaration {
             GraphQuery::Unwind(unwind) => Self::validate_graph_unwind(unwind),
             GraphQuery::UnwindPipeline(pipeline) => self.validate_graph_unwind_pipeline(pipeline),
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, None),
+            GraphQuery::StagedUnwind(staged) => {
+                self.validate_graph_staged_unwind_query(staged, None)
+            }
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
                     return Err(CoreError::internal("graph union had no union branches"));
@@ -210,6 +214,9 @@ impl Declaration {
                 self.validate_graph_unwind_pipeline_against_catalog(pipeline, catalog)
             }
             GraphQuery::Staged(staged) => self.validate_graph_staged_query(staged, Some(catalog)),
+            GraphQuery::StagedUnwind(staged) => {
+                self.validate_graph_staged_unwind_query(staged, Some(catalog))
+            }
             GraphQuery::Union(union) => {
                 if union.branches.is_empty() {
                     return Err(CoreError::internal("graph union had no union branches"));
@@ -305,6 +312,20 @@ impl Declaration {
         }
 
         let stage_columns = stage_column_bindings_with_catalog(self, staged, catalog)?;
+        GraphPlanValidator::new_with_stage_columns(self, &staged.final_plan, catalog, stage_columns)
+            .validate()
+            .map(|_| ())
+    }
+
+    fn validate_graph_staged_unwind_query(
+        &self,
+        staged: &GraphStagedUnwindQuery,
+        catalog: Option<&CatalogInfo>,
+    ) -> Result<(), CoreError> {
+        validate_staged_unwind_source_export(staged)?;
+        GraphPlanValidator::new(self, &staged.stage.plan, catalog)
+            .validate_and_infer_projection_scalar_types()?;
+        let stage_columns = staged_unwind_stage_column_bindings(staged)?;
         GraphPlanValidator::new_with_stage_columns(self, &staged.final_plan, catalog, stage_columns)
             .validate()
             .map(|_| ())
@@ -1163,6 +1184,178 @@ pub(crate) fn unwind_stage_column_bindings(
         },
     );
     Ok(bindings)
+}
+
+pub(crate) fn staged_unwind_stage_column_bindings(
+    staged: &GraphStagedUnwindQuery,
+) -> Result<StageColumnBindings, CoreError> {
+    validate_staged_unwind_source_export(staged)?;
+    let mut bindings = StageColumnBindings::default();
+    let stage_alias = "stage1";
+    for export in &staged.stage.exports {
+        match export {
+            GraphStageExport::NodeKey { variable, column } => {
+                if bindings
+                    .node_keys
+                    .insert(
+                        variable.clone(),
+                        StageNodeColumnBinding {
+                            stage_alias: stage_alias.to_string(),
+                            key_column: column.clone(),
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(CoreError::internal(format!(
+                        "staged UNWIND exported node variable '{variable}' more than once",
+                    )));
+                }
+            }
+            GraphStageExport::RelationshipKey { .. } => {
+                return Err(CoreError::internal(
+                    "staged UNWIND does not support carried relationship keys yet",
+                ));
+            }
+            GraphStageExport::ScalarValue { alias, source } => {
+                if bindings
+                    .scalar_values
+                    .insert(
+                        alias.clone(),
+                        StageScalarColumnBinding {
+                            stage_alias: stage_alias.to_string(),
+                            value_column: source.clone(),
+                            scalar_type: ScalarType::Unknown,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(CoreError::internal(format!(
+                        "staged UNWIND exported scalar value '{alias}' more than once",
+                    )));
+                }
+            }
+            GraphStageExport::AggregateValue { alias, .. } => {
+                if alias != &staged.unwind.source_alias {
+                    return Err(CoreError::internal(format!(
+                        "staged UNWIND cannot carry aggregate value '{alias}'",
+                    )));
+                }
+            }
+        }
+    }
+
+    match &staged.unwind.binding {
+        GraphStagedUnwindBinding::Scalar { element_type } => {
+            if bindings
+                .scalar_values
+                .insert(
+                    staged.unwind.variable.clone(),
+                    StageScalarColumnBinding {
+                        stage_alias: stage_alias.to_string(),
+                        value_column: staged.unwind.variable.clone(),
+                        scalar_type: scalar_type_for_literal_list_element(*element_type),
+                    },
+                )
+                .is_some()
+            {
+                return Err(CoreError::internal(format!(
+                    "staged UNWIND scalar '{}' conflicts with a carried scalar",
+                    staged.unwind.variable
+                )));
+            }
+        }
+        GraphStagedUnwindBinding::NodeKey { .. } => {
+            if bindings
+                .node_keys
+                .insert(
+                    staged.unwind.variable.clone(),
+                    StageNodeColumnBinding {
+                        stage_alias: stage_alias.to_string(),
+                        key_column: staged.unwind.variable.clone(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(CoreError::internal(format!(
+                    "staged UNWIND node '{}' conflicts with a carried node",
+                    staged.unwind.variable
+                )));
+            }
+        }
+    }
+    Ok(bindings)
+}
+
+fn validate_staged_unwind_source_export(staged: &GraphStagedUnwindQuery) -> Result<(), CoreError> {
+    validate_variable(
+        "staged_unwind.unwind.source_alias",
+        &staged.unwind.source_alias,
+    )?;
+    validate_variable("staged_unwind.unwind.variable", &staged.unwind.variable)?;
+    let source_column = staged_unwind_source_column(staged)?;
+    let Some(projection) = staged
+        .stage
+        .plan
+        .projections
+        .iter()
+        .find(|projection| projection.output_name() == source_column)
+    else {
+        return Err(CoreError::internal(format!(
+            "staged UNWIND source column '{source_column}' was not projected by the stage",
+        )));
+    };
+    let Projection::Aggregate {
+        function: AggregateFunction::Collect,
+        ..
+    } = projection
+    else {
+        return Err(CoreError::internal(format!(
+            "staged UNWIND source column '{source_column}' must be a collect aggregate",
+        )));
+    };
+    if let GraphStagedUnwindBinding::NodeKey { label } = &staged.unwind.binding {
+        let Some(node) = staged
+            .final_plan
+            .nodes
+            .iter()
+            .find(|node| node.variable == staged.unwind.variable)
+        else {
+            return Err(CoreError::internal(format!(
+                "staged UNWIND node '{}' is not bound in the final plan",
+                staged.unwind.variable
+            )));
+        };
+        if &node.label != label {
+            return Err(CoreError::internal(format!(
+                "staged UNWIND node '{}' expected label '{label}' but final plan used '{}'",
+                staged.unwind.variable, node.label
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn staged_unwind_source_column(
+    staged: &GraphStagedUnwindQuery,
+) -> Result<&str, CoreError> {
+    staged
+        .stage
+        .exports
+        .iter()
+        .find_map(|export| match export {
+            GraphStageExport::AggregateValue { alias, column }
+                if alias == &staged.unwind.source_alias =>
+            {
+                Some(column.as_str())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            CoreError::internal(format!(
+                "staged UNWIND source alias '{}' was not exported",
+                staged.unwind.source_alias
+            ))
+        })
 }
 
 fn scalar_type_for_literal_list_element(element_type: LiteralListElementType) -> ScalarType {

@@ -2017,6 +2017,9 @@ pub enum GraphQuery {
     /// A staged chain of graph plans where non-terminal stages export row keys
     /// consumed by the final plan.
     Staged(GraphStagedQuery),
+    /// A staged aggregate list that is expanded with `UNWIND` before the final
+    /// graph plan consumes the row values.
+    StagedUnwind(Box<GraphStagedUnwindQuery>),
     /// A top-level set union of graph query plans.
     Union(GraphUnion),
 }
@@ -2092,6 +2095,43 @@ pub struct GraphUnwindPipeline {
     pub unwind: GraphUnwind,
     /// Final graph plan that consumes the unwound value as a staged scalar.
     pub final_plan: GraphPlan,
+}
+
+/// Staged aggregate list expansion feeding a final graph plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphStagedUnwindQuery {
+    /// Aggregate stage that exports the collected list plus any carried keys.
+    pub stage: GraphStage,
+    /// `UNWIND` expansion over one aggregate list export.
+    pub unwind: GraphStagedUnwind,
+    /// Final stage rendered against carried and unwound stage columns.
+    pub final_plan: GraphPlan,
+}
+
+/// A staged `UNWIND` expansion over an aggregate list export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphStagedUnwind {
+    /// Aggregate alias exported by the first stage and expanded into rows.
+    pub source_alias: String,
+    /// Variable bound by the `UNWIND` clause.
+    pub variable: String,
+    /// Binding kind produced for the unwound value.
+    pub binding: GraphStagedUnwindBinding,
+}
+
+/// Binding kind produced by a staged `UNWIND` expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphStagedUnwindBinding {
+    /// The unwound value is a scalar stage column.
+    Scalar {
+        /// Known non-null scalar type of the unwound value.
+        element_type: LiteralListElementType,
+    },
+    /// The unwound value is a graph node key stage column.
+    NodeKey {
+        /// Label of the collected graph node values.
+        label: String,
+    },
 }
 
 /// Staged graph query with one or more non-terminal row-source stages and a

@@ -56,7 +56,8 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphUnion, GraphUnionBranch,
+    GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery, GraphStagedUnwind,
+    GraphStagedUnwindBinding, GraphStagedUnwindQuery, GraphUnion, GraphUnionBranch,
     GraphUnionOuterProjection, GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindInput,
     GraphUnwindInputProjection, GraphUnwindPipeline, GraphUnwindProjection, KeyPredicate, Literal,
     LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
@@ -791,7 +792,7 @@ pub fn compile_cypher_with_parameters(
             "query.unwind",
             "compile_cypher returns a single graph plan; use compile_cypher_query for UNWIND row-source queries",
         )),
-        GraphQuery::Staged(_) => Err(unsupported(
+        GraphQuery::Staged(_) | GraphQuery::StagedUnwind(_) => Err(unsupported(
             "query.staged",
             "compile_cypher returns a single graph plan; use compile_cypher_query for staged queries",
         )),
@@ -835,7 +836,7 @@ pub fn compile_cypher_for_graph_with_parameters(
             "query.unwind",
             "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for UNWIND row-source queries",
         )),
-        GraphQuery::Staged(_) => Err(unsupported(
+        GraphQuery::Staged(_) | GraphQuery::StagedUnwind(_) => Err(unsupported(
             "query.staged",
             "compile_cypher_for_graph returns a single graph plan; use compile_cypher_query_for_graph for staged queries",
         )),
@@ -980,7 +981,9 @@ fn compile_single_query_as_graph_query(
     path: impl Into<String>,
 ) -> Result<GraphQuery, CoreError> {
     let path = path.into();
-    if let Some(query) = compile_direct_unwind_row_source(single_query, context, &path)? {
+    if let Some(query) =
+        compile_single_query_row_source_before_expansion(single_query, context, &path)?
+    {
         return Ok(query);
     }
     let contains_static_unwind = single_query_contains_unwind(single_query);
@@ -1077,6 +1080,20 @@ fn compile_single_query_as_graph_query(
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+}
+
+fn compile_single_query_row_source_before_expansion(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphQuery>, CoreError> {
+    if let Some(query) = compile_direct_unwind_row_source(single_query, context, path)? {
+        return Ok(Some(query));
+    }
+    let SingleQueryKind::MultiPart(multi_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    compile_staged_collect_unwind_multi_part(multi_part, context)
 }
 
 fn compile_direct_unwind_row_source(
@@ -4825,7 +4842,7 @@ fn append_explicit_union_component(
             path,
             "UNWIND row-source queries with UNION require row-source union planning and are not supported yet",
         )),
-        GraphQuery::Staged(_) => Err(unsupported(
+        GraphQuery::Staged(_) | GraphQuery::StagedUnwind(_) => Err(unsupported(
             path,
             "staged queries with UNION require staged subquery planning and are not supported yet",
         )),
@@ -6536,6 +6553,9 @@ fn compile_staged_multi_part(
     query: &MultiPartQuery,
     context: &CypherCompileContext,
 ) -> Result<Option<GraphQuery>, CoreError> {
+    if let Some(query) = compile_staged_collect_unwind_multi_part(query, context)? {
+        return Ok(Some(query));
+    }
     if let Some(query) = compile_staged_order_limit_multi_part(query, context)? {
         return Ok(Some(query));
     }
@@ -6716,6 +6736,16 @@ struct StagedAggregationShape<'a> {
     group_variables: Vec<String>,
     aggregate_item_index: usize,
     aggregate_alias: String,
+}
+
+struct StagedCollectUnwindShape<'a> {
+    part: &'a MultiPartQueryPart,
+    remaining_reading_clauses: &'a [ReadingClause],
+    return_clause: &'a Return,
+    group_variables: Vec<String>,
+    aggregate_item_index: usize,
+    aggregate_alias: String,
+    unwind_variable: String,
 }
 
 struct StagedFinalMatchShape {
@@ -7310,6 +7340,566 @@ fn staged_scalar_alias_used_in_final_match(
             .items
             .iter()
             .any(|item| expression_variable_name(&item.expression).as_deref() == Some(scalar_alias))
+}
+
+fn compile_staged_collect_unwind_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some(shape) = staged_collect_unwind_multi_part_shape(query, context)? else {
+        return Ok(None);
+    };
+    let Some((stage_plan, exports)) = compile_staged_collect_unwind_stage(query, &shape, context)?
+    else {
+        return Ok(None);
+    };
+    let aggregate_projection = stage_plan
+        .projections
+        .iter()
+        .find(|projection| projection.output_name() == shape.aggregate_alias)
+        .ok_or_else(|| CoreError::internal("staged collect projection was missing"))?;
+    let binding = staged_collect_unwind_binding(
+        aggregate_projection,
+        &stage_plan,
+        context,
+        format!(
+            "parts[0].with.items[{}].expression",
+            shape.aggregate_item_index
+        ),
+    )?;
+    let final_plan =
+        compile_staged_collect_unwind_final_plan(&shape, &stage_plan, &binding, context)?;
+
+    Ok(Some(GraphQuery::StagedUnwind(Box::new(
+        GraphStagedUnwindQuery {
+            stage: GraphStage {
+                plan: stage_plan,
+                exports,
+            },
+            unwind: GraphStagedUnwind {
+                source_alias: shape.aggregate_alias,
+                variable: shape.unwind_variable,
+                binding,
+            },
+            final_plan,
+        },
+    ))))
+}
+
+fn staged_collect_unwind_multi_part_shape<'a>(
+    query: &'a MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<StagedCollectUnwindShape<'a>>, CoreError> {
+    let [part] = query.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.order.is_some()
+        || part.with.skip.is_some()
+        || part.with.limit.is_some()
+    {
+        return Ok(None);
+    }
+    let [
+        ReadingClause::Unwind(unwind),
+        remaining_reading_clauses @ ..,
+    ] = query.final_part.reading_clauses.as_slice()
+    else {
+        return Ok(None);
+    };
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    let Some((group_variables, aggregate_item_index, aggregate_alias)) =
+        staged_collect_unwind_with_items(&part.with, context)?
+    else {
+        return Ok(None);
+    };
+    let Expression::Variable(source_variable) = &unwind.expression else {
+        return Ok(None);
+    };
+    if variable_name(source_variable) != aggregate_alias {
+        return Ok(None);
+    }
+    let unwind_variable = dynamic_unwind_variable_name(unwind, context);
+    if group_variables
+        .iter()
+        .any(|variable| variable == &unwind_variable)
+        || aggregate_alias == unwind_variable
+    {
+        return Err(unsupported(
+            "final_part.reading_clauses[0].unwind.variable",
+            format!("UNWIND variable '{unwind_variable}' conflicts with a staged WITH alias"),
+        ));
+    }
+
+    Ok(Some(StagedCollectUnwindShape {
+        part,
+        remaining_reading_clauses,
+        return_clause,
+        group_variables,
+        aggregate_item_index,
+        aggregate_alias,
+        unwind_variable,
+    }))
+}
+
+fn staged_collect_unwind_with_items(
+    with: &With,
+    context: &CypherCompileContext,
+) -> Result<Option<(Vec<String>, usize, String)>, CoreError> {
+    if with.items.is_empty() {
+        return Ok(None);
+    }
+    let mut group_variables = Vec::new();
+    let mut aggregate = None;
+    for (index, item) in with.items.iter().enumerate() {
+        if item.alias.is_none()
+            && let Expression::Variable(variable) = &item.expression
+        {
+            group_variables.push(variable_name(variable));
+            continue;
+        }
+        let Some(alias) = item.alias.as_ref().map(variable_name) else {
+            return Ok(None);
+        };
+        if !staged_collect_unwind_expression_is_collect(
+            &item.expression,
+            format!("parts[0].with.items[{index}].expression"),
+            context,
+        )? {
+            return Ok(None);
+        }
+        if aggregate.replace((index, alias)).is_some() {
+            return Ok(None);
+        }
+    }
+    let Some((aggregate_item_index, aggregate_alias)) = aggregate else {
+        return Ok(None);
+    };
+    let mut unique = BTreeSet::new();
+    if !group_variables
+        .iter()
+        .all(|variable| unique.insert(variable.clone()))
+        || unique.contains(&aggregate_alias)
+    {
+        return Ok(None);
+    }
+    Ok(Some((
+        group_variables,
+        aggregate_item_index,
+        aggregate_alias,
+    )))
+}
+
+fn staged_collect_unwind_expression_is_collect(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => {
+            staged_collect_unwind_expression_is_collect(inner, path, context)
+        }
+        Expression::FunctionCall(function) => {
+            Ok(compile_aggregate_function(function, &path, context)?
+                .is_some_and(|function| function == AggregateFunction::Collect))
+        }
+        _ => Ok(false),
+    }
+}
+
+fn compile_staged_collect_unwind_stage(
+    query: &MultiPartQuery,
+    shape: &StagedCollectUnwindShape<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<(GraphPlan, Vec<GraphStageExport>)>, CoreError> {
+    let mut stage_plan = GraphPlan::default();
+    let mut stage_state = compile_state_for_multi_part(query, context);
+    compile_reading_clauses_into(
+        &shape.part.reading_clauses,
+        "parts[0].match",
+        &mut stage_plan,
+        &mut stage_state,
+        context,
+    )?;
+    if !stage_state.path_variables.is_empty()
+        || !stage_state.relationship_element_path_variables.is_empty()
+        || !stage_state.scalar_aliases.is_empty()
+    {
+        return Ok(None);
+    }
+    let visible = visible_graph_variables(&stage_plan, &stage_state);
+    if !shape
+        .group_variables
+        .iter()
+        .all(|variable| visible.contains(variable))
+    {
+        return Ok(None);
+    }
+
+    let mut exports = Vec::with_capacity(shape.group_variables.len() + 1);
+    for variable in &shape.group_variables {
+        let export_column = stage_export_column(variable);
+        stage_plan.projections.push(Projection::Key {
+            variable: variable.clone(),
+            alias: export_column.clone(),
+        });
+        exports.push(GraphStageExport::NodeKey {
+            variable: variable.clone(),
+            column: export_column,
+        });
+    }
+    let aggregate_item = shape
+        .part
+        .with
+        .items
+        .get(shape.aggregate_item_index)
+        .ok_or_else(|| CoreError::internal("staged collect item index was out of bounds"))?;
+    reject_staged_collect_unwind_list_argument(
+        &aggregate_item.expression,
+        format!(
+            "parts[0].with.items[{}].expression",
+            shape.aggregate_item_index
+        ),
+    )?;
+    let aggregate_projection = compile_projection(
+        aggregate_item,
+        format!("parts[0].with.items[{}]", shape.aggregate_item_index),
+        context,
+        &stage_plan,
+        &stage_state,
+    )?;
+    let Projection::Aggregate {
+        function: AggregateFunction::Collect,
+        ..
+    } = &aggregate_projection
+    else {
+        return Ok(None);
+    };
+    let aggregate_column = aggregate_projection.output_name();
+    stage_plan.projections.push(aggregate_projection);
+    exports.push(GraphStageExport::AggregateValue {
+        alias: shape.aggregate_alias.clone(),
+        column: aggregate_column,
+    });
+    Ok(Some((stage_plan, exports)))
+}
+
+fn reject_staged_collect_unwind_list_argument(
+    expression: &Expression,
+    path: impl Into<String>,
+) -> Result<(), CoreError> {
+    let Some(function) = aggregate_function_call(expression) else {
+        return Ok(());
+    };
+    let [argument] = function.arguments.as_slice() else {
+        return Ok(());
+    };
+    if collect_unwind_argument_is_list_valued(argument) {
+        return Err(unsupported(
+            format!("{}.arguments[0]", path.into()),
+            "UNWIND collect(...) currently requires scalar string, integer, float, boolean, property, node-key, or supported scalar-expression elements; list-valued collect elements are not supported yet",
+        ));
+    }
+    Ok(())
+}
+
+fn collect_unwind_argument_is_list_valued(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => collect_unwind_argument_is_list_valued(inner),
+        Expression::Literal(CypherLiteral::List(_))
+        | Expression::ListSlice { .. }
+        | Expression::ListComprehension(_) => true,
+        _ => false,
+    }
+}
+
+fn compile_staged_collect_unwind_final_plan(
+    shape: &StagedCollectUnwindShape<'_>,
+    stage_plan: &GraphPlan,
+    binding: &GraphStagedUnwindBinding,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
+    let mut final_nodes = shape
+        .group_variables
+        .iter()
+        .map(|variable| {
+            stage_plan
+                .nodes
+                .iter()
+                .find(|node| node.variable == *variable)
+                .cloned()
+                .ok_or_else(|| CoreError::internal("staged group variable was not a node"))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+    if let GraphStagedUnwindBinding::NodeKey { label } = binding {
+        final_nodes.push(NodePattern {
+            variable: shape.unwind_variable.clone(),
+            label: label.clone(),
+        });
+    }
+
+    let mut final_plan = GraphPlan {
+        nodes: final_nodes,
+        ..GraphPlan::default()
+    };
+    let mut final_state = CypherCompileState::default();
+    if matches!(binding, GraphStagedUnwindBinding::Scalar { .. }) {
+        final_state.scalar_aliases.push(Projection::Expression {
+            expression: ScalarExpression::StageValue {
+                alias: shape.unwind_variable.clone(),
+            },
+            alias: shape.unwind_variable.clone(),
+        });
+    }
+    if !shape.remaining_reading_clauses.is_empty() {
+        compile_reading_clauses_into(
+            shape.remaining_reading_clauses,
+            "final_part.reading_clauses",
+            &mut final_plan,
+            &mut final_state,
+            context,
+        )?;
+    }
+    compile_return(shape.return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+    Ok(final_plan)
+}
+
+fn staged_collect_unwind_binding(
+    aggregate_projection: &Projection,
+    stage_plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<GraphStagedUnwindBinding, CoreError> {
+    let path = path.into();
+    let Projection::Aggregate {
+        function: AggregateFunction::Collect,
+        target,
+        ..
+    } = aggregate_projection
+    else {
+        return Err(CoreError::internal(
+            "staged collect UNWIND source was not a collect aggregate",
+        ));
+    };
+    match target {
+        AggregateTarget::VariableKey { variable } => {
+            let node = stage_plan
+                .nodes
+                .iter()
+                .find(|node| node.variable == *variable)
+                .ok_or_else(|| {
+                    unsupported(
+                        path.clone(),
+                        "UNWIND collect(variable) currently supports collected node variables",
+                    )
+                })?;
+            Ok(GraphStagedUnwindBinding::NodeKey {
+                label: node.label.clone(),
+            })
+        }
+        AggregateTarget::Property(property) => Ok(GraphStagedUnwindBinding::Scalar {
+            element_type: collect_unwind_property_element_type(
+                property, stage_plan, context, path,
+            )?,
+        }),
+        AggregateTarget::Expression(expression) => Ok(GraphStagedUnwindBinding::Scalar {
+            element_type: collect_unwind_scalar_expression_element_type(
+                expression, stage_plan, context, path,
+            )?,
+        }),
+        AggregateTarget::PresenceGatedProperty { .. }
+        | AggregateTarget::PresenceGatedVariableKey { .. } => Err(unsupported(
+            path,
+            "UNWIND collect(...) over optional presence-gated targets requires nullable staged row-source planning and is not supported yet",
+        )),
+    }
+}
+
+fn collect_unwind_scalar_expression_element_type(
+    expression: &ScalarExpression,
+    stage_plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<LiteralListElementType, CoreError> {
+    let path = path.into();
+    match expression {
+        ScalarExpression::Literal(literal) => literal_list_element_kind(literal).ok_or_else(|| {
+            unsupported(
+                path,
+                "UNWIND collect(NULL) requires an explicit non-null element type",
+            )
+        }),
+        ScalarExpression::Property(property) => {
+            collect_unwind_property_element_type(property, stage_plan, context, path)
+        }
+        ScalarExpression::Predicate(_)
+        | ScalarExpression::ToBoolean { .. }
+        | ScalarExpression::ToBooleanOrNull { .. }
+        | ScalarExpression::IsNaN { .. } => Ok(LiteralListElementType::Boolean),
+        ScalarExpression::ToString { .. }
+        | ScalarExpression::ToStringOrNull { .. }
+        | ScalarExpression::ToLower { .. }
+        | ScalarExpression::ToUpper { .. }
+        | ScalarExpression::Trim { .. }
+        | ScalarExpression::LTrim { .. }
+        | ScalarExpression::RTrim { .. }
+        | ScalarExpression::Replace { .. }
+        | ScalarExpression::Substring { .. }
+        | ScalarExpression::Left { .. }
+        | ScalarExpression::Right { .. }
+        | ScalarExpression::Reverse { .. } => Ok(LiteralListElementType::String),
+        ScalarExpression::ToInteger { .. }
+        | ScalarExpression::ToIntegerOrNull { .. }
+        | ScalarExpression::CharacterLength { .. } => Ok(LiteralListElementType::Integer),
+        ScalarExpression::ToFloat { .. }
+        | ScalarExpression::ToFloatOrNull { .. }
+        | ScalarExpression::Abs { .. }
+        | ScalarExpression::Ceil { .. }
+        | ScalarExpression::Floor { .. }
+        | ScalarExpression::Round { .. }
+        | ScalarExpression::Sqrt { .. }
+        | ScalarExpression::Exp { .. }
+        | ScalarExpression::Log { .. }
+        | ScalarExpression::Log10 { .. }
+        | ScalarExpression::Sin { .. }
+        | ScalarExpression::Cos { .. }
+        | ScalarExpression::Tan { .. }
+        | ScalarExpression::Cot { .. }
+        | ScalarExpression::Asin { .. }
+        | ScalarExpression::Acos { .. }
+        | ScalarExpression::Atan { .. }
+        | ScalarExpression::Atan2 { .. }
+        | ScalarExpression::Degrees { .. }
+        | ScalarExpression::Radians { .. } => Ok(LiteralListElementType::Float),
+        ScalarExpression::Negate { expression } => {
+            collect_unwind_scalar_expression_element_type(expression, stage_plan, context, path)
+        }
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => {
+            if matches!(
+                operator,
+                ArithmeticOperator::Divide | ArithmeticOperator::Power
+            ) {
+                return Ok(LiteralListElementType::Float);
+            }
+            let left =
+                collect_unwind_scalar_expression_element_type(left, stage_plan, context, &path)?;
+            let right =
+                collect_unwind_scalar_expression_element_type(right, stage_plan, context, &path)?;
+            Ok(
+                if matches!(left, LiteralListElementType::Float)
+                    || matches!(right, LiteralListElementType::Float)
+                {
+                    LiteralListElementType::Float
+                } else {
+                    left
+                },
+            )
+        }
+        _ => Err(unsupported(
+            path,
+            "UNWIND collect(...) currently requires scalar string, integer, float, boolean, property, node-key, or supported scalar-expression elements",
+        )),
+    }
+}
+
+fn collect_unwind_property_element_type(
+    property: &PropertyRef,
+    stage_plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: impl Into<String>,
+) -> Result<LiteralListElementType, CoreError> {
+    let path = path.into();
+    let (Some(graph), Some(catalog)) = (context.graph.as_ref(), context.catalog.as_ref()) else {
+        return Err(unsupported(
+            path,
+            "UNWIND collect(property) requires catalog-backed graph compilation so the collected element type is known",
+        ));
+    };
+    if let Some(node_pattern) = stage_plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == property.variable)
+    {
+        let node = graph.node(&node_pattern.label).ok_or_else(|| {
+            CoreError::internal(format!(
+                "staged collect referenced unknown node label '{}'",
+                node_pattern.label
+            ))
+        })?;
+        let column = node
+            .column_for_property(&property.property)
+            .ok_or_else(|| {
+                unsupported(
+                    path.clone(),
+                    format!(
+                        "UNWIND collect(property) references unknown property '{}.{}'",
+                        property.variable, property.property
+                    ),
+                )
+            })?;
+        let data_type =
+            catalog_column_data_type(catalog, &node.table, column).ok_or_else(|| {
+                unsupported(
+                    path.clone(),
+                    format!(
+                        "UNWIND collect(property) could not resolve catalog type for '{}.{}'",
+                        property.variable, property.property
+                    ),
+                )
+            })?;
+        return literal_list_element_type_for_data_type(data_type, path);
+    }
+    Err(unsupported(
+        path,
+        "UNWIND collect(relationship.property) requires relationship-property row-source typing and is not supported yet",
+    ))
+}
+
+fn literal_list_element_type_for_data_type(
+    data_type: &str,
+    path: impl Into<String>,
+) -> Result<LiteralListElementType, CoreError> {
+    let path = path.into();
+    let data_type = data_type.trim();
+    if data_type.contains("Utf8") {
+        return Ok(LiteralListElementType::String);
+    }
+    if data_type.starts_with("Int") || data_type.starts_with("UInt") {
+        return Ok(LiteralListElementType::Integer);
+    }
+    if data_type.starts_with("Float") || data_type.starts_with("Decimal") {
+        return Ok(LiteralListElementType::Float);
+    }
+    if data_type == "Boolean" {
+        return Ok(LiteralListElementType::Boolean);
+    }
+    if data_type.starts_with("Dictionary") {
+        if data_type.contains("Utf8") {
+            return Ok(LiteralListElementType::String);
+        }
+        if data_type.contains("Int") || data_type.contains("UInt") {
+            return Ok(LiteralListElementType::Integer);
+        }
+        if data_type.contains("Float") || data_type.contains("Decimal") {
+            return Ok(LiteralListElementType::Float);
+        }
+        if data_type.contains("Boolean") {
+            return Ok(LiteralListElementType::Boolean);
+        }
+    }
+    Err(unsupported(
+        path,
+        format!("UNWIND collect(property) does not support collected {data_type} values yet"),
+    ))
 }
 
 fn compile_staged_aggregation_multi_part(

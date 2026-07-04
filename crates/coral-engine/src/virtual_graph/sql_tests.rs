@@ -2,12 +2,13 @@ use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
-    GraphUnwind, GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindPipeline,
-    GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
-    PredicateRhs, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyPredicate, PropertyRef, RelationshipPattern, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
+    GraphStagedUnwind, GraphStagedUnwindBinding, GraphStagedUnwindQuery, GraphUnwind,
+    GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindPipeline, GraphUnwindProjection,
+    KeyPredicate, Literal, LiteralListElementType, NodePattern, OptionalMatchScope, OrderDirection,
+    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
+    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
 };
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
@@ -950,6 +951,99 @@ fn lower_graph_query_renders_staged_aggregate_cte() {
              JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
              JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
     );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_collect_unwind_ctes() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_collect_unwind_query();
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged collect UNWIND query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\", COALESCE(ARRAY_AGG(\"n1\".\"id\") FILTER (WHERE (\"n1\".\"id\") IS NOT NULL), make_array()) AS \"bees\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" \
+             GROUP BY \"n0\".\"id\"), \
+             \"stage1\" AS (SELECT \"stage0\".\"a_id\" AS \"a_id\", UNNEST(\"stage0\".\"bees\") AS \"b2\" FROM \"stage0\" AS \"stage0\") \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage1\" AS \"stage1\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage1\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage1\".\"a_id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON (\"r0\".\"friend_id\" = \"stage1\".\"b2\") AND (\"n1\".\"id\" = \"stage1\".\"b2\")"
+    );
+}
+
+fn staged_collect_unwind_query() -> GraphQuery {
+    let mut stage_plan = staged_aggregate_stage_plan();
+    *stage_plan
+        .projections
+        .get_mut(1)
+        .expect("staged aggregate fixture should have aggregate projection") =
+        Projection::Aggregate {
+            function: AggregateFunction::Collect,
+            target: AggregateTarget::VariableKey {
+                variable: "b".to_string(),
+            },
+            distinct: false,
+            alias: "bees".to_string(),
+        };
+
+    let mut final_plan = staged_aggregate_final_plan();
+    final_plan
+        .nodes
+        .get_mut(1)
+        .expect("staged aggregate fixture should have final target node")
+        .variable = "b2".to_string();
+    final_plan
+        .relationships
+        .get_mut(0)
+        .expect("staged aggregate fixture should have final relationship")
+        .right = "b2".to_string();
+    final_plan.projections = vec![
+        Projection::Property {
+            property: PropertyRef {
+                variable: "a".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("a".to_string()),
+        },
+        Projection::Property {
+            property: PropertyRef {
+                variable: "b2".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("b".to_string()),
+        },
+    ];
+
+    GraphQuery::StagedUnwind(Box::new(GraphStagedUnwindQuery {
+        stage: GraphStage {
+            plan: stage_plan,
+            exports: vec![
+                GraphStageExport::NodeKey {
+                    variable: "a".to_string(),
+                    column: "a_id".to_string(),
+                },
+                GraphStageExport::AggregateValue {
+                    alias: "bees".to_string(),
+                    column: "bees".to_string(),
+                },
+            ],
+        },
+        unwind: GraphStagedUnwind {
+            source_alias: "bees".to_string(),
+            variable: "b2".to_string(),
+            binding: GraphStagedUnwindBinding::NodeKey {
+                label: "Person".to_string(),
+            },
+        },
+        final_plan,
+    }))
 }
 
 fn staged_aggregate_query() -> GraphQuery {

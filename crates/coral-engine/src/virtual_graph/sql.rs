@@ -16,17 +16,18 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphStagedQuery, GraphUnion, GraphUnionOuterProjectionItem, GraphUnwind,
-    GraphUnwindPipeline, KeyPredicate, Literal, LiteralListElementType, NodePattern, NullOrder,
-    OptionalMatchScope, OrderDirection, OrderExpression, PredicateExpression, PredicateRhs,
-    PresencePredicate, Projection, ProjectionPredicate, ProjectionPredicateExpression,
-    ProjectionPredicateRhs, PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarCaseAlternative, ScalarExpression, ScalarPredicate,
-    ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
-    UndirectedRelationshipEndpoint,
+    GraphQuery, GraphStageExport, GraphStagedQuery, GraphStagedUnwindQuery, GraphUnion,
+    GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindPipeline, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern, NullOrder, OptionalMatchScope, OrderDirection,
+    OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
+    ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
+    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use super::validation::{
-    ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings, unwind_stage_column_bindings,
+    ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings, staged_unwind_source_column,
+    staged_unwind_stage_column_bindings, unwind_stage_column_bindings,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -109,6 +110,7 @@ impl Declaration {
             GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
             GraphQuery::UnwindPipeline(pipeline) => self.lower_graph_unwind_pipeline(pipeline),
             GraphQuery::Staged(staged) => self.lower_graph_staged_query(staged),
+            GraphQuery::StagedUnwind(staged) => self.lower_graph_staged_unwind_query(staged),
             GraphQuery::Union(union) => self.lower_graph_union(union),
         }
     }
@@ -168,6 +170,9 @@ impl Declaration {
             GraphQuery::Plan(plan) => self.lower_graph_plan_against_catalog(plan, catalog),
             GraphQuery::Staged(staged) => {
                 self.lower_graph_staged_query_against_catalog(staged, catalog)
+            }
+            GraphQuery::StagedUnwind(staged) => {
+                self.lower_graph_staged_unwind_query_against_catalog(staged, catalog)
             }
             GraphQuery::Union(union) => self.lower_graph_union_against_catalog(union, catalog),
             GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
@@ -270,6 +275,59 @@ impl Declaration {
         ))
     }
 
+    fn lower_graph_staged_unwind_query(
+        &self,
+        staged: &GraphStagedUnwindQuery,
+    ) -> Result<SqlTranslation, CoreError> {
+        let stage_translation = self.lower_graph_plan(&staged.stage.plan)?;
+        let unwind_cte = render_staged_unwind_cte(staged)?;
+        let stage_columns = staged_unwind_stage_column_bindings(staged)?;
+        let final_validated =
+            self.validate_graph_plan_with_stage_columns(&staged.final_plan, stage_columns)?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        let mut diagnostics = stage_translation.diagnostics().to_vec();
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!(
+                "WITH {} AS ({}), {} {}",
+                quote_ident("stage0"),
+                stage_translation.sql(),
+                unwind_cte,
+                final_translation.sql()
+            ),
+            diagnostics,
+        ))
+    }
+
+    fn lower_graph_staged_unwind_query_against_catalog(
+        &self,
+        staged: &GraphStagedUnwindQuery,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        let stage_translation =
+            self.lower_graph_plan_against_catalog(&staged.stage.plan, catalog)?;
+        let unwind_cte = render_staged_unwind_cte(staged)?;
+        let stage_columns = staged_unwind_stage_column_bindings(staged)?;
+        let final_validated = self.validate_graph_plan_with_stage_columns_against_catalog(
+            &staged.final_plan,
+            stage_columns,
+            catalog,
+        )?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        let mut diagnostics = stage_translation.diagnostics().to_vec();
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!(
+                "WITH {} AS ({}), {} {}",
+                quote_ident("stage0"),
+                stage_translation.sql(),
+                unwind_cte,
+                final_translation.sql()
+            ),
+            diagnostics,
+        ))
+    }
+
     fn lower_graph_union(&self, union: &GraphUnion) -> Result<SqlTranslation, CoreError> {
         if union.branches.is_empty() {
             return Err(CoreError::internal("graph union had no union branches"));
@@ -362,6 +420,52 @@ fn render_unwind_input(
         projections.join(", "),
         quote_ident(input_alias)
     ))
+}
+
+fn render_staged_unwind_cte(staged: &GraphStagedUnwindQuery) -> Result<String, CoreError> {
+    let source_column = staged_unwind_source_column(staged)?;
+    let mut projections = Vec::new();
+    for export in &staged.stage.exports {
+        match export {
+            GraphStageExport::NodeKey { column, .. }
+            | GraphStageExport::RelationshipKey { column, .. } => {
+                projections.push(render_staged_unwind_passthrough(column));
+            }
+            GraphStageExport::ScalarValue { source, .. } => {
+                projections.push(render_staged_unwind_passthrough(source));
+            }
+            GraphStageExport::AggregateValue { alias, .. } => {
+                if alias != &staged.unwind.source_alias {
+                    return Err(CoreError::internal(format!(
+                        "staged UNWIND cannot pass through aggregate value '{alias}'",
+                    )));
+                }
+            }
+        }
+    }
+    projections.push(format!(
+        "UNNEST({}.{}) AS {}",
+        quote_ident("stage0"),
+        quote_ident(source_column),
+        quote_ident(&staged.unwind.variable)
+    ));
+
+    Ok(format!(
+        "{} AS (SELECT {} FROM {} AS {})",
+        quote_ident("stage1"),
+        projections.join(", "),
+        quote_ident("stage0"),
+        quote_ident("stage0")
+    ))
+}
+
+fn render_staged_unwind_passthrough(column: &str) -> String {
+    format!(
+        "{}.{} AS {}",
+        quote_ident("stage0"),
+        quote_ident(column),
+        quote_ident(column)
+    )
 }
 
 fn render_unwind_list_expression(

@@ -556,6 +556,85 @@ async fn cypher_staged_two_group_key_aggregation_before_match_executes() {
 }
 
 #[tokio::test]
+async fn cypher_collect_scalar_unwind_source_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         WITH collect(service.id) AS ids \
+         UNWIND ids AS id \
+         RETURN id ORDER BY id",
+    )
+    .await
+    .expect("collect(property) UNWIND source should execute");
+
+    assert!(
+        execution.translated_sql().contains("ARRAY_AGG"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("UNNEST"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"id": 10}),
+            json!({"id": 20}),
+            json!({"id": 30}),
+            json!({"id": 40}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_collect_node_unwind_source_feeds_downstream_match() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b1:Person) \
+         WITH a, collect(b1) AS bees \
+         UNWIND bees AS b2 \
+         MATCH (a)-[:LIKES]->(b2) \
+         RETURN a.name AS a, b2.name AS b ORDER BY a, b",
+    )
+    .await
+    .expect("collect(node) UNWIND source should feed a downstream MATCH");
+
+    assert!(
+        execution.translated_sql().contains("ARRAY_AGG"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("UNNEST"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"a": "Alice", "b": "Bob"}),
+            json!({"a": "Bob", "b": "Carol"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_staged_aggregate_alias_filters_in_final_match() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_fixture(temp.path());

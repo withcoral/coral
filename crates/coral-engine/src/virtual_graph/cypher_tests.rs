@@ -748,17 +748,102 @@ fn compiles_literal_unwind_terminal_with_return_as_pipeline() {
 }
 
 #[test]
-fn rejects_collect_unwind_row_source_for_later_widening() {
+fn compiles_collect_scalar_unwind_row_source_as_staged_unwind() {
+    let query = compile_cypher_query(
+        "MATCH (person:Person) \
+         WITH collect(1) AS numbers \
+         UNWIND numbers AS n \
+         RETURN n ORDER BY n",
+    )
+    .expect("collect-sourced scalar UNWIND should compile");
+
+    let GraphQuery::StagedUnwind(staged) = query else {
+        panic!("expected collect-sourced UNWIND to compile as a staged row-source query");
+    };
+    assert_eq!(staged.unwind.source_alias, "numbers");
+    assert_eq!(staged.unwind.variable, "n");
+    assert_eq!(
+        staged.unwind.binding,
+        GraphStagedUnwindBinding::Scalar {
+            element_type: LiteralListElementType::Integer,
+        }
+    );
+    assert_eq!(
+        staged.stage.exports,
+        vec![GraphStageExport::AggregateValue {
+            alias: "numbers".to_string(),
+            column: "numbers".to_string(),
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::StageValue {
+                alias: "n".to_string(),
+            },
+            alias: "n".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_collect_node_unwind_match_as_staged_unwind() {
+    let query = compile_cypher_query(
+        "MATCH (a:Person)-[:KNOWS]->(b1:Person) \
+         WITH a, collect(b1) AS bees \
+         UNWIND bees AS b2 \
+         MATCH (a)-[:LIKES]->(b2) \
+         RETURN a.name AS a, b2.name AS b",
+    )
+    .expect("collect(node)-sourced UNWIND feeding MATCH should compile");
+
+    let GraphQuery::StagedUnwind(staged) = query else {
+        panic!("expected collect(node)-sourced UNWIND to compile as a staged row-source query");
+    };
+    assert_eq!(staged.unwind.source_alias, "bees");
+    assert_eq!(staged.unwind.variable, "b2");
+    assert_eq!(
+        staged.unwind.binding,
+        GraphStagedUnwindBinding::NodeKey {
+            label: "Person".to_string(),
+        }
+    );
+    assert_eq!(
+        staged.stage.exports,
+        vec![
+            GraphStageExport::NodeKey {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            },
+            GraphStageExport::AggregateValue {
+                alias: "bees".to_string(),
+                column: "bees".to_string(),
+            },
+        ]
+    );
+    assert!(
+        staged
+            .final_plan
+            .relationships
+            .iter()
+            .any(|relationship| relationship.left == "a" && relationship.right == "b2")
+    );
+}
+
+#[test]
+fn rejects_collect_unwind_nested_list_elements_for_later_widening() {
     let error = compile_cypher_query(
         "MATCH (person:Person) \
-         WITH collect(person.name) AS names \
-         UNWIND names AS x \
+         WITH collect([1]) AS lists \
+         UNWIND lists AS x \
          RETURN x",
     )
-    .expect_err("collect-sourced UNWIND should remain out of scope");
+    .expect_err("nested collect-sourced UNWIND should remain out of scope");
 
     assert!(
-        error.to_string().contains("UNSUPPORTED_CYPHER"),
+        error
+            .to_string()
+            .contains("list-valued collect elements are not supported yet"),
         "unexpected error: {error}"
     );
 }

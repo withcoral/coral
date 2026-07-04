@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 27,
+    "Unwind": 30,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -7134,6 +7134,58 @@
             "name": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "unwind-collect-scalar-row-source",
+      "feature": "Unwind",
+      "query": "MATCH (p:Person) WITH collect(p.age) AS ages UNWIND ages AS age RETURN age ORDER BY age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "age": 29
+          },
+          {
+            "age": 34
+          },
+          {
+            "age": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-collect-node-downstream-match",
+      "feature": "Unwind",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b1:Person) WITH a, collect(b1) AS bees UNWIND bees AS b2 MATCH (a)-[:KNOWS]->(b2) RETURN a.name AS source, b2.name AS target ORDER BY source, target",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "source": "Alice",
+            "target": "Bob"
+          },
+          {
+            "source": "Alice",
+            "target": "Carol"
+          },
+          {
+            "source": "Bob",
+            "target": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-collect-nested-list-elements-rejected",
+      "feature": "Unwind",
+      "query": "MATCH (p:Person) WITH collect([p.age]) AS age_lists UNWIND age_lists AS ages RETURN ages[0] AS age",
+      "expected": {
+        "kind": "error",
+        "contains": "UNWIND collect(...) currently requires scalar"
       }
     },
     {
