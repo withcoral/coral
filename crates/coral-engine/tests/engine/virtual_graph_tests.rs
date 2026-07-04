@@ -10,7 +10,10 @@ use coral_engine::{
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use crate::harness::{build_source, dir_url, execution_to_rows, test_runtime, write_jsonl_file};
+use crate::harness::{
+    RICH_GRAPH, build_source, dir_url, execution_to_rows, rich_manifest, test_runtime,
+    write_jsonl_file, write_rich_fixture,
+};
 
 fn assert_close(actual: f64, expected: f64) {
     let delta = (actual - expected).abs();
@@ -778,6 +781,92 @@ async fn cypher_temporal_components_execute_against_synthetic_sources() {
             "time_millisecond": 789,
             "time_microsecond": 789_123
         })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_stored_temporal_components_execute_against_rich_fixture() {
+    let temp = TempDir::new().expect("temp dir");
+    write_rich_fixture(temp.path());
+    let source = build_source(rich_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(RICH_GRAPH).expect("rich graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada' \
+         RETURN person.joined.year AS joined_year, \
+                person.joined.month AS joined_month, \
+                person.joined.day AS joined_day, \
+                person.joined.hour AS joined_hour, \
+                person.birthday.year AS birthday_year, \
+                person.birthday.month AS birthday_month, \
+                person.birthday.day AS birthday_day",
+    )
+    .await
+    .expect("Cypher stored temporal component access should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT CAST(date_part('year', people.joined) AS BIGINT) AS joined_year, \
+                    CAST(date_part('month', people.joined) AS BIGINT) AS joined_month, \
+                    CAST(date_part('day', people.joined) AS BIGINT) AS joined_day, \
+                    CAST(date_part('hour', people.joined) AS BIGINT) AS joined_hour, \
+                    CAST(date_part('year', people.birthday) AS BIGINT) AS birthday_year, \
+                    CAST(date_part('month', people.birthday) AS BIGINT) AS birthday_month, \
+                    CAST(date_part('day', people.birthday) AS BIGINT) AS birthday_day \
+             FROM rich.people \
+             WHERE people.name = 'Ada'",
+        )
+        .await
+        .expect("equivalent stored temporal component SQL should execute"),
+    );
+
+    assert!(
+        execution.translated_sql().contains("date_part('year'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "joined_year": 2020,
+            "joined_month": 6,
+            "joined_day": 1,
+            "joined_hour": 9,
+            "birthday_year": 1990,
+            "birthday_month": 5,
+            "birthday_day": 20
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_stored_date_rejects_time_component_against_rich_fixture() {
+    let temp = TempDir::new().expect("temp dir");
+    write_rich_fixture(temp.path());
+    let source = build_source(rich_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(RICH_GRAPH).expect("rich graph should parse");
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) WHERE person.name = 'Ada' RETURN person.birthday.hour AS hour",
+    )
+    .await
+    .expect_err("stored DATE hour component should reject");
+
+    assert!(
+        error
+            .to_string()
+            .contains("hour is not supported for date values"),
+        "unexpected error: {error}"
     );
 }
 

@@ -419,6 +419,9 @@ impl<'a> GraphPlanValidator<'a> {
         let expression_type =
             self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
         let ScalarType::Temporal(kind) = expression_type else {
+            if matches!(expression_type, ScalarType::Unknown) {
+                return Ok(ScalarType::Integer);
+            }
             return Err(Diagnostic::new(
                 diagnostic_codes::INVALID_SCALAR_TYPE,
                 format!("{path}.expression"),

@@ -50,7 +50,7 @@ use decypher::ast::visit::{self, VisitMut};
 use ordered_float::OrderedFloat;
 use regex::Regex;
 
-use super::declaration::{Declaration, Relationship as DeclaredRelationship};
+use super::declaration::{Declaration, Relationship as DeclaredRelationship, TableRef};
 use super::diagnostic::Diagnostic;
 use super::diagnostic_codes;
 use super::ir::{
@@ -65,7 +65,7 @@ use super::ir::{
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
-use crate::CoreError;
+use crate::{CatalogInfo, CoreError};
 
 mod cst_recovery;
 mod functions;
@@ -508,6 +508,7 @@ struct CypherCompileContext {
     order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     parameters: BTreeMap<String, CypherParameterValue>,
     graph: Option<Declaration>,
+    catalog: Option<CatalogInfo>,
 }
 
 impl CypherCompileContext {
@@ -515,6 +516,7 @@ impl CypherCompileContext {
         cypher: &str,
         parameters: BTreeMap<String, CypherParameterValue>,
         graph: Option<Declaration>,
+        catalog: Option<&CatalogInfo>,
         order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     ) -> Self {
         Self {
@@ -531,6 +533,7 @@ impl CypherCompileContext {
             order_null_placements,
             parameters,
             graph,
+            catalog: catalog.cloned(),
         }
     }
 
@@ -865,7 +868,7 @@ pub fn compile_cypher_query_with_parameters(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
 ) -> Result<GraphQuery, CoreError> {
-    compile_cypher_query_with_optional_graph(cypher, parameters, None)
+    compile_cypher_query_with_optional_graph(cypher, parameters, None, None)
 }
 
 /// Parses and compiles Cypher with typed parameter values into a read-only graph query
@@ -882,15 +885,25 @@ pub fn compile_cypher_query_for_graph_with_parameters(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
 ) -> Result<GraphQuery, CoreError> {
-    let query = compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph))?;
+    let query = compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph), None)?;
     graph.validate_graph_query(&query)?;
     Ok(query)
+}
+
+pub(crate) fn compile_cypher_query_for_graph_with_parameters_and_catalog(
+    graph: &Declaration,
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+    catalog: &CatalogInfo,
+) -> Result<GraphQuery, CoreError> {
+    compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph), Some(catalog))
 }
 
 fn compile_cypher_query_with_optional_graph(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
     graph: Option<&Declaration>,
+    catalog: Option<&CatalogInfo>,
 ) -> Result<GraphQuery, CoreError> {
     let count_normalized = normalize_compact_count_subqueries(cypher);
     let range_normalized = normalize_static_range_functions(count_normalized.as_ref());
@@ -913,6 +926,7 @@ fn compile_cypher_query_with_optional_graph(
         cypher,
         parameters.clone(),
         graph.cloned(),
+        catalog,
         order_null_placements,
     );
     compile_query(&query, &context)
@@ -7264,14 +7278,39 @@ fn apply_terminal_return_projection_aliases(
     let mut available = plan.projections.clone();
     let mut returned_aliases = BTreeSet::new();
     for (index, item) in return_clause.items.iter().enumerate() {
-        if terminal_return_item_is_stored_temporal_component_access(
-            &item.expression,
-            &plan.projections,
-        ) {
-            return Err(unsupported(
-                format!("final_part.return.items[{index}].expression"),
-                "stored temporal component access is not supported yet",
-            ));
+        let item_path = format!("final_part.return.items[{index}].expression");
+        if let Some((projection, consumed_alias)) =
+            compile_optional_terminal_temporal_component_projection(
+                &item.expression,
+                item.alias.as_ref(),
+                &available,
+                plan,
+                context,
+                item_path.clone(),
+            )?
+        {
+            if !returned_aliases.insert(consumed_alias.clone()) {
+                return Err(unsupported(
+                    item_path,
+                    format!(
+                        "terminal RETURN projects WITH alias '{consumed_alias}' more than once"
+                    ),
+                ));
+            }
+            let position = available
+                .iter()
+                .position(|projection| {
+                    projection_output_alias(projection) == Some(consumed_alias.as_str())
+                })
+                .ok_or_else(|| {
+                    unsupported(
+                        format!("final_part.return.items[{index}].expression"),
+                        format!("terminal RETURN references unknown WITH alias '{consumed_alias}'"),
+                    )
+                })?;
+            available.remove(position);
+            reordered.push(projection);
+            continue;
         }
         let Expression::Variable(variable) = &item.expression else {
             return Err(unsupported(
@@ -7305,28 +7344,80 @@ fn apply_terminal_return_projection_aliases(
     Ok(())
 }
 
-fn terminal_return_item_is_stored_temporal_component_access(
+fn compile_optional_terminal_temporal_component_projection(
     expression: &Expression,
+    output_alias: Option<&Variable>,
     projections: &[Projection],
-) -> bool {
+    plan: &GraphPlan,
+    context: &CypherCompileContext,
+    path: String,
+) -> Result<Option<(Projection, String)>, CoreError> {
     match expression {
         Expression::Parenthesized(inner) => {
-            terminal_return_item_is_stored_temporal_component_access(inner, projections)
+            compile_optional_terminal_temporal_component_projection(
+                inner,
+                output_alias,
+                projections,
+                plan,
+                context,
+                path,
+            )
         }
         Expression::PropertyLookup { base, property, .. } => {
             let component = property.name.name.as_str();
             if !temporal_component_name_is_reserved(component) {
-                return false;
+                return Ok(None);
             }
             let Expression::Variable(variable) = base.as_ref() else {
-                return false;
+                return Ok(None);
             };
-            let alias = variable_name(variable);
-            projections
-                .iter()
-                .any(|projection| projection_output_alias(projection) == Some(alias.as_str()))
+            let consumed_alias = variable_name(variable);
+            let Some(projection) = projections.iter().find(|projection| {
+                projection_output_alias(projection) == Some(consumed_alias.as_str())
+            }) else {
+                return Err(unsupported(
+                    path,
+                    format!("terminal RETURN references unknown WITH alias '{consumed_alias}'"),
+                ));
+            };
+            let base_expression =
+                scalar_alias_projection_expression(projection, format!("{path}.base"))?;
+            let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
+            match classify_temporal_component_base(
+                &base_expression,
+                PredicateCompileMode::Graph {
+                    plan,
+                    path_state: None,
+                },
+                context,
+            )? {
+                TemporalComponentBaseType::Temporal(kind) => {
+                    if !unit.supports_kind(kind) {
+                        return Err(unsupported(
+                            format!("{path}.property"),
+                            format!("{component} is not supported for {} values", kind.name()),
+                        ));
+                    }
+                }
+                TemporalComponentBaseType::NonTemporal | TemporalComponentBaseType::Unknown => {
+                    return Err(unsupported(
+                        format!("{path}.base"),
+                        "temporal component access requires a temporal value",
+                    ));
+                }
+            }
+            Ok(Some((
+                Projection::Expression {
+                    expression: ScalarExpression::Temporal(TemporalExpr::Component {
+                        expression: Box::new(base_expression),
+                        unit,
+                    }),
+                    alias: output_alias.map_or_else(|| component.to_string(), variable_name),
+                },
+                consumed_alias,
+            )))
         }
-        _ => false,
+        _ => Ok(None),
     }
 }
 
@@ -20460,27 +20551,22 @@ fn compile_optional_temporal_component_scalar_expression(
                 mode,
                 context,
             )?;
-            let ScalarExpression::Temporal(temporal) = &base_expression else {
-                if temporal_component_name_is_reserved(component) {
+            let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
+            match classify_temporal_component_base(&base_expression, mode, context)? {
+                TemporalComponentBaseType::Temporal(kind) => {
+                    if !unit.supports_kind(kind) {
+                        return Err(unsupported(
+                            format!("{path}.property"),
+                            format!("{component} is not supported for {} values", kind.name()),
+                        ));
+                    }
+                }
+                TemporalComponentBaseType::NonTemporal | TemporalComponentBaseType::Unknown => {
                     return Err(unsupported(
                         format!("{path}.base"),
-                        "stored temporal component access is not supported yet",
+                        "temporal component access requires a temporal value",
                     ));
                 }
-                return Ok(None);
-            };
-            let Some(kind) = temporal_expression_value_kind(temporal) else {
-                return Err(unsupported(
-                    format!("{path}.base"),
-                    "temporal component access requires a temporal value",
-                ));
-            };
-            let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
-            if !unit.supports_kind(kind) {
-                return Err(unsupported(
-                    format!("{path}.property"),
-                    format!("{component} is not supported for {} values", kind.name()),
-                ));
             }
             Ok(Some(ScalarExpression::Temporal(TemporalExpr::Component {
                 expression: Box::new(base_expression),
@@ -20488,6 +20574,197 @@ fn compile_optional_temporal_component_scalar_expression(
             })))
         }
         _ => Ok(None),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemporalComponentBaseType {
+    Temporal(TemporalKind),
+    NonTemporal,
+    Unknown,
+}
+
+fn classify_temporal_component_base(
+    expression: &ScalarExpression,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<TemporalComponentBaseType, CoreError> {
+    match expression {
+        ScalarExpression::Temporal(temporal) => Ok(temporal_expression_value_kind(temporal)
+            .map_or(
+                TemporalComponentBaseType::NonTemporal,
+                TemporalComponentBaseType::Temporal,
+            )),
+        ScalarExpression::Property(property) => {
+            classify_temporal_property_ref(property, mode.static_metadata_plan(), context)
+        }
+        ScalarExpression::Literal(_)
+        | ScalarExpression::LiteralList { .. }
+        | ScalarExpression::TypedLiteralList { .. }
+        | ScalarExpression::GraphKeyList { .. }
+        | ScalarExpression::Predicate(_)
+        | ScalarExpression::Key { .. }
+        | ScalarExpression::ElementId { .. }
+        | ScalarExpression::GraphIdentity { .. }
+        | ScalarExpression::GraphPresence { .. }
+        | ScalarExpression::NodeLabels { .. }
+        | ScalarExpression::PropertyKeys { .. }
+        | ScalarExpression::RelationshipType { .. } => Ok(TemporalComponentBaseType::NonTemporal),
+        _ => Ok(TemporalComponentBaseType::Unknown),
+    }
+}
+
+fn classify_temporal_property_ref(
+    property: &PropertyRef,
+    plan: Option<&GraphPlan>,
+    context: &CypherCompileContext,
+) -> Result<TemporalComponentBaseType, CoreError> {
+    let (Some(plan), Some(graph), Some(catalog)) =
+        (plan, context.graph.as_ref(), context.catalog.as_ref())
+    else {
+        return Ok(TemporalComponentBaseType::Unknown);
+    };
+    let Some((table, column)) = property_ref_table_column(property, plan, graph)? else {
+        return Ok(TemporalComponentBaseType::Unknown);
+    };
+    let Some(data_type) = catalog_column_data_type(catalog, table, column) else {
+        return Ok(TemporalComponentBaseType::Unknown);
+    };
+    Ok(temporal_kind_for_data_type(data_type).map_or(
+        TemporalComponentBaseType::NonTemporal,
+        TemporalComponentBaseType::Temporal,
+    ))
+}
+
+fn property_ref_table_column<'a>(
+    property: &PropertyRef,
+    plan: &GraphPlan,
+    graph: &'a Declaration,
+) -> Result<Option<(&'a TableRef, &'a str)>, CoreError> {
+    if let Some(node_pattern) = plan
+        .nodes
+        .iter()
+        .find(|node| node.variable == property.variable)
+    {
+        let Some(node) = graph.node(&node_pattern.label) else {
+            return Ok(None);
+        };
+        return Ok(node
+            .column_for_property(&property.property)
+            .map(|column| (&node.table, column)));
+    }
+
+    let Some((relationship_pattern, relationship_index)) = plan
+        .relationships
+        .iter()
+        .enumerate()
+        .find_map(|(index, relationship)| {
+            (relationship.variable.as_deref() == Some(property.variable.as_str()))
+                .then_some((relationship, index))
+        })
+    else {
+        return Ok(None);
+    };
+    let Some(left_label) = plan_node_label(plan, &relationship_pattern.left) else {
+        return Ok(None);
+    };
+    let Some(right_label) = plan_node_label(plan, &relationship_pattern.right) else {
+        return Ok(None);
+    };
+    let mut matches = graph
+        .relationships_for_type(&relationship_pattern.relationship_type)
+        .filter(|relationship| {
+            relationship_matches_temporal_property_ref_pattern(
+                relationship,
+                relationship_pattern.direction,
+                left_label,
+                right_label,
+            )
+        });
+    let Some(relationship) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(unsupported(
+            format!("relationships[{relationship_index}]"),
+            "ambiguous relationship property component type; add direction or use distinct relationship types",
+        ));
+    }
+    Ok(relationship
+        .column_for_property(&property.property)
+        .map(|column| (&relationship.table, column)))
+}
+
+fn plan_node_label<'a>(plan: &'a GraphPlan, variable: &str) -> Option<&'a str> {
+    plan.nodes
+        .iter()
+        .find(|node| node.variable == variable)
+        .map(|node| node.label.as_str())
+}
+
+fn relationship_matches_temporal_property_ref_pattern(
+    relationship: &DeclaredRelationship,
+    direction: Direction,
+    left_label: &str,
+    right_label: &str,
+) -> bool {
+    let matches_forward =
+        left_label == relationship.from.label && right_label == relationship.to.label;
+    let matches_reverse =
+        left_label == relationship.to.label && right_label == relationship.from.label;
+    match direction {
+        Direction::Outgoing => matches_forward,
+        Direction::Incoming => matches_reverse,
+        Direction::Undirected => matches_forward || matches_reverse,
+    }
+}
+
+fn catalog_column_data_type<'a>(
+    catalog: &'a CatalogInfo,
+    table: &TableRef,
+    column: &str,
+) -> Option<&'a str> {
+    catalog
+        .tables
+        .iter()
+        .find(|candidate| {
+            candidate.schema_name == table.schema && candidate.table_name == table.name
+        })
+        .and_then(|table| {
+            table
+                .columns
+                .iter()
+                .find(|candidate| candidate.name == column)
+        })
+        .map(|column| column.data_type.as_str())
+}
+
+fn temporal_kind_for_data_type(data_type: &str) -> Option<TemporalKind> {
+    let data_type = data_type.trim();
+    if data_type.starts_with("Date") {
+        return Some(TemporalKind::Date);
+    }
+    if data_type.starts_with("Time") && !data_type.starts_with("Timestamp") {
+        return Some(TemporalKind::LocalTime);
+    }
+    if data_type.starts_with("Timestamp") {
+        return Some(TemporalKind::LocalDateTime);
+    }
+    if data_type.starts_with("Dictionary") {
+        return temporal_kind_for_dictionary_data_type(data_type);
+    }
+    None
+}
+
+fn temporal_kind_for_dictionary_data_type(data_type: &str) -> Option<TemporalKind> {
+    if data_type.contains("Date") {
+        Some(TemporalKind::Date)
+    } else if data_type.contains("Time") && !data_type.contains("Timestamp") {
+        Some(TemporalKind::LocalTime)
+    } else if data_type.contains("Timestamp") {
+        Some(TemporalKind::LocalDateTime)
+    } else {
+        None
     }
 }
 
@@ -22407,6 +22684,7 @@ fn compile_compact_exists_pattern_query(
         source,
         context.parameters.clone(),
         context.graph.clone(),
+        context.catalog.as_ref(),
         BTreeMap::new(),
     );
     compile_exists_regular_query_predicate(&regular_query, path, plan, &fragment_context)
@@ -22547,6 +22825,7 @@ fn compile_pattern_comprehension_scalar_expression(
         &source.collect_query_source,
         context.parameters.clone(),
         context.graph.clone(),
+        context.catalog.as_ref(),
         BTreeMap::new(),
     );
     let (pattern, target, distinct) = compile_regular_query_collect_subquery(
@@ -22590,6 +22869,7 @@ fn compile_pattern_comprehension_count_scalar_expression(
         &source.count_query_source,
         context.parameters.clone(),
         context.graph.clone(),
+        context.catalog.as_ref(),
         BTreeMap::new(),
     );
     let (pattern, distinct_target) = compile_regular_query_count_subquery(
@@ -25272,6 +25552,7 @@ fn parse_cypher_expression_fragment(
         &fragment,
         context.parameters.clone(),
         context.graph.clone(),
+        context.catalog.as_ref(),
         BTreeMap::new(),
     );
     Ok((expression, fragment_context))

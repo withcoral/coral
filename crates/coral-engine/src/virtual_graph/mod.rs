@@ -16,6 +16,7 @@ mod ir;
 mod sql;
 mod validation;
 
+pub(crate) use cypher::compile_cypher_query_for_graph_with_parameters_and_catalog;
 pub use cypher::{
     CypherParameterValue, compile_cypher, compile_cypher_for_graph,
     compile_cypher_for_graph_with_parameters, compile_cypher_query, compile_cypher_query_for_graph,

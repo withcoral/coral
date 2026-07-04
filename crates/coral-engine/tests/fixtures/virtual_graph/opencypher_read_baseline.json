@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 50,
+    "Temporal": 56,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10918,7 +10918,7 @@
       "query": "MATCH (p:Person) WITH p.name AS d RETURN d.year AS year",
       "expected": {
         "kind": "error",
-        "contains": "stored temporal component access is not supported yet"
+        "contains": "temporal component access requires a temporal value"
       }
     },
     {
@@ -11277,8 +11277,121 @@
       "fixture": "rich",
       "query": "MATCH (p:Person) WHERE p.name = 'Ada' WITH p.joined AS t RETURN t.year AS y",
       "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "y": 2020
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-timestamp-component-month",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.joined.month AS m",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "m": 6
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-timestamp-component-day",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.joined.day AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-timestamp-component-hour",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.joined.hour AS h",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "h": 9
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-date-components",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.birthday.year AS y, p.birthday.month AS mo, p.birthday.day AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "y": 1990,
+            "mo": 5,
+            "d": 20
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-timestamp-component-ordered-years",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) RETURN p.name AS name, p.joined.year AS y ORDER BY y",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Eve",
+            "y": 2018
+          },
+          {
+            "name": "Cee",
+            "y": 2019
+          },
+          {
+            "name": "Ada",
+            "y": 2020
+          },
+          {
+            "name": "Bea",
+            "y": 2021
+          },
+          {
+            "name": "Dot",
+            "y": 2022
+          },
+          {
+            "name": "Fay",
+            "y": 2023
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-date-component-hour-rejected",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.birthday.hour AS h",
+      "expected": {
         "kind": "error",
-        "contains": "stored temporal component access is not supported yet"
+        "contains": "hour is not supported for date values"
       }
     }
   ]

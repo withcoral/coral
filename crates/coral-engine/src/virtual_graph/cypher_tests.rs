@@ -1,4 +1,5 @@
 use super::*;
+use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
 fn star_test_graph() -> Declaration {
     Declaration::from_yaml(
@@ -98,6 +99,55 @@ relationships:
 ",
     )
     .expect("single-label Person/KNOWS test graph should parse")
+}
+
+fn temporal_columns_test_graph() -> Declaration {
+    Declaration::from_yaml(
+        r"
+version: 1
+name: temporal_columns_test
+nodes:
+  - label: Person
+    table: { schema: rich, name: people }
+    key: id
+    properties:
+      name: name
+      joined: joined
+      birthday: birthday
+",
+    )
+    .expect("temporal columns test graph should parse")
+}
+
+fn temporal_columns_catalog() -> CatalogInfo {
+    CatalogInfo {
+        tables: vec![TableInfo {
+            schema_name: "rich".to_string(),
+            table_name: "people".to_string(),
+            description: String::new(),
+            guide: String::new(),
+            columns: [
+                ("id", "Int64"),
+                ("name", "Utf8"),
+                ("joined", "Timestamp"),
+                ("birthday", "Date"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(position, (name, data_type))| ColumnInfo {
+                name: name.to_string(),
+                data_type: data_type.to_string(),
+                nullable: true,
+                is_virtual: false,
+                is_required_filter: false,
+                description: String::new(),
+                ordinal_position: u32::try_from(position).unwrap_or(u32::MAX),
+            })
+            .collect(),
+            required_filters: Vec::new(),
+        }],
+        table_functions: Vec::new(),
+    }
 }
 
 fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
@@ -2511,6 +2561,100 @@ fn compiles_constructed_temporal_component_scalar_expressions() {
 }
 
 #[test]
+fn compiles_stored_temporal_component_scalar_expressions_with_catalog() {
+    let graph = temporal_columns_test_graph();
+    let catalog = temporal_columns_catalog();
+    let query = compile_cypher_query_for_graph_with_parameters_and_catalog(
+        &graph,
+        "MATCH (person:Person) \
+         RETURN person.joined.year AS joinedYear, \
+                person.birthday.month AS birthdayMonth",
+        &BTreeMap::new(),
+        &catalog,
+    )
+    .expect("stored temporal component access should compile with catalog types");
+    let GraphQuery::Plan(plan) = query else {
+        panic!("stored temporal component query should compile to one plan");
+    };
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "joined".to_string(),
+                    }),
+                    TemporalComponentUnit::Year,
+                ),
+                alias: "joinedYear".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "birthday".to_string(),
+                    }),
+                    TemporalComponentUnit::Month,
+                ),
+                alias: "birthdayMonth".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_terminal_with_stored_temporal_component_scalar_expression_with_catalog() {
+    let graph = temporal_columns_test_graph();
+    let catalog = temporal_columns_catalog();
+    let query = compile_cypher_query_for_graph_with_parameters_and_catalog(
+        &graph,
+        "MATCH (person:Person) WITH person.joined AS t RETURN t.year AS year",
+        &BTreeMap::new(),
+        &catalog,
+    )
+    .expect("terminal WITH stored temporal component access should compile with catalog types");
+    let GraphQuery::Plan(plan) = query else {
+        panic!("terminal WITH stored temporal component query should compile to one plan");
+    };
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: temporal_component_expression(
+                ScalarExpression::Property(PropertyRef {
+                    variable: "person".to_string(),
+                    property: "joined".to_string(),
+                }),
+                TemporalComponentUnit::Year,
+            ),
+            alias: "year".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn rejects_stored_temporal_component_kind_mismatch_with_catalog() {
+    let graph = temporal_columns_test_graph();
+    let catalog = temporal_columns_catalog();
+    let error = compile_cypher_query_for_graph_with_parameters_and_catalog(
+        &graph,
+        "MATCH (person:Person) RETURN person.birthday.hour AS hour",
+        &BTreeMap::new(),
+        &catalog,
+    )
+    .expect_err("stored date hour component should reject");
+
+    assert!(
+        error
+            .to_string()
+            .contains("hour is not supported for date values"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn rejects_unsupported_temporal_component_access() {
     for (cypher, expected) in [
         (
@@ -2539,7 +2683,7 @@ fn rejects_unsupported_temporal_component_access() {
         ),
         (
             "MATCH (person:Person) WITH person.name AS d RETURN d.year AS year",
-            "stored temporal component access is not supported yet",
+            "temporal component access requires a temporal value",
         ),
     ] {
         let error =

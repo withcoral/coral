@@ -332,8 +332,18 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_for_graph(graph, cypher)?;
-        Self::execute_graph_query(sources, runtime, graph, &query).await
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
+            graph,
+            cypher,
+            &BTreeMap::new(),
+            &catalog,
+        )?;
+        graph.validate_graph_query_against_catalog(&query, &catalog)?;
+        let translation = graph.lower_graph_query(&query)?;
+        let execution = query_runtime.execute_sql(translation.sql()).await?;
+        Ok(GraphExecution::new(translation, execution))
     }
 
     /// Executes one supported read-only Cypher query with typed parameters.
@@ -361,8 +371,15 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)?;
-        Self::execute_graph_query(sources, runtime, graph, &query).await
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
+            graph, cypher, parameters, &catalog,
+        )?;
+        graph.validate_graph_query_against_catalog(&query, &catalog)?;
+        let translation = graph.lower_graph_query(&query)?;
+        let execution = query_runtime.execute_sql(translation.sql()).await?;
+        Ok(GraphExecution::new(translation, execution))
     }
 
     /// Explains one supported read-only Cypher query over a virtual graph declaration.
@@ -384,8 +401,18 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_for_graph(graph, cypher)?;
-        Self::explain_graph_query(sources, runtime, graph, &query).await
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
+            graph,
+            cypher,
+            &BTreeMap::new(),
+            &catalog,
+        )?;
+        graph.validate_graph_query_against_catalog(&query, &catalog)?;
+        let translation = graph.lower_graph_query(&query)?;
+        let query_plan = query_runtime.explain_sql(translation.sql()).await?;
+        Ok(GraphQueryPlan::new(translation, query_plan))
     }
 
     /// Explains one supported read-only Cypher query with typed parameters.
@@ -409,8 +436,15 @@ impl CoralQuery {
             ));
         }
 
-        let query = compile_cypher_query_for_graph_with_parameters(graph, cypher, parameters)?;
-        Self::explain_graph_query(sources, runtime, graph, &query).await
+        let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
+        let catalog = query_runtime.catalog_info(None);
+        let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
+            graph, cypher, parameters, &catalog,
+        )?;
+        graph.validate_graph_query_against_catalog(&query, &catalog)?;
+        let translation = graph.lower_graph_query(&query)?;
+        let query_plan = query_runtime.explain_sql(translation.sql()).await?;
+        Ok(GraphQueryPlan::new(translation, query_plan))
     }
 
     /// Executes one supported read-only GraphQL virtual graph query.
