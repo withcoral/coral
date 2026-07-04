@@ -632,6 +632,26 @@ struct JoinRelationshipOptions<'p> {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct StageRelationshipOptionalUnknownOptions<'p, 'a> {
+    relationship: &'p Relationship,
+    pattern: &'a RelationshipPattern,
+    relationship_alias: &'p str,
+    unknown_variable: &'a str,
+    optional_predicate: Option<&'p str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OptionalPredicateUnknownJoinOptions<'p, 'a> {
+    relationship: &'p Relationship,
+    pattern: &'a RelationshipPattern,
+    relationship_alias: &'p str,
+    unknown_variable: &'a str,
+    known_is_left: bool,
+    relationship_join: &'p str,
+    optional_predicate: &'p str,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct OptionalScopeAnchor<'a> {
     relationship_index: usize,
     anchor_variable: &'a str,

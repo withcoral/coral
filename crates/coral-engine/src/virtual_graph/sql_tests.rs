@@ -741,10 +741,108 @@ fn lower_graph_query_renders_staged_relationship_key_optional_match() {
     );
 }
 
+#[test]
+fn lower_graph_query_renders_staged_node_relationship_key_optional_miss() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_node_relationship_key_optional_miss_query();
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged node and relationship-key optional graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"r0\".\"id\" AS \"r_id\", \"n0\".\"id\" AS \"a1_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" ORDER BY \"r0\".\"id\" ASC LIMIT 1) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"stage0\".\"r_id\" AS \"r\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a1_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"id\" = \"stage0\".\"r_id\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n1\" ON (\"r0\".\"person_id\" = \"n1\".\"id\" AND \"r0\".\"friend_id\" = \"stage0\".\"a1_id\") AND (\"r0\".\"id\" = \"stage0\".\"r_id\")"
+    );
+}
+
 fn staged_relationship_key_optional_query() -> GraphQuery {
     GraphQuery::Staged(GraphStagedQuery {
         stages: vec![staged_relationship_key_stage()],
         final_plan: staged_relationship_key_optional_final_plan(),
+    })
+}
+
+fn staged_node_relationship_key_optional_miss_query() -> GraphQuery {
+    let mut stage = staged_relationship_key_stage();
+    stage.plan.projections.push(Projection::Key {
+        variable: "a".to_string(),
+        alias: "a1_id".to_string(),
+    });
+    stage.plan.order_by.push(OrderKey {
+        expression: OrderExpression::Key {
+            variable: "r".to_string(),
+        },
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    });
+    stage.exports.push(GraphStageExport::NodeKey {
+        variable: "a1".to_string(),
+        column: "a1_id".to_string(),
+    });
+
+    GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![stage],
+        final_plan: GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "a1".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "b2".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("r".to_string()),
+                relationship_type: "KNOWS".to_string(),
+                left: "b2".to_string(),
+                direction: Direction::Outgoing,
+                right: "a1".to_string(),
+            }],
+            optional_relationships: vec![0],
+            optional_matches: vec![OptionalMatchScope {
+                node_indices: vec![1],
+                relationship_indices: vec![0],
+                predicate: None,
+            }],
+            distinct: false,
+            projections: vec![
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "a1".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("a".to_string()),
+                },
+                Projection::Key {
+                    variable: "r".to_string(),
+                    alias: "r".to_string(),
+                },
+                Projection::Property {
+                    property: PropertyRef {
+                        variable: "b2".to_string(),
+                        property: "name".to_string(),
+                    },
+                    alias: Some("b".to_string()),
+                },
+            ],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: None,
+        },
     })
 }
 

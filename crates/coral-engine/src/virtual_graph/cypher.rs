@@ -7070,6 +7070,7 @@ struct StagedRelationshipCarryShape<'a> {
 
 struct StagedRelationshipCarryInitialMatch {
     relationship_variable: String,
+    relationship_type: String,
     endpoint_variables: BTreeSet<String>,
     endpoint_labels: BTreeMap<String, String>,
 }
@@ -7151,6 +7152,7 @@ fn staged_relationship_carry_multi_part_shape<'a>(
     let Some(final_match) = staged_relationship_carry_final_match_shape(
         match_clause,
         &initial_match.relationship_variable,
+        &initial_match.relationship_type,
         &carried_nodes.iter().cloned().collect(),
         &initial_match.endpoint_labels,
     ) else {
@@ -7248,6 +7250,12 @@ fn staged_relationship_carry_initial_match_shape(
         .as_ref()
         .and_then(|detail| detail.variable.as_ref())
         .map(variable_name)?;
+    let relationship_type = chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.types.as_ref())
+        .and_then(staged_static_label_expression_name)?;
     let endpoint_variables = [path_node_variable(start), path_node_variable(&chain.node)]
         .into_iter()
         .flatten()
@@ -7268,6 +7276,7 @@ fn staged_relationship_carry_initial_match_shape(
 
     Some(StagedRelationshipCarryInitialMatch {
         relationship_variable,
+        relationship_type,
         endpoint_variables,
         endpoint_labels,
     })
@@ -7293,6 +7302,7 @@ fn staged_relationship_carry_with_order_shape(
 fn staged_relationship_carry_final_match_shape(
     match_clause: &Match,
     carried_relationship: &str,
+    carried_relationship_type: &str,
     carried_nodes: &BTreeSet<String>,
     carried_node_labels: &BTreeMap<String, String>,
 ) -> Option<StagedRelationshipCarryFinalMatch> {
@@ -7337,12 +7347,16 @@ fn staged_relationship_carry_final_match_shape(
     if relationship_variable != carried_relationship {
         return None;
     }
-    let relationship_type = chain
+    let relationship_type = if let Some(types) = chain
         .relationship
         .detail
         .as_ref()
         .and_then(|detail| detail.types.as_ref())
-        .and_then(staged_static_label_expression_name)?;
+    {
+        staged_static_label_expression_name(types)?
+    } else {
+        carried_relationship_type.to_string()
+    };
     let start_variable = path_node_variable(start)?;
     let end_variable = path_node_variable(&chain.node)?;
     if start.properties.is_some()
@@ -7354,8 +7368,7 @@ fn staged_relationship_carry_final_match_shape(
     }
 
     let mut graph_variables = BTreeSet::new();
-    let mut nodes = Vec::with_capacity(2);
-    let mut optional_node_indices = Vec::new();
+    let mut node_specs = Vec::with_capacity(2);
     for (variable, labels) in [
         (start_variable.clone(), start.labels.as_slice()),
         (end_variable.clone(), chain.node.labels.as_slice()),
@@ -7365,11 +7378,19 @@ fn staged_relationship_carry_final_match_shape(
         }
         let label = staged_static_label_name(labels)
             .or_else(|| carried_node_labels.get(&variable).cloned())?;
-        if !carried_nodes.contains(&variable) {
-            optional_node_indices.push(nodes.len());
-        }
-        nodes.push(NodePattern { variable, label });
+        let optional = !carried_nodes.contains(&variable);
+        node_specs.push((NodePattern { variable, label }, optional));
     }
+    node_specs.sort_by_key(|(_, optional)| *optional);
+    let nodes = node_specs
+        .iter()
+        .map(|(node, _)| node.clone())
+        .collect::<Vec<_>>();
+    let optional_node_indices = node_specs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, optional))| optional.then_some(index))
+        .collect::<Vec<_>>();
 
     Some(StagedRelationshipCarryFinalMatch {
         nodes,
@@ -7397,6 +7418,9 @@ fn staged_relationship_carry_return_shape(
                 .is_some_and(|(variable, _)| graph_variables.contains(&variable))
                 || staged_id_lookup(&item.expression, context)
                     .is_some_and(|variable| variable == carried_relationship)
+                || terminal_return_graph_variable(&item.expression).is_some_and(|variable| {
+                    variable == carried_relationship || graph_variables.contains(&variable)
+                })
         })
 }
 

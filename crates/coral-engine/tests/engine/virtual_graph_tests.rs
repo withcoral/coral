@@ -263,6 +263,77 @@ async fn cypher_staged_relationship_carry_optional_match_executes() {
 }
 
 #[tokio::test]
+async fn cypher_staged_bare_relationship_carry_optional_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (:Person)-[r:KNOWS]->(:Person) \
+         WITH r LIMIT 1 \
+         OPTIONAL MATCH (a2:Person)-[r]->(b2:Person) \
+         RETURN a2, r, b2",
+    )
+    .await
+    .expect("staged bare relationship carry optional query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"r_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows.len(), 1);
+    let expected = [
+        json!({
+            "a2.__id": 1,
+            "a2.__labels": ["Person"],
+            "a2.name": "Alice",
+            "a2.age": 30,
+            "r.__id": 100,
+            "r.__type": "KNOWS",
+            "b2.__id": 2,
+            "b2.__labels": ["Person"],
+            "b2.name": "Bob",
+            "b2.age": 25
+        }),
+        json!({
+            "a2.__id": 1,
+            "a2.__labels": ["Person"],
+            "a2.name": "Alice",
+            "a2.age": 30,
+            "r.__id": 101,
+            "r.__type": "KNOWS",
+            "b2.__id": 3,
+            "b2.__labels": ["Person"],
+            "b2.name": "Carol",
+            "b2.age": 35
+        }),
+        json!({
+            "a2.__id": 2,
+            "a2.__labels": ["Person"],
+            "a2.name": "Bob",
+            "a2.age": 25,
+            "r.__id": 102,
+            "r.__type": "KNOWS",
+            "b2.__id": 3,
+            "b2.__labels": ["Person"],
+            "b2.name": "Carol",
+            "b2.age": 35
+        }),
+    ];
+    let row = rows.first().expect("expected one result row");
+    assert!(
+        expected.contains(row),
+        "unexpected bare relationship carry row: {row:?}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_staged_node_and_relationship_carry_optional_match_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_keyed_fixture(temp.path());
@@ -285,6 +356,120 @@ async fn cypher_staged_node_and_relationship_carry_optional_match_executes() {
         execution_to_rows(execution.execution()),
         vec![json!({"a": "Alice", "r": 100, "b": "Bob"})]
     );
+}
+
+#[tokio::test]
+async fn cypher_staged_node_and_bare_relationship_carry_optional_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
+         WITH r, a1 LIMIT 1 \
+         OPTIONAL MATCH (a1)-[r]->(b2:Person) \
+         RETURN a1, r, b2",
+    )
+    .await
+    .expect("staged node and bare relationship carry optional query should execute");
+
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows.len(), 1);
+    let expected = [
+        json!({
+            "a1.__id": 1,
+            "a1.__labels": ["Person"],
+            "a1.name": "Alice",
+            "a1.age": 30,
+            "r.__id": 100,
+            "r.__type": "KNOWS",
+            "b2.__id": 2,
+            "b2.__labels": ["Person"],
+            "b2.name": "Bob",
+            "b2.age": 25
+        }),
+        json!({
+            "a1.__id": 1,
+            "a1.__labels": ["Person"],
+            "a1.name": "Alice",
+            "a1.age": 30,
+            "r.__id": 101,
+            "r.__type": "KNOWS",
+            "b2.__id": 3,
+            "b2.__labels": ["Person"],
+            "b2.name": "Carol",
+            "b2.age": 35
+        }),
+        json!({
+            "a1.__id": 2,
+            "a1.__labels": ["Person"],
+            "a1.name": "Bob",
+            "a1.age": 25,
+            "r.__id": 102,
+            "r.__type": "KNOWS",
+            "b2.__id": 3,
+            "b2.__labels": ["Person"],
+            "b2.name": "Carol",
+            "b2.age": 35
+        }),
+    ];
+    let row = rows.first().expect("expected one result row");
+    assert!(
+        expected.contains(row),
+        "unexpected node and bare relationship carry row: {row:?}"
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_node_and_bare_relationship_carry_optional_miss_preserves_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
+         WITH r, a1 ORDER BY id(r) LIMIT 1 \
+         OPTIONAL MATCH (b2:Person)-[r]->(a1) \
+         RETURN a1, r, b2",
+    )
+    .await
+    .expect("staged bare relationship carry optional miss should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "a1.__id": 1,
+            "a1.__labels": ["Person"],
+            "a1.name": "Alice",
+            "a1.age": 30,
+            "r.__id": 100,
+            "r.__type": "KNOWS"
+        })]
+    );
+    assert_eq!(execution.execution().row_count(), 1);
+    let batch = execution
+        .execution()
+        .batches()
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .expect("optional miss query should return one row");
+    let b2_id = batch
+        .column_by_name("b2.__id")
+        .expect("optional miss query should project b2 id");
+    assert!(b2_id.is_null(0), "optional-only b2 should be NULL");
 }
 
 #[tokio::test]

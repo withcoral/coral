@@ -1344,7 +1344,6 @@ impl<'a> SqlRenderer<'a> {
         } else {
             (pattern.right.as_str(), pattern.left.as_str(), false)
         };
-        let unknown_node = validated.node_binding(unknown_variable)?;
         let relationship_join = Self::relationship_known_node_condition(
             validated,
             relationship,
@@ -1353,6 +1352,43 @@ impl<'a> SqlRenderer<'a> {
             known_variable,
             known_is_left,
         )?;
+        if options.optional
+            && Self::try_join_stage_relationship_optional_unknown_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                StageRelationshipOptionalUnknownOptions {
+                    relationship,
+                    pattern,
+                    relationship_alias,
+                    unknown_variable,
+                    optional_predicate: options.optional_predicate,
+                },
+            )?
+        {
+            return Ok(());
+        }
+        if options.optional
+            && let Some(optional_predicate) = options.optional_predicate
+        {
+            Self::join_optional_predicate_unknown_node(
+                validated,
+                joined_nodes,
+                from_clause,
+                OptionalPredicateUnknownJoinOptions {
+                    relationship,
+                    pattern,
+                    relationship_alias,
+                    unknown_variable,
+                    known_is_left,
+                    relationship_join: &relationship_join,
+                    optional_predicate,
+                },
+            )?;
+            return Ok(());
+        }
+
+        let unknown_node = validated.node_binding(unknown_variable)?;
         let unknown_table_ref = render_table_ref(&unknown_node.table);
         let unknown_alias = validated.binding(unknown_variable)?.alias().to_string();
         let join_operator = if options.optional {
@@ -1360,53 +1396,6 @@ impl<'a> SqlRenderer<'a> {
         } else {
             " JOIN "
         };
-        if options.optional
-            && let Some(optional_predicate) = options.optional_predicate
-        {
-            let mut unknown_join = Self::relationship_known_node_condition(
-                validated,
-                relationship,
-                pattern,
-                relationship_alias,
-                unknown_variable,
-                !known_is_left,
-            )?;
-            if let Some(rehydration) =
-                Self::stage_column_node_rehydration_condition(validated, unknown_variable)?
-            {
-                unknown_join = format!("({unknown_join}) AND ({rehydration})");
-            }
-            let relationship_condition = if pattern.direction == Direction::Undirected
-                && Self::relationship_orientations(validated, relationship, pattern)?.len() > 1
-            {
-                Self::relationship_pair_condition(
-                    validated,
-                    relationship,
-                    relationship_alias,
-                    pattern,
-                )?
-            } else {
-                relationship_join
-            };
-            let outer_condition = Self::join_condition_with_predicate(
-                relationship_condition,
-                Some(optional_predicate),
-            );
-            write!(
-                from_clause,
-                " LEFT JOIN ({} AS {} JOIN {} AS {} ON {}) ON {}",
-                render_table_ref(&relationship.table),
-                quote_ident(relationship_alias),
-                unknown_table_ref,
-                quote_ident(&unknown_alias),
-                unknown_join,
-                outer_condition
-            )
-            .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
-            joined_nodes.insert(unknown_variable);
-            return Ok(());
-        }
-
         write!(
             from_clause,
             "{}{} AS {} ON {}",
@@ -1435,6 +1424,115 @@ impl<'a> SqlRenderer<'a> {
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         joined_nodes.insert(unknown_variable);
         Ok(())
+    }
+
+    fn join_optional_predicate_unknown_node(
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
+        options: OptionalPredicateUnknownJoinOptions<'_, 'a>,
+    ) -> Result<(), CoreError> {
+        let mut unknown_join = Self::relationship_known_node_condition(
+            validated,
+            options.relationship,
+            options.pattern,
+            options.relationship_alias,
+            options.unknown_variable,
+            !options.known_is_left,
+        )?;
+        if let Some(rehydration) =
+            Self::stage_column_node_rehydration_condition(validated, options.unknown_variable)?
+        {
+            unknown_join = format!("({unknown_join}) AND ({rehydration})");
+        }
+        let relationship_condition = if options.pattern.direction == Direction::Undirected
+            && Self::relationship_orientations(validated, options.relationship, options.pattern)?
+                .len()
+                > 1
+        {
+            Self::relationship_pair_condition(
+                validated,
+                options.relationship,
+                options.relationship_alias,
+                options.pattern,
+            )?
+        } else {
+            options.relationship_join.to_string()
+        };
+        let outer_condition = Self::join_condition_with_predicate(
+            relationship_condition,
+            Some(options.optional_predicate),
+        );
+        let unknown_node = validated.node_binding(options.unknown_variable)?;
+        let unknown_alias = validated.binding(options.unknown_variable)?.alias();
+        write!(
+            from_clause,
+            " LEFT JOIN ({} AS {} JOIN {} AS {} ON {}) ON {}",
+            render_table_ref(&options.relationship.table),
+            quote_ident(options.relationship_alias),
+            render_table_ref(&unknown_node.table),
+            quote_ident(unknown_alias),
+            unknown_join,
+            outer_condition
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        joined_nodes.insert(options.unknown_variable);
+        Ok(())
+    }
+
+    fn try_join_stage_relationship_optional_unknown_node(
+        validated: &ValidatedGraphPlan<'a>,
+        joined_nodes: &mut BTreeSet<&'a str>,
+        from_clause: &mut String,
+        options: StageRelationshipOptionalUnknownOptions<'_, 'a>,
+    ) -> Result<bool, CoreError> {
+        let Some(variable) = options.pattern.variable.as_deref() else {
+            return Ok(false);
+        };
+        let Some((stage_alias, key_column)) = validated.stage_relationship_column_ref(variable)
+        else {
+            return Ok(false);
+        };
+        if !matches!(
+            validated.binding(options.unknown_variable)?.kind(),
+            ValidatedBindingKind::Node(_)
+        ) {
+            return Ok(false);
+        }
+
+        let relationship_key = options.relationship.key.as_deref().ok_or_else(|| {
+            CoreError::internal("validated staged relationship did not have a key")
+        })?;
+        let relationship_condition = format!(
+            "{}.{} = {}.{}",
+            quote_ident(options.relationship_alias),
+            quote_ident(relationship_key),
+            quote_ident(stage_alias),
+            quote_ident(key_column)
+        );
+        let unknown_join = Self::relationship_pair_condition(
+            validated,
+            options.relationship,
+            options.relationship_alias,
+            options.pattern,
+        )?;
+        let unknown_join =
+            Self::join_condition_with_predicate(unknown_join, options.optional_predicate);
+        let unknown_node = validated.node_binding(options.unknown_variable)?;
+        let unknown_alias = validated.binding(options.unknown_variable)?.alias();
+        write!(
+            from_clause,
+            " JOIN {} AS {} ON {} LEFT JOIN {} AS {} ON {}",
+            render_table_ref(&options.relationship.table),
+            quote_ident(options.relationship_alias),
+            relationship_condition,
+            render_table_ref(&unknown_node.table),
+            quote_ident(unknown_alias),
+            unknown_join
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        joined_nodes.insert(options.unknown_variable);
+        Ok(true)
     }
 
     fn unknown_node_join_condition(

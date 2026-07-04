@@ -6038,6 +6038,60 @@ fn compiles_staged_relationship_carry_optional_match() {
 }
 
 #[test]
+fn compiles_staged_bare_relationship_carry_optional_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (:Person)-[r:KNOWS]->(:Person) \
+             WITH r LIMIT 1 \
+             OPTIONAL MATCH (a2:Person)-[r]->(b2:Person) \
+             RETURN a2, r, b2",
+    )
+    .expect("staged route should infer the carried relationship type for bare optional reuse");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("bare relationship carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport::RelationshipKey {
+            variable: "r".to_string(),
+            column: "r_id".to_string(),
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a2".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+    assert_eq!(
+        staged.final_plan.projection_output_names(),
+        vec![
+            "a2.__id",
+            "a2.__labels",
+            "a2.age",
+            "a2.name",
+            "r.__id",
+            "r.__type",
+            "b2.__id",
+            "b2.__labels",
+            "b2.age",
+            "b2.name",
+        ]
+    );
+}
+
+#[test]
 fn compiles_staged_node_and_relationship_carry_optional_match() {
     let graph = staged_planning_test_graph();
     let query = compile_cypher_query_for_graph(
@@ -6080,6 +6134,66 @@ fn compiles_staged_node_and_relationship_carry_optional_match() {
         }]
     );
     assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+}
+
+#[test]
+fn compiles_staged_node_and_bare_relationship_carry_optional_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
+             WITH r, a1 LIMIT 1 \
+             OPTIONAL MATCH (a1)-[r]->(b2:Person) \
+             RETURN a1, r, b2",
+    )
+    .expect("staged route should carry node and bare relationship keys together");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("node plus bare relationship carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::RelationshipKey {
+                variable: "r".to_string(),
+                column: "r_id".to_string(),
+            },
+            GraphStageExport::NodeKey {
+                variable: "a1".to_string(),
+                column: "a1_id".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a1".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+    assert_eq!(
+        staged.final_plan.projection_output_names(),
+        vec![
+            "a1.__id",
+            "a1.__labels",
+            "a1.age",
+            "a1.name",
+            "r.__id",
+            "r.__type",
+            "b2.__id",
+            "b2.__labels",
+            "b2.age",
+            "b2.name",
+        ]
+    );
 }
 
 #[test]
@@ -6875,6 +6989,17 @@ fn rejects_staged_with_untyped_final_relationship() {
          WITH a ORDER BY a.age LIMIT 2 \
          MATCH (a)-->(b:Person) \
          RETURN a.name AS a, b.name AS b",
+    );
+}
+
+#[test]
+fn rejects_staged_bare_relationship_carry_unlabeled_optional_targets() {
+    assert_staged_planning_reject(
+        "bare relationship carry unlabeled optional targets",
+        "MATCH (:Person)-[r:KNOWS]->(:Person) \
+         WITH r LIMIT 1 \
+         OPTIONAL MATCH (a2)-[r]->(b2) \
+         RETURN id(r) AS r",
     );
 }
 
