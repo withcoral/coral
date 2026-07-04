@@ -17,12 +17,12 @@ use super::ir::{
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
     GraphQuery, GraphStageExport, GraphStagedQuery, GraphUnionOuterProjection,
     GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal,
-    LiteralListElementType, NodePattern,
-    OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
-    Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
-    PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
+    LiteralListElementType, NodePattern, OptionalMatchScope, OrderExpression, PredicateExpression,
+    PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
+    ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
+    PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
+    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
+    UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 

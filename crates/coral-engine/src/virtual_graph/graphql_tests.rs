@@ -16,6 +16,12 @@ fn variable_object_map(
         .collect()
 }
 
+fn temporal_rhs(source: &str) -> PredicateRhs {
+    PredicateRhs::TemporalCoercion {
+        source: source.to_string(),
+    }
+}
+
 fn predicate_expression_contains_not(expression: &PredicateExpression) -> bool {
     match expression {
         PredicateExpression::Not { .. } => true,
@@ -869,12 +875,12 @@ fn compiles_graphql_filter_operator_aliases() {
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "tier"
             && predicate.operator == ComparisonOperator::Equal
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+            && predicate.rhs == temporal_rhs("prod")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
             && predicate.operator == ComparisonOperator::NotEqual
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("legacy-sync".to_string()))
+            && predicate.rhs == temporal_rhs("legacy-sync")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
@@ -913,7 +919,7 @@ fn compiles_graphql_shorthand_where_filters() {
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "tier"
             && predicate.operator == ComparisonOperator::Equal
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+            && predicate.rhs == temporal_rhs("prod")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "risk"
@@ -1270,8 +1276,7 @@ fn compiles_root_query_with_object_where_variable() {
 
     assert_eq!(plan.predicates.len(), 3);
     assert!(plan.predicates.iter().any(|predicate| {
-        predicate.property.property == "tier"
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+        predicate.property.property == "tier" && predicate.rhs == temporal_rhs("prod")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "risk"
@@ -1422,7 +1427,7 @@ fn compiles_root_query_with_property_condition_variable() {
                 property: "tier".to_string(),
             },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            rhs: temporal_rhs("prod"),
         }]
     );
 }
@@ -1451,7 +1456,7 @@ fn compiles_root_query_with_scalar_shorthand_where_variable() {
                 property: "tier".to_string(),
             },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            rhs: temporal_rhs("prod"),
         }]
     );
 }
@@ -1485,7 +1490,7 @@ fn compiles_root_query_with_object_where_variable_shorthand_values() {
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "tier"
             && predicate.operator == ComparisonOperator::Equal
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+            && predicate.rhs == temporal_rhs("prod")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "risk"
@@ -1735,8 +1740,7 @@ fn compiles_root_query_with_variable_defaults() {
 
     assert_eq!(plan.predicates.len(), 2);
     assert!(plan.predicates.iter().any(|predicate| {
-        predicate.property.property == "tier"
-            && predicate.rhs == PredicateRhs::Literal(Literal::String("prod".to_string()))
+        predicate.property.property == "tier" && predicate.rhs == temporal_rhs("prod")
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
@@ -1789,7 +1793,7 @@ fn runtime_graphql_variables_override_defaults() {
                 property: "tier".to_string(),
             },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(Literal::String("dev".to_string())),
+            rhs: temporal_rhs("dev"),
         }]
     );
 }
@@ -1984,7 +1988,7 @@ fn compiles_root_query_with_object_variable_defaults() {
                 property: "tier".to_string(),
             },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+            rhs: temporal_rhs("prod"),
         }]
     );
     assert_eq!(
@@ -3538,8 +3542,8 @@ nodes:
         [PropertyPredicate {
             property: PropertyRef { variable, property },
             operator: ComparisonOperator::Equal,
-            rhs: PredicateRhs::Literal(Literal::String(value)),
-        }] if variable == "service" && property == "out_status" && value == "green"
+            rhs: PredicateRhs::TemporalCoercion { source },
+        }] if variable == "service" && property == "out_status" && source == "green"
     ));
 }
 

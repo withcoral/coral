@@ -2627,7 +2627,7 @@ fn compile_where_variable_object(
                 GraphqlVariableValue::Literal(literal) => Some(compile_where_shorthand_expression(
                     scope.variable,
                     property,
-                    PredicateRhs::Literal(literal.clone()),
+                    comparison_rhs_from_literal(literal.clone()),
                     next_path,
                 )?),
                 GraphqlVariableValue::List(_) | GraphqlVariableValue::ObjectList(_) => {
@@ -3251,7 +3251,7 @@ fn compile_where_property_conditions(
             GraphqlVariableValue::Literal(literal) => Ok(Some(compile_where_shorthand_expression(
                 graph_variable,
                 property,
-                PredicateRhs::Literal(literal.clone()),
+                comparison_rhs_from_literal(literal.clone()),
                 path,
             )?)),
             GraphqlVariableValue::List(_) | GraphqlVariableValue::ObjectList(_) => {
@@ -3268,7 +3268,7 @@ fn compile_where_property_conditions(
         return Ok(Some(compile_where_shorthand_expression(
             graph_variable,
             property,
-            PredicateRhs::Literal(compile_literal(condition, path.clone(), context)?),
+            compile_comparison_rhs(condition, path.clone(), context)?,
             path,
         )?));
     };
@@ -3560,7 +3560,7 @@ fn compile_where_operator_expression(
         Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
             target,
             operator,
-            PredicateRhs::Literal(compile_literal(value, path.clone(), context)?),
+            compile_operator_comparison_rhs(operator, value, path.clone(), context)?,
             &path,
         )?),
         Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
@@ -3605,7 +3605,7 @@ fn compile_where_operator_expression(
             Ok(negated_comparison_expression(
                 target,
                 operator,
-                PredicateRhs::Literal(compile_literal(value, path.clone(), context)?),
+                compile_operator_comparison_rhs(operator, value, path.clone(), context)?,
                 &path,
             )?)
         }
@@ -3641,7 +3641,7 @@ fn compile_where_variable_operator_expression(
         Some(GraphqlWhereOperator::Comparison(operator)) => Ok(comparison_expression(
             target,
             operator,
-            PredicateRhs::Literal(compile_variable_literal(value, path.clone())?),
+            compile_variable_operator_comparison_rhs(operator, value, path.clone())?,
             &path,
         )?),
         Some(GraphqlWhereOperator::RegexMatch) => Ok(comparison_expression(
@@ -3686,7 +3686,7 @@ fn compile_where_variable_operator_expression(
             Ok(negated_comparison_expression(
                 target,
                 operator,
-                PredicateRhs::Literal(compile_variable_literal(value, path.clone())?),
+                compile_variable_operator_comparison_rhs(operator, value, path.clone())?,
                 &path,
             )?)
         }
@@ -3942,6 +3942,56 @@ fn compile_variable_literal(
             "GraphQL variable value must be a scalar literal",
         )),
     }
+}
+
+fn comparison_rhs_from_literal(literal: Literal) -> PredicateRhs {
+    match literal {
+        Literal::String(source) => PredicateRhs::TemporalCoercion { source },
+        literal => PredicateRhs::Literal(literal),
+    }
+}
+
+fn operator_comparison_rhs_from_literal(
+    operator: ComparisonOperator,
+    literal: Literal,
+) -> PredicateRhs {
+    if matches!(
+        operator,
+        ComparisonOperator::StartsWith
+            | ComparisonOperator::EndsWith
+            | ComparisonOperator::Contains
+    ) {
+        PredicateRhs::Literal(literal)
+    } else {
+        comparison_rhs_from_literal(literal)
+    }
+}
+
+fn compile_comparison_rhs(
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<PredicateRhs, CoreError> {
+    compile_literal(value, path, context).map(comparison_rhs_from_literal)
+}
+
+fn compile_operator_comparison_rhs(
+    operator: ComparisonOperator,
+    value: &Value<'_, String>,
+    path: impl Into<String>,
+    context: &GraphqlCompileContext<'_, '_>,
+) -> Result<PredicateRhs, CoreError> {
+    compile_literal(value, path, context)
+        .map(|literal| operator_comparison_rhs_from_literal(operator, literal))
+}
+
+fn compile_variable_operator_comparison_rhs(
+    operator: ComparisonOperator,
+    value: &GraphqlVariableValue,
+    path: impl Into<String>,
+) -> Result<PredicateRhs, CoreError> {
+    compile_variable_literal(value, path)
+        .map(|literal| operator_comparison_rhs_from_literal(operator, literal))
 }
 
 fn compile_variable_literal_list(
