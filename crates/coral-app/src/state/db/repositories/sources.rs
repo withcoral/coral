@@ -196,23 +196,22 @@ where
         source: &InstalledSource,
         now_unix_nanos: i64,
     ) -> Result<(), DbError> {
-        let created_at_unix_nanos = self
-            .source_created_at(workspace_name, &source.name)
-            .await?
-            .unwrap_or(now_unix_nanos);
-        self.upsert_source_row(
-            workspace_name,
-            source,
-            created_at_unix_nanos,
-            now_unix_nanos,
-        )
-        .await?;
+        let created_at_unix_nanos = self.source_created_at(workspace_name, &source.name).await?;
+        if created_at_unix_nanos.is_some() {
+            self.update_existing_source_row(workspace_name, source, now_unix_nanos)
+                .await?;
+        } else {
+            self.upsert_source_row(workspace_name, source, now_unix_nanos, now_unix_nanos)
+                .await?;
+        }
         self.delete_source_child_rows(workspace_name, &source.name)
             .await?;
         self.delete_imported_manifest_for_non_imported_source(workspace_name, source)
             .await?;
         self.insert_source_variables(workspace_name, source).await?;
-        self.insert_source_secret_keys(workspace_name, source).await
+        self.insert_source_secret_keys(workspace_name, source)
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn remove_source(
@@ -239,6 +238,43 @@ where
             updated_at_unix_nanos,
         )
         .await
+    }
+
+    async fn update_existing_source_row(
+        &mut self,
+        workspace_name: &WorkspaceName,
+        source: &InstalledSource,
+        updated_at_unix_nanos: i64,
+    ) -> Result<(), DbError> {
+        let statement = Query::update()
+            .table(Sources::Table)
+            .value(Sources::Version, Expr::val(source.version.clone()))
+            .value(
+                Sources::OriginKind,
+                Expr::val(source.origin.as_config_value()),
+            )
+            .value(
+                Sources::CredentialStorage,
+                Expr::val(
+                    source
+                        .credential_storage
+                        .map(CredentialStorageKind::as_config_value),
+                ),
+            )
+            .value(
+                Sources::UpdatedAtUnixNanos,
+                Expr::val(updated_at_unix_nanos),
+            )
+            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
+            .and_where(Expr::col(Sources::Name).eq(source.name.as_str()))
+            .to_owned();
+        if self.session.execute_update(statement).await? == 1 {
+            return Ok(());
+        }
+        Err(DbError::InvalidData(format!(
+            "source '{workspace_name}:{}' was deleted while being updated",
+            source.name
+        )))
     }
 
     async fn source_created_at(
@@ -507,6 +543,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_update_rejects_deleted_existing_source_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let db = open_sqlite(&layout).await;
+        assert_source_update_rejects_deleted_existing_source(&db).await;
+    }
+
+    #[tokio::test]
     #[ignore = "set CORAL_TEST_POSTGRES_URL to run the shared repository harness against Postgres"]
     async fn source_repository_round_trips_against_postgres() {
         let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
@@ -547,6 +591,20 @@ mod tests {
         db.migrate().await.expect("migrate postgres");
 
         assert_source_repository_rejects_invalid_persisted_source_name(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run the source delete/upsert race regression against Postgres"]
+    async fn source_delete_upsert_race_cannot_resurrect_database_credentials_postgres() {
+        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_source_delete_upsert_race_cannot_resurrect_database_credentials(&db).await;
     }
 
     async fn open_sqlite(layout: &AppStateLayout) -> CoralDb {
@@ -727,6 +785,111 @@ mod tests {
         );
         assert_eq!(source_manifest(db, &workspace, &original.name).await, None);
         assert!(!credential_document(db, &workspace, &original.name).await);
+    }
+
+    async fn assert_source_update_rejects_deleted_existing_source(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let with_secret = source(
+            "deleted_source",
+            Some("1.0.1"),
+            [("API_BASE", "https://api.example.test")],
+            ["API_TOKEN"],
+            Some(CredentialStorageKind::Database),
+            SourceOrigin::Imported,
+        );
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &with_secret, 20)
+            .await
+            .expect("insert source");
+        tx.sources()
+            .remove_source(&workspace, &with_secret.name)
+            .await
+            .expect("delete source");
+        let error = tx
+            .sources()
+            .update_existing_source_row(&workspace, &with_secret, 21)
+            .await
+            .expect_err("deleted source update should fail");
+        assert!(matches!(error, DbError::InvalidData(_)), "{error}");
+        tx.rollback().await.expect("rollback failed update");
+        assert_eq!(get_source(db, &workspace, &with_secret.name).await, None);
+    }
+
+    async fn assert_source_delete_upsert_race_cannot_resurrect_database_credentials(db: &CoralDb) {
+        let workspace = unique_workspace();
+        let source_name = SourceName::parse("race_source").expect("source name");
+        let provisional = source(
+            source_name.as_str(),
+            Some("1.0.0"),
+            [("API_BASE", "https://api.example.test")],
+            [],
+            Some(CredentialStorageKind::Database),
+            SourceOrigin::Imported,
+        );
+        let with_secret = source(
+            source_name.as_str(),
+            Some("1.0.1"),
+            [("API_BASE", "https://api2.example.test")],
+            ["API_TOKEN"],
+            Some(CredentialStorageKind::Database),
+            SourceOrigin::Imported,
+        );
+        let mut setup = db.begin().await.expect("begin setup");
+        setup
+            .workspaces()
+            .ensure(workspace.as_str(), 10)
+            .await
+            .expect("ensure workspace");
+        setup
+            .sources()
+            .upsert_source(&workspace, &provisional, 20)
+            .await
+            .expect("upsert provisional source");
+        setup
+            .credential_documents()
+            .upsert(&workspace, &source_name, &credential_document_write(), 21)
+            .await
+            .expect("upsert credential document");
+        setup
+            .sources()
+            .upsert_source(&workspace, &with_secret, 22)
+            .await
+            .expect("upsert source with secret metadata");
+        setup.commit().await.expect("commit setup");
+
+        let mut stale_upsert = db.begin().await.expect("begin stale upsert");
+        stale_upsert
+            .sources()
+            .source_created_at(&workspace, &source_name)
+            .await
+            .expect("read created_at")
+            .expect("source created_at");
+        let mut delete = db.begin().await.expect("begin delete");
+        delete
+            .sources()
+            .remove_source(&workspace, &source_name)
+            .await
+            .expect("delete source");
+        delete.commit().await.expect("commit delete");
+
+        let mut repo = stale_upsert.sources();
+        let error = repo
+            .update_existing_source_row(&workspace, &with_secret, 30)
+            .await
+            .expect_err("stale update must fail after concurrent delete");
+        assert!(matches!(error, DbError::InvalidData(_)), "{error}");
+        stale_upsert
+            .rollback()
+            .await
+            .expect("rollback stale upsert");
+
+        assert_eq!(get_source(db, &workspace, &source_name).await, None);
+        assert!(!credential_document(db, &workspace, &source_name).await);
     }
 
     async fn assert_source_repository_rejects_source_without_workspace(db: &CoralDb) {
