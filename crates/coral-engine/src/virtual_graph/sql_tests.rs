@@ -1033,6 +1033,30 @@ fn lower_graph_query_renders_staged_aggregate_cte() {
 }
 
 #[test]
+fn lower_graph_query_renders_staged_aggregate_relationship_key_cte() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_aggregate_relationship_key_query();
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged aggregate relationship-key graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\", \"r0\".\"id\" AS \"r_id\", \"n1\".\"id\" AS \"b_id\", COUNT(*) AS \"c\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" \
+             GROUP BY \"n0\".\"id\", \"r0\".\"id\", \"n1\".\"id\") \
+             SELECT \"stage0\".\"r_id\" AS \"rel.__id\", CASE WHEN \"stage0\".\"r_id\" IS NULL THEN NULL ELSE 'KNOWS' END AS \"rel.__type\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON (\"r0\".\"person_id\" = \"stage0\".\"a_id\") AND (\"r0\".\"id\" = \"stage0\".\"r_id\") \
+             JOIN \"ops\".\"people\" AS \"n1\" ON ((\"r0\".\"friend_id\" = \"stage0\".\"b_id\") AND (\"r0\".\"id\" = \"stage0\".\"r_id\")) AND (\"n1\".\"id\" = \"stage0\".\"b_id\")"
+    );
+}
+
+#[test]
 fn lower_graph_query_renders_staged_collect_unwind_ctes() {
     let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
     let query = staged_collect_unwind_query();
@@ -1142,6 +1166,105 @@ fn staged_aggregate_query() -> GraphQuery {
         }],
         final_plan: staged_aggregate_final_plan(),
     })
+}
+
+fn staged_aggregate_relationship_key_query() -> GraphQuery {
+    GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: GraphPlan {
+                projections: vec![
+                    Projection::Key {
+                        variable: "a".to_string(),
+                        alias: "a_id".to_string(),
+                    },
+                    Projection::Key {
+                        variable: "r".to_string(),
+                        alias: "r_id".to_string(),
+                    },
+                    Projection::Key {
+                        variable: "b".to_string(),
+                        alias: "b_id".to_string(),
+                    },
+                    Projection::CountAll {
+                        alias: "c".to_string(),
+                    },
+                ],
+                ..staged_aggregate_relationship_key_base_plan()
+            },
+            exports: vec![
+                GraphStageExport::NodeKey {
+                    variable: "a".to_string(),
+                    column: "a_id".to_string(),
+                },
+                GraphStageExport::RelationshipKey {
+                    variable: "r".to_string(),
+                    column: "r_id".to_string(),
+                },
+                GraphStageExport::NodeKey {
+                    variable: "b".to_string(),
+                    column: "b_id".to_string(),
+                },
+                GraphStageExport::AggregateValue {
+                    alias: "c".to_string(),
+                    column: "c".to_string(),
+                },
+            ],
+        }],
+        final_plan: GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "b".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("r".to_string()),
+                relationship_type: "KNOWS".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            }],
+            projections: vec![
+                Projection::Key {
+                    variable: "r".to_string(),
+                    alias: "rel.__id".to_string(),
+                },
+                Projection::RelationshipType {
+                    variable: "r".to_string(),
+                    relationship_type: "KNOWS".to_string(),
+                    alias: "rel.__type".to_string(),
+                },
+            ],
+            ..GraphPlan::default()
+        },
+    })
+}
+
+fn staged_aggregate_relationship_key_base_plan() -> GraphPlan {
+    GraphPlan {
+        nodes: vec![
+            NodePattern {
+                variable: "a".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "b".to_string(),
+                label: "Person".to_string(),
+            },
+        ],
+        relationships: vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }],
+        ..GraphPlan::default()
+    }
 }
 
 fn staged_aggregate_stage_plan() -> GraphPlan {

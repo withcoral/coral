@@ -556,6 +556,102 @@ async fn cypher_staged_two_group_key_aggregation_before_match_executes() {
 }
 
 #[tokio::test]
+async fn cypher_staged_aggregate_relationship_alias_carry_before_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH ()-[r1:KNOWS]->(:Person) \
+         WITH r1 AS r2, count(*) AS c \
+         MATCH ()-[r2:KNOWS]->() \
+         RETURN r2 AS rel",
+    )
+    .await
+    .expect("staged aggregate relationship alias carry should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"r2_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"rel.__id": 100, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 101, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 102, "rel.__type": "KNOWS"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_aggregate_node_and_relationship_alias_carry_before_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a)-[r1:KNOWS]->(b:Person) \
+         WITH a, r1 AS r2, b, count(*) AS c \
+         MATCH (a)-[r2:KNOWS]->(b) \
+         RETURN r2 AS rel",
+    )
+    .await
+    .expect("staged aggregate node plus relationship alias carry should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    rows.sort_by_key(std::string::ToString::to_string);
+    assert_eq!(
+        rows,
+        vec![
+            json!({"rel.__id": 100, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 101, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 102, "rel.__type": "KNOWS"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_aggregate_relationship_carry_with_return_order_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a)-[r:KNOWS]->(b:Person) \
+         WITH a, r, b, count(*) AS c ORDER BY c \
+         MATCH (a)-[r:KNOWS]->(b) \
+         RETURN r AS rel ORDER BY rel.id",
+    )
+    .await
+    .expect("staged aggregate relationship carry with return ordering should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"rel.__id": 100, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 101, "rel.__type": "KNOWS"}),
+            json!({"rel.__id": 102, "rel.__type": "KNOWS"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_collect_scalar_unwind_source_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

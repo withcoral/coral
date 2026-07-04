@@ -82,6 +82,28 @@ relationships:
     .expect("staged planning test graph should parse")
 }
 
+fn staged_aggregate_relationship_carry_test_graph() -> Declaration {
+    Declaration::from_yaml(
+        r"
+version: 1
+name: staged_aggregate_relationship_carry_test
+nodes:
+  - label: X
+    table: { schema: ops, name: xs }
+    key: id
+    properties:
+      name: name
+relationships:
+  - type: REL
+    table: { schema: ops, name: rels }
+    key: id
+    from: { label: X, key: from_id }
+    to: { label: X, key: to_id }
+",
+    )
+    .expect("staged aggregate relationship-carry test graph should parse")
+}
+
 fn single_label_person_knows_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -6361,6 +6383,143 @@ fn compiles_staged_with_two_group_keys_before_match() {
                 column: "c".to_string(),
             },
         ]
+    );
+}
+
+#[test]
+fn compiles_staged_aggregate_relationship_alias_carry_before_match() {
+    let graph = staged_aggregate_relationship_carry_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH ()-[r1]->(:X) \
+         WITH r1 AS r2, count(*) AS c \
+         MATCH ()-[r2]->() \
+         RETURN r2 AS rel",
+    )
+    .expect("staged aggregate should carry aliased relationship key");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("relationship aggregate carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::RelationshipKey {
+                variable: "r2".to_string(),
+                column: "r2_id".to_string(),
+            },
+            GraphStageExport::AggregateValue {
+                alias: "c".to_string(),
+                column: "c".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r2".to_string()),
+            relationship_type: "REL".to_string(),
+            left: "__coral_node_0_0".to_string(),
+            direction: Direction::Outgoing,
+            right: "__coral_node_0_1".to_string(),
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.projection_output_names(),
+        vec!["rel.__id", "rel.__type"]
+    );
+}
+
+#[test]
+fn compiles_staged_aggregate_node_and_relationship_alias_carry_before_match() {
+    let graph = staged_aggregate_relationship_carry_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a)-[r1]->(b:X) \
+         WITH a, r1 AS r2, b, count(*) AS c \
+         MATCH (a)-[r2]->(b) \
+         RETURN r2 AS rel",
+    )
+    .expect("staged aggregate should carry node and aliased relationship keys");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("node plus relationship aggregate carry should compile to staged");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::NodeKey {
+                variable: "a".to_string(),
+                column: "a_id".to_string(),
+            },
+            GraphStageExport::RelationshipKey {
+                variable: "r2".to_string(),
+                column: "r2_id".to_string(),
+            },
+            GraphStageExport::NodeKey {
+                variable: "b".to_string(),
+                column: "b_id".to_string(),
+            },
+            GraphStageExport::AggregateValue {
+                alias: "c".to_string(),
+                column: "c".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r2".to_string()),
+            relationship_type: "REL".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_staged_aggregate_relationship_carry_with_return_order() {
+    let graph = staged_aggregate_relationship_carry_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a)-[r]->(b:X) \
+         WITH a, r, b, count(*) AS c ORDER BY c \
+         MATCH (a)-[r]->(b) \
+         RETURN r AS rel ORDER BY rel.id",
+    )
+    .expect("staged aggregate should carry relationship key through ordered stage and return");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("ordered relationship aggregate carry should compile to staged");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("c".to_string()),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("rel.__id".to_string()),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
     );
 }
 

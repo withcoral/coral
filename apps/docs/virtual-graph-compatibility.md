@@ -142,6 +142,28 @@ unsupported behavior should be rejected clearly instead of guessed.
 | GraphQL nested row modifiers | Rejected | Per-parent `orderBy`, `limit`/`first`, `offset`/`skip`, and `distinct` require collection semantics rather than global SQL modifiers |
 | Writes | Rejected by product invariant | Coral virtual graph is read-only |
 
+## Staged Planning Boundary Notes
+
+The staged-planning completion tail supports grouped aggregate stages that carry
+a keyed relationship group column into a downstream fixed-hop `MATCH`. Four
+nearby residue classes remain outside the current staged row-source slice:
+
+- Relationship carry into a final `OPTIONAL MATCH` with fresh unlabeled anchors
+  remains deferred. On July 4, 2026, both closure probes
+  `MATCH ()-[r]->() WITH r LIMIT 1 OPTIONAL MATCH (a2)-[r]->(b2) RETURN a2, r, b2`
+  and
+  `MATCH (a1)-[r]->() WITH r, a1 LIMIT 1 OPTIONAL MATCH (a1)-[r]->(b2) RETURN a1, r, b2`
+  rejected with
+  `invalid input: virtual graph UNSUPPORTED_CYPHER at final_part.reading_clauses: WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning and are not supported yet`.
+  They stay behind the fresh unlabeled or inferred staged-target boundary.
+- Staged graph-object tails such as `RETURN a` and `RETURN *` stay behind the
+  graph-object-return boundary unless the supported slice explicitly expands a
+  carried keyed relationship value.
+- `SKIP toInteger(rand()*9)` stays behind the unsupported non-deterministic
+  `rand()` boundary.
+- Double-`WITH` graph-variable rename chains stay behind broader staged
+  row-source planning.
+
 ## Validation
 
 All current and future compatibility checks must use synthetic fixtures only.
@@ -150,7 +172,7 @@ Live-source tests are intentionally excluded from product validation.
 The `Virtual Graph Core` workflow currently enforces two executable
 compatibility baseline gates:
 
-- `coral-opencypher-read-baseline`: 676 openCypher-style read scenarios with
+- `coral-opencypher-read-baseline`: 679 openCypher-style read scenarios with
   declared feature floors.
 - `coral-graphql-read-baseline`: 164 GraphQL read-adapter scenarios with declared
   feature floors.
@@ -164,5 +186,5 @@ the pinned upstream openCypher `2024.3` TCK feature tree and classifies scenario
 definitions into Coral's read-only product scope. That inventory is a backlog
 and credibility gate, not an execution claim: it currently reports 1,615
 upstream scenario definitions, 1,294 read-candidate scenario definitions after
-excluding mutations and procedure calls, and a 676-scenario Coral curated
+excluding mutations and procedure calls, and a 679-scenario Coral curated
 baseline.

@@ -30,7 +30,7 @@
     "Unwind": 37,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 45
+    "With": 48
   },
   "scenarios": [
     {
@@ -12500,6 +12500,93 @@
           {
             "name": "Bob",
             "deg": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-relationship-alias-carry-before-match",
+      "feature": "With",
+      "query": "MATCH ()-[r1:KNOWS]->(:Person) WITH r1 AS r2, count(*) AS c MATCH ()-[r2:KNOWS]->() RETURN r2 AS rel",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "rel.__id": 100,
+            "rel.__type": "KNOWS",
+            "rel.since": 2020,
+            "rel.strength": 0.9
+          },
+          {
+            "rel.__id": 101,
+            "rel.__type": "KNOWS",
+            "rel.since": 2021,
+            "rel.strength": 0.7
+          },
+          {
+            "rel.__id": 102,
+            "rel.__type": "KNOWS",
+            "rel.since": 2022,
+            "rel.strength": 0.3
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-node-relationship-alias-carry-before-match",
+      "feature": "With",
+      "query": "MATCH (a)-[r1:KNOWS]->(b:Person) WITH a, r1 AS r2, b, count(*) AS c MATCH (a)-[r2:KNOWS]->(b) RETURN r2 AS rel",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "rel.__id": 100,
+            "rel.__type": "KNOWS",
+            "rel.since": 2020,
+            "rel.strength": 0.9
+          },
+          {
+            "rel.__id": 101,
+            "rel.__type": "KNOWS",
+            "rel.since": 2021,
+            "rel.strength": 0.7
+          },
+          {
+            "rel.__id": 102,
+            "rel.__type": "KNOWS",
+            "rel.since": 2022,
+            "rel.strength": 0.3
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-relationship-carry-return-order",
+      "feature": "With",
+      "query": "MATCH (a)-[r:KNOWS]->(b:Person) WITH a, r, b, count(*) AS c ORDER BY c MATCH (a)-[r:KNOWS]->(b) RETURN r AS rel ORDER BY rel.id",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rel.__id": 100,
+            "rel.__type": "KNOWS",
+            "rel.since": 2020,
+            "rel.strength": 0.9
+          },
+          {
+            "rel.__id": 101,
+            "rel.__type": "KNOWS",
+            "rel.since": 2021,
+            "rel.strength": 0.7
+          },
+          {
+            "rel.__id": 102,
+            "rel.__type": "KNOWS",
+            "rel.since": 2022,
+            "rel.strength": 0.3
           }
         ]
       }
