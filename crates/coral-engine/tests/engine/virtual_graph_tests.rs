@@ -576,6 +576,64 @@ async fn cypher_localdatetime_constructors_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_localtime_constructors_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN localtime('12:34:56') AS from_string, \
+                localtime({hour: 12, minute: 34, second: 56}) AS from_map, \
+                localtime({hour: 12}) AS default_time, \
+                localtime('12:00:00') < localtime('13:00:00') AS ordered, \
+                toString(localtime('12:34:56')) AS text",
+    )
+    .await
+    .expect("Cypher LOCALTIME constructors should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT CAST('12:34:56' AS TIME) AS from_string, \
+                    CAST('12:34:56' AS TIME) AS from_map, \
+                    CAST('12:00:00' AS TIME) AS default_time, \
+                    CAST('12:00:00' AS TIME) < CAST('13:00:00' AS TIME) AS ordered, \
+                    CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS text \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent LOCALTIME SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("CAST('12:34:56' AS TIME)"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "from_string": "12:34:56",
+            "from_map": "12:34:56",
+            "default_time": "12:00:00",
+            "ordered": true,
+            "text": "12:34:56"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_parenthesized_path_patterns_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

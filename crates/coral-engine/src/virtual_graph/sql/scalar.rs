@@ -465,6 +465,25 @@ impl<'a> SqlRenderer<'a> {
             TemporalExpr::LocalDateTimeFromString { text } => {
                 self.render_localdatetime_from_string_expression(text, scope)
             }
+            TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            } => self.render_make_localtime_expression(
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                scope,
+            ),
+            TemporalExpr::LocalTimeFromString { text } => {
+                self.render_localtime_from_string_expression(text, scope)
+            }
         }
     }
 
@@ -553,6 +572,52 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         Ok(format!(
             "CAST({} AS TIMESTAMP)",
+            self.render_scalar_in_scope(text, scope)?
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Temporal constructor components mirror openCypher localtime fields."
+    )]
+    pub(super) fn render_make_localtime_expression<'b, 'c>(
+        &self,
+        hour: &ScalarExpression,
+        minute: &ScalarExpression,
+        second: &ScalarExpression,
+        millisecond: &ScalarExpression,
+        microsecond: &ScalarExpression,
+        nanosecond: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        if let Some(time) =
+            literal_localtime(hour, minute, second, millisecond, microsecond, nanosecond)
+        {
+            return Ok(format!("CAST({} AS TIME)", quote_string_literal(&time)));
+        }
+
+        let total_nanoseconds = format!(
+            "(({} * 1000000) + ({} * 1000) + {})",
+            self.render_scalar_in_scope(millisecond, scope)?,
+            self.render_scalar_in_scope(microsecond, scope)?,
+            self.render_scalar_in_scope(nanosecond, scope)?
+        );
+        let time = format!(
+            "concat({}, ':', {}, ':', {}, '.', lpad(CAST({total_nanoseconds} AS VARCHAR), 9, '0'))",
+            self.render_zero_padded_component(hour, 2, scope)?,
+            self.render_zero_padded_component(minute, 2, scope)?,
+            self.render_zero_padded_component(second, 2, scope)?,
+        );
+        Ok(format!("CAST({time} AS TIME)"))
+    }
+
+    pub(super) fn render_localtime_from_string_expression<'b, 'c>(
+        &self,
+        text: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "CAST({} AS TIME)",
             self.render_scalar_in_scope(text, scope)?
         ))
     }
@@ -723,6 +788,34 @@ fn literal_localdatetime(
         timestamp.push_str(&fractional);
     }
     Some(timestamp)
+}
+
+fn literal_localtime(
+    hour: &ScalarExpression,
+    minute: &ScalarExpression,
+    second: &ScalarExpression,
+    millisecond: &ScalarExpression,
+    microsecond: &ScalarExpression,
+    nanosecond: &ScalarExpression,
+) -> Option<String> {
+    let total_nanoseconds = literal_integer(millisecond)? * 1_000_000
+        + literal_integer(microsecond)? * 1_000
+        + literal_integer(nanosecond)?;
+    let mut time = format!(
+        "{:02}:{:02}:{:02}",
+        literal_integer(hour)?,
+        literal_integer(minute)?,
+        literal_integer(second)?,
+    );
+    if total_nanoseconds != 0 {
+        let mut fractional = format!("{total_nanoseconds:09}");
+        while fractional.ends_with('0') {
+            fractional.pop();
+        }
+        time.push('.');
+        time.push_str(&fractional);
+    }
+    Some(time)
 }
 
 fn literal_integer(expression: &ScalarExpression) -> Option<i64> {

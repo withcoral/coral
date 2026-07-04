@@ -366,6 +366,22 @@ impl<'a> SqlRenderer<'a> {
                     local_nodes,
                 )
             }),
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => [hour, minute, second, millisecond, microsecond, nanosecond]
+                .iter()
+                .all(|expression| {
+                    Self::scoped_scalar_expression_is_inner(
+                        expression,
+                        relationship_bindings,
+                        local_nodes,
+                    )
+                }),
             ScalarExpression::Case {
                 alternatives,
                 else_expression,

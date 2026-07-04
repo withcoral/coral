@@ -365,6 +365,41 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalDateTime))
             }
+            TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            } => {
+                for (name, expression) in [
+                    ("hour", hour),
+                    ("minute", minute),
+                    ("second", second),
+                    ("millisecond", millisecond),
+                    ("microsecond", microsecond),
+                    ("nanosecond", nanosecond),
+                ] {
+                    let expression_type =
+                        self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+                    Self::require_integer_compatible_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        "localtime constructor field",
+                    )?;
+                }
+                Ok(ScalarType::Temporal(TemporalKind::LocalTime))
+            }
+            TemporalExpr::LocalTimeFromString { text } => {
+                let text_type = self.infer_scalar_expression_type(text, format!("{path}.text"))?;
+                Self::require_string_compatible_type(
+                    text_type,
+                    format!("{path}.text"),
+                    "localtime string constructor",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::LocalTime))
+            }
         }
     }
 

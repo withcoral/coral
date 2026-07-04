@@ -922,18 +922,12 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<ScalarType, CoreError> {
         match expression {
             TemporalExpr::MakeDate { year, month, day } => {
-                for (name, expression) in [("year", year), ("month", month), ("day", day)] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_integer_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "date constructor field",
-                    )?;
-                }
+                self.require_scoped_temporal_integer_fields(
+                    [("year", year), ("month", month), ("day", day)],
+                    scope,
+                    path,
+                    "date constructor field",
+                )?;
                 Ok(ScalarType::Temporal(TemporalKind::Date))
             }
             TemporalExpr::DateFromString { text } => {
@@ -957,28 +951,22 @@ impl<'a> GraphPlanValidator<'a> {
                 microsecond,
                 nanosecond,
             } => {
-                for (name, expression) in [
-                    ("year", year),
-                    ("month", month),
-                    ("day", day),
-                    ("hour", hour),
-                    ("minute", minute),
-                    ("second", second),
-                    ("millisecond", millisecond),
-                    ("microsecond", microsecond),
-                    ("nanosecond", nanosecond),
-                ] {
-                    let expression_type = self.infer_scoped_scalar_expression_type(
-                        expression,
-                        scope,
-                        format!("{path}.{name}"),
-                    )?;
-                    Self::require_integer_compatible_type(
-                        expression_type,
-                        format!("{path}.{name}"),
-                        "localdatetime constructor field",
-                    )?;
-                }
+                self.require_scoped_temporal_integer_fields(
+                    [
+                        ("year", year),
+                        ("month", month),
+                        ("day", day),
+                        ("hour", hour),
+                        ("minute", minute),
+                        ("second", second),
+                        ("millisecond", millisecond),
+                        ("microsecond", microsecond),
+                        ("nanosecond", nanosecond),
+                    ],
+                    scope,
+                    path,
+                    "localdatetime constructor field",
+                )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalDateTime))
             }
             TemporalExpr::LocalDateTimeFromString { text } => {
@@ -991,7 +979,62 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalDateTime))
             }
+            TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            } => {
+                self.require_scoped_temporal_integer_fields(
+                    [
+                        ("hour", hour),
+                        ("minute", minute),
+                        ("second", second),
+                        ("millisecond", millisecond),
+                        ("microsecond", microsecond),
+                        ("nanosecond", nanosecond),
+                    ],
+                    scope,
+                    path,
+                    "localtime constructor field",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::LocalTime))
+            }
+            TemporalExpr::LocalTimeFromString { text } => {
+                let text_type =
+                    self.infer_scoped_scalar_expression_type(text, scope, format!("{path}.text"))?;
+                Self::require_string_compatible_type(
+                    text_type,
+                    format!("{path}.text"),
+                    "localtime string constructor",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::LocalTime))
+            }
         }
+    }
+
+    fn require_scoped_temporal_integer_fields<'b, const N: usize>(
+        &self,
+        fields: [(&'static str, &ScalarExpression); N],
+        scope: ExistsPredicateValidationContext<'a, 'b>,
+        path: &str,
+        context: &str,
+    ) -> Result<(), CoreError> {
+        for (name, expression) in fields {
+            let expression_type = self.infer_scoped_scalar_expression_type(
+                expression,
+                scope,
+                format!("{path}.{name}"),
+            )?;
+            Self::require_integer_compatible_type(
+                expression_type,
+                format!("{path}.{name}"),
+                context,
+            )?;
+        }
+        Ok(())
     }
 
     fn infer_scoped_string_scalar_function_type<'b>(

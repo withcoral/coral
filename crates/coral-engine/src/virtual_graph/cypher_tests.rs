@@ -139,6 +139,30 @@ fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn localtime_expression(
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
+fn localtime_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 fn route_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -2259,6 +2283,108 @@ fn rejects_unsupported_localdatetime_constructor_forms() {
     ] {
         let error =
             compile_cypher(cypher).expect_err("unsupported localdatetime form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn compiles_localtime_map_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN localtime({hour: 12, minute: 34, second: 56}) AS full, \
+                localtime({hour: 12}) AS default_time, \
+                toString(localtime({hour: 12, minute: 34, second: 56})) AS text",
+    )
+    .expect("literal localtime map constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: localtime_expression(12, 34, 56, 0, 0, 0),
+                alias: "full".to_string(),
+            },
+            Projection::Expression {
+                expression: localtime_expression(12, 0, 0, 0, 0, 0),
+                alias: "default_time".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(localtime_expression(12, 34, 56, 0, 0, 0)),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_localtime_string_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN localtime('12:34:56') AS t, \
+                toString(localtime('12:34:56')) AS text",
+    )
+    .expect("literal localtime string constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: localtime_from_string_expression("12:34:56"),
+                alias: "t".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(localtime_from_string_expression("12:34:56")),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_localtime_constructor_forms() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN localtime(person.name) AS t",
+            "dynamic localtime() string argument not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime('12:34:56Z') AS t",
+            "localtime() does not accept a timezone; use a naive time string",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime('12:34:56+01:00') AS t",
+            "localtime() does not accept a timezone; use a naive time string",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime(12) AS t",
+            "localtime() requires a literal map or string argument",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime({hour: person.age}) AS t",
+            "dynamic temporal fields not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime({minute: 34, second: 56}) AS t",
+            "localtime() map constructor requires a literal integer hour",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime({hour: 12, timezone: 'UTC'}) AS t",
+            "localtime() temporal field 'timezone' is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime({hour: 12, date: date({year: 2020})}) AS t",
+            "localtime() temporal field 'date' is not supported yet",
+        ),
+    ] {
+        let error =
+            compile_cypher(cypher).expect_err("unsupported localtime form should be rejected");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?}, got {error}"

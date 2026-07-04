@@ -94,6 +94,24 @@ fn localdatetime_expression(
     })
 }
 
+fn localtime_expression(
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
 #[test]
 fn lower_graph_plan_renders_forward_relationship_sql() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -2423,6 +2441,62 @@ fn lower_graph_plan_renders_temporal_localdatetime_expressions() {
 }
 
 #[test]
+fn lower_graph_plan_renders_temporal_localtime_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: localtime_expression(12, 34, 56, 0, 0, 0),
+            alias: "t".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(localtime_expression(12, 34, 56, 0, 0, 0)),
+            },
+            alias: "text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: localtime_expression(12, 0, 0, 0, 0, 0),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localtime_expression(13, 0, 0, 0, 0, 0)),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(localtime_expression(12, 34, 56, 0, 0, 0)),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localtime scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT CAST('12:34:56' AS TIME) AS \"t\", \
+             CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("WHERE CAST('12:00:00' AS TIME) < CAST('13:00:00' AS TIME)"),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST('12:34:56' AS TIME) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_null_if_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);
@@ -4410,6 +4484,12 @@ fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn localtime_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 #[test]
 fn renders_date_from_string_projection() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -4576,6 +4656,88 @@ fn renders_localdatetime_from_string_order() {
         translation
             .sql()
             .contains("ORDER BY CAST('2020-01-15T12:34:56' AS TIMESTAMP) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localtime_from_string_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        expression_projection("t", localtime_from_string_expression("12:34:56")),
+        expression_projection(
+            "text",
+            ScalarExpression::ToString {
+                expression: Box::new(localtime_from_string_expression("12:34:56")),
+            },
+        ),
+    ];
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localtime string projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT CAST('12:34:56' AS TIME) AS \"t\", \
+             CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localtime_from_string_comparison() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: localtime_from_string_expression("12:00:00"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localtime_from_string_expression("13:00:00")),
+    }));
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localtime string comparison should lower");
+
+    assert!(
+        translation
+            .sql()
+            .contains("WHERE CAST('12:00:00' AS TIME) < CAST('13:00:00' AS TIME)"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn renders_localtime_from_string_order() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(localtime_from_string_expression("12:34:56")),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("localtime string ordering should lower");
+
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST('12:34:56' AS TIME) ASC"),
         "{}",
         translation.sql()
     );

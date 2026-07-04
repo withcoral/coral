@@ -79,6 +79,30 @@ fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn localtime_expression(
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
+fn localtime_from_string_expression(text: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
 #[test]
 fn validate_graph_plan_resolves_bindings_and_relationships() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
@@ -943,6 +967,113 @@ fn validate_graph_plan_rejects_temporal_date_localdatetime_comparison() {
         ),
         "{error}"
     );
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_localtime_scalar_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: localtime_expression(12, 34, 56, 0, 0, 0),
+            alias: "localtime_value".to_string(),
+        },
+        Projection::Expression {
+            expression: localtime_from_string_expression("12:34:56"),
+            alias: "localtime_string_value".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(localtime_from_string_expression("12:34:56")),
+            },
+            alias: "localtime_text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: localtime_expression(12, 0, 0, 0, 0, 0),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localtime_expression(13, 0, 0, 0, 0, 0)),
+    }));
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("localtime scalar expressions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_localtime_string_constructor_with_non_string_text() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
+            text: Box::new(ScalarExpression::Literal(Literal::Integer(12))),
+        }),
+        alias: "localtime_value".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("localtime string constructor text should require a string");
+
+    assert!(
+        error.to_string().contains(
+            "localtime string constructor requires a string scalar expression, got integer"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_localtime_as_numeric() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: ScalarExpression::Arithmetic {
+            operator: ArithmeticOperator::Add,
+            left: Box::new(localtime_expression(12, 0, 0, 0, 0, 0)),
+            right: Box::new(ScalarExpression::Literal(Literal::Integer(1))),
+        },
+        alias: "shifted".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("localtime arithmetic should fail validation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("arithmetic requires a numeric scalar expression, got localtime"),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_localtime_cross_kind_comparisons() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    for (rhs, expected) in [
+        (
+            date_expression(2020, 1, 15),
+            "scalar predicate operands require compatible scalar types, got localtime and date",
+        ),
+        (
+            localdatetime_expression(2020, 1, 15, 12, 0, 0, 0, 0, 0),
+            "scalar predicate operands require compatible scalar types, got localtime and localdatetime",
+        ),
+    ] {
+        let mut plan = ownership_plan();
+        plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+            lhs: localtime_expression(12, 0, 0, 0, 0, 0),
+            operator: ComparisonOperator::LessThan,
+            rhs: ScalarPredicateRhs::Expression(rhs),
+        }));
+
+        let error = graph
+            .validate_graph_plan(&plan)
+            .expect_err("localtime cross-kind comparison should fail validation");
+
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }
 
 #[test]

@@ -52,7 +52,8 @@ pub(super) fn scalar_expression_unary_operand(
         | ScalarExpression::IsNaN { expression }
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
-            | TemporalExpr::LocalDateTimeFromString { text: expression },
+            | TemporalExpr::LocalDateTimeFromString { text: expression }
+            | TemporalExpr::LocalTimeFromString { text: expression },
         )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,

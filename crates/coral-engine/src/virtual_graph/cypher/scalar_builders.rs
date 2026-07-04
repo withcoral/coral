@@ -150,6 +150,24 @@ pub(super) fn make_localdatetime_scalar_expression(
     })
 }
 
+pub(super) fn make_localtime_scalar_expression(
+    hour: ScalarExpression,
+    minute: ScalarExpression,
+    second: ScalarExpression,
+    millisecond: ScalarExpression,
+    microsecond: ScalarExpression,
+    nanosecond: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+        hour: Box::new(hour),
+        minute: Box::new(minute),
+        second: Box::new(second),
+        millisecond: Box::new(millisecond),
+        microsecond: Box::new(microsecond),
+        nanosecond: Box::new(nanosecond),
+    })
+}
+
 pub(super) fn static_list_case_result_scalar_expression(
     result: StaticListCaseResult,
     element_type: LiteralListElementType,

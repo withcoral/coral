@@ -416,7 +416,9 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
 
     match expression {
         ScalarExpression::Temporal(
-            TemporalExpr::DateFromString { text } | TemporalExpr::LocalDateTimeFromString { text },
+            TemporalExpr::DateFromString { text }
+            | TemporalExpr::LocalDateTimeFromString { text }
+            | TemporalExpr::LocalTimeFromString { text },
         ) => reject_ignored_path_variable_references_in_scalar_expression(
             text,
             state,
@@ -432,8 +434,8 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             millisecond,
             microsecond,
             nanosecond,
-        }) => {
-            for (name, expression) in [
+        }) => reject_path_variables_in_temporal_fields(
+            [
                 ("year", year),
                 ("month", month),
                 ("day", day),
@@ -443,15 +445,29 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
                 ("millisecond", millisecond),
                 ("microsecond", microsecond),
                 ("nanosecond", nanosecond),
-            ] {
-                reject_ignored_path_variable_references_in_scalar_expression(
-                    expression,
-                    state,
-                    format!("{path}.{name}"),
-                )?;
-            }
-            Ok(())
-        }
+            ],
+            state,
+            &path,
+        ),
+        ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        }) => reject_path_variables_in_temporal_fields(
+            [
+                ("hour", hour),
+                ("minute", minute),
+                ("second", second),
+                ("millisecond", millisecond),
+                ("microsecond", microsecond),
+                ("nanosecond", nanosecond),
+            ],
+            state,
+            &path,
+        ),
         ScalarExpression::Coalesce { expressions } => {
             reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
         }
@@ -488,6 +504,21 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             Ok(())
         }
     }
+}
+
+fn reject_path_variables_in_temporal_fields<const N: usize>(
+    fields: [(&'static str, &ScalarExpression); N],
+    state: &CypherCompileState,
+    path: &str,
+) -> Result<(), CoreError> {
+    for (name, expression) in fields {
+        reject_ignored_path_variable_references_in_scalar_expression(
+            expression,
+            state,
+            format!("{path}.{name}"),
+        )?;
+    }
+    Ok(())
 }
 
 fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(

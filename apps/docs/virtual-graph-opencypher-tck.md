@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-573 scenarios, which is 35.48% of the full upstream scenario-definition inventory
-and 44.28% of the read-candidate inventory.
+580 scenarios, which is 35.91% of the full upstream scenario-definition inventory
+and 44.82% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 573 representative read-only scenarios:
+The baseline currently contains 580 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -247,12 +247,12 @@ The baseline currently contains 573 representative read-only scenarios:
   `toInteger(...)`, `toFloat(...)`, `toBoolean(...)`, nullable
   `toStringOrNull(...)`, `toIntegerOrNull(...)`, `toFloatOrNull(...)`,
   `toBooleanOrNull(...)` composition, and adjacent rejection coverage.
-- `Temporal`: 25 scenarios for DATE and LOCALDATETIME map and string constructor
-  support, DATE and LOCALDATETIME comparison operators, `toString(...)` over
-  native temporal values, and adjacent temporal support boundaries, including
-  `date(...)`, `localdatetime(...)`, zoned `datetime(...)` / `time(...)`,
-  `duration(...)`, unsupported temporal map forms, component access,
-  arithmetic, and `duration.between(...)`.
+- `Temporal`: 32 scenarios for DATE, LOCALDATETIME, and LOCALTIME map and
+  string constructor support, native temporal comparison operators,
+  `toString(...)` over native temporal values, and adjacent temporal support
+  boundaries, including `date(...)`, `localdatetime(...)`, `localtime(...)`,
+  zoned `datetime(...)` / `time(...)`, `duration(...)`, unsupported temporal map
+  forms, component access, arithmetic, and `duration.between(...)`.
 - `GraphMetadata`: 19 scenarios for `id(...)`, `elementId(...)`, `type(...)`,
   `startNode(...)`, `endNode(...)`, `labels(...)`, and `keys(...)`.
 - `RowModifiers`: 24 scenarios for `ORDER BY`, `NULLS FIRST` / `NULLS LAST`,

@@ -351,6 +351,20 @@ impl<'a> SqlRenderer<'a> {
                     );
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => {
+                for expression in [hour, minute, second, millisecond, microsecond, nanosecond] {
+                    self.collect_scalar_expression_subquery_candidates(
+                        expression, required, candidates,
+                    );
+                }
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,

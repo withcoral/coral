@@ -366,6 +366,18 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(expression, variables);
                 }
             }
+            ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }) => {
+                for expression in [hour, minute, second, millisecond, microsecond, nanosecond] {
+                    Self::collect_scalar_expression_variables(expression, variables);
+                }
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -495,7 +507,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::IsNaN { expression }
             | ScalarExpression::Temporal(
                 TemporalExpr::DateFromString { text: expression }
-                | TemporalExpr::LocalDateTimeFromString { text: expression },
+                | TemporalExpr::LocalDateTimeFromString { text: expression }
+                | TemporalExpr::LocalTimeFromString { text: expression },
             )
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,

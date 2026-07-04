@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 25,
+    "Temporal": 32,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10653,6 +10653,99 @@
             "text": "2020-01-15T12:34:56"
           }
         ]
+      }
+    },
+    {
+      "id": "temporal-localtime-string-constructor",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56') AS t",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "t": "12:34:56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-map-constructor",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime({hour: 12, minute: 34, second: 56}) AS t",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "t": "12:34:56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-map-default-fields",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime({hour: 12}) AS t",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "t": "12:00:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-compare-operators",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:00:00') < localtime('13:00:00') AS lt, localtime('13:00:00') > localtime('12:00:00') AS gt, localtime('12:00:00') <= localtime('12:00:00') AS le, localtime('13:00:00') >= localtime('12:00:00') AS ge, localtime('12:34:56') = localtime({hour: 12, minute: 34, second: 56}) AS eq, localtime('12:34:56') <> localtime('12:34:57') AS ne",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "eq": true,
+            "ge": true,
+            "gt": true,
+            "le": true,
+            "lt": true,
+            "ne": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-to-string",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(localtime('12:34:56')) AS text",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "text": "12:34:56"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-string-zoned-z-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56Z') AS t",
+      "expected": {
+        "kind": "error",
+        "contains": "localtime() does not accept a timezone; use a naive time string"
+      }
+    },
+    {
+      "id": "temporal-localtime-string-zoned-offset-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56+01:00') AS t",
+      "expected": {
+        "kind": "error",
+        "contains": "localtime() does not accept a timezone; use a naive time string"
       }
     },
     {

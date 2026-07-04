@@ -1082,6 +1082,7 @@ impl ScalarType {
             Self::Boolean => "boolean",
             Self::Temporal(TemporalKind::Date) => "date",
             Self::Temporal(TemporalKind::LocalDateTime) => "localdatetime",
+            Self::Temporal(TemporalKind::LocalTime) => "localtime",
             Self::Other => "non-scalar",
         }
     }
