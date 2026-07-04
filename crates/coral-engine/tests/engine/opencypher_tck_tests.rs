@@ -24,7 +24,17 @@ struct TckScenario {
     query: String,
     #[serde(default)]
     parameters: BTreeMap<String, Value>,
+    #[serde(default)]
+    fixture: TckFixture,
     expected: TckExpectation,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TckFixture {
+    #[default]
+    Baseline,
+    Rich,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,18 +59,27 @@ async fn opencypher_tck_read_baseline_gate() {
 
     let temp = TempDir::new().expect("temp dir");
     write_tck_fixture(temp.path());
+    crate::harness::write_rich_fixture(temp.path());
     let graph = GraphDeclaration::from_yaml(TCK_GRAPH).expect("TCK graph should parse");
+    let rich_graph = GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
+        .expect("rich fixture graph should parse");
 
     for scenario in suite.scenarios {
-        let source = build_source(tck_manifest(temp.path()));
+        let (source, graph) = match scenario.fixture {
+            TckFixture::Baseline => (build_source(tck_manifest(temp.path())), &graph),
+            TckFixture::Rich => (
+                build_source(crate::harness::rich_manifest(temp.path())),
+                &rich_graph,
+            ),
+        };
         let result = if scenario.parameters.is_empty() {
-            CoralQuery::execute_cypher(&[source], test_runtime(), &graph, &scenario.query).await
+            CoralQuery::execute_cypher(&[source], test_runtime(), graph, &scenario.query).await
         } else {
             let parameters = scenario_parameters(&scenario);
             CoralQuery::execute_cypher_with_parameters(
                 &[source],
                 test_runtime(),
-                &graph,
+                graph,
                 &scenario.query,
                 &parameters,
             )

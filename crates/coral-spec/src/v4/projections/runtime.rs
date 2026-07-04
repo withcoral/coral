@@ -104,6 +104,7 @@ pub fn manifest_data_type_name(data_type: ManifestDataType) -> &'static str {
         ManifestDataType::Boolean => "Boolean",
         ManifestDataType::Float64 => "Float64",
         ManifestDataType::Timestamp => "Timestamp",
+        ManifestDataType::Date => "Date",
         ManifestDataType::Json => "Json",
     }
 }

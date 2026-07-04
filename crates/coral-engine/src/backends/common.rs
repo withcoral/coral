@@ -377,6 +377,7 @@ pub(crate) fn manifest_data_type_to_arrow(data_type: ManifestDataType) -> DataTy
         ManifestDataType::Timestamp => {
             DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         }
+        ManifestDataType::Date => DataType::Date32,
     }
 }
 

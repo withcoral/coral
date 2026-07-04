@@ -433,6 +433,9 @@ impl FilePartitionDataType {
             ManifestDataType::Timestamp => Err(ManifestError::validation(
                 "type=Timestamp is not supported for backend=file path partitions",
             )),
+            ManifestDataType::Date => Err(ManifestError::validation(
+                "type=Date is not supported for backend=file path partitions",
+            )),
         }
     }
 }
@@ -1282,6 +1285,33 @@ mod tests {
         .expect_err("timestamp partitions should fail");
 
         assert!(error.to_string().contains("type=Timestamp"));
+    }
+
+    #[test]
+    fn file_manifest_rejects_date_partitions() {
+        let error = FileSourceManifest::parse_manifest_value(json!({
+            "dsl_version": 3,
+            "name": "logs",
+            "version": "0.1.0",
+            "backend": "file",
+            "tables": [{
+                "name": "messages",
+                "description": "JSONL messages",
+                "format": "jsonl",
+                "source": {
+                    "location": "file:///tmp/logs/",
+                    "partitions": [{ "name": "created_on", "type": "Date" }]
+                },
+                "columns": [{ "name": "kind", "type": "Utf8" }],
+            }],
+        }))
+        .expect_err("date partitions should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("type=Date is not supported for backend=file path partitions")
+        );
     }
 
     #[test]

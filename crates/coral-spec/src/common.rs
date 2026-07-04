@@ -93,6 +93,7 @@ pub enum ManifestDataType {
     Boolean,
     Float64,
     Timestamp,
+    Date,
     /// Stored as UTF-8 containing valid JSON. Hints to users and tooling
     /// that the column is queryable with JSON functions (`json_get`,
     /// `json_get_str`, `json_as_text`, etc.); the JSON functions also
@@ -971,6 +972,7 @@ pub(crate) fn parse_manifest_data_type(s: &str) -> Result<ManifestDataType> {
         "Boolean" => Ok(ManifestDataType::Boolean),
         "Float64" => Ok(ManifestDataType::Float64),
         "Timestamp" => Ok(ManifestDataType::Timestamp),
+        "Date" => Ok(ManifestDataType::Date),
         "Json" => Ok(ManifestDataType::Json),
         other => Err(ManifestError::validation(format!(
             "unsupported data type '{other}' in source manifest"

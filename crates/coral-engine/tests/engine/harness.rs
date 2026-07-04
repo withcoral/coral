@@ -124,12 +124,12 @@ pub(crate) fn write_rich_fixture(dir: &Path) {
         dir,
         "rich_people.jsonl",
         &[
-            json!({"id": 1, "name": "Ada", "age": 20, "city": "London", "score": 8.0,  "weight": 7.0}),
-            json!({"id": 2, "name": "Bea", "age": 20, "city": "London", "score": 8.0,  "weight": 9.0}),
-            json!({"id": 3, "name": "Cee", "age": 20, "city": null,     "score": 8.0,  "weight": 10.0}),
-            json!({"id": 4, "name": "Dot", "age": 30, "city": "Paris",  "score": 12.0, "weight": 10.0}),
-            json!({"id": 5, "name": "Eve", "age": 40, "city": null,     "score": 12.0, "weight": 11.0}),
-            json!({"id": 6, "name": "Fay", "age": 50, "city": "Paris",  "score": 12.0, "weight": 13.0}),
+            json!({"id": 1, "name": "Ada", "age": 20, "city": "London", "score": 8.0,  "weight": 7.0,  "joined": "2020-06-01T09:00:00Z", "birthday": "1990-05-20"}),
+            json!({"id": 2, "name": "Bea", "age": 20, "city": "London", "score": 8.0,  "weight": 9.0,  "joined": "2021-03-15T09:00:00Z", "birthday": "1985-12-01"}),
+            json!({"id": 3, "name": "Cee", "age": 20, "city": null,     "score": 8.0,  "weight": 10.0, "joined": "2019-11-30T09:00:00Z", "birthday": "1995-08-15"}),
+            json!({"id": 4, "name": "Dot", "age": 30, "city": "Paris",  "score": 12.0, "weight": 10.0, "joined": "2022-01-10T09:00:00Z", "birthday": "1988-03-30"}),
+            json!({"id": 5, "name": "Eve", "age": 40, "city": null,     "score": 12.0, "weight": 11.0, "joined": "2018-07-22T09:00:00Z", "birthday": "1992-10-10"}),
+            json!({"id": 6, "name": "Fay", "age": 50, "city": "Paris",  "score": 12.0, "weight": 13.0, "joined": "2023-09-05T09:00:00Z", "birthday": "1979-01-25"}),
         ],
     );
 }
@@ -152,7 +152,9 @@ pub(crate) fn rich_manifest(dir: &Path) -> Value {
                     { "name": "age", "type": "Int64" },
                     { "name": "city", "type": "Utf8" },
                     { "name": "score", "type": "Float64" },
-                    { "name": "weight", "type": "Float64" }
+                    { "name": "weight", "type": "Float64" },
+                    { "name": "joined", "type": "Timestamp" },
+                    { "name": "birthday", "type": "Date" }
                 ]
             }
         ]
@@ -173,6 +175,8 @@ nodes:
       city: city
       score: score
       weight: weight
+      joined: joined
+      birthday: birthday
 ";
 
 pub(crate) fn users_rows() -> Vec<Value> {

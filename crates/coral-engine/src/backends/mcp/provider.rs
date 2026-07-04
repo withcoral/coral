@@ -218,7 +218,7 @@ fn coerce_filter_value(
     value: &str,
 ) -> Result<Value> {
     match data_type {
-        ManifestDataType::Utf8 | ManifestDataType::Timestamp => {
+        ManifestDataType::Utf8 | ManifestDataType::Timestamp | ManifestDataType::Date => {
             Ok(Value::String(value.to_string()))
         }
         ManifestDataType::Json => serde_json::from_str(value).map_err(|_unused| {

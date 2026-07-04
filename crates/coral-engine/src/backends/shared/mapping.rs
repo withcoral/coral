@@ -7,7 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use chrono::DateTime;
 use datafusion::arrow::array::{
-    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    Array, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray,
 };
 use datafusion::arrow::datatypes::SchemaRef;
@@ -86,6 +86,13 @@ pub(crate) fn convert_items(
                     .map(|row| to_i64(eval_expr(&expr, row, filters, args)))
                     .collect();
                 let array = array.with_timezone("+00:00");
+                arrays.push(Arc::new(array));
+            }
+            ManifestDataType::Date => {
+                let array: Date32Array = items
+                    .iter()
+                    .map(|row| to_i32(eval_expr(&expr, row, filters, args)))
+                    .collect();
                 arrays.push(Arc::new(array));
             }
         }
@@ -437,6 +444,18 @@ fn to_i64(value: Option<Value>) -> Option<i64> {
             .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok())),
         Value::String(v) => v.parse::<i64>().ok(),
         Value::Bool(v) => Some(i64::from(v)),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn to_i32(value: Option<Value>) -> Option<i32> {
+    match value? {
+        Value::Number(v) => v
+            .as_i64()
+            .and_then(|i| i32::try_from(i).ok())
+            .or_else(|| v.as_u64().and_then(|u| i32::try_from(u).ok())),
+        Value::String(v) => v.parse::<i32>().ok(),
+        Value::Bool(v) => Some(i32::from(v)),
         Value::Null | Value::Array(_) | Value::Object(_) => None,
     }
 }

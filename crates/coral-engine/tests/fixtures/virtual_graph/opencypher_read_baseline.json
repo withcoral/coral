@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 47,
+    "Temporal": 50,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -11234,6 +11234,51 @@
             "name": "Bob"
           }
         ]
+      }
+    },
+    {
+      "id": "temporal-stored-timestamp-return",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Ada', 'Fay'] RETURN p.name AS name, p.joined AS joined ORDER BY p.joined",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Ada",
+            "joined": "2020-06-01T09:00:00Z"
+          },
+          {
+            "name": "Fay",
+            "joined": "2023-09-05T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-date-return",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.birthday AS birthday",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "birthday": "1990-05-20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-stored-component-access-rejected",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "MATCH (p:Person) WHERE p.name = 'Ada' WITH p.joined AS t RETURN t.year AS y",
+      "expected": {
+        "kind": "error",
+        "contains": "stored temporal component access is not supported yet"
       }
     }
   ]

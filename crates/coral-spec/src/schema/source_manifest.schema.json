@@ -593,7 +593,7 @@
     },
     "manifest_data_type": {
       "type": "string",
-      "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"]
+      "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Date", "Json"]
     },
     "filter": {
       "type": "object",
@@ -749,7 +749,7 @@
       "required": ["name", "tool_arg"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Json"] },
+        "type": { "type": "string", "enum": ["Utf8", "Int64", "Boolean", "Float64", "Timestamp", "Date", "Json"] },
         "required": { "type": "boolean" },
         "mode": { "type": "string", "enum": ["equality", "search", "contains"] },
         "description": { "type": "string" },
