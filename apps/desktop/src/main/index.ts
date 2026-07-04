@@ -3,7 +3,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { McpClientId, SidecarInfo } from '../shared/types'
 import { configureMcpClient, mcpClients } from './mcp-config'
-import { APP_ENTRY_URL, APP_ORIGIN, registerAppProtocol, registerAppSchemePrivileges } from './app-renderer'
+import {
+  APP_ENTRY_URL,
+  APP_GRPC_BASE,
+  APP_ORIGIN,
+  registerAppProtocol,
+  registerAppSchemePrivileges,
+} from './app-renderer'
 import { killAllTrackedChildren, startCoralSidecar, type CoralSidecar } from './sidecar'
 
 const SHUTDOWN_TIMEOUT_MS = 6000
@@ -226,8 +232,15 @@ async function stopServices(): Promise<void> {
 
 function registerIpcHandlers() {
   ipcMain.handle('coral:await-initialization', async (): Promise<SidecarInfo> => {
+    // App-scheme renderer (no dev override) uses the same-origin proxy base. The
+    // proxy resolves the live sidecar per request, so don't block startup on the
+    // sidecar here — returning the constant keeps the app shell responsive.
+    if (rendererUrl() === null) {
+      return { grpcBaseUrl: APP_GRPC_BASE, packaged: app.isPackaged }
+    }
+    // Dev (Vite http origin) hits the sidecar directly, so wait for its endpoint.
     const started = await ensureSidecar()
-    return { url: started.url, packaged: started.packaged }
+    return { grpcBaseUrl: started.url, packaged: started.packaged }
   })
   ipcMain.handle('coral:list-mcp-clients', () => mcpClients())
   ipcMain.handle('coral:configure-mcp', (_event, clientId: McpClientId) => configureMcpClient(clientId))
@@ -316,7 +329,7 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', updatePlatformIcon)
   registerIpcHandlers()
   installMenu()
-  registerAppProtocol()
+  registerAppProtocol(() => ensureSidecar().then((started) => started.url))
   void ensureSidecar().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`[coral-sidecar] failed to start during boot: ${message}`)

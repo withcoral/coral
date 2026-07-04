@@ -337,10 +337,17 @@ describe('Architectural Tests', () => {
     it('app shell should wrap only top-level app routes', () => {
       const routeConfig = fs.readFileSync(ROUTE_CONFIG_FILE, 'utf-8')
 
-      // Settings is registered only in the desktop build (gated on
-      // CORAL_DESKTOP_APP), so it appears as a conditional spread entry.
+      expect(routeConfig).toContain("layout('routes/app-shell.tsx', [")
+      expect(routeConfig).toContain("index('routes/index.tsx')")
+      expect(routeConfig).toContain("route('sources', 'routes/sources.tsx')")
+      expect(routeConfig).toContain("route('traces', 'routes/traces.tsx')")
+      // Settings is gated to the desktop build, but the route entry is still present.
+      expect(routeConfig).toContain("route('settings', 'routes/settings.tsx')")
+
+      // Structural check: every route is nested inside the layout, and settings
+      // keeps its desktop-only conditional spread.
       expect(routeConfig).toMatch(
-        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
+        /layout\(\s*'routes\/app-shell\.tsx',\s*\[\s*index\('routes\/index\.tsx'\),\s*route\('sources', 'routes\/sources\.tsx'\),\s*route\('traces', 'routes\/traces\.tsx'\),\s*\.\.\.\(\s*isDesktopApp\s*\?\s*\[route\('settings', 'routes\/settings\.tsx'\)\]\s*:\s*\[\]\),?\s*\]\s*\)/,
       )
     })
 
