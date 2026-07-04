@@ -2793,6 +2793,91 @@ fn compiles_constructed_temporal_component_scalar_expressions() {
 }
 
 #[test]
+fn compiles_constructed_duration_component_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN duration({years: 1, months: 4, days: 10, hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).years AS years, \
+                duration({months: 16}).quarters AS quarters, \
+                duration({months: 16}).months AS months, \
+                duration({days: 10}).weeks AS weeks, \
+                duration({days: 10}).days AS days, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).hours AS hours, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).minutes AS minutes, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).seconds AS seconds, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).milliseconds AS milliseconds, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).microseconds AS microseconds, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).nanoseconds AS nanoseconds, \
+                duration({months: 16}).quartersOfYear AS quartersOfYear, \
+                duration({months: 16}).monthsOfQuarter AS monthsOfQuarter, \
+                duration({months: 16}).monthsOfYear AS monthsOfYear, \
+                duration({days: 10}).daysOfWeek AS daysOfWeek, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).minutesOfHour AS minutesOfHour, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).secondsOfMinute AS secondsOfMinute, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).millisecondsOfSecond AS millisecondsOfSecond, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).microsecondsOfSecond AS microsecondsOfSecond, \
+                duration({hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}).nanosecondsOfSecond AS nanosecondsOfSecond",
+    )
+    .expect("constructed duration component access should compile");
+
+    let units =
+        plan.projections
+            .iter()
+            .map(|projection| match projection {
+                Projection::Expression {
+                    expression:
+                        ScalarExpression::Temporal(TemporalExpr::Component { expression, unit }),
+                    alias,
+                } => {
+                    assert!(
+                        matches!(
+                            expression.as_ref(),
+                            ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. })
+                        ),
+                        "duration component base should be a duration expression"
+                    );
+                    (alias.as_str(), *unit)
+                }
+                projection => panic!("unexpected projection: {projection:?}"),
+            })
+            .collect::<Vec<_>>();
+
+    assert_eq!(
+        units,
+        vec![
+            ("years", TemporalComponentUnit::Years),
+            ("quarters", TemporalComponentUnit::Quarters),
+            ("months", TemporalComponentUnit::Months),
+            ("weeks", TemporalComponentUnit::Weeks),
+            ("days", TemporalComponentUnit::Days),
+            ("hours", TemporalComponentUnit::Hours),
+            ("minutes", TemporalComponentUnit::Minutes),
+            ("seconds", TemporalComponentUnit::Seconds),
+            ("milliseconds", TemporalComponentUnit::Milliseconds),
+            ("microseconds", TemporalComponentUnit::Microseconds),
+            ("nanoseconds", TemporalComponentUnit::Nanoseconds),
+            ("quartersOfYear", TemporalComponentUnit::QuartersOfYear),
+            ("monthsOfQuarter", TemporalComponentUnit::MonthsOfQuarter),
+            ("monthsOfYear", TemporalComponentUnit::MonthsOfYear),
+            ("daysOfWeek", TemporalComponentUnit::DaysOfWeek),
+            ("minutesOfHour", TemporalComponentUnit::MinutesOfHour),
+            ("secondsOfMinute", TemporalComponentUnit::SecondsOfMinute),
+            (
+                "millisecondsOfSecond",
+                TemporalComponentUnit::MillisecondsOfSecond,
+            ),
+            (
+                "microsecondsOfSecond",
+                TemporalComponentUnit::MicrosecondsOfSecond,
+            ),
+            (
+                "nanosecondsOfSecond",
+                TemporalComponentUnit::NanosecondsOfSecond
+            ),
+        ]
+    );
+}
+
+#[test]
 fn compiles_stored_temporal_component_scalar_expressions_with_catalog() {
     let graph = temporal_columns_test_graph();
     let catalog = temporal_columns_catalog();
@@ -2867,6 +2952,43 @@ fn compiles_terminal_with_stored_temporal_component_scalar_expression_with_catal
 }
 
 #[test]
+fn compiles_terminal_with_multiple_duration_components_from_one_alias() {
+    let query = compile_cypher(
+        "MATCH (person:Person) \
+         WITH duration({months: 14}) AS d \
+         RETURN d.years AS years, d.months AS months, d.monthsOfYear AS monthsOfYear",
+    )
+    .expect("terminal WITH duration component access should compile");
+
+    assert_eq!(
+        query.projections,
+        vec![
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    duration_expression(14, 0, 0, 0),
+                    TemporalComponentUnit::Years,
+                ),
+                alias: "years".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    duration_expression(14, 0, 0, 0),
+                    TemporalComponentUnit::Months,
+                ),
+                alias: "months".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    duration_expression(14, 0, 0, 0),
+                    TemporalComponentUnit::MonthsOfYear,
+                ),
+                alias: "monthsOfYear".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn rejects_stored_temporal_component_kind_mismatch_with_catalog() {
     let graph = temporal_columns_test_graph();
     let catalog = temporal_columns_catalog();
@@ -2912,6 +3034,14 @@ fn rejects_unsupported_temporal_component_access() {
         (
             "MATCH (person:Person) RETURN localtime('12:34:56').year AS year",
             "year is not supported for localtime values",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration('P1D').day AS day",
+            "day is not supported for duration values",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').years AS years",
+            "years is not supported for date values",
         ),
         (
             "MATCH (person:Person) WITH person.name AS d RETURN d.year AS year",

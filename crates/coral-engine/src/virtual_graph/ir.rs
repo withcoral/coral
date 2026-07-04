@@ -618,7 +618,7 @@ pub enum ScalarExpression {
     },
 }
 
-/// Native temporal component units supported by `DataFusion` `date_part`.
+/// Temporal component units supported by Cypher component access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalComponentUnit {
     /// Calendar year.
@@ -641,6 +641,46 @@ pub enum TemporalComponentUnit {
     Millisecond,
     /// Microsecond fraction.
     Microsecond,
+    /// Total years in a duration's month group.
+    Years,
+    /// Total quarters in a duration's month group.
+    Quarters,
+    /// Total months in a duration's month group.
+    Months,
+    /// Total weeks in a duration's day group.
+    Weeks,
+    /// Total days in a duration's day group.
+    Days,
+    /// Total hours in a duration's nanosecond group.
+    Hours,
+    /// Total minutes in a duration's nanosecond group.
+    Minutes,
+    /// Total seconds in a duration's nanosecond group.
+    Seconds,
+    /// Total milliseconds in a duration's nanosecond group.
+    Milliseconds,
+    /// Total microseconds in a duration's nanosecond group.
+    Microseconds,
+    /// Total nanoseconds in a duration's nanosecond group.
+    Nanoseconds,
+    /// Quarter component within a duration's current year.
+    QuartersOfYear,
+    /// Month component within a duration's current quarter.
+    MonthsOfQuarter,
+    /// Month component within a duration's current year.
+    MonthsOfYear,
+    /// Day component within a duration's current week.
+    DaysOfWeek,
+    /// Minute component within a duration's current hour.
+    MinutesOfHour,
+    /// Second component within a duration's current minute.
+    SecondsOfMinute,
+    /// Millisecond component within a duration's current second.
+    MillisecondsOfSecond,
+    /// Microsecond component within a duration's current second.
+    MicrosecondsOfSecond,
+    /// Nanosecond component within a duration's current second.
+    NanosecondsOfSecond,
 }
 
 /// Duration decomposition and unit-total functions supported by the temporal IR.
@@ -785,6 +825,26 @@ impl TemporalComponentUnit {
             Self::Second => "second",
             Self::Millisecond => "millisecond",
             Self::Microsecond => "microsecond",
+            Self::Years => "years",
+            Self::Quarters => "quarters",
+            Self::Months => "months",
+            Self::Weeks => "weeks",
+            Self::Days => "days",
+            Self::Hours => "hours",
+            Self::Minutes => "minutes",
+            Self::Seconds => "seconds",
+            Self::Milliseconds => "milliseconds",
+            Self::Microseconds => "microseconds",
+            Self::Nanoseconds => "nanoseconds",
+            Self::QuartersOfYear => "quartersOfYear",
+            Self::MonthsOfQuarter => "monthsOfQuarter",
+            Self::MonthsOfYear => "monthsOfYear",
+            Self::DaysOfWeek => "daysOfWeek",
+            Self::MinutesOfHour => "minutesOfHour",
+            Self::SecondsOfMinute => "secondsOfMinute",
+            Self::MillisecondsOfSecond => "millisecondsOfSecond",
+            Self::MicrosecondsOfSecond => "microsecondsOfSecond",
+            Self::NanosecondsOfSecond => "nanosecondsOfSecond",
         }
     }
 
@@ -800,7 +860,53 @@ impl TemporalComponentUnit {
             Self::Hour | Self::Minute | Self::Second | Self::Millisecond | Self::Microsecond => {
                 matches!(kind, TemporalKind::LocalDateTime | TemporalKind::LocalTime)
             }
+            Self::Years
+            | Self::Quarters
+            | Self::Months
+            | Self::Weeks
+            | Self::Days
+            | Self::Hours
+            | Self::Minutes
+            | Self::Seconds
+            | Self::Milliseconds
+            | Self::Microseconds
+            | Self::Nanoseconds
+            | Self::QuartersOfYear
+            | Self::MonthsOfQuarter
+            | Self::MonthsOfYear
+            | Self::DaysOfWeek
+            | Self::MinutesOfHour
+            | Self::SecondsOfMinute
+            | Self::MillisecondsOfSecond
+            | Self::MicrosecondsOfSecond
+            | Self::NanosecondsOfSecond => matches!(kind, TemporalKind::Duration),
         }
+    }
+
+    pub(super) fn is_duration_component(self) -> bool {
+        matches!(
+            self,
+            Self::Years
+                | Self::Quarters
+                | Self::Months
+                | Self::Weeks
+                | Self::Days
+                | Self::Hours
+                | Self::Minutes
+                | Self::Seconds
+                | Self::Milliseconds
+                | Self::Microseconds
+                | Self::Nanoseconds
+                | Self::QuartersOfYear
+                | Self::MonthsOfQuarter
+                | Self::MonthsOfYear
+                | Self::DaysOfWeek
+                | Self::MinutesOfHour
+                | Self::SecondsOfMinute
+                | Self::MillisecondsOfSecond
+                | Self::MicrosecondsOfSecond
+                | Self::NanosecondsOfSecond
+        )
     }
 }
 

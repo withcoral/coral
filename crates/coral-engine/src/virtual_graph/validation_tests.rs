@@ -1426,6 +1426,54 @@ fn validate_graph_plan_accepts_temporal_component_scalar_expressions() {
 }
 
 #[test]
+fn validate_graph_plan_accepts_duration_component_scalar_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(16, 0, 0, 0),
+                TemporalComponentUnit::Years,
+            ),
+            alias: "years".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(16, 0, 0, 0),
+                TemporalComponentUnit::MonthsOfYear,
+            ),
+            alias: "months_of_year".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(0, 10, 0, 0),
+                TemporalComponentUnit::DaysOfWeek,
+            ),
+            alias: "days_of_week".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(0, 0, 3_661, 111_111_111),
+                TemporalComponentUnit::SecondsOfMinute,
+            ),
+            alias: "seconds_of_minute".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: temporal_component_expression(
+            duration_expression(14, 0, 0, 0),
+            TemporalComponentUnit::Months,
+        ),
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(14))),
+    }));
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("duration component scalar expressions should validate");
+}
+
+#[test]
 fn validate_graph_plan_rejects_temporal_component_on_non_temporal_expression() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan();
@@ -1469,6 +1517,30 @@ fn validate_graph_plan_rejects_temporal_component_kind_mismatch() {
         error
             .to_string()
             .contains("year is not supported for localtime values"),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_date_component_on_duration_expression() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: temporal_component_expression(
+            duration_expression(0, 1, 0, 0),
+            TemporalComponentUnit::Day,
+        ),
+        alias: "day".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("date component on duration should fail validation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("day is not supported for duration values"),
         "{error}"
     );
 }

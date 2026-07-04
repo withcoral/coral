@@ -1032,6 +1032,112 @@ async fn cypher_duration_results_render_as_iso_strings_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_duration_components_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         WITH duration({years: 1, months: 4, days: 10, hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}) AS d, \
+              duration({months: 14}) AS normalized, \
+              duration({months: -14, days: -10, hours: -1, minutes: -1, seconds: -1, nanoseconds: -111111111}) AS negative, \
+              duration({}) AS zero \
+         RETURN d.years AS years, d.quarters AS quarters, d.months AS months, d.weeks AS weeks, d.days AS days, \
+                d.hours AS hours, d.minutes AS minutes, d.seconds AS seconds, d.milliseconds AS milliseconds, d.microseconds AS microseconds, d.nanoseconds AS nanoseconds, \
+                d.quartersOfYear AS quartersOfYear, d.monthsOfQuarter AS monthsOfQuarter, d.monthsOfYear AS monthsOfYear, d.daysOfWeek AS daysOfWeek, \
+                d.minutesOfHour AS minutesOfHour, d.secondsOfMinute AS secondsOfMinute, d.millisecondsOfSecond AS millisecondsOfSecond, \
+                d.microsecondsOfSecond AS microsecondsOfSecond, d.nanosecondsOfSecond AS nanosecondsOfSecond, \
+                normalized.years AS normalized_years, normalized.months AS normalized_months, normalized.monthsOfYear AS normalized_monthsOfYear, \
+                negative.monthsOfYear AS negative_monthsOfYear, \
+                negative.secondsOfMinute AS negative_secondsOfMinute, \
+                zero.nanoseconds AS zero_nanoseconds",
+    )
+    .await
+    .expect("Cypher duration component access should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT 1 AS years, \
+                    5 AS quarters, \
+                    16 AS months, \
+                    1 AS weeks, \
+                    10 AS days, \
+                    1 AS hours, \
+                    61 AS minutes, \
+                    3661 AS seconds, \
+                    3661111 AS milliseconds, \
+                    3661111111 AS microseconds, \
+                    3661111111111 AS nanoseconds, \
+                    1 AS \"quartersOfYear\", \
+                    1 AS \"monthsOfQuarter\", \
+                    4 AS \"monthsOfYear\", \
+                    3 AS \"daysOfWeek\", \
+                    1 AS \"minutesOfHour\", \
+                    1 AS \"secondsOfMinute\", \
+                    111 AS \"millisecondsOfSecond\", \
+                    111111 AS \"microsecondsOfSecond\", \
+                    111111111 AS \"nanosecondsOfSecond\", \
+                    1 AS normalized_years, \
+                    14 AS normalized_months, \
+                    2 AS \"normalized_monthsOfYear\", \
+                    -2 AS \"negative_monthsOfYear\", \
+                    -1 AS \"negative_secondsOfMinute\", \
+                    0 AS zero_nanoseconds \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent duration component SQL should execute"),
+    );
+
+    assert!(
+        execution.translated_sql().contains("coral_duration_part("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "years": 1,
+            "quarters": 5,
+            "months": 16,
+            "weeks": 1,
+            "days": 10,
+            "hours": 1,
+            "minutes": 61,
+            "seconds": 3661,
+            "milliseconds": 3_661_111,
+            "microseconds": 3_661_111_111i64,
+            "nanoseconds": 3_661_111_111_111i64,
+            "quartersOfYear": 1,
+            "monthsOfQuarter": 1,
+            "monthsOfYear": 4,
+            "daysOfWeek": 3,
+            "minutesOfHour": 1,
+            "secondsOfMinute": 1,
+            "millisecondsOfSecond": 111,
+            "microsecondsOfSecond": 111_111,
+            "nanosecondsOfSecond": 111_111_111,
+            "normalized_years": 1,
+            "normalized_months": 14,
+            "normalized_monthsOfYear": 2,
+            "negative_monthsOfYear": -2,
+            "negative_secondsOfMinute": -1,
+            "zero_nanoseconds": 0
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_temporal_duration_unit_totals_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

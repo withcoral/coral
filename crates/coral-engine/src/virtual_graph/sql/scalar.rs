@@ -641,6 +641,13 @@ impl<'a> SqlRenderer<'a> {
         unit: TemporalComponentUnit,
         scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
+        if unit.is_duration_component() {
+            return Ok(format!(
+                "coral_duration_part({}, '{}')",
+                self.render_scalar_in_scope(expression, scope)?,
+                unit.component_name()
+            ));
+        }
         let date_part_sql = format!(
             "CAST(date_part('{}', {}) AS BIGINT)",
             unit.date_part_unit(),

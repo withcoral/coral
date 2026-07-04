@@ -3139,6 +3139,88 @@ fn lower_graph_plan_renders_temporal_component_expressions() {
 }
 
 #[test]
+fn lower_graph_plan_renders_duration_component_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(14, 0, 0, 0),
+                TemporalComponentUnit::Years,
+            ),
+            alias: "years".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(14, 0, 0, 0),
+                TemporalComponentUnit::MonthsOfYear,
+            ),
+            alias: "monthsOfYear".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(0, 10, 0, 0),
+                TemporalComponentUnit::DaysOfWeek,
+            ),
+            alias: "daysOfWeek".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                duration_expression(0, 0, 3_661, 111_111_111),
+                TemporalComponentUnit::NanosecondsOfSecond,
+            ),
+            alias: "nanosecondsOfSecond".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: temporal_component_expression(
+            duration_expression(14, 0, 0, 0),
+            TemporalComponentUnit::Months,
+        ),
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(14))),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(temporal_component_expression(
+            duration_expression(0, 0, 3_661, 111_111_111),
+            TemporalComponentUnit::SecondsOfMinute,
+        )),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("duration component scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT coral_duration_part(CAST('14 months 0 days 0 seconds' AS INTERVAL), 'years') AS \"years\", \
+             coral_duration_part(CAST('14 months 0 days 0 seconds' AS INTERVAL), 'monthsOfYear') AS \"monthsOfYear\", \
+             coral_duration_part(CAST('0 months 10 days 0 seconds' AS INTERVAL), 'daysOfWeek') AS \"daysOfWeek\", \
+             coral_duration_part(CAST('0 months 0 days 3661.111111111 seconds' AS INTERVAL), 'nanosecondsOfSecond') AS \"nanosecondsOfSecond\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "WHERE coral_duration_part(CAST('14 months 0 days 0 seconds' AS INTERVAL), 'months') = 14"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "ORDER BY coral_duration_part(CAST('0 months 0 days 3661.111111111 seconds' AS INTERVAL), 'secondsOfMinute') ASC"
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_null_if_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);

@@ -7721,15 +7721,16 @@ fn apply_terminal_return_projection_aliases(
             "RETURN * mixed with explicit projections after WITH requires scoped query planning and is not supported yet",
         ));
     }
-    if return_clause.items.len() != plan.projections.len() {
-        return Err(unsupported(
-            "final_part.return.items",
-            "terminal RETURN after WITH must pass through every WITH alias",
-        ));
-    }
     let mut reordered = Vec::with_capacity(plan.projections.len());
     let mut available = plan.projections.clone();
+    let required_aliases = plan
+        .projections
+        .iter()
+        .filter_map(projection_output_alias)
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
     let mut returned_aliases = BTreeSet::new();
+    let mut component_aliases = BTreeSet::new();
     for (index, item) in return_clause.items.iter().enumerate() {
         let item_path = format!("final_part.return.items[{index}].expression");
         if let Some((projection, consumed_alias)) =
@@ -7742,7 +7743,7 @@ fn apply_terminal_return_projection_aliases(
                 item_path.clone(),
             )?
         {
-            if !returned_aliases.insert(consumed_alias.clone()) {
+            if returned_aliases.contains(&consumed_alias) {
                 return Err(unsupported(
                     item_path,
                     format!(
@@ -7750,18 +7751,7 @@ fn apply_terminal_return_projection_aliases(
                     ),
                 ));
             }
-            let position = available
-                .iter()
-                .position(|projection| {
-                    projection_output_alias(projection) == Some(consumed_alias.as_str())
-                })
-                .ok_or_else(|| {
-                    unsupported(
-                        format!("final_part.return.items[{index}].expression"),
-                        format!("terminal RETURN references unknown WITH alias '{consumed_alias}'"),
-                    )
-                })?;
-            available.remove(position);
+            component_aliases.insert(consumed_alias);
             reordered.push(projection);
             continue;
         }
@@ -7772,6 +7762,12 @@ fn apply_terminal_return_projection_aliases(
             ));
         };
         let alias = variable_name(variable);
+        if component_aliases.contains(&alias) {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                format!("terminal RETURN projects WITH alias '{alias}' more than once"),
+            ));
+        }
         if !returned_aliases.insert(alias.clone()) {
             return Err(unsupported(
                 format!("final_part.return.items[{index}].expression"),
@@ -7792,6 +7788,16 @@ fn apply_terminal_return_projection_aliases(
             set_projection_output_alias(&mut projection, variable_name(alias));
         }
         reordered.push(projection);
+    }
+    let consumed_aliases = returned_aliases
+        .union(&component_aliases)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if consumed_aliases != required_aliases {
+        return Err(unsupported(
+            "final_part.return.items",
+            "terminal RETURN after WITH must pass through every WITH alias",
+        ));
     }
     plan.projections = reordered;
     Ok(())
@@ -21794,6 +21800,9 @@ fn temporal_kind_for_data_type(data_type: &str) -> Option<TemporalKind> {
     if data_type.starts_with("Timestamp") {
         return Some(TemporalKind::LocalDateTime);
     }
+    if data_type.starts_with("Interval") {
+        return Some(TemporalKind::Duration);
+    }
     if data_type.starts_with("Dictionary") {
         return temporal_kind_for_dictionary_data_type(data_type);
     }
@@ -21807,6 +21816,8 @@ fn temporal_kind_for_dictionary_data_type(data_type: &str) -> Option<TemporalKin
         Some(TemporalKind::LocalTime)
     } else if data_type.contains("Timestamp") {
         Some(TemporalKind::LocalDateTime)
+    } else if data_type.contains("Interval") {
+        Some(TemporalKind::Duration)
     } else {
         None
     }
@@ -21847,6 +21858,26 @@ fn compile_temporal_component_unit(
         "second" => Ok(TemporalComponentUnit::Second),
         "millisecond" => Ok(TemporalComponentUnit::Millisecond),
         "microsecond" => Ok(TemporalComponentUnit::Microsecond),
+        "years" => Ok(TemporalComponentUnit::Years),
+        "quarters" => Ok(TemporalComponentUnit::Quarters),
+        "months" => Ok(TemporalComponentUnit::Months),
+        "weeks" => Ok(TemporalComponentUnit::Weeks),
+        "days" => Ok(TemporalComponentUnit::Days),
+        "hours" => Ok(TemporalComponentUnit::Hours),
+        "minutes" => Ok(TemporalComponentUnit::Minutes),
+        "seconds" => Ok(TemporalComponentUnit::Seconds),
+        "milliseconds" => Ok(TemporalComponentUnit::Milliseconds),
+        "microseconds" => Ok(TemporalComponentUnit::Microseconds),
+        "nanoseconds" => Ok(TemporalComponentUnit::Nanoseconds),
+        "quartersOfYear" => Ok(TemporalComponentUnit::QuartersOfYear),
+        "monthsOfQuarter" => Ok(TemporalComponentUnit::MonthsOfQuarter),
+        "monthsOfYear" => Ok(TemporalComponentUnit::MonthsOfYear),
+        "daysOfWeek" => Ok(TemporalComponentUnit::DaysOfWeek),
+        "minutesOfHour" => Ok(TemporalComponentUnit::MinutesOfHour),
+        "secondsOfMinute" => Ok(TemporalComponentUnit::SecondsOfMinute),
+        "millisecondsOfSecond" => Ok(TemporalComponentUnit::MillisecondsOfSecond),
+        "microsecondsOfSecond" => Ok(TemporalComponentUnit::MicrosecondsOfSecond),
+        "nanosecondsOfSecond" => Ok(TemporalComponentUnit::NanosecondsOfSecond),
         _ => Err(unsupported(
             path,
             format!("{component} is not supported yet"),
@@ -21867,6 +21898,26 @@ fn temporal_component_name_is_reserved(component: &str) -> bool {
             | "second"
             | "millisecond"
             | "microsecond"
+            | "years"
+            | "quarters"
+            | "months"
+            | "weeks"
+            | "days"
+            | "hours"
+            | "minutes"
+            | "seconds"
+            | "milliseconds"
+            | "microseconds"
+            | "nanoseconds"
+            | "quartersOfYear"
+            | "monthsOfQuarter"
+            | "monthsOfYear"
+            | "daysOfWeek"
+            | "minutesOfHour"
+            | "secondsOfMinute"
+            | "millisecondsOfSecond"
+            | "microsecondsOfSecond"
+            | "nanosecondsOfSecond"
             | "nanosecond"
             | "weekYear"
             | "weekDay"

@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-648 scenarios, which is 40.12% of the full upstream scenario-definition inventory
-and 50.08% of the read-candidate inventory.
+652 scenarios, which is 40.37% of the full upstream scenario-definition inventory
+and 50.39% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 648 representative read-only scenarios:
+The baseline currently contains 652 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -251,18 +251,19 @@ The baseline currently contains 648 representative read-only scenarios:
   `toStringOrNull(...)`, `toIntegerOrNull(...)`, `toFloatOrNull(...)`,
   `toBooleanOrNull(...)` composition, NULL-on-failure conversion behavior, and
   adjacent rejection coverage.
-- `Temporal`: 86 scenarios for DATE, LOCALDATETIME, and LOCALTIME map and
+- `Temporal`: 90 scenarios for DATE, LOCALDATETIME, and LOCALTIME map and
   string constructor support, native temporal comparison operators,
   `toString(...)` over native temporal values, constructed temporal component
   access over native `date_part(...)` units, duration construction for temporal
   arithmetic, ISO-8601 duration rendering through bare duration returns and
   `toString(duration)`, DATE / LOCALDATETIME / LOCALTIME `+` and `-` duration
   arithmetic, calendar between/months and total day/second duration functions,
-  and adjacent temporal support boundaries, including `date(...)`, `localdatetime(...)`,
-  `localtime(...)`, zoned `datetime(...)` / `time(...)`, duration component
-  access, same-kind temporal subtraction, non-literal duration multiplication,
-  unsupported temporal map forms, deferred component names, kind-mismatched
-  components, `duration.between(...)`, and `duration.inMonths(...)`.
+  duration component totals and within-larger-unit accessors, and adjacent
+  temporal support boundaries, including `date(...)`, `localdatetime(...)`,
+  `localtime(...)`, zoned `datetime(...)` / `time(...)`, same-kind temporal
+  subtraction, non-literal duration multiplication, unsupported temporal map
+  forms, deferred component names, kind-mismatched components,
+  `duration.between(...)`, and `duration.inMonths(...)`.
 - `GraphMetadata`: 19 scenarios for `id(...)`, `elementId(...)`, `type(...)`,
   `startNode(...)`, `endNode(...)`, `labels(...)`, and `keys(...)`.
 - `RowModifiers`: 24 scenarios for `ORDER BY`, `NULLS FIRST` / `NULLS LAST`,

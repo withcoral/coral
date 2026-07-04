@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 86,
+    "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
     "Unwind": 13,
@@ -10710,6 +10710,98 @@
             "signed_days": true,
             "subsecond": true,
             "zero_duration": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-components-tck-accessors",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' WITH duration({years: 1, months: 4, days: 10, hours: 1, minutes: 1, seconds: 1, nanoseconds: 111111111}) AS d RETURN d.years AS years, d.quarters AS quarters, d.months AS months, d.weeks AS weeks, d.days AS days, d.hours AS hours, d.minutes AS minutes, d.seconds AS seconds, d.milliseconds AS milliseconds, d.microseconds AS microseconds, d.nanoseconds AS nanoseconds, d.quartersOfYear AS quartersOfYear, d.monthsOfQuarter AS monthsOfQuarter, d.monthsOfYear AS monthsOfYear, d.daysOfWeek AS daysOfWeek, d.minutesOfHour AS minutesOfHour, d.secondsOfMinute AS secondsOfMinute, d.millisecondsOfSecond AS millisecondsOfSecond, d.microsecondsOfSecond AS microsecondsOfSecond, d.nanosecondsOfSecond AS nanosecondsOfSecond",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "days": 10,
+            "daysOfWeek": 3,
+            "hours": 1,
+            "microseconds": 3661111111,
+            "microsecondsOfSecond": 111111,
+            "milliseconds": 3661111,
+            "millisecondsOfSecond": 111,
+            "minutes": 61,
+            "minutesOfHour": 1,
+            "months": 16,
+            "monthsOfQuarter": 1,
+            "monthsOfYear": 4,
+            "nanoseconds": 3661111111111,
+            "nanosecondsOfSecond": 111111111,
+            "quarters": 5,
+            "quartersOfYear": 1,
+            "seconds": 3661,
+            "secondsOfMinute": 1,
+            "weeks": 1,
+            "years": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-components-normalize-months-on-access",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration({months: 14}).years AS years, duration({months: 14}).months AS months, duration({months: 14}).monthsOfYear AS monthsOfYear",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "months": 14,
+            "monthsOfYear": 2,
+            "years": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-components-preserve-negative-field-signs",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' WITH duration({months: -14, days: -10, hours: -1, minutes: -1, seconds: -1, nanoseconds: -111111111}) AS d RETURN d.years AS years, d.quarters AS quarters, d.months AS months, d.weeks AS weeks, d.days AS days, d.hours AS hours, d.minutes AS minutes, d.seconds AS seconds, d.quartersOfYear AS quartersOfYear, d.monthsOfYear AS monthsOfYear, d.daysOfWeek AS daysOfWeek, d.secondsOfMinute AS secondsOfMinute, d.nanosecondsOfSecond AS nanosecondsOfSecond",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "days": -10,
+            "daysOfWeek": -3,
+            "hours": -1,
+            "minutes": -61,
+            "months": -14,
+            "monthsOfYear": -2,
+            "nanosecondsOfSecond": -111111111,
+            "quarters": -4,
+            "quartersOfYear": 0,
+            "seconds": -3661,
+            "secondsOfMinute": -1,
+            "weeks": -1,
+            "years": -1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-components-zero",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration({}).years AS years, duration({}).days AS days, duration({}).seconds AS seconds, duration({}).nanosecondsOfSecond AS nanosecondsOfSecond",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "days": 0,
+            "nanosecondsOfSecond": 0,
+            "seconds": 0,
+            "years": 0
           }
         ]
       }

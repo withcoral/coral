@@ -31,6 +31,7 @@ pub(crate) fn register_string_functions(
 ) -> DataFusionResult<()> {
     registry.register_udf(Arc::new(ScalarUDF::from(StringIndices::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationToIso::new())))?;
+    registry.register_udf(Arc::new(ScalarUDF::from(DurationPart::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationBetween::new(
         "coral_duration_between",
         DurationBetweenMode::Full,
@@ -129,6 +130,56 @@ impl ScalarUDFImpl for DurationToIso {
         let duration = duration.to_array_of_size(args.number_rows)?;
         Ok(ColumnarValue::Array(duration_to_iso_array(
             &duration,
+            args.number_rows,
+        )?))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct DurationPart {
+    signature: Signature,
+}
+
+impl DurationPart {
+    fn new() -> Self {
+        Self {
+            signature: Signature::exact(
+                vec![
+                    DataType::Interval(IntervalUnit::MonthDayNano),
+                    DataType::Utf8,
+                ],
+                Volatility::Immutable,
+            ),
+        }
+    }
+}
+
+impl ScalarUDFImpl for DurationPart {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "coral_duration_part"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(DataType::Int64)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        let [duration, unit] = args.args.as_slice() else {
+            return exec_err!("coral_duration_part expects exactly two arguments");
+        };
+        let duration = duration.to_array_of_size(args.number_rows)?;
+        let unit = unit.to_array_of_size(args.number_rows)?;
+        Ok(ColumnarValue::Array(duration_part_array(
+            &duration,
+            &unit,
             args.number_rows,
         )?))
     }
@@ -260,6 +311,56 @@ fn duration_to_iso_array(duration: &ArrayRef, rows: usize) -> DataFusionResult<A
         builder.append_value(duration_to_iso_string(months, days, nanos));
     }
     Ok(Arc::new(builder.finish()))
+}
+
+fn duration_part_array(
+    duration: &ArrayRef,
+    unit: &ArrayRef,
+    rows: usize,
+) -> DataFusionResult<ArrayRef> {
+    let duration = as_interval_mdn_array(duration.as_ref())?;
+    let mut builder = Int64Builder::new();
+    for row in 0..rows {
+        if duration.is_null(row) {
+            builder.append_null();
+            continue;
+        }
+        let Some(unit) = string_value(unit.as_ref(), row)? else {
+            builder.append_null();
+            continue;
+        };
+        let (months, days, nanos) = IntervalMonthDayNanoType::to_parts(duration.value(row));
+        builder.append_value(duration_part_value(months, days, nanos, unit)?);
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+fn duration_part_value(months: i32, days: i32, nanos: i64, unit: &str) -> DataFusionResult<i64> {
+    let months = i64::from(months);
+    let days = i64::from(days);
+    match unit {
+        "years" => Ok(months / 12),
+        "quarters" => Ok(months / 3),
+        "months" => Ok(months),
+        "weeks" => Ok(days / 7),
+        "days" => Ok(days),
+        "hours" => Ok(nanos / 3_600_000_000_000),
+        "minutes" => Ok(nanos / 60_000_000_000),
+        "seconds" => Ok(nanos / 1_000_000_000),
+        "milliseconds" => Ok(nanos / 1_000_000),
+        "microseconds" => Ok(nanos / 1_000),
+        "nanoseconds" => Ok(nanos),
+        "quartersOfYear" => Ok((months / 3) % 4),
+        "monthsOfQuarter" => Ok(months % 3),
+        "monthsOfYear" => Ok(months % 12),
+        "daysOfWeek" => Ok(days % 7),
+        "minutesOfHour" => Ok((nanos / 60_000_000_000) % 60),
+        "secondsOfMinute" => Ok((nanos / 1_000_000_000) % 60),
+        "millisecondsOfSecond" => Ok((nanos / 1_000_000) % 1_000),
+        "microsecondsOfSecond" => Ok((nanos / 1_000) % 1_000_000),
+        "nanosecondsOfSecond" => Ok(nanos % 1_000_000_000),
+        _ => exec_err!("coral_duration_part does not support component {unit:?}"),
+    }
 }
 
 fn duration_to_iso_string(months: i32, days: i32, nanos: i64) -> String {
@@ -529,8 +630,8 @@ mod tests {
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
     use super::{
-        DurationBetweenMode, TemporalInput, duration_between, duration_to_iso_string,
-        string_indices,
+        DurationBetweenMode, TemporalInput, duration_between, duration_part_value,
+        duration_to_iso_string, string_indices,
     };
 
     #[test]
@@ -572,6 +673,69 @@ mod tests {
         ] {
             assert_eq!(duration_to_iso_string(months, days, nanos), expected);
         }
+    }
+
+    #[test]
+    fn duration_part_value_matches_pinned_component_formulas() {
+        let tck_duration = (16, 10, 3_661_111_111_111);
+        for (unit, expected) in [
+            ("years", 1),
+            ("quarters", 5),
+            ("months", 16),
+            ("weeks", 1),
+            ("days", 10),
+            ("hours", 1),
+            ("minutes", 61),
+            ("seconds", 3_661),
+            ("milliseconds", 3_661_111),
+            ("microseconds", 3_661_111_111),
+            ("nanoseconds", 3_661_111_111_111),
+            ("quartersOfYear", 1),
+            ("monthsOfQuarter", 1),
+            ("monthsOfYear", 4),
+            ("daysOfWeek", 3),
+            ("minutesOfHour", 1),
+            ("secondsOfMinute", 1),
+            ("millisecondsOfSecond", 111),
+            ("microsecondsOfSecond", 111_111),
+            ("nanosecondsOfSecond", 111_111_111),
+        ] {
+            assert_eq!(
+                duration_part_value(tck_duration.0, tck_duration.1, tck_duration.2, unit)
+                    .expect("duration part should compute"),
+                expected,
+                "{unit}"
+            );
+        }
+
+        assert_eq!(
+            duration_part_value(14, 0, 0, "years").expect("years should compute"),
+            1
+        );
+        assert_eq!(
+            duration_part_value(14, 0, 0, "months").expect("months should compute"),
+            14
+        );
+        assert_eq!(
+            duration_part_value(14, 0, 0, "monthsOfYear").expect("monthsOfYear should compute"),
+            2
+        );
+
+        assert_eq!(
+            duration_part_value(-14, -10, -3_661_111_111_111, "monthsOfYear")
+                .expect("negative month component should compute"),
+            -2
+        );
+        assert_eq!(
+            duration_part_value(-14, -10, -3_661_111_111_111, "secondsOfMinute")
+                .expect("negative second component should compute"),
+            -1
+        );
+        assert_eq!(
+            duration_part_value(0, 0, 0, "nanosecondsOfSecond")
+                .expect("zero duration component should compute"),
+            0
+        );
     }
 
     #[test]
