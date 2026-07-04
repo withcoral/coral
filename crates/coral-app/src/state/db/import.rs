@@ -190,6 +190,7 @@ async fn import_config_source_catalog(
         .await?
     {
         tx.rollback().await?;
+        finalize_database_migrated_config(config_store);
         return Ok(SourceCatalogImportReport {
             source_count: 0,
             import_performed: false,
@@ -210,7 +211,7 @@ async fn import_config_source_catalog(
     let source_count =
         import_config_sources(&mut tx, layout, &source_entries, now_unix_nanos).await?;
     tx.commit().await?;
-    clear_legacy_source_catalog_config(config_store, source_entries.len());
+    finalize_database_migrated_config(config_store);
 
     Ok(SourceCatalogImportReport {
         source_count,
@@ -1051,16 +1052,15 @@ fn read_optional_imported_manifest_file(
     }
 }
 
-fn clear_legacy_source_catalog_config(config_store: &ConfigStore, source_count: usize) {
-    if source_count != 0
-        && let Err(error) = config_store.clear_source_catalog_unlocked()
-    {
+fn finalize_database_migrated_config(config_store: &ConfigStore) {
+    if let Err(error) = config_store.finalize_database_migration_unlocked() {
         tracing::warn!(
             detail = %error,
-            "source catalog imported into database but legacy config cleanup failed"
+            "source catalog imported into database but legacy config finalization failed"
         );
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1205,6 +1205,15 @@ mod tests {
             layout.manifest_file(&workspace, &source.name).exists(),
             "legacy manifest file should be preserved for rollback compatibility"
         );
+        let raw_config =
+            fs::read_to_string(layout.config_file()).expect("read migrated config.toml");
+        assert!(
+            raw_config.contains("version = 2"),
+            "successful database import should stamp migrated config version: {raw_config}"
+        );
+        config_store
+            .load_config_unlocked()
+            .expect("current config reader should accept migrated version");
     }
 
     #[tokio::test]
@@ -2379,7 +2388,8 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_v4_materialization_backfill_race_is_benign_postgres() {
-        let Some(url) = postgres_test_url() else {
+        let Ok(Some(url)) = crate::bootstrap::AppEnvironment::env_var("CORAL_TEST_POSTGRES_URL")
+        else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -2539,7 +2549,8 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_feedback_report_import_race_is_benign_postgres() {
-        let Some(url) = postgres_test_url() else {
+        let Ok(Some(url)) = crate::bootstrap::AppEnvironment::env_var("CORAL_TEST_POSTGRES_URL")
+        else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -2901,7 +2912,8 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_credential_import_race_is_benign_postgres() {
-        let Some(url) = postgres_test_url() else {
+        let Ok(Some(url)) = crate::bootstrap::AppEnvironment::env_var("CORAL_TEST_POSTGRES_URL")
+        else {
             return;
         };
         let temp = tempdir().expect("temp dir");
@@ -3188,15 +3200,5 @@ paths:
                     id: {type: integer}
                     title: {type: string}
 "
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The Postgres import harness is explicitly gated by this CI/test-only variable."
-    )]
-    fn postgres_test_url() -> Option<String> {
-        std::env::var("CORAL_TEST_POSTGRES_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
     }
 }

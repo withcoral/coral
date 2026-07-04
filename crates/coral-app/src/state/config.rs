@@ -66,6 +66,8 @@ fn default_config_version() -> u32 {
     1
 }
 
+const DATABASE_MIGRATED_CONFIG_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedAppConfig {
     #[serde(default = "default_config_version")]
@@ -571,12 +573,13 @@ impl ConfigStore {
         self.load_config_unlocked()
     }
 
-    pub(crate) fn clear_source_catalog_unlocked(&self) -> Result<(), AppError> {
+    pub(crate) fn finalize_database_migration_unlocked(&self) -> Result<(), AppError> {
         let mut config = self.load_unlocked()?;
-        if config.catalog.0.is_empty() {
+        if config.catalog.0.is_empty() && config.version >= DATABASE_MIGRATED_CONFIG_VERSION {
             return Ok(());
         }
         config.catalog = SourceCatalog::default();
+        config.version = DATABASE_MIGRATED_CONFIG_VERSION;
         self.save_unlocked(&config)
     }
 
@@ -1005,6 +1008,12 @@ impl TryFrom<PersistedAppConfig> for AppConfig {
     type Error = AppError;
 
     fn try_from(value: PersistedAppConfig) -> Result<Self, Self::Error> {
+        if !matches!(value.version, 1 | DATABASE_MIGRATED_CONFIG_VERSION) {
+            return Err(AppError::FailedPrecondition(format!(
+                "unsupported config.toml version {}; upgrade Coral or use a compatible state directory",
+                value.version
+            )));
+        }
         let mut workspaces = WorkspaceCatalog::default();
         let mut catalog = SourceCatalog::default();
         let mut functions = FunctionCatalog::default();
@@ -1354,6 +1363,23 @@ version = 1
                 .map(|workspace| workspace.name.as_str().to_string())
                 .collect::<Vec<_>>(),
             vec!["work".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_config_version() {
+        let raw = "version = 3\n";
+
+        let error = AppConfig::try_from(
+            toml::from_str::<PersistedAppConfig>(raw).expect("config should parse"),
+        )
+        .expect_err("unsupported config version should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported config.toml version 3"),
+            "unexpected error: {error}"
         );
     }
 

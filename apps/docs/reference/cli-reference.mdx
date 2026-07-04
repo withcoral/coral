@@ -254,8 +254,8 @@ coral source list
 ```
 
 The output includes the source's stored-secret route, such as
-`database (encrypted)`, `keychain` for legacy keychain-backed sources, or
-`none`.
+`database (encrypted)`, `keychain` for a legacy route that has not been
+migrated, or `none`.
 
 ### `coral source info <NAME>`
 
@@ -318,9 +318,9 @@ coral source add --interactive github
 
 If the source is already installed, running this command again replaces its stored credentials with the new values you provide. After installation, it prints the discovered tables and runs any optional top-level `test_queries` declared in the source spec to validate the connection. Any post-install validation issue is reported as a warning here so the source remains installed and re-runnable.
 
-New sources with stored secret material show `database (encrypted)` in source
-output. Legacy keychain-backed sources may still show `keychain`, and sources
-with no stored secret material show `none`.
+Sources with encrypted secret material show `database (encrypted)` in source
+output. A legacy keychain route that could not be migrated may still show
+`keychain`, and sources with no stored secret material show `none`.
 
 ### `coral source lint <FILE>`
 

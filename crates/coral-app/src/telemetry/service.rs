@@ -1268,7 +1268,8 @@ mod tests {
 
     #[tokio::test]
     async fn backfill_summaries_preserves_existing_postgres_rows() {
-        let Some(url) = postgres_test_url() else {
+        let Ok(Some(url)) = crate::bootstrap::AppEnvironment::env_var("CORAL_TEST_POSTGRES_URL")
+        else {
             return;
         };
         let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
@@ -1363,16 +1364,6 @@ mod tests {
             .ensure(workspace_id, 1)
             .await
             .expect("ensure workspace");
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "The Postgres trace harness is explicitly gated by this CI/test-only variable."
-    )]
-    fn postgres_test_url() -> Option<String> {
-        std::env::var("CORAL_TEST_POSTGRES_URL")
-            .ok()
-            .filter(|value| !value.is_empty())
     }
 
     fn summary(trace_id: &str, workspace_id: &str, end_time_unix_nanos: i64) -> TraceSummaryRecord {

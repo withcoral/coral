@@ -83,9 +83,9 @@ root.
   documents, feedback reports, and trace summaries. Legacy filesystem
   artifacts are migration inputs only unless a test explicitly constructs a
   filesystem-backed manager.
-- Legacy file-backed source credential material migrates into encrypted
-  database documents. Legacy keychain-backed source credential material remains
-  keychain-routed until the source credentials are replaced.
+- Readable legacy file-backed and keychain-backed source credential material
+  migrates into encrypted database documents. Retain legacy material unless the
+  database write and readback are verified.
 - Keep raw trace spans and optional HTTP/MCP body captures out of the database.
   The database may index trace summaries derived from the local trace span
   store.

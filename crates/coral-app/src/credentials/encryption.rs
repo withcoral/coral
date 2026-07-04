@@ -1177,6 +1177,12 @@ mod tests {
     #[test]
     #[ignore = "uses the native OS keychain; run manually on hosts with keychain access"]
     fn native_keychain_key_provider_round_trips_key_material() {
+        if !matches!(
+            crate::bootstrap::AppEnvironment::env_var("CORAL_RUN_NATIVE_KEYCHAIN_TESTS"),
+            Ok(Some(_))
+        ) {
+            return;
+        }
         let (_temp, layout) = temp_layout();
         let first = KeychainCredentialKeyProvider::new(&layout)
             .active_key()
