@@ -4,7 +4,7 @@
   "minimum_feature_counts": {
     "Aggregation": 20,
     "BooleanFilters": 8,
-    "ErrorHandling": 18,
+    "ErrorHandling": 19,
     "GeneratedClientShape": 9,
     "IdentityFields": 32,
     "NestedRelationships": 15,
@@ -12,7 +12,7 @@
     "RootSelection": 4,
     "RowModifiers": 17,
     "ScalarFilters": 18,
-    "Temporal": 10
+    "Temporal": 14
   },
   "scenarios": [
     {
@@ -2560,10 +2560,95 @@
       }
     },
     {
+      "id": "gql-temporal-filter-in-timestamp",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(where: { joined: { in: [\"2020-06-01T09:00:00Z\", \"2018-07-22T09:00:00Z\"] } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Eve"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-filter-notin-timestamp",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(where: { joined: { notIn: [\"2020-06-01T09:00:00Z\", \"2018-07-22T09:00:00Z\"] } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Bea"
+          },
+          {
+            "name": "Cee"
+          },
+          {
+            "name": "Dot"
+          },
+          {
+            "name": "Fay"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-filter-in-date",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(where: { birthday: { in: [\"1990-05-20\", \"1979-01-25\"] } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Ada"
+          },
+          {
+            "name": "Fay"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gql-temporal-filter-in-roundtrip",
+      "feature": "Temporal",
+      "fixture": "rich",
+      "query": "query { Person(where: { joined: { in: [\"2020-06-01T09:00:00Z\"] } }) { name } }",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "name": "Ada"
+          }
+        ]
+      }
+    },
+    {
       "id": "gql-temporal-filter-kind-mismatch-rejected",
       "feature": "ErrorHandling",
       "fixture": "rich",
       "query": "query { Person(where: { birthday: { eq: \"2020-06-01T09:00:00Z\" } }) { name } }",
+      "expected": {
+        "kind": "error",
+        "contains": "cannot coerce string"
+      }
+    },
+    {
+      "id": "gql-temporal-filter-in-kind-mismatch-rejected",
+      "feature": "ErrorHandling",
+      "fixture": "rich",
+      "query": "query { Person(where: { birthday: { in: [\"2020-06-01T09:00:00Z\"] } }) { name } }",
       "expected": {
         "kind": "error",
         "contains": "cannot coerce string"

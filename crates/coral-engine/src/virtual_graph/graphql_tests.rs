@@ -22,6 +22,10 @@ fn temporal_rhs(source: &str) -> PredicateRhs {
     }
 }
 
+fn temporal_list_rhs(sources: &[&str]) -> PredicateRhs {
+    PredicateRhs::TemporalCoercionList(sources.iter().map(|source| (*source).to_string()).collect())
+}
+
 fn predicate_expression_contains_not(expression: &PredicateExpression) -> bool {
     match expression {
         PredicateExpression::Not { .. } => true,
@@ -32,6 +36,34 @@ fn predicate_expression_contains_not(expression: &PredicateExpression) -> bool {
         }
         PredicateExpression::Boolean(_)
         | PredicateExpression::Comparison(_)
+        | PredicateExpression::KeyComparison(_)
+        | PredicateExpression::ElementIdComparison(_)
+        | PredicateExpression::Presence(_)
+        | PredicateExpression::PropertyKeyMembership(_)
+        | PredicateExpression::ExistsPattern(_)
+        | PredicateExpression::ScalarComparison(_) => false,
+    }
+}
+
+fn predicate_expression_contains_rhs(
+    expression: &PredicateExpression,
+    property: &str,
+    rhs: &PredicateRhs,
+) -> bool {
+    match expression {
+        PredicateExpression::Not { expression } => {
+            predicate_expression_contains_rhs(expression, property, rhs)
+        }
+        PredicateExpression::And { left, right }
+        | PredicateExpression::Or { left, right }
+        | PredicateExpression::Xor { left, right } => {
+            predicate_expression_contains_rhs(left, property, rhs)
+                || predicate_expression_contains_rhs(right, property, rhs)
+        }
+        PredicateExpression::Comparison(predicate) => {
+            predicate.property.property == property && &predicate.rhs == rhs
+        }
+        PredicateExpression::Boolean(_)
         | PredicateExpression::KeyComparison(_)
         | PredicateExpression::ElementIdComparison(_)
         | PredicateExpression::Presence(_)
@@ -1091,10 +1123,45 @@ fn compiles_root_query_with_variables() {
     assert!(plan.distinct);
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
-            && matches!(
-                    &predicate.rhs,
-            PredicateRhs::List(values) if values.len() == 2
-                )
+            && predicate.rhs == temporal_list_rhs(&["billing-api", "deployments"])
+    }));
+}
+
+#[test]
+fn compiles_graphql_in_lists_with_temporal_coercion_marker_guard() {
+    let plan = compile_graphql(
+        r#"
+            query {
+              Service(
+                where: {
+                  tier: { in: ["prod", "dev"] }
+                  name: { in: ["billing-api", 1] }
+                  risk: { in: [] }
+                }
+              ) {
+                name
+              }
+            }
+            "#,
+    )
+    .expect("GraphQL IN-list filters should compile");
+
+    assert_eq!(plan.predicates.len(), 3);
+    assert!(plan.predicates.iter().any(|predicate| {
+        predicate.property.property == "tier"
+            && predicate.rhs == temporal_list_rhs(&["prod", "dev"])
+    }));
+    assert!(plan.predicates.iter().any(|predicate| {
+        predicate.property.property == "name"
+            && predicate.rhs
+                == PredicateRhs::List(vec![
+                    Literal::String("billing-api".to_string()),
+                    Literal::Integer(1),
+                ])
+    }));
+    assert!(plan.predicates.iter().any(|predicate| {
+        predicate.property.property == "risk"
+            && matches!(&predicate.rhs, PredicateRhs::List(values) if values.is_empty())
     }));
 }
 
@@ -1284,10 +1351,7 @@ fn compiles_root_query_with_object_where_variable() {
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
-            && matches!(
-                &predicate.rhs,
-                PredicateRhs::List(values) if values.len() == 2
-            )
+            && predicate.rhs == temporal_list_rhs(&["billing-api", "deployments"])
     }));
 }
 
@@ -1398,6 +1462,11 @@ fn compiles_root_query_with_object_where_variable_negated_operators() {
         .as_ref()
         .expect("negated GraphQL variable filters should compile into the predicate tree");
     assert!(predicate_expression_contains_not(expression));
+    assert!(predicate_expression_contains_rhs(
+        expression,
+        "name",
+        &temporal_list_rhs(&["legacy-sync", "experiments"])
+    ));
 }
 
 #[test]
@@ -1744,15 +1813,7 @@ fn compiles_root_query_with_variable_defaults() {
     }));
     assert!(plan.predicates.iter().any(|predicate| {
         predicate.property.property == "name"
-            && matches!(
-                &predicate.rhs,
-                PredicateRhs::List(values)
-                    if values
-                        == &vec![
-                            Literal::String("billing-api".to_string()),
-                            Literal::String("deployments".to_string()),
-                        ]
-            )
+            && predicate.rhs == temporal_list_rhs(&["billing-api", "deployments"])
     }));
     assert_eq!(
         plan.order_by,

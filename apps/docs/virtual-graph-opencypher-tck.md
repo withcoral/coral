@@ -306,7 +306,7 @@ silently shrink or move into an unreported category.
 
 ## GraphQL Scope
 
-The GraphQL baseline currently contains 159 representative read-only scenarios:
+The GraphQL baseline currently contains 164 representative read-only scenarios:
 
 - `RootSelection`: 4 scenarios for exact-label and generated singular/plural
   root aliases.
@@ -327,8 +327,9 @@ The GraphQL baseline currently contains 159 representative read-only scenarios:
   aggregates including `_median`, DISTINCT aggregate variants, sample and
   population standard deviation with `_stDev` / `_stDevP`, distinct counts, and
   exact `_percentileCont(field:, percentile:)`, plus single-row `_collect`.
-- `Temporal`: 10 scenarios for stored `Timestamp` and `Date` scalar selection,
-  `orderBy`, and `_min` / `_max` aggregation.
+- `Temporal`: 14 scenarios for stored `Timestamp` and `Date` scalar selection,
+  `orderBy`, `_min` / `_max` aggregation, and temporal `in` / `notIn`
+  filtering.
 - `IdentityFields`: 32 scenarios for `_id` / `_elementId` selection, `_id`
   equality, range, inequality, list, negated-list, and null filters, `_id` list
   filtering combined with identity ordering, `_id` ordering, and `_elementId`
@@ -346,10 +347,10 @@ The GraphQL baseline currently contains 159 representative read-only scenarios:
 - `GeneratedClientShape`: 9 scenarios for single, chained, and inline
   fragments, root and traversal `__typename` metadata including `_edge`
   relationship types, and `@skip`/`@include` directives.
-- `ErrorHandling`: 18 expected rejections for unknown graph-declared properties,
+- `ErrorHandling`: 19 expected rejections for unknown graph-declared properties,
   `_id` string predicates, aggregate argument misuse, temporal numeric
-  aggregate and string-filter boundaries, and multiple included root node
-  fields.
+  aggregate and string-filter boundaries, temporal list kind mismatches, and
+  multiple included root node fields.
 
 The same fixture-level contract applies: ids must be unique, every feature
 bucket must be declared, and each bucket must stay at or above its floor.

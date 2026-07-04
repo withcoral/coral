@@ -3572,7 +3572,7 @@ fn compile_where_operator_expression(
         Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
             target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_literal_list(value, path.clone(), context)?),
+            list_rhs_from_literals(compile_literal_list(value, path.clone(), context)?),
             &path,
         )?),
         Some(GraphqlWhereOperator::IsNull) => {
@@ -3618,7 +3618,7 @@ fn compile_where_operator_expression(
         Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
             target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_literal_list(value, path.clone(), context)?),
+            list_rhs_from_literals(compile_literal_list(value, path.clone(), context)?),
             &path,
         )?),
         None => Err(unsupported(
@@ -3653,7 +3653,7 @@ fn compile_where_variable_operator_expression(
         Some(GraphqlWhereOperator::In) => Ok(comparison_expression(
             target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_variable_literal_list(value, path.clone())?),
+            list_rhs_from_literals(compile_variable_literal_list(value, path.clone())?),
             &path,
         )?),
         Some(GraphqlWhereOperator::IsNull) => {
@@ -3699,7 +3699,7 @@ fn compile_where_variable_operator_expression(
         Some(GraphqlWhereOperator::NotIn) => Ok(negated_comparison_expression(
             target,
             ComparisonOperator::In,
-            PredicateRhs::List(compile_variable_literal_list(value, path.clone())?),
+            list_rhs_from_literals(compile_variable_literal_list(value, path.clone())?),
             &path,
         )?),
         None => Err(unsupported(
@@ -3992,6 +3992,26 @@ fn compile_variable_operator_comparison_rhs(
 ) -> Result<PredicateRhs, CoreError> {
     compile_variable_literal(value, path)
         .map(|literal| operator_comparison_rhs_from_literal(operator, literal))
+}
+
+fn list_rhs_from_literals(literals: Vec<Literal>) -> PredicateRhs {
+    if !literals.is_empty()
+        && literals
+            .iter()
+            .all(|literal| matches!(literal, Literal::String(_)))
+    {
+        PredicateRhs::TemporalCoercionList(
+            literals
+                .into_iter()
+                .map(|literal| match literal {
+                    Literal::String(source) => source,
+                    _ => unreachable!("all-String checked"),
+                })
+                .collect(),
+        )
+    } else {
+        PredicateRhs::List(literals)
+    }
 }
 
 fn compile_variable_literal_list(

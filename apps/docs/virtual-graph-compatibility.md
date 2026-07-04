@@ -25,7 +25,7 @@ unsupported behavior should be rejected clearly instead of guessed.
 | Disconnected mandatory patterns | Supported foundation | Disconnected mandatory node/path components lower to explicit SQL `CROSS JOIN`; `OPTIONAL MATCH` may connect already-bound components through a single nullable chain or start a disconnected nullable component by cross-joining an anchor inside that component |
 | Property projections | Supported foundation | Node keys and exposed properties |
 | Property predicates | Supported foundation | Literal and property-to-property comparisons with boolean expression trees |
-| Adapter-marked temporal predicate coercion | Supported foundation | Frontends that cannot know property types at compile time may mark a string property-predicate RHS for validation-time temporal coercion. Catalog-known `DATE`, `TIMESTAMP`, and `TIME` property LHS values strictly parse the string as the matching temporal kind and lower to a SQL cast; non-temporal LHS values keep byte-identical string-literal validation and SQL rendering. |
+| Adapter-marked temporal predicate coercion | Supported foundation | Frontends that cannot know property types at compile time may mark a string property-predicate RHS, or a non-empty all-string list-membership RHS, for validation-time temporal coercion. Catalog-known `DATE`, `TIMESTAMP`, and `TIME` property LHS values strictly parse the string or each list element as the matching temporal kind and lower to SQL casts; non-temporal LHS values keep byte-identical string-literal validation and SQL rendering. |
 | Numeric literals | Supported foundation | Integer and finite floating-point literals, including negated values |
 | `COUNT(*)` | Supported foundation | Standalone or grouped by projected properties |
 | `COUNT(property)` | Supported foundation | Counts non-null mapped property values and supported scalar expression targets such as `count(coalesce(n.tier, 'unknown'))` or `count(n.tier IS NULL)`; optional `DISTINCT` is supported; endpoint forms such as `count(endNode(r).name)` over optional relationships are null-gated by relationship presence |
@@ -152,7 +152,7 @@ compatibility baseline gates:
 
 - `coral-opencypher-read-baseline`: 669 openCypher-style read scenarios with
   declared feature floors.
-- `coral-graphql-read-baseline`: 159 GraphQL read-adapter scenarios with declared
+- `coral-graphql-read-baseline`: 164 GraphQL read-adapter scenarios with declared
   feature floors.
 
 Both gates run end-to-end through parsing, graph validation, SQL lowering,
