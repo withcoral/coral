@@ -235,6 +235,7 @@ fn render_aggregate_function(function: AggregateFunction) -> &'static str {
         AggregateFunction::Avg => "AVG",
         AggregateFunction::Median => "MEDIAN",
         AggregateFunction::PercentileCont { .. } => "PERCENTILE_CONT",
+        AggregateFunction::PercentileDisc { .. } => "PERCENTILE_DISC",
         AggregateFunction::StdDev => "STDDEV_SAMP",
         AggregateFunction::StdDevP => "STDDEV_POP",
         AggregateFunction::Min => "MIN",

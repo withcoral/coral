@@ -19550,6 +19550,68 @@ fn compiles_percentile_cont_aggregate_projections_and_ordering() {
 }
 
 #[test]
+fn compiles_percentile_disc_aggregate_projections_and_ordering() {
+    let plan = compile_cypher(
+        "MATCH (service:Service) \
+             RETURN service.tier AS tier, \
+                    percentileDisc(service.risk, 0.75) AS p75_risk \
+             ORDER BY percentileDisc(service.risk, 0.5) DESC, tier",
+    )
+    .expect("percentileDisc aggregate query should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                alias: Some("tier".to_string()),
+            },
+            Projection::Aggregate {
+                function: super::AggregateFunction::PercentileDisc {
+                    percentile: ordered_float::OrderedFloat(0.75),
+                },
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                distinct: false,
+                alias: "p75_risk".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.order_by,
+        vec![
+            OrderKey {
+                expression: OrderExpression::Aggregate {
+                    function: AggregateFunction::PercentileDisc {
+                        percentile: ordered_float::OrderedFloat(0.5),
+                    },
+                    target: AggregateTarget::Property(PropertyRef {
+                        variable: "service".to_string(),
+                        property: "risk".to_string(),
+                    }),
+                    distinct: false,
+                },
+                direction: OrderDirection::Descending,
+                nulls: None,
+            },
+            OrderKey {
+                expression: OrderExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                }),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            },
+        ]
+    );
+}
+
+#[test]
 fn rejects_distinct_percentile_cont_aggregates() {
     let error = compile_cypher(
         "MATCH (service:Service) \
@@ -19559,6 +19621,30 @@ fn rejects_distinct_percentile_cont_aggregates() {
 
     assert!(error.to_string().contains("percentileCont(DISTINCT"));
     assert!(error.to_string().contains("DataFusion 53"));
+}
+
+#[test]
+fn rejects_distinct_percentile_disc_aggregates() {
+    let error = compile_cypher(
+        "MATCH (service:Service) \
+             RETURN percentileDisc(DISTINCT service.risk, 0.75) AS p75_risk",
+    )
+    .expect_err("distinct percentileDisc should be rejected before SQL lowering");
+
+    assert!(error.to_string().contains("percentileDisc(DISTINCT"));
+    assert!(error.to_string().contains("DataFusion 53"));
+}
+
+#[test]
+fn rejects_nested_percentile_disc_aggregate_targets() {
+    let error = compile_cypher(
+        "MATCH (service:Service) \
+             RETURN sum(percentileDisc(service.risk, 0.75)) AS nested_risk",
+    )
+    .expect_err("nested percentileDisc should be rejected before SQL lowering");
+
+    assert!(error.to_string().contains("percentileDisc"), "{error}");
+    assert!(error.to_string().contains("not supported here"), "{error}");
 }
 
 #[test]

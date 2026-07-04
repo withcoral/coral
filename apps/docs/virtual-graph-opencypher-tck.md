@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-620 scenarios, which is 38.39% of the full upstream scenario-definition inventory
-and 47.91% of the read-candidate inventory.
+623 scenarios, which is 38.58% of the full upstream scenario-definition inventory
+and 48.15% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 620 representative read-only scenarios:
+The baseline currently contains 623 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -178,11 +178,11 @@ The baseline currently contains 620 representative read-only scenarios:
   bound-endpoint optional joins, multiple optional clauses, mandatory matches
   after optional scopes, inline relationship property maps, named-path metadata,
   and connected multi-hop optional chains.
-- `Aggregation`: 26 scenarios for grouped counts, `count(*)`, numeric
+- `Aggregation`: 29 scenarios for grouped counts, `count(*)`, numeric
   aggregates, empty-input/null-injected aggregate targets, optional null
   grouping, statistical aggregates, distinct statistical aggregates,
-  `percentileCont(...)`, `count(DISTINCT ...)`, hidden aggregate ordering, and
-  selected static-map aggregate targets.
+  `percentileCont(...)`, `percentileDisc(...)`, `count(DISTINCT ...)`, hidden
+  aggregate ordering, and selected static-map aggregate targets.
 - `With`: 45 scenarios for transparent scope filtering, scalar alias filters,
   `WITH *` filtering and carry-forward into later `MATCH`, variable dropping,
   node and relationship variable renaming, non-terminal scalar aliases carried

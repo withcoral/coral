@@ -562,8 +562,261 @@ impl<'a> SqlRenderer<'a> {
         target: &AggregateTarget,
         distinct: bool,
     ) -> Result<String, CoreError> {
+        if matches!(function, AggregateFunction::PercentileDisc { .. }) {
+            let aggregate = PercentileDiscAggregate {
+                function,
+                target: target.clone(),
+                distinct,
+            };
+            return self
+                .percentile_disc_plan
+                .aggregate_ref(&aggregate)
+                .ok_or_else(|| {
+                    CoreError::internal("percentileDisc aggregate was not precomputed")
+                });
+        }
         let target = self.render_aggregate_target(function, target)?;
         Ok(render_aggregate_invocation_sql(function, &target, distinct))
+    }
+
+    pub(super) fn build_percentile_disc_aggregate_plan(
+        &self,
+    ) -> Result<PercentileDiscAggregatePlan, CoreError> {
+        let candidates = self.percentile_disc_aggregate_candidates();
+        if candidates.is_empty() {
+            return Ok(PercentileDiscAggregatePlan::default());
+        }
+
+        let mut aggregates = Vec::new();
+        let mut from_joins = String::new();
+        for candidate in candidates {
+            if aggregates
+                .iter()
+                .any(|precomputed: &PrecomputedPercentileDiscAggregate| {
+                    precomputed.aggregate == candidate
+                })
+            {
+                continue;
+            }
+            let index = aggregates.len();
+            let precomputed = PrecomputedPercentileDiscAggregate {
+                aggregate: candidate,
+                table_alias: format!("__coral_percentile_disc_{index}"),
+                value_alias: "__coral_value".to_string(),
+                group_aliases: self
+                    .render_group_by_expressions()?
+                    .iter()
+                    .enumerate()
+                    .map(|(group_index, _)| format!("__coral_group_{group_index}"))
+                    .collect(),
+            };
+            from_joins.push(' ');
+            from_joins.push_str(&self.render_percentile_disc_aggregate_join(&precomputed)?);
+            aggregates.push(precomputed);
+        }
+
+        Ok(PercentileDiscAggregatePlan {
+            aggregates,
+            from_joins,
+        })
+    }
+
+    fn percentile_disc_aggregate_candidates(&self) -> Vec<PercentileDiscAggregate> {
+        let mut candidates = Vec::new();
+        for projection in &self.validated.plan().projections {
+            if let Projection::Aggregate {
+                function: function @ AggregateFunction::PercentileDisc { .. },
+                target,
+                distinct,
+                ..
+            } = projection
+            {
+                candidates.push(PercentileDiscAggregate {
+                    function: *function,
+                    target: target.clone(),
+                    distinct: *distinct,
+                });
+            }
+        }
+        for key in &self.validated.plan().order_by {
+            if let OrderExpression::Aggregate {
+                function: function @ AggregateFunction::PercentileDisc { .. },
+                target,
+                distinct,
+            } = &key.expression
+            {
+                candidates.push(PercentileDiscAggregate {
+                    function: *function,
+                    target: target.clone(),
+                    distinct: *distinct,
+                });
+            }
+        }
+        candidates
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The percentileDisc lowering assembles one derived-table SQL shape with correlated group keys."
+    )]
+    fn render_percentile_disc_aggregate_join(
+        &self,
+        precomputed: &PrecomputedPercentileDiscAggregate,
+    ) -> Result<String, CoreError> {
+        if precomputed.aggregate.distinct {
+            return Err(CoreError::InvalidInput(
+                "percentileDisc(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_disc aggregates"
+                    .to_string(),
+            ));
+        }
+        let AggregateFunction::PercentileDisc { percentile } = precomputed.aggregate.function
+        else {
+            return Err(CoreError::internal(
+                "percentileDisc precompute was requested for a non-percentileDisc aggregate",
+            ));
+        };
+
+        let outer_groups = self.render_group_by_expressions()?;
+        let inner_validated = self
+            .validated
+            .with_alias_prefix(&format!("{}_", precomputed.table_alias));
+        let mut inner = SqlRenderer::new(inner_validated);
+        let mut inner_from = FromClauseBuilder::new(&inner).build()?;
+        let inner_subquery_plan = inner.build_scalar_subquery_plan()?;
+        inner_from.push_str(&inner_subquery_plan.from_joins);
+        inner.subquery_plan = inner_subquery_plan;
+
+        let inner_groups = inner.render_group_by_expressions()?;
+        if inner_groups.len() != outer_groups.len() {
+            return Err(CoreError::internal(
+                "percentileDisc group correlation had mismatched key counts",
+            ));
+        }
+
+        let inner_target = inner.render_aggregate_target(
+            precomputed.aggregate.function,
+            &precomputed.aggregate.target,
+        )?;
+        let mut predicates = inner.render_pre_projection_predicates()?;
+        predicates.push(format!("({inner_target}) IS NOT NULL"));
+        let inner_where = if predicates.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", predicates.join(" AND "))
+        };
+
+        let value_alias = quote_ident(&precomputed.value_alias);
+        let row_number_alias = quote_ident("__coral_rn");
+        let count_alias = quote_ident("__coral_n");
+        let row_source_alias = format!("{}_rows", precomputed.table_alias);
+        let quoted_row_source_alias = quote_ident(&row_source_alias);
+        let inner_group_selects = inner_groups
+            .iter()
+            .zip(precomputed.group_aliases.iter())
+            .map(|(expression, alias)| format!("{expression} AS {}", quote_ident(alias)));
+        let partition = if inner_groups.is_empty() {
+            String::new()
+        } else {
+            format!("PARTITION BY {} ", inner_groups.join(", "))
+        };
+        let mut row_selects = inner_group_selects.collect::<Vec<_>>();
+        row_selects.push(format!("{inner_target} AS {value_alias}"));
+        row_selects.push(format!(
+            "CAST(row_number() OVER ({partition}ORDER BY {inner_target}) AS BIGINT) AS {row_number_alias}"
+        ));
+        row_selects.push(format!("COUNT(*) OVER ({partition}) AS {count_alias}"));
+
+        let percentile = render_percentile_disc_literal(percentile.into_inner());
+        let qualified_count = qualified_ref(&row_source_alias, "__coral_n");
+        let qualified_row_number = qualified_ref(&row_source_alias, "__coral_rn");
+        let qualified_value = qualified_ref(&row_source_alias, &precomputed.value_alias);
+        let requested_position = format!("CAST(ceil({percentile} * {qualified_count}) AS BIGINT)");
+        let selected_position =
+            format!("CASE WHEN {requested_position} < 1 THEN 1 ELSE {requested_position} END");
+
+        let group_selects = precomputed
+            .group_aliases
+            .iter()
+            .map(|alias| {
+                format!(
+                    "{} AS {}",
+                    qualified_ref(&row_source_alias, alias),
+                    quote_ident(alias)
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut aggregate_selects = group_selects;
+        aggregate_selects.push(format!(
+            "MAX(CASE WHEN {qualified_row_number} = {selected_position} THEN {qualified_value} ELSE NULL END) AS {value_alias}"
+        ));
+        let group_by = if precomputed.group_aliases.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " GROUP BY {}",
+                precomputed
+                    .group_aliases
+                    .iter()
+                    .map(|alias| qualified_ref(&row_source_alias, alias))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
+        let join_condition = if precomputed.group_aliases.is_empty() {
+            "TRUE".to_string()
+        } else {
+            precomputed
+                .group_aliases
+                .iter()
+                .zip(outer_groups.iter())
+                .map(|(alias, outer)| {
+                    render_null_safe_correlation(
+                        &qualified_ref(&precomputed.table_alias, alias),
+                        outer,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+
+        Ok(format!(
+            "LEFT JOIN (SELECT {} FROM (SELECT {} {inner_from}{inner_where}) AS {quoted_row_source_alias}{group_by}) AS {} ON {join_condition}",
+            aggregate_selects.join(", "),
+            row_selects.join(", "),
+            quote_ident(&precomputed.table_alias),
+        ))
+    }
+}
+
+impl PercentileDiscAggregatePlan {
+    fn aggregate_ref(&self, aggregate: &PercentileDiscAggregate) -> Option<String> {
+        self.aggregates
+            .iter()
+            .find(|precomputed| precomputed.aggregate == *aggregate)
+            .map(|precomputed| {
+                format!(
+                    "MAX({})",
+                    qualified_ref(&precomputed.table_alias, &precomputed.value_alias)
+                )
+            })
+    }
+}
+
+fn qualified_ref(alias: &str, column: &str) -> String {
+    format!("{}.{}", quote_ident(alias), quote_ident(column))
+}
+
+fn render_null_safe_correlation(inner: &str, outer: &str) -> String {
+    format!("(({inner} = {outer}) OR ({inner} IS NULL AND {outer} IS NULL))")
+}
+
+fn render_percentile_disc_literal(value: f64) -> String {
+    let rendered = value.to_string();
+    if rendered.contains('.') || rendered.contains('e') || rendered.contains('E') {
+        rendered
+    } else {
+        format!("{rendered}.0")
     }
 }
 

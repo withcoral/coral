@@ -586,6 +586,36 @@ fn validate_graph_plan_rejects_distinct_percentile_cont_aggregates() {
 }
 
 #[test]
+fn validate_graph_plan_rejects_distinct_percentile_disc_aggregates() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Aggregate {
+        function: AggregateFunction::PercentileDisc {
+            percentile: ordered_float::OrderedFloat(0.75),
+        },
+        target: AggregateTarget::Property(PropertyRef {
+            variable: "service".to_string(),
+            property: "tier".to_string(),
+        }),
+        distinct: true,
+        alias: "p75_tier".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("distinct percentile-discrete aggregate should fail validation");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("percentileDisc(DISTINCT ...)"),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn validate_graph_plan_rejects_hidden_distinct_percentile_cont_ordering() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan();
@@ -616,6 +646,66 @@ fn validate_graph_plan_rejects_hidden_distinct_percentile_cont_ordering() {
         error.to_string().contains("order_by[0].aggregate.distinct"),
         "{error:?}"
     );
+}
+
+#[test]
+fn validate_graph_plan_rejects_hidden_distinct_percentile_disc_ordering() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Aggregate {
+            function: AggregateFunction::PercentileDisc {
+                percentile: ordered_float::OrderedFloat(0.75),
+            },
+            target: AggregateTarget::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "tier".to_string(),
+            }),
+            distinct: true,
+        },
+        direction: OrderDirection::Descending,
+        nulls: None,
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("hidden distinct percentile-discrete aggregate should fail validation");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("order_by[0].aggregate.distinct"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_catalog_typed_percentile_disc_non_numeric_targets() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Aggregate {
+        function: AggregateFunction::PercentileDisc {
+            percentile: ordered_float::OrderedFloat(0.75),
+        },
+        target: AggregateTarget::Property(PropertyRef {
+            variable: "person".to_string(),
+            property: "name".to_string(),
+        }),
+        distinct: false,
+        alias: "bad_p75".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan_against_catalog(&plan, &typed_ownership_catalog())
+        .expect_err("string percentile-discrete target should fail catalog-aware validation");
+
+    assert!(
+        error.to_string().contains("INVALID_AGGREGATE_TARGET"),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("percentileDisc"), "{error:?}");
 }
 
 #[test]

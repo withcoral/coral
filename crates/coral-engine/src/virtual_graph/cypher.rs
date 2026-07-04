@@ -23138,7 +23138,12 @@ fn compile_function_aggregate_target(
     context: &CypherCompileContext,
 ) -> Result<AggregateTarget, CoreError> {
     match function.arguments.as_slice() {
-        [argument, _] if matches!(function_kind, AggregateFunction::PercentileCont { .. }) => {
+        [argument, _]
+            if matches!(
+                function_kind,
+                AggregateFunction::PercentileCont { .. } | AggregateFunction::PercentileDisc { .. }
+            ) =>
+        {
             compile_aggregate_target(
                 argument,
                 format!("{path}.expression.arguments[0]"),
@@ -23347,7 +23352,19 @@ fn compile_aggregate_function(
             ));
         }
         Ok(Some(AggregateFunction::PercentileCont {
-            percentile: compile_percentile_argument(function, path, context)?,
+            percentile: compile_percentile_argument(function, path, context, "percentileCont")?,
+        }))
+    } else if name.name.eq_ignore_ascii_case("percentileDisc")
+        || name.name.eq_ignore_ascii_case("percentile_disc")
+    {
+        if function.distinct {
+            return Err(unsupported(
+                format!("{path}.distinct"),
+                "percentileDisc(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_disc aggregates",
+            ));
+        }
+        Ok(Some(AggregateFunction::PercentileDisc {
+            percentile: compile_percentile_argument(function, path, context, "percentileDisc")?,
         }))
     } else if name.name.eq_ignore_ascii_case("stDev")
         || name.name.eq_ignore_ascii_case("stdev_samp")
@@ -23370,11 +23387,12 @@ fn compile_percentile_argument(
     function: &FunctionInvocation,
     path: &str,
     context: &CypherCompileContext,
+    function_name: &str,
 ) -> Result<OrderedFloat<f64>, CoreError> {
     let [_, percentile] = function.arguments.as_slice() else {
         return Err(unsupported(
             format!("{path}.arguments"),
-            "percentileCont() supports exactly two arguments: value and percentile",
+            format!("{function_name}() supports exactly two arguments: value and percentile"),
         ));
     };
     let literal = compile_literal(percentile, format!("{path}.arguments[1]"), context)?;
@@ -23384,21 +23402,21 @@ fn compile_percentile_argument(
         Literal::Integer(_) => {
             return Err(unsupported(
                 format!("{path}.arguments[1]"),
-                "percentileCont() percentile must be between 0.0 and 1.0 inclusive",
+                format!("{function_name}() percentile must be between 0.0 and 1.0 inclusive"),
             ));
         }
         Literal::Float(value) => value.into_inner(),
         _ => {
             return Err(unsupported(
                 format!("{path}.arguments[1]"),
-                "percentileCont() requires a numeric percentile literal",
+                format!("{function_name}() requires a numeric percentile literal"),
             ));
         }
     };
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
         return Err(unsupported(
             format!("{path}.arguments[1]"),
-            "percentileCont() percentile must be between 0.0 and 1.0 inclusive",
+            format!("{function_name}() percentile must be between 0.0 and 1.0 inclusive"),
         ));
     }
     Ok(OrderedFloat(value))

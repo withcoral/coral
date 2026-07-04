@@ -62,6 +62,19 @@ impl<'a> GraphPlanValidator<'a> {
                 "projections[{index}].distinct"
             )));
         }
+        for (index, projection) in self.plan.projections.iter().enumerate() {
+            let Projection::Aggregate {
+                function: AggregateFunction::PercentileDisc { .. },
+                distinct: true,
+                ..
+            } = projection
+            else {
+                continue;
+            };
+            return Err(unsupported_distinct_percentile_disc_error(format!(
+                "projections[{index}].distinct"
+            )));
+        }
         for (index, key) in self.plan.order_by.iter().enumerate() {
             let OrderExpression::Aggregate {
                 function: AggregateFunction::PercentileCont { .. },
@@ -72,6 +85,19 @@ impl<'a> GraphPlanValidator<'a> {
                 continue;
             };
             return Err(unsupported_distinct_percentile_cont_error(format!(
+                "order_by[{index}].aggregate.distinct"
+            )));
+        }
+        for (index, key) in self.plan.order_by.iter().enumerate() {
+            let OrderExpression::Aggregate {
+                function: AggregateFunction::PercentileDisc { .. },
+                distinct: true,
+                ..
+            } = &key.expression
+            else {
+                continue;
+            };
+            return Err(unsupported_distinct_percentile_disc_error(format!(
                 "order_by[{index}].aggregate.distinct"
             )));
         }
@@ -270,6 +296,17 @@ impl<'a> GraphPlanValidator<'a> {
             | AggregateFunction::PercentileCont { .. }
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP => Ok(ScalarType::Float),
+            AggregateFunction::PercentileDisc { .. } => match target {
+                AggregateTarget::Property(property)
+                | AggregateTarget::PresenceGatedProperty { property, .. } => {
+                    self.property_ref_scalar_type(property)
+                }
+                AggregateTarget::Expression(expression) => {
+                    self.infer_scalar_expression_type(expression, "expression")
+                }
+                AggregateTarget::VariableKey { .. }
+                | AggregateTarget::PresenceGatedVariableKey { .. } => Ok(ScalarType::Unknown),
+            },
             AggregateFunction::Min | AggregateFunction::Max => match target {
                 AggregateTarget::Property(property)
                 | AggregateTarget::PresenceGatedProperty { property, .. } => {

@@ -166,6 +166,7 @@ impl Declaration {
 struct SqlRenderer<'a> {
     validated: ValidatedGraphPlan<'a>,
     subquery_plan: ScalarSubqueryPlan,
+    percentile_disc_plan: PercentileDiscAggregatePlan,
     /// Uniqueness counter for inline exists-count aliases (see `render_scalar_predicate_expression`,
     /// predicates.rs). Separate from `subquery_plan`: the alias it mints is local to a generated
     /// COUNT(*) subquery SELECT and is never referenced by the outer query. Kept on the
@@ -243,6 +244,27 @@ struct ScalarSubqueryPlan {
     from_joins: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PercentileDiscAggregate {
+    function: AggregateFunction,
+    target: AggregateTarget,
+    distinct: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PrecomputedPercentileDiscAggregate {
+    aggregate: PercentileDiscAggregate,
+    table_alias: String,
+    value_alias: String,
+    group_aliases: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct PercentileDiscAggregatePlan {
+    aggregates: Vec<PrecomputedPercentileDiscAggregate>,
+    from_joins: String,
+}
+
 #[derive(Debug, Clone)]
 struct PrecomputedNodeCorrelation {
     predicate_index: usize,
@@ -287,6 +309,7 @@ impl<'a> SqlRenderer<'a> {
         Self {
             validated,
             subquery_plan: ScalarSubqueryPlan::default(),
+            percentile_disc_plan: PercentileDiscAggregatePlan::default(),
             next_scalar_subquery_alias: Cell::new(0),
         }
     }
@@ -299,6 +322,9 @@ impl<'a> SqlRenderer<'a> {
         let plan = self.build_scalar_subquery_plan()?;
         from_clause.push_str(&plan.from_joins);
         self.subquery_plan = plan;
+        let percentile_disc_plan = self.build_percentile_disc_aggregate_plan()?;
+        from_clause.push_str(&percentile_disc_plan.from_joins);
+        self.percentile_disc_plan = percentile_disc_plan;
 
         let select = self.render_select()?;
         let where_clause = self.render_where()?;

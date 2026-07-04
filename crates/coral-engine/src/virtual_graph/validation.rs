@@ -222,6 +222,14 @@ impl<'a> ValidatedGraphPlan<'a> {
         self.graph
     }
 
+    pub(crate) fn with_alias_prefix(&self, prefix: &str) -> Self {
+        let mut cloned = self.clone();
+        for binding in cloned.bindings.values_mut() {
+            binding.alias = format!("{prefix}{}", binding.alias);
+        }
+        cloned
+    }
+
     pub(crate) fn plan(&self) -> &'a GraphPlan {
         self.plan
     }

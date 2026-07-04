@@ -24,7 +24,7 @@ impl<'a> SqlRenderer<'a> {
         Ok(format!(" WHERE {}", predicates.join(" AND ")))
     }
 
-    fn render_pre_projection_predicates(&self) -> Result<Vec<String>, CoreError> {
+    pub(super) fn render_pre_projection_predicates(&self) -> Result<Vec<String>, CoreError> {
         let mut predicates = Vec::with_capacity(
             self.validated.plan().predicates.len()
                 + usize::from(self.validated.plan().predicate.is_some()),

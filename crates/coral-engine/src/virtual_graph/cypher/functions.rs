@@ -1,7 +1,7 @@
 //! openCypher function classification: case-insensitive `pub(super)` predicates
 //! over `decypher` `FunctionInvocation`s that identify which built-in a call is —
 //! aggregates (`count`, `collect`, `sum`, `avg`, `min`/`max`, `percentileCont`,
-//! `stDev`...), scalar/string/list functions (`toString`, `toInteger`,
+//! `percentileDisc`, `stDev`...), scalar/string/list functions (`toString`, `toInteger`,
 //! `substring`, `split`, `coalesce`...), identity (`id`, `elementId`, `type`,
 //! `labels`, `keys`, `properties`), relationship endpoints, existence and
 //! collection quantifiers, and internal graph functions — plus canonical-name
@@ -43,6 +43,10 @@ pub(super) fn aggregate_function_default_alias(
         || name.name.eq_ignore_ascii_case("percentile_cont")
     {
         Some("percentileCont")
+    } else if name.name.eq_ignore_ascii_case("percentileDisc")
+        || name.name.eq_ignore_ascii_case("percentile_disc")
+    {
+        Some("percentileDisc")
     } else if name.name.eq_ignore_ascii_case("stDev")
         || name.name.eq_ignore_ascii_case("stdev_samp")
     {
@@ -68,6 +72,7 @@ pub(super) fn aggregate_function_name(function: AggregateFunction) -> &'static s
         AggregateFunction::Avg => "avg",
         AggregateFunction::Median => "median",
         AggregateFunction::PercentileCont { .. } => "percentileCont",
+        AggregateFunction::PercentileDisc { .. } => "percentileDisc",
         AggregateFunction::StdDev => "stDev",
         AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",

@@ -228,6 +228,7 @@ pub(super) fn aggregate_function_name(function: AggregateFunction) -> &'static s
         AggregateFunction::Avg => "avg",
         AggregateFunction::Median => "median",
         AggregateFunction::PercentileCont { .. } => "percentileCont",
+        AggregateFunction::PercentileDisc { .. } => "percentileDisc",
         AggregateFunction::StdDev => "stDev",
         AggregateFunction::StdDevP => "stDevP",
         AggregateFunction::Min => "min",
@@ -242,6 +243,7 @@ pub(super) fn aggregate_function_requires_numeric_target(function: AggregateFunc
             | AggregateFunction::Avg
             | AggregateFunction::Median
             | AggregateFunction::PercentileCont { .. }
+            | AggregateFunction::PercentileDisc { .. }
             | AggregateFunction::StdDev
             | AggregateFunction::StdDevP
     )
@@ -252,6 +254,15 @@ pub(super) fn unsupported_distinct_percentile_cont_error(path: impl Into<String>
         diagnostic_codes::INVALID_AGGREGATE_TARGET,
         path,
         "percentileCont(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_cont aggregates",
+    )
+    .into_core_error()
+}
+
+pub(super) fn unsupported_distinct_percentile_disc_error(path: impl Into<String>) -> CoreError {
+    Diagnostic::new(
+        diagnostic_codes::INVALID_AGGREGATE_TARGET,
+        path,
+        "percentileDisc(DISTINCT ...) is not supported because DataFusion 53 cannot execute distinct percentile_disc aggregates",
     )
     .into_core_error()
 }

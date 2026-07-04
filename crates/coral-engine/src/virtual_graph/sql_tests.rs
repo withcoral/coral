@@ -4550,6 +4550,10 @@ fn lower_graph_plan_renders_numeric_aggregate_projections() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The test keeps related statistical aggregate SQL assertions together."
+)]
 fn lower_graph_plan_renders_statistical_aggregate_projections() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);
@@ -4572,6 +4576,17 @@ fn lower_graph_plan_renders_statistical_aggregate_projections() {
         }),
         distinct: false,
         alias: "p75_risk".to_string(),
+    });
+    plan.projections.push(Projection::Aggregate {
+        function: AggregateFunction::PercentileDisc {
+            percentile: ordered_float::OrderedFloat(0.75),
+        },
+        target: AggregateTarget::Property(PropertyRef {
+            variable: "service".to_string(),
+            property: "risk".to_string(),
+        }),
+        distinct: false,
+        alias: "p75_disc_risk".to_string(),
     });
     plan.projections.push(Projection::Aggregate {
         function: AggregateFunction::StdDev,
@@ -4624,18 +4639,160 @@ fn lower_graph_plan_renders_statistical_aggregate_projections() {
         .expect("statistical aggregate projections should lower");
 
     assert!(
-            translation.sql().contains(
-                "MEDIAN(CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"median_risk\", \
-                 PERCENTILE_CONT(\"n1\".\"risk_score\", 0.75) AS \"p75_risk\", \
-                 STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
-                 STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
-                 MEDIAN(DISTINCT CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"distinct_median_risk\", \
-                 SQRT(VAR_SAMP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_sample_risk\", \
-                 SQRT(VAR_POP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_population_risk\""
-            ),
-            "{}",
-            translation.sql()
-        );
+        translation
+            .sql()
+            .contains("MEDIAN(CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"median_risk\""),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("PERCENTILE_CONT(\"n1\".\"risk_score\", 0.75) AS \"p75_risk\""),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "STDDEV_SAMP(\"n1\".\"risk_score\") AS \"sample_risk\", \
+             STDDEV_POP(\"n1\".\"risk_score\") AS \"population_risk\", \
+             MEDIAN(DISTINCT CAST(\"n1\".\"risk_score\" AS DOUBLE)) AS \"distinct_median_risk\", \
+             SQRT(VAR_SAMP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_sample_risk\", \
+             SQRT(VAR_POP(DISTINCT \"n1\".\"risk_score\")) AS \"distinct_population_risk\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("MAX(\"__coral_percentile_disc_0\".\"__coral_value\") AS \"p75_disc_risk\""),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("LEFT JOIN (SELECT \"__coral_percentile_disc_0_rows\""),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "row_number() OVER (PARTITION BY \"__coral_percentile_disc_0_n0\".\"full_name\", \"__coral_percentile_disc_0_n1\".\"service_name\" ORDER BY \"__coral_percentile_disc_0_n1\".\"risk_score\")"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "((\"__coral_percentile_disc_0\".\"__coral_group_0\" = \"n0\".\"full_name\") OR (\"__coral_percentile_disc_0\".\"__coral_group_0\" IS NULL AND \"n0\".\"full_name\" IS NULL))"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("(\"__coral_percentile_disc_0_n1\".\"risk_score\") IS NOT NULL"),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("CASE WHEN CAST(ceil(0.75 * \"__coral_percentile_disc_0_rows\".\"__coral_n\") AS BIGINT) < 1 THEN 1 ELSE CAST(ceil(0.75 * \"__coral_percentile_disc_0_rows\".\"__coral_n\") AS BIGINT) END"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_grouped_percentile_disc_projection_and_ordering() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let plan = GraphPlan {
+        nodes: vec![NodePattern {
+            variable: "service".to_string(),
+            label: "Service".to_string(),
+        }],
+        relationships: Vec::new(),
+        optional_relationships: Vec::new(),
+        optional_matches: Vec::new(),
+        distinct: false,
+        projections: vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "service".to_string(),
+                    property: "tier".to_string(),
+                },
+                alias: Some("tier".to_string()),
+            },
+            Projection::Aggregate {
+                function: AggregateFunction::PercentileDisc {
+                    percentile: ordered_float::OrderedFloat(0.5),
+                },
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                distinct: false,
+                alias: "median_disc_risk".to_string(),
+            },
+        ],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: vec![OrderKey {
+            expression: OrderExpression::Aggregate {
+                function: AggregateFunction::PercentileDisc {
+                    percentile: ordered_float::OrderedFloat(0.75),
+                },
+                target: AggregateTarget::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "risk".to_string(),
+                }),
+                distinct: false,
+            },
+            direction: OrderDirection::Descending,
+            nulls: None,
+        }],
+        skip: None,
+        limit: None,
+    };
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("grouped percentileDisc projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "((\"__coral_percentile_disc_0\".\"__coral_group_0\" = \"n0\".\"tier\") OR (\"__coral_percentile_disc_0\".\"__coral_group_0\" IS NULL AND \"n0\".\"tier\" IS NULL))"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains("GROUP BY \"n0\".\"tier\""),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains(" ORDER BY MAX(\"__coral_percentile_disc_1\".\"__coral_value\") DESC"),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains("ceil(0.75 *"),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains("ceil(0.5 *"),
+        "{}",
+        translation.sql()
+    );
 }
 
 #[test]

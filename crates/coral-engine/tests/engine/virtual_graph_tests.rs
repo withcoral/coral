@@ -15404,6 +15404,193 @@ async fn cypher_percentile_cont_aggregate_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn datafusion_percentile_disc_probe_executes_with_windowed_position_sql() {
+    let execution = CoralQuery::execute_sql(
+        &[],
+        test_runtime(),
+        "WITH values_table AS ( \
+             SELECT column1 AS x FROM (VALUES (10), (20), (30), (40)) \
+         ) \
+         SELECT \
+             (SELECT sub.x FROM ( \
+                 SELECT x, \
+                        CAST(row_number() OVER (ORDER BY x) AS BIGINT) AS rn, \
+                        COUNT(*) OVER () AS n \
+                 FROM values_table \
+                 WHERE x IS NOT NULL \
+             ) AS sub \
+             WHERE sub.rn = CASE \
+                 WHEN CAST(ceil(0.75 * sub.n) AS BIGINT) < 1 THEN 1 \
+                 ELSE CAST(ceil(0.75 * sub.n) AS BIGINT) \
+             END LIMIT 1) AS p75, \
+             (SELECT sub.x FROM ( \
+                 SELECT x, \
+                        CAST(row_number() OVER (ORDER BY x) AS BIGINT) AS rn, \
+                        COUNT(*) OVER () AS n \
+                 FROM values_table \
+                 WHERE x IS NOT NULL \
+             ) AS sub \
+             WHERE sub.rn = CASE \
+                 WHEN CAST(ceil(0.5 * sub.n) AS BIGINT) < 1 THEN 1 \
+                 ELSE CAST(ceil(0.5 * sub.n) AS BIGINT) \
+             END LIMIT 1) AS p50, \
+             (SELECT sub.x FROM ( \
+                 SELECT x, \
+                        CAST(row_number() OVER (ORDER BY x) AS BIGINT) AS rn, \
+                        COUNT(*) OVER () AS n \
+                 FROM values_table \
+                 WHERE x IS NOT NULL \
+             ) AS sub \
+             WHERE sub.rn = CASE \
+                 WHEN CAST(ceil(0.0 * sub.n) AS BIGINT) < 1 THEN 1 \
+                 ELSE CAST(ceil(0.0 * sub.n) AS BIGINT) \
+             END LIMIT 1) AS p0, \
+             (SELECT sub.x FROM ( \
+                 SELECT x, \
+                        CAST(row_number() OVER (ORDER BY x) AS BIGINT) AS rn, \
+                        COUNT(*) OVER () AS n \
+                 FROM values_table \
+                 WHERE x IS NOT NULL \
+             ) AS sub \
+             WHERE sub.rn = CASE \
+                 WHEN CAST(ceil(1.0 * sub.n) AS BIGINT) < 1 THEN 1 \
+                 ELSE CAST(ceil(1.0 * sub.n) AS BIGINT) \
+             END LIMIT 1) AS p100",
+    )
+    .await
+    .expect("windowed percentile-disc SQL probe should execute");
+
+    assert_eq!(
+        execution_to_rows(&execution),
+        vec![json!({"p75": 30, "p50": 20, "p0": 10, "p100": 40})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_percentile_disc_aggregate_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN percentileDisc(service.risk, 0.75) AS p75_risk",
+    )
+    .await
+    .expect("percentileDisc aggregate Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "row_number() OVER (ORDER BY \"__coral_percentile_disc_0_n0\".\"risk_score\")"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("MAX(\"__coral_percentile_disc_0\".\"__coral_value\") AS \"p75_risk\""),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT (SELECT sub.risk_score FROM ( \
+             SELECT risk_score, \
+                    CAST(row_number() OVER (ORDER BY risk_score) AS BIGINT) AS rn, \
+                    COUNT(*) OVER () AS n \
+             FROM ops.services \
+             WHERE risk_score IS NOT NULL \
+         ) AS sub \
+         WHERE sub.rn = CASE \
+             WHEN CAST(ceil(0.75 * sub.n) AS BIGINT) < 1 THEN 1 \
+             ELSE CAST(ceil(0.75 * sub.n) AS BIGINT) \
+         END LIMIT 1) AS p75_risk",
+    )
+    .await
+    .expect("equivalent percentile-disc SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(graph_rows, vec![json!({"p75_risk": 0.9})]);
+}
+
+#[tokio::test]
+async fn cypher_grouped_percentile_disc_aggregate_executes_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         RETURN service.active AS active, \
+                percentileDisc(service.risk, 0.5) AS median_disc_risk \
+         ORDER BY active",
+    )
+    .await
+    .expect("grouped percentileDisc Cypher query should execute");
+
+    assert!(
+        execution.translated_sql().contains(
+            "((\"__coral_percentile_disc_0\".\"__coral_group_0\" = \"n0\".\"active\") OR (\"__coral_percentile_disc_0\".\"__coral_group_0\" IS NULL AND \"n0\".\"active\" IS NULL))"
+        ),
+        "{}",
+        execution.translated_sql()
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT s0.active AS active, \
+                MAX(pdisc.value) AS median_disc_risk \
+         FROM ops.services AS s0 \
+         LEFT JOIN ( \
+             SELECT rows.active_group AS active_group, \
+                    MAX(CASE WHEN rows.rn = CASE \
+                        WHEN CAST(ceil(0.5 * rows.n) AS BIGINT) < 1 THEN 1 \
+                        ELSE CAST(ceil(0.5 * rows.n) AS BIGINT) \
+                    END THEN rows.value ELSE NULL END) AS value \
+             FROM ( \
+                 SELECT s1.active AS active_group, \
+                        s1.risk_score AS value, \
+                        CAST(row_number() OVER (PARTITION BY s1.active ORDER BY s1.risk_score) AS BIGINT) AS rn, \
+                        COUNT(*) OVER (PARTITION BY s1.active) AS n \
+                 FROM ops.services AS s1 \
+                 WHERE s1.risk_score IS NOT NULL \
+             ) AS rows \
+             GROUP BY rows.active_group \
+         ) AS pdisc \
+         ON ((pdisc.active_group = s0.active) OR (pdisc.active_group IS NULL AND s0.active IS NULL)) \
+         GROUP BY s0.active \
+         ORDER BY active",
+    )
+    .await
+    .expect("equivalent grouped percentile-disc SQL should execute");
+
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(&sql_execution);
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![
+            json!({"active": false, "median_disc_risk": 0.25}),
+            json!({"active": true, "median_disc_risk": 0.5}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_gql_aggregate_function_aliases_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

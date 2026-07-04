@@ -962,6 +962,11 @@ pub enum AggregateFunction {
         /// Requested percentile in the inclusive range `[0.0, 1.0]`.
         percentile: OrderedFloat<f64>,
     },
+    /// `PERCENTILEDISC(property, percentile)`.
+    PercentileDisc {
+        /// Requested percentile in the inclusive range `[0.0, 1.0]`.
+        percentile: OrderedFloat<f64>,
+    },
     /// `STDEV(property)` / sample standard deviation.
     StdDev,
     /// `STDEVP(property)` / population standard deviation.

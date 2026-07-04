@@ -2,7 +2,7 @@
   "suite": "coral-opencypher-read-baseline",
   "description": "Curated openCypher TCK-style read-only scenarios that Coral claims for virtual graph execution. These scenarios are synthetic and run end-to-end through Cypher parsing, graph validation, SQL lowering, DataFusion execution, and result comparison.",
   "minimum_feature_counts": {
-    "Aggregation": 26,
+    "Aggregation": 29,
     "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 13,
@@ -1562,6 +1562,39 @@
       }
     },
     {
+      "id": "aggregate-percentile-disc",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN percentileDisc(p.age, 0.75) AS p75_age",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "p75_age": 41
+          }
+        ]
+      }
+    },
+    {
+      "id": "aggregate-percentile-disc-by-group",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN p.active AS active, percentileDisc(p.age, 0.5) AS median_age ORDER BY active",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "active": false,
+            "median_age": 29
+          },
+          {
+            "active": true,
+            "median_age": 34
+          }
+        ]
+      }
+    },
+    {
       "id": "aggregate-distinct-population-standard-deviation",
       "feature": "Aggregation",
       "query": "MATCH (p:Person) WHERE p.name <> 'Alice' RETURN stDevP(DISTINCT toFloat(p.age)) AS population_age_stdev",
@@ -1922,6 +1955,15 @@
       "expected": {
         "kind": "error",
         "contains": "percentileCont(DISTINCT ...) is not supported"
+      }
+    },
+    {
+      "id": "aggregate-percentile-disc-distinct-rejected",
+      "feature": "Aggregation",
+      "query": "MATCH (p:Person) RETURN percentileDisc(DISTINCT p.age, 0.5) AS median_age",
+      "expected": {
+        "kind": "error",
+        "contains": "percentileDisc(DISTINCT ...) is not supported"
       }
     },
     {
