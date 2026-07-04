@@ -238,6 +238,7 @@ impl<'a> GraphPlanValidator<'a> {
             }
             PredicateRhs::Literal(_)
             | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::TemporalCoercionList(_)
             | PredicateRhs::List(_) => {}
         }
     }

@@ -5983,6 +5983,145 @@ fn lower_graph_plan_renders_temporal_coercion_casts_from_catalog_type() {
 }
 
 #[test]
+fn lower_graph_plan_renders_temporal_coercion_list_casts_from_catalog_type() {
+    let cases = [
+        (
+            "Timestamp(Nanosecond, None)",
+            vec!["2020-06-01T09:00:00Z", "2020-06-02T09:00:00Z"],
+            "CAST('2020-06-01T09:00:00Z' AS TIMESTAMP), CAST('2020-06-02T09:00:00Z' AS TIMESTAMP)",
+        ),
+        (
+            "Date32",
+            vec!["2020-06-01", "2020-06-02"],
+            "CAST('2020-06-01' AS DATE), CAST('2020-06-02' AS DATE)",
+        ),
+        (
+            "Time64(Nanosecond)",
+            vec!["09:00:00", "10:00:00"],
+            "CAST('09:00:00' AS TIME), CAST('10:00:00' AS TIME)",
+        ),
+    ];
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+
+    for (since_type, sources, expected_casts) in cases {
+        let mut plan = ownership_plan(Direction::Outgoing);
+        plan.relationships
+            .get_mut(0)
+            .expect("ownership plan should have a relationship")
+            .variable = Some("owns".to_string());
+        plan.predicates.clear();
+        plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+            property: PropertyRef {
+                variable: "owns".to_string(),
+                property: "since".to_string(),
+            },
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::TemporalCoercionList(
+                sources.into_iter().map(str::to_string).collect(),
+            ),
+        }));
+        plan.order_by.clear();
+        plan.limit = None;
+
+        let translation = graph
+            .lower_graph_plan_against_catalog(
+                &plan,
+                &typed_ownership_catalog_with_since_type(since_type),
+            )
+            .expect("temporal coercion list should lower with catalog type");
+
+        assert!(
+            translation
+                .sql()
+                .contains(&format!("WHERE \"r0\".\"since\" IN ({expected_casts})")),
+            "{}",
+            translation.sql()
+        );
+    }
+}
+
+#[test]
+fn lower_graph_plan_renders_negated_temporal_coercion_list_with_casts() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.relationships
+        .get_mut(0)
+        .expect("ownership plan should have a relationship")
+        .variable = Some("owns".to_string());
+    plan.predicates.clear();
+    plan.predicate = Some(PredicateExpression::Not {
+        expression: Box::new(PredicateExpression::Comparison(PropertyPredicate {
+            property: PropertyRef {
+                variable: "owns".to_string(),
+                property: "since".to_string(),
+            },
+            operator: ComparisonOperator::In,
+            rhs: PredicateRhs::TemporalCoercionList(vec![
+                "2020-06-01T09:00:00Z".to_string(),
+                "2020-06-02T09:00:00Z".to_string(),
+            ]),
+        })),
+    });
+    plan.order_by.clear();
+    plan.limit = None;
+
+    let translation = graph
+        .lower_graph_plan_against_catalog(
+            &plan,
+            &typed_ownership_catalog_with_since_type("Timestamp(Nanosecond, None)"),
+        )
+        .expect("negated temporal coercion list should lower with catalog type");
+
+    assert!(
+        translation.sql().contains(
+            "WHERE NOT (\"r0\".\"since\" IN (CAST('2020-06-01T09:00:00Z' AS TIMESTAMP), CAST('2020-06-02T09:00:00Z' AS TIMESTAMP)))"
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_non_temporal_coercion_list_like_string_list() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut coerced_plan = ownership_plan(Direction::Outgoing);
+    coerced_plan.predicates = vec![PropertyPredicate {
+        property: PropertyRef {
+            variable: "service".to_string(),
+            property: "tier".to_string(),
+        },
+        operator: ComparisonOperator::In,
+        rhs: PredicateRhs::TemporalCoercionList(vec!["prod".to_string(), "dev".to_string()]),
+    }];
+    let mut literal_plan = ownership_plan(Direction::Outgoing);
+    literal_plan.predicates = vec![PropertyPredicate {
+        property: PropertyRef {
+            variable: "service".to_string(),
+            property: "tier".to_string(),
+        },
+        operator: ComparisonOperator::In,
+        rhs: PredicateRhs::List(vec![
+            Literal::String("prod".to_string()),
+            Literal::String("dev".to_string()),
+        ]),
+    }];
+    let catalog = typed_ownership_catalog();
+
+    let coerced_sql = graph
+        .lower_graph_plan_against_catalog(&coerced_plan, &catalog)
+        .expect("temporal coercion list should lower for string property")
+        .sql()
+        .to_string();
+    let literal_sql = graph
+        .lower_graph_plan_against_catalog(&literal_plan, &catalog)
+        .expect("literal string list should lower for string property")
+        .sql()
+        .to_string();
+
+    assert_eq!(coerced_sql, literal_sql);
+}
+
+#[test]
 fn lower_graph_plan_renders_non_temporal_coercion_like_string_literal() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut coerced_plan = ownership_plan(Direction::Outgoing);

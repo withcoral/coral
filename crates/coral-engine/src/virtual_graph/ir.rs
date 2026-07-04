@@ -115,6 +115,9 @@ pub enum PredicateRhs {
         /// Original string operand from the adapter.
         source: String,
     },
+    /// Compare against adapter-marked strings that validation may coerce to
+    /// the left-hand property's temporal kind for list membership.
+    TemporalCoercionList(Vec<String>),
     /// Compare against another graph property.
     Property(PropertyRef),
     /// Compare against the stable mapped key for a graph variable.
@@ -1351,6 +1354,7 @@ fn predicate_rhs_references_outside_scope(rhs: &PredicateRhs, scope: &BTreeSet<S
         }
         PredicateRhs::Literal(_)
         | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::TemporalCoercionList(_)
         | PredicateRhs::List(_) => false,
     }
 }

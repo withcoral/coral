@@ -956,6 +956,7 @@ impl<'a> SqlRenderer<'a> {
                 .map(Some),
             PredicateRhs::Literal(_)
             | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::TemporalCoercionList(_)
             | PredicateRhs::List(_) => Ok(None),
         }
     }

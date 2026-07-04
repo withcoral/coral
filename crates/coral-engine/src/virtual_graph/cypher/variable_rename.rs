@@ -197,6 +197,7 @@ fn rename_predicate_rhs_variables(rhs: &mut PredicateRhs, renames: &BTreeMap<Str
         }
         PredicateRhs::Literal(_)
         | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::TemporalCoercionList(_)
         | PredicateRhs::List(_) => {}
     }
 }

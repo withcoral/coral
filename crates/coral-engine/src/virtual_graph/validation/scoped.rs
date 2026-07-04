@@ -469,6 +469,11 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::TemporalCoercion { source } => {
                 Self::validate_temporal_coercion_operand_types(operator, lhs_type, source, path)
             }
+            PredicateRhs::TemporalCoercionList(sources) => {
+                Self::validate_temporal_coercion_list_operand_types(
+                    operator, lhs_type, sources, path,
+                )
+            }
             PredicateRhs::List(literals) => {
                 Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
             }

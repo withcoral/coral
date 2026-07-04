@@ -3434,6 +3434,9 @@ fn branch_predicate_rhs_as_scalar_rhs(
         PredicateRhs::TemporalCoercion { .. } => Err(CoreError::internal(
             "static branch rewrite cannot preserve temporal predicate coercion",
         )),
+        PredicateRhs::TemporalCoercionList(_) => Err(CoreError::internal(
+            "static branch rewrite cannot preserve temporal predicate list coercion",
+        )),
         PredicateRhs::Property(property)
             if branch_property_is_missing(graph, nodes, relationships, &property) =>
         {
@@ -3478,6 +3481,7 @@ fn branch_predicate_rhs_is_missing_property(
         }
         PredicateRhs::Literal(_)
         | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::TemporalCoercionList(_)
         | PredicateRhs::Key { .. }
         | PredicateRhs::ElementId { .. }
         | PredicateRhs::List(_) => false,

@@ -61,6 +61,7 @@ impl<'a> SqlRenderer<'a> {
             }
             PredicateRhs::Literal(_)
             | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::TemporalCoercionList(_)
             | PredicateRhs::List(_) => true,
         }
     }
@@ -1715,6 +1716,13 @@ impl<'a> SqlRenderer<'a> {
                     .join(", ");
                 Ok(format!("{lhs} IN ({rendered})"))
             }
+            (ComparisonOperator::In, PredicateRhs::TemporalCoercionList(sources)) => {
+                if sources.is_empty() {
+                    return Ok("FALSE".to_string());
+                }
+                let rendered = Self::render_temporal_coercion_list_rhs_for_kind(sources, None);
+                Ok(format!("{lhs} IN ({rendered})"))
+            }
             (ComparisonOperator::In, _) => Err(CoreError::internal(
                 "validated scoped IN predicate did not contain a literal list",
             )),
@@ -1736,7 +1744,10 @@ impl<'a> SqlRenderer<'a> {
             ) => Err(CoreError::internal(
                 "validated scoped string predicate did not contain a string literal",
             )),
-            (ComparisonOperator::RegexMatch, PredicateRhs::List(_)) => Err(CoreError::internal(
+            (
+                ComparisonOperator::RegexMatch,
+                PredicateRhs::List(_) | PredicateRhs::TemporalCoercionList(_),
+            ) => Err(CoreError::internal(
                 "validated scoped regex predicate did not contain a scalar RHS",
             )),
             (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
@@ -3060,6 +3071,9 @@ impl<'a> SqlRenderer<'a> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
             PredicateRhs::TemporalCoercion { source } => Ok(quote_string_literal(source)),
+            PredicateRhs::TemporalCoercionList(_) => Err(CoreError::internal(
+                "validated EXISTS temporal coercion list predicate reached generic RHS renderer",
+            )),
             PredicateRhs::Property(property) => {
                 self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
             }
@@ -3085,6 +3099,19 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         let kind = self.exists_property_ref_temporal_kind(property, relationships, local_nodes)?;
         Ok(Self::render_temporal_coercion_rhs_for_kind(source, kind))
+    }
+
+    pub(super) fn render_exists_temporal_coercion_list_predicate_rhs<'b>(
+        &self,
+        property: &PropertyRef,
+        sources: &[String],
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<String, CoreError> {
+        let kind = self.exists_property_ref_temporal_kind(property, relationships, local_nodes)?;
+        Ok(Self::render_temporal_coercion_list_rhs_for_kind(
+            sources, kind,
+        ))
     }
 
     fn exists_property_ref_temporal_kind<'b>(

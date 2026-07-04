@@ -295,6 +295,7 @@ fn reject_ignored_path_variable_references_in_predicate_rhs(
         }
         PredicateRhs::Literal(_)
         | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::TemporalCoercionList(_)
         | PredicateRhs::List(_) => Ok(()),
     }
 }

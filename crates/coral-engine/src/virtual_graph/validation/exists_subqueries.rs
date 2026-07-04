@@ -506,7 +506,7 @@ impl<'a> GraphPlanValidator<'a> {
                     format!("{path}.rhs"),
                 )
             }
-            PredicateRhs::List(_) => {
+            PredicateRhs::TemporalCoercionList(_) | PredicateRhs::List(_) => {
                 if predicate.operator != ComparisonOperator::In {
                     return Err(Diagnostic::new(
                         diagnostic_codes::INVALID_PREDICATE_OPERAND,
@@ -696,6 +696,14 @@ impl<'a> GraphPlanValidator<'a> {
                     predicate.operator,
                     lhs_type,
                     source,
+                    path,
+                )
+            }
+            PredicateRhs::TemporalCoercionList(sources) => {
+                Self::validate_temporal_coercion_list_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    sources,
                     path,
                 )
             }

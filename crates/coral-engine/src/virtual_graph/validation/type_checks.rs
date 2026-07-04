@@ -140,6 +140,11 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::TemporalCoercion { source } => {
                 Self::validate_temporal_coercion_operand_types(operator, lhs_type, source, path)
             }
+            PredicateRhs::TemporalCoercionList(sources) => {
+                Self::validate_temporal_coercion_list_operand_types(
+                    operator, lhs_type, sources, path,
+                )
+            }
             PredicateRhs::List(literals) => {
                 Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
             }
@@ -176,6 +181,52 @@ impl<'a> GraphPlanValidator<'a> {
                 ScalarType::String,
                 path,
             ),
+        }
+    }
+
+    pub(super) fn validate_temporal_coercion_list_operand_types(
+        operator: ComparisonOperator,
+        lhs_type: ScalarType,
+        sources: &[String],
+        path: &str,
+    ) -> Result<(), CoreError> {
+        if operator != ComparisonOperator::In {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                path,
+                "literal lists are only supported with IN predicates",
+            )
+            .into_core_error());
+        }
+
+        match lhs_type {
+            ScalarType::Temporal(
+                kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime),
+            ) => {
+                for source in sources {
+                    Self::validate_temporal_coercion_source(source, kind, format!("{path}.rhs"))?;
+                }
+                Self::validate_scalar_predicate_operand_types(operator, lhs_type, lhs_type, path)
+            }
+            ScalarType::Temporal(TemporalKind::Duration) => Err(Self::temporal_coercion_error(
+                sources.first().map_or("", String::as_str),
+                TemporalKind::Duration,
+                format!("{path}.rhs"),
+            )),
+            ScalarType::Unknown
+            | ScalarType::Null
+            | ScalarType::String
+            | ScalarType::Integer
+            | ScalarType::Float
+            | ScalarType::Boolean
+            | ScalarType::Other => {
+                let literals = sources
+                    .iter()
+                    .cloned()
+                    .map(Literal::String)
+                    .collect::<Vec<_>>();
+                Self::validate_scalar_in_list_operand_types(lhs_type, &literals, path)
+            }
         }
     }
 

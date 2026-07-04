@@ -110,6 +110,9 @@ impl<'a> GraphPlanValidator<'a> {
                     source,
                 )
             }
+            PredicateRhs::TemporalCoercionList(_) => {
+                Self::validate_temporal_coercion_list_literal_predicate(&path, predicate.operator)
+            }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -241,6 +244,9 @@ impl<'a> GraphPlanValidator<'a> {
                     source,
                 )
             }
+            PredicateRhs::TemporalCoercionList(_) => {
+                Self::validate_temporal_coercion_list_literal_predicate(&path, predicate.operator)
+            }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -345,6 +351,13 @@ impl<'a> GraphPlanValidator<'a> {
                     source,
                 )
             }
+            PredicateRhs::TemporalCoercionList(sources) => {
+                Self::validate_element_id_temporal_coercion_list_predicate(
+                    &path,
+                    predicate.operator,
+                    sources,
+                )
+            }
             PredicateRhs::ElementId { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -371,18 +384,11 @@ impl<'a> GraphPlanValidator<'a> {
                 self.validate_element_id_projection(variable, format!("{path}.rhs"))
             }
             PredicateRhs::List(literals) => {
-                if predicate.operator != ComparisonOperator::In {
-                    return Err(Diagnostic::new(
-                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
-                        path.clone(),
-                        "literal lists are only supported with IN predicates",
-                    )
-                    .into_core_error());
-                }
-                for (index, literal) in literals.iter().enumerate() {
-                    Self::validate_element_id_literal(format!("{path}.rhs[{index}]"), literal)?;
-                }
-                Ok(())
+                Self::validate_element_id_literal_list_predicate(
+                    &path,
+                    predicate.operator,
+                    literals,
+                )
             }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
@@ -456,6 +462,21 @@ impl<'a> GraphPlanValidator<'a> {
         Self::validate_literal_predicate(path, operator, &literal)
     }
 
+    fn validate_temporal_coercion_list_literal_predicate(
+        path: &str,
+        operator: ComparisonOperator,
+    ) -> Result<(), CoreError> {
+        if operator != ComparisonOperator::In {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                path,
+                "literal lists are only supported with IN predicates",
+            )
+            .into_core_error());
+        }
+        Ok(())
+    }
+
     fn validate_element_id_temporal_coercion_predicate(
         path: &str,
         operator: ComparisonOperator,
@@ -473,6 +494,33 @@ impl<'a> GraphPlanValidator<'a> {
         Self::validate_element_id_literal(path, &literal)?;
         Self::validate_string_predicate(path, operator, &literal)?;
         Self::validate_literal_predicate(path, operator, &literal)
+    }
+
+    fn validate_element_id_temporal_coercion_list_predicate(
+        path: &str,
+        operator: ComparisonOperator,
+        sources: &[String],
+    ) -> Result<(), CoreError> {
+        Self::validate_temporal_coercion_list_literal_predicate(path, operator)?;
+        for (index, source) in sources.iter().enumerate() {
+            Self::validate_element_id_literal(
+                format!("{path}.rhs[{index}]"),
+                &Literal::String(source.clone()),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_element_id_literal_list_predicate(
+        path: &str,
+        operator: ComparisonOperator,
+        literals: &[Literal],
+    ) -> Result<(), CoreError> {
+        Self::validate_temporal_coercion_list_literal_predicate(path, operator)?;
+        for (index, literal) in literals.iter().enumerate() {
+            Self::validate_element_id_literal(format!("{path}.rhs[{index}]"), literal)?;
+        }
+        Ok(())
     }
 
     fn validate_presence_predicate(
