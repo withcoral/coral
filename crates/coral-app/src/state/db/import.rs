@@ -807,6 +807,15 @@ async fn import_legacy_credential_material_with_store(
                     continue;
                 }
             };
+            if material.is_empty() {
+                tracing::warn!(
+                    workspace_name = %workspace_name,
+                    source_name = %source.name,
+                    %storage,
+                    "skipping legacy credential material import because the legacy credential material is empty; re-add the source if credentials are still required"
+                );
+                continue;
+            }
             match database_store.replace_material(
                 &workspace_name,
                 &credential_set_id,
@@ -861,9 +870,7 @@ async fn import_legacy_credential_material_with_store(
                     continue;
                 }
             }
-            if !material.is_empty() {
-                imported += 1;
-            }
+            imported += 1;
             let mut updated = source.clone();
             updated.credential_storage = Some(CredentialStorageKind::Database);
             let mut tx = db.begin().await?;
@@ -2605,6 +2612,78 @@ mod tests {
             .await
             .expect("rerun legacy credential import");
         assert_eq!(imported, 0);
+    }
+
+    #[tokio::test]
+    async fn skips_missing_legacy_file_credentials_without_marking_source_database_backed() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let workspace = WorkspaceName::parse("default").expect("workspace");
+        let source_name = SourceName::parse("github").expect("source name");
+        let source = source(
+            "github",
+            Some("1.2.3"),
+            [],
+            ["GITHUB_TOKEN"],
+            Some(CredentialStorageKind::File),
+            SourceOrigin::Imported,
+        );
+        let db = Arc::new(open_sqlite(&layout).await);
+        let mut tx = db.begin().await.expect("begin tx");
+        tx.workspaces()
+            .ensure(workspace.as_str(), 7)
+            .await
+            .expect("ensure workspace");
+        tx.sources()
+            .upsert_source(&workspace, &source, 7)
+            .await
+            .expect("upsert source");
+        tx.commit().await.expect("commit source");
+        let credential_set_id = CredentialSetId::for_source(&source_name);
+        let legacy_store =
+            CredentialStore::with_preference(layout.clone(), CredentialStoragePreference::File);
+        let database_store = CredentialStore::with_database(
+            layout.clone(),
+            CredentialStoragePreference::Auto,
+            Arc::clone(&db),
+            Arc::new(LocalFileCredentialKeyProvider::with_source(
+                &layout,
+                None,
+                CredentialEncryptionKeySource::File,
+            )),
+        );
+
+        let imported = import_legacy_credential_material_with_store(
+            db.as_ref(),
+            &database_store,
+            &legacy_store,
+        )
+        .await
+        .expect("import legacy credentials");
+
+        assert_eq!(imported, 0);
+        let mut session = db.as_ref();
+        let updated = session
+            .sources()
+            .get_source(&workspace, &source_name)
+            .await
+            .expect("get source")
+            .expect("source");
+        assert_eq!(
+            updated.credential_storage,
+            Some(CredentialStorageKind::File)
+        );
+        assert_eq!(
+            database_store
+                .read_material(
+                    &workspace,
+                    &credential_set_id,
+                    CredentialStorageKind::Database
+                )
+                .expect("read missing database material"),
+            BTreeMap::new()
+        );
     }
 
     #[tokio::test]
