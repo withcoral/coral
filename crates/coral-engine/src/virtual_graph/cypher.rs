@@ -63,7 +63,8 @@ use super::ir::{
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
+    UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -12101,6 +12102,10 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
             .iter()
             .all(|expression| hidden_subquery_order_expression_can_be_precomputed(expression)),
         ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+            hidden_subquery_order_expression_can_be_precomputed(start)
+                && hidden_subquery_order_expression_can_be_precomputed(end)
+        }
         ScalarExpression::Case {
             alternatives,
             else_expression,
@@ -12319,6 +12324,10 @@ fn compound_scalar_expression_correlated_subquery_count(
                 .sum(),
         ),
         ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => Some(0),
+        ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => Some(
+            scalar_expression_correlated_subquery_count(start)
+                + scalar_expression_correlated_subquery_count(end),
+        ),
         _ => None,
     }
 }
@@ -20076,6 +20085,8 @@ fn compile_temporal_scalar_function_expression(
         compile_localtime_scalar_expression(function, path).map(Some)
     } else if is_duration_function(function) {
         compile_duration_scalar_expression(function, path, mode, context).map(Some)
+    } else if let Some(unit) = duration_namespaced_function(function) {
+        compile_duration_unit_scalar_expression(function, unit, path, mode, context).map(Some)
     } else {
         Ok(None)
     }
@@ -20515,6 +20526,58 @@ fn compile_duration_scalar_expression(
     )
 }
 
+fn compile_duration_unit_scalar_expression(
+    function: &FunctionInvocation,
+    unit: TemporalDurationUnit,
+    path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [start, end] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            format!("{}() requires exactly two arguments", unit.function_name()),
+        ));
+    };
+    for (index, argument) in [(0, start), (1, end)] {
+        if expression_is_zoned_temporal_constructor(argument) {
+            return Err(unsupported(
+                format!("{path}.arguments[{index}]"),
+                format!(
+                    "{}() does not support zoned datetime() or time() arguments yet",
+                    unit.function_name()
+                ),
+            ));
+        }
+    }
+    Ok(ScalarExpression::Temporal(TemporalExpr::DurationInUnits {
+        unit,
+        start: Box::new(compile_scalar_expression_in_predicate_mode(
+            start,
+            format!("{path}.arguments[0]"),
+            mode,
+            context,
+        )?),
+        end: Box::new(compile_scalar_expression_in_predicate_mode(
+            end,
+            format!("{path}.arguments[1]"),
+            mode,
+            context,
+        )?),
+    }))
+}
+
+fn expression_is_zoned_temporal_constructor(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => expression_is_zoned_temporal_constructor(inner),
+        Expression::FunctionCall(function) => {
+            is_datetime_function(function) || is_time_function(function)
+        }
+        _ => false,
+    }
+}
+
 fn compile_duration_argument_scalar_expression(
     argument: &Expression,
     path: impl Into<String>,
@@ -20903,7 +20966,9 @@ fn compile_duration_multiply_expression(
 
 fn scalar_expression_has_duration_value(expression: &ScalarExpression) -> bool {
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
+        ) => true,
         ScalarExpression::Arithmetic {
             operator,
             left,
@@ -21852,7 +21917,9 @@ fn temporal_expression_value_kind(expression: &TemporalExpr) -> Option<TemporalK
         TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. } => {
             Some(TemporalKind::LocalTime)
         }
-        TemporalExpr::MakeDuration { .. } => Some(TemporalKind::Duration),
+        TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. } => {
+            Some(TemporalKind::Duration)
+        }
         TemporalExpr::Component { .. } => None,
     }
 }

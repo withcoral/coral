@@ -467,6 +467,9 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             &path,
         ),
         ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => Ok(()),
+        ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+            reject_path_variables_in_temporal_fields([("start", start), ("end", end)], state, &path)
+        }
         ScalarExpression::Coalesce { expressions } => {
             reject_path_variables_in_scalar_list(expressions, state, format!("{path}.expressions"))
         }

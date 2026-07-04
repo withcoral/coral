@@ -379,6 +379,10 @@ impl<'a> SqlRenderer<'a> {
                 }
             }
             ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
+            ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+                self.reject_unprecomputed_projection_scalar_subqueries(start)?;
+                self.reject_unprecomputed_projection_scalar_subqueries(end)?;
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -817,7 +821,9 @@ fn render_percentile_disc_literal(value: f64) -> String {
 
 fn scalar_expression_projects_duration(expression: &ScalarExpression) -> bool {
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
+        ) => true,
         ScalarExpression::Arithmetic {
             operator,
             left,

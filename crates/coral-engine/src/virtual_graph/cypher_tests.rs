@@ -247,6 +247,18 @@ fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> Scal
     })
 }
 
+fn duration_in_units_expression(
+    unit: TemporalDurationUnit,
+    start: ScalarExpression,
+    end: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DurationInUnits {
+        unit,
+        start: Box::new(start),
+        end: Box::new(end),
+    })
+}
+
 fn temporal_component_expression(
     expression: ScalarExpression,
     unit: TemporalComponentUnit,
@@ -2523,6 +2535,49 @@ fn compiles_duration_constructor_scalar_expressions() {
 }
 
 #[test]
+fn compiles_temporal_duration_unit_total_functions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS secondsDuration, \
+                duration.inDays(date('1984-10-11'), date('2015-06-24')) AS daysDuration, \
+                toString(duration.inSeconds(null, null)) AS nullDuration",
+    )
+    .expect("duration unit-total functions should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: duration_in_units_expression(
+                    TemporalDurationUnit::Seconds,
+                    localdatetime_from_string_expression("2020-01-01T00:00:00"),
+                    localdatetime_from_string_expression("2020-03-01T12:00:00"),
+                ),
+                alias: "secondsDuration".to_string(),
+            },
+            Projection::Expression {
+                expression: duration_in_units_expression(
+                    TemporalDurationUnit::Days,
+                    date_from_string_expression("1984-10-11"),
+                    date_from_string_expression("2015-06-24"),
+                ),
+                alias: "daysDuration".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(duration_in_units_expression(
+                        TemporalDurationUnit::Seconds,
+                        ScalarExpression::Literal(Literal::Null),
+                        ScalarExpression::Literal(Literal::Null),
+                    )),
+                },
+                alias: "nullDuration".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn compiles_temporal_duration_arithmetic_scalar_expressions() {
     let plan = compile_cypher(
         "MATCH (person:Person) \
@@ -2611,6 +2666,10 @@ fn rejects_unsupported_duration_constructor_and_multiply_forms() {
         (
             "MATCH (person:Person) RETURN duration('P1D').day AS days",
             "day is not supported for duration values",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration.inDays(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d",
+            "duration.inDays() does not support zoned datetime() or time() arguments yet",
         ),
         (
             "MATCH (person:Person) RETURN date('2020-01-01') + duration('P1D') * person.age AS shifted",

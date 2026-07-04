@@ -643,6 +643,15 @@ pub enum TemporalComponentUnit {
     Microsecond,
 }
 
+/// Duration unit-total functions supported by the temporal IR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalDurationUnit {
+    /// Whole-day duration between two temporal instants.
+    Days,
+    /// Total seconds duration between two temporal instants.
+    Seconds,
+}
+
 /// Temporal scalar expressions in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemporalExpr {
@@ -717,6 +726,15 @@ pub enum TemporalExpr {
         /// Nanosecond clock component within the current second.
         nanos: i64,
     },
+    /// Construct a duration containing total whole days or total seconds between temporals.
+    DurationInUnits {
+        /// Unit-total function to evaluate.
+        unit: TemporalDurationUnit,
+        /// Start temporal expression.
+        start: Box<ScalarExpression>,
+        /// End temporal expression.
+        end: Box<ScalarExpression>,
+    },
     /// Extract an integer component from a native temporal value.
     Component {
         /// Temporal value expression.
@@ -778,6 +796,15 @@ impl TemporalComponentUnit {
             Self::Hour | Self::Minute | Self::Second | Self::Millisecond | Self::Microsecond => {
                 matches!(kind, TemporalKind::LocalDateTime | TemporalKind::LocalTime)
             }
+        }
+    }
+}
+
+impl TemporalDurationUnit {
+    pub(super) fn function_name(self) -> &'static str {
+        match self {
+            Self::Days => "duration.inDays",
+            Self::Seconds => "duration.inSeconds",
         }
     }
 }
@@ -1611,6 +1638,10 @@ fn temporal_expression_references_outside_scope(
             .iter()
             .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
         TemporalExpr::MakeDuration { .. } => false,
+        TemporalExpr::DurationInUnits { start, end, .. } => {
+            scalar_expression_references_outside_scope(start, scope)
+                || scalar_expression_references_outside_scope(end, scope)
+        }
         TemporalExpr::Component { expression, .. } => {
             scalar_expression_references_outside_scope(expression, scope)
         }

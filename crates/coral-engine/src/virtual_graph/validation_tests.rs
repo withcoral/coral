@@ -3,7 +3,8 @@ use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, Direction, KeyPredicate, NodePattern,
     OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
     PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr,
+    ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit,
+    TemporalDurationUnit, TemporalExpr,
 };
 use crate::{ColumnInfo, TableInfo};
 
@@ -109,6 +110,18 @@ fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> Scal
         days,
         seconds,
         nanos,
+    })
+}
+
+fn duration_in_units_expression(
+    unit: TemporalDurationUnit,
+    start: ScalarExpression,
+    end: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DurationInUnits {
+        unit,
+        start: Box::new(start),
+        end: Box::new(end),
     })
 }
 
@@ -985,6 +998,59 @@ fn validate_graph_plan_accepts_temporal_duration_arithmetic() {
     graph
         .validate_graph_plan(&plan)
         .expect("temporal +/- duration should validate");
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_duration_unit_total_functions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Seconds,
+                localdatetime_from_string_expression("2020-01-01T00:00:00"),
+                localdatetime_from_string_expression("2020-03-01T12:00:00"),
+            ),
+            alias: "seconds_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Days,
+                date_from_string_expression("1984-10-11"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "days_duration".to_string(),
+        },
+    ];
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("duration unit-total functions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_invalid_temporal_duration_unit_arguments() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: duration_in_units_expression(
+            TemporalDurationUnit::Seconds,
+            date_from_string_expression("2020-01-01"),
+            ScalarExpression::Literal(Literal::String("not temporal".to_string())),
+        ),
+        alias: "bad_duration".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("non-temporal duration unit argument should reject");
+
+    assert!(
+        error.to_string().contains(
+            "duration.inSeconds() requires date, localdatetime, or localtime arguments, got string"
+        ),
+        "{error}"
+    );
 }
 
 #[test]

@@ -292,6 +292,10 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
             | ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
+            ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+                Self::collect_scalar_expression_variables(start, variables);
+                Self::collect_scalar_expression_variables(end, variables);
+            }
             ScalarExpression::Predicate(predicate) => {
                 Self::collect_predicate_expression_variables(predicate, variables);
             }

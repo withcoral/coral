@@ -1019,6 +1019,21 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
             }
             TemporalExpr::MakeDuration { .. } => Ok(ScalarType::Temporal(TemporalKind::Duration)),
+            TemporalExpr::DurationInUnits { unit, start, end } => {
+                for (name, expression) in [("start", start), ("end", end)] {
+                    let expression_type = self.infer_scoped_scalar_expression_type(
+                        expression,
+                        scope,
+                        format!("{path}.{name}"),
+                    )?;
+                    Self::require_duration_unit_argument_type(
+                        expression_type,
+                        format!("{path}.{name}"),
+                        unit.function_name(),
+                    )?;
+                }
+                Ok(ScalarType::Temporal(TemporalKind::Duration))
+            }
             TemporalExpr::Component { expression, unit } => {
                 let expression_type = self.infer_scoped_scalar_expression_type(
                     expression,

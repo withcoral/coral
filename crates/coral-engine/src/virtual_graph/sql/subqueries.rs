@@ -366,6 +366,10 @@ impl<'a> SqlRenderer<'a> {
                 }
             }
             ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {}
+            ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+                self.collect_scalar_expression_subquery_candidates(start, required, candidates);
+                self.collect_scalar_expression_subquery_candidates(end, required, candidates);
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -408,6 +412,9 @@ impl<'a> SqlRenderer<'a> {
             } => Some((expression, pattern)),
             ScalarExpression::Arithmetic { left, right, .. } => Some((left, right)),
             ScalarExpression::Atan2 { y, x } => Some((y, x)),
+            ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+                Some((start, end))
+            }
             _ => None,
         }
     }

@@ -6,7 +6,7 @@ use crate::virtual_graph::ir::{
     OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalExpr,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
 };
 
 const GRAPH: &str = r"
@@ -120,6 +120,18 @@ fn duration_expression(months: i64, days: i64, seconds: i64, nanos: i64) -> Scal
         days,
         seconds,
         nanos,
+    })
+}
+
+fn duration_in_units_expression(
+    unit: TemporalDurationUnit,
+    start: ScalarExpression,
+    end: ScalarExpression,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::DurationInUnits {
+        unit,
+        start: Box::new(start),
+        end: Box::new(end),
     })
 }
 
@@ -2933,6 +2945,82 @@ fn lower_graph_plan_renders_duration_results_as_iso_strings() {
             "SELECT coral_duration_to_iso(CAST('149 months 14 days 58390.000000001 seconds' AS INTERVAL)) AS \"bare\", \
              coral_duration_to_iso(CAST('0 months 0 days -60.001 seconds' AS INTERVAL)) AS \"text\""
         ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_temporal_duration_unit_total_functions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Seconds,
+                localdatetime_from_string_expression("2020-01-01T00:00:00"),
+                localdatetime_from_string_expression("2020-03-01T12:00:00"),
+            ),
+            alias: "seconds_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Days,
+                date_from_string_expression("1984-10-11"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "days_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Days,
+                localdatetime_from_string_expression("2015-07-21T21:40:32.142"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "negative_partial_days_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToStringOrNull {
+                expression: Box::new(duration_in_units_expression(
+                    TemporalDurationUnit::Seconds,
+                    ScalarExpression::Literal(Literal::Null),
+                    ScalarExpression::Literal(Literal::Null),
+                )),
+            },
+            alias: "null_duration".to_string(),
+        },
+    ];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("duration unit-total functions should lower through ISO formatter");
+
+    assert!(
+        translation.sql().contains(
+            "coral_duration_to_iso(CASE WHEN CAST('2020-01-01T00:00:00' AS TIMESTAMP) IS NULL OR CAST('2020-03-01T12:00:00' AS TIMESTAMP) IS NULL THEN CAST(NULL AS INTERVAL) ELSE CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-03-01T12:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL) END) AS \"seconds_duration\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST(CAST('1984-10-11' AS DATE) AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST('2015-07-21T21:40:32.142' AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("coral_duration_to_iso(CASE WHEN CAST(NULL AS TIMESTAMP) IS NULL"),
         "{}",
         translation.sql()
     );

@@ -3,7 +3,9 @@ use std::{
     path::Path,
 };
 
-use coral_engine::{CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphLiteral};
+use coral_engine::{
+    CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphLiteral, QueryExecution,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -93,7 +95,7 @@ async fn opencypher_tck_read_baseline_gate() {
                         scenario.id, scenario.feature
                     )
                 });
-                let mut actual = execution_to_rows(execution.execution());
+                let mut actual = execution_to_tck_rows(execution.execution(), &rows);
                 if !ordered {
                     sort_rows(&mut actual);
                     sort_rows(&mut rows);
@@ -122,6 +124,31 @@ async fn opencypher_tck_read_baseline_gate() {
             }
         }
     }
+}
+
+fn execution_to_tck_rows(execution: &QueryExecution, expected_rows: &[Value]) -> Vec<Value> {
+    let mut actual_rows = execution_to_rows(execution);
+    let projected_columns = execution
+        .schema()
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for (actual_row, expected_row) in actual_rows.iter_mut().zip(expected_rows) {
+        let (Value::Object(actual), Value::Object(expected)) = (actual_row, expected_row) else {
+            continue;
+        };
+        for (key, expected_value) in expected {
+            if expected_value.is_null()
+                && projected_columns.contains(key.as_str())
+                && !actual.contains_key(key)
+            {
+                actual.insert(key.clone(), Value::Null);
+            }
+        }
+    }
+
+    actual_rows
 }
 
 fn assert_tck_coverage_contract(suite: &TckSuite) {

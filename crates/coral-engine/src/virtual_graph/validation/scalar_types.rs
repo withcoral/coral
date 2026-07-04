@@ -9,6 +9,7 @@
     reason = "Scalar-type validation methods are split into a child module while preserving parent call sites."
 )]
 use super::*;
+use crate::virtual_graph::ir::TemporalDurationUnit;
 
 #[allow(
     clippy::allow_attributes,
@@ -407,9 +408,54 @@ impl<'a> GraphPlanValidator<'a> {
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
             }
             TemporalExpr::MakeDuration { .. } => Ok(ScalarType::Temporal(TemporalKind::Duration)),
+            TemporalExpr::DurationInUnits { unit, start, end } => {
+                self.validate_duration_in_units_expression(*unit, start, end, path)
+            }
             TemporalExpr::Component { expression, unit } => {
                 self.validate_temporal_component_expression(expression, *unit, path)
             }
+        }
+    }
+
+    fn validate_duration_in_units_expression(
+        &self,
+        unit: TemporalDurationUnit,
+        start: &ScalarExpression,
+        end: &ScalarExpression,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for (name, expression) in [("start", start), ("end", end)] {
+            let expression_type =
+                self.infer_scalar_expression_type(expression, format!("{path}.{name}"))?;
+            Self::require_duration_unit_argument_type(
+                expression_type,
+                format!("{path}.{name}"),
+                unit.function_name(),
+            )?;
+        }
+        Ok(ScalarType::Temporal(TemporalKind::Duration))
+    }
+
+    pub(super) fn require_duration_unit_argument_type(
+        expression_type: ScalarType,
+        path: impl Into<String>,
+        function_name: &str,
+    ) -> Result<(), CoreError> {
+        match expression_type {
+            ScalarType::Unknown
+            | ScalarType::Null
+            | ScalarType::Temporal(
+                TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime,
+            ) => Ok(()),
+            _ => Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                path,
+                format!(
+                    "{function_name}() requires date, localdatetime, or localtime arguments, got {}",
+                    expression_type.name()
+                ),
+            )
+            .into_core_error()),
         }
     }
 

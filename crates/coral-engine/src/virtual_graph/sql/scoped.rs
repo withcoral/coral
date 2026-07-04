@@ -383,6 +383,9 @@ impl<'a> SqlRenderer<'a> {
                     )
                 }),
             ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+            ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
+                Self::scoped_scalar_pair_is_inner(start, end, relationship_bindings, local_nodes)
+            }
             ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
                 Self::scoped_scalar_expression_is_inner(
                     expression,
@@ -2461,7 +2464,20 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::ToInteger { expression } => cast(expression, "BIGINT"),
             ScalarExpression::ToFloat { expression } => cast(expression, "DOUBLE"),
             ScalarExpression::ToBoolean { expression } => cast(expression, "BOOLEAN"),
-            ScalarExpression::ToStringOrNull { expression } => try_cast(expression, "VARCHAR"),
+            ScalarExpression::ToStringOrNull { expression } => {
+                if scoped_scalar_expression_is_duration(expression) {
+                    return Ok(Some(format!(
+                        "coral_duration_to_iso({})",
+                        self.render_scoped_scalar_expression(
+                            expression,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?
+                    )));
+                }
+                try_cast(expression, "VARCHAR")
+            }
             ScalarExpression::ToIntegerOrNull { expression } => try_cast(expression, "BIGINT"),
             ScalarExpression::ToFloatOrNull { expression } => try_cast(expression, "DOUBLE"),
             ScalarExpression::ToBooleanOrNull { expression } => try_cast(expression, "BOOLEAN"),
@@ -3154,7 +3170,9 @@ impl<'a> SqlRenderer<'a> {
 
 fn scoped_scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
+        ) => true,
         ScalarExpression::Arithmetic {
             operator,
             left,

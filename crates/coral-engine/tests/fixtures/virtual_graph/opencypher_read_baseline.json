@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 72,
+    "Temporal": 79,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -11217,6 +11217,99 @@
       "expected": {
         "kind": "error",
         "contains": "RETURN function 'duration.between' is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-duration-inseconds-localdatetime-total",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "PT1452H"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-indays-date-total",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inDays(date('1984-10-11'), date('2015-06-24')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P11213D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-indays-negative-partial",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inDays(localdatetime('2015-07-21T21:40:32.142'), date('2015-06-24')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P-27D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-inseconds-negative-subsecond",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inSeconds(localdatetime('2014-07-21T21:40:36.143'), localdatetime('2014-07-21T21:40:36.142')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "PT-0.001S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-inseconds-zero",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-01-01T00:00:00')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "PT0S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-inseconds-null-to-string",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration.inSeconds(null, null)) AS s",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "s": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-indays-zoned-datetime-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inDays(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "duration.inDays() does not support zoned datetime() or time() arguments yet"
       }
     },
     {

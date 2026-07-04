@@ -1032,6 +1032,64 @@ async fn cypher_duration_results_render_as_iso_strings_against_synthetic_sources
 }
 
 #[tokio::test]
+async fn cypher_temporal_duration_unit_totals_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS seconds_duration, \
+                duration.inDays(date('1984-10-11'), date('2015-06-24')) AS days_duration, \
+                duration.inDays(localdatetime('2015-07-21T21:40:32.142'), date('2015-06-24')) AS negative_partial_days, \
+                duration.inSeconds(localdatetime('2014-07-21T21:40:36.143'), localdatetime('2014-07-21T21:40:36.142')) AS negative_subsecond, \
+                duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-01-01T00:00:00')) AS zero_duration, \
+                toString(duration.inSeconds(null, null)) AS null_duration",
+    )
+    .await
+    .expect("Cypher temporal duration unit totals should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-03-01T12:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS seconds_duration, \
+                    coral_duration_to_iso(CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST(CAST('1984-10-11' AS DATE) AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)) AS days_duration, \
+                    coral_duration_to_iso(CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST('2015-07-21T21:40:32.142' AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)) AS negative_partial_days, \
+                    coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2014-07-21T21:40:36.142' AS TIMESTAMP) - CAST('2014-07-21T21:40:36.143' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS negative_subsecond, \
+                    coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-01-01T00:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS zero_duration, \
+                    coral_duration_to_iso(CAST(NULL AS INTERVAL)) AS null_duration \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent temporal duration unit SQL should execute"),
+    );
+
+    assert!(
+        execution.translated_sql().contains("date_part('epoch'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "seconds_duration": "PT1452H",
+            "days_duration": "P11213D",
+            "negative_partial_days": "P-27D",
+            "negative_subsecond": "PT-0.001S",
+            "zero_duration": "PT0S"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_stored_temporal_components_execute_against_rich_fixture() {
     let temp = TempDir::new().expect("temp dir");
     write_rich_fixture(temp.path());

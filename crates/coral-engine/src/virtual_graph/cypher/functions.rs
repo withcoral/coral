@@ -9,7 +9,7 @@
 
 use decypher::ast::expr::{Expression, FunctionInvocation, Literal as CypherLiteral};
 
-use super::super::ir::AggregateFunction;
+use super::super::ir::{AggregateFunction, TemporalDurationUnit};
 use super::{
     INTERNAL_GRAPH_IDENTITY_FUNCTION, INTERNAL_GRAPH_PRESENCE_FUNCTION,
     INTERNAL_STATIC_RANGE_FUNCTION, INTERNAL_STRING_CONTAINS_FUNCTION,
@@ -291,6 +291,38 @@ pub(super) fn is_duration_function(function: &FunctionInvocation) -> bool {
     matches!(
         function.name.as_slice(),
         [name] if name.name.eq_ignore_ascii_case("duration")
+    )
+}
+
+pub(super) fn duration_namespaced_function(
+    function: &FunctionInvocation,
+) -> Option<TemporalDurationUnit> {
+    let [namespace, name] = function.name.as_slice() else {
+        return None;
+    };
+    if !namespace.name.eq_ignore_ascii_case("duration") {
+        return None;
+    }
+    if name.name.eq_ignore_ascii_case("inDays") {
+        Some(TemporalDurationUnit::Days)
+    } else if name.name.eq_ignore_ascii_case("inSeconds") {
+        Some(TemporalDurationUnit::Seconds)
+    } else {
+        None
+    }
+}
+
+pub(super) fn is_datetime_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("datetime")
+    )
+}
+
+pub(super) fn is_time_function(function: &FunctionInvocation) -> bool {
+    matches!(
+        function.name.as_slice(),
+        [name] if name.name.eq_ignore_ascii_case("time")
     )
 }
 

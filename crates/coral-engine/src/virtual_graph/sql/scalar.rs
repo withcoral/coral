@@ -10,6 +10,7 @@
     reason = "SQL scalar helpers are split into a child module while preserving parent-private access."
 )]
 use super::*;
+use crate::virtual_graph::ir::TemporalDurationUnit;
 
 #[allow(
     clippy::allow_attributes,
@@ -356,9 +357,15 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::ToBoolean { expression } => {
                 self.render_cast_expression(expression, "BOOLEAN").map(Some)
             }
-            ScalarExpression::ToStringOrNull { expression } => self
-                .render_try_cast_expression(expression, "VARCHAR")
-                .map(Some),
+            ScalarExpression::ToStringOrNull { expression } => {
+                if scalar_expression_is_duration(expression) {
+                    return self
+                        .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
+                        .map(Some);
+                }
+                self.render_try_cast_expression(expression, "VARCHAR")
+                    .map(Some)
+            }
             ScalarExpression::ToIntegerOrNull { expression } => self
                 .render_try_cast_expression(expression, "BIGINT")
                 .map(Some),
@@ -508,6 +515,9 @@ impl<'a> SqlRenderer<'a> {
             } => Ok(render_make_duration_expression(
                 *months, *days, *seconds, *nanos,
             )),
+            TemporalExpr::DurationInUnits { unit, start, end } => {
+                self.render_duration_in_units_expression(*unit, start, end, scope)
+            }
             TemporalExpr::Component { expression, unit } => {
                 self.render_temporal_component_expression(expression, *unit, scope)
             }
@@ -664,6 +674,78 @@ impl<'a> SqlRenderer<'a> {
             TemporalComponentUnit::Millisecond => Ok(format!("({date_part_sql} % 1000)")),
             TemporalComponentUnit::Microsecond => Ok(format!("({date_part_sql} % 1000000)")),
             _ => Ok(date_part_sql),
+        }
+    }
+
+    pub(super) fn render_duration_in_units_expression<'b, 'c>(
+        &self,
+        unit: TemporalDurationUnit,
+        start: &ScalarExpression,
+        end: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let start_timestamp = self.render_temporal_duration_timestamp(start, end, scope)?;
+        let end_timestamp = self.render_temporal_duration_timestamp(end, start, scope)?;
+        if matches!(unit, TemporalDurationUnit::Days)
+            && matches!(
+                (temporal_scalar_kind(start), temporal_scalar_kind(end)),
+                (Some(TemporalKind::LocalTime), _) | (_, Some(TemporalKind::LocalTime))
+            )
+        {
+            return Ok(render_null_checked_interval(
+                &start_timestamp,
+                &end_timestamp,
+                "CAST('0 months 0 days 0 seconds' AS INTERVAL)",
+            ));
+        }
+        let epoch_diff = format!("date_part('epoch', ({end_timestamp} - {start_timestamp}))");
+        let interval = match unit {
+            TemporalDurationUnit::Seconds => dynamic_seconds_interval(&epoch_diff),
+            TemporalDurationUnit::Days => {
+                dynamic_days_interval(&format!("trunc({epoch_diff} / 86400)"))
+            }
+        };
+        Ok(render_null_checked_interval(
+            &start_timestamp,
+            &end_timestamp,
+            &interval,
+        ))
+    }
+
+    fn render_temporal_duration_timestamp<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        peer: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let expression_sql = self.render_scalar_in_scope(expression, scope)?;
+        match temporal_scalar_kind(expression) {
+            Some(TemporalKind::Date) => Ok(format!("CAST({expression_sql} AS TIMESTAMP)")),
+            Some(TemporalKind::LocalDateTime) => Ok(expression_sql),
+            Some(TemporalKind::LocalTime) => {
+                let anchor = self.render_temporal_duration_anchor_date(peer, scope)?;
+                Ok(format!(
+                    "CAST(concat(CAST({anchor} AS VARCHAR), 'T', CAST({expression_sql} AS VARCHAR)) AS TIMESTAMP)"
+                ))
+            }
+            Some(TemporalKind::Duration) | None => {
+                Ok(format!("CAST({expression_sql} AS TIMESTAMP)"))
+            }
+        }
+    }
+
+    fn render_temporal_duration_anchor_date<'b, 'c>(
+        &self,
+        peer: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let peer_sql = self.render_scalar_in_scope(peer, scope)?;
+        match temporal_scalar_kind(peer) {
+            Some(TemporalKind::Date) => Ok(peer_sql),
+            Some(TemporalKind::LocalDateTime) | None => Ok(format!("CAST({peer_sql} AS DATE)")),
+            Some(TemporalKind::LocalTime | TemporalKind::Duration) => {
+                Ok("CAST('1970-01-01' AS DATE)".to_string())
+            }
         }
     }
 
@@ -893,6 +975,28 @@ fn render_make_duration_expression(months: i64, days: i64, seconds: i64, nanos: 
     format!("CAST({} AS INTERVAL)", quote_string_literal(&interval))
 }
 
+fn dynamic_seconds_interval(total_seconds: &str) -> String {
+    format!(
+        "CAST(concat('0 months 0 days ', coalesce(CAST({total_seconds} AS VARCHAR), '0'), ' seconds') AS INTERVAL)"
+    )
+}
+
+fn dynamic_days_interval(total_days: &str) -> String {
+    format!(
+        "CAST(concat('0 months ', coalesce(CAST({total_days} AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)"
+    )
+}
+
+fn render_null_checked_interval(
+    start_timestamp: &str,
+    end_timestamp: &str,
+    interval: &str,
+) -> String {
+    format!(
+        "CASE WHEN {start_timestamp} IS NULL OR {end_timestamp} IS NULL THEN CAST(NULL AS INTERVAL) ELSE {interval} END"
+    )
+}
+
 fn render_folded_duration_multiply_expression(
     operator: ArithmeticOperator,
     left: &ScalarExpression,
@@ -1013,7 +1117,9 @@ fn render_duration_seconds(seconds: i64, nanos: i64) -> String {
 
 fn scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
+        ) => true,
         ScalarExpression::Arithmetic {
             operator,
             left,
@@ -1042,9 +1148,9 @@ fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
         ScalarExpression::Temporal(
             TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. },
         ) => Some(TemporalKind::LocalTime),
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {
-            Some(TemporalKind::Duration)
-        }
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
+        ) => Some(TemporalKind::Duration),
         _ => None,
     }
 }
