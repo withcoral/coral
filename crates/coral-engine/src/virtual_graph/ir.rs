@@ -1864,6 +1864,13 @@ pub enum GraphStageExport {
         /// Output column name containing the variable's key.
         column: String,
     },
+    /// Relationship variable key carried across the stage boundary.
+    RelationshipKey {
+        /// Relationship variable carried across the stage boundary.
+        variable: String,
+        /// Output column name containing the variable's key.
+        column: String,
+    },
     /// Aggregate scalar value carried across the stage boundary.
     AggregateValue {
         /// Aggregate alias visible to later stages.
@@ -1885,7 +1892,9 @@ impl GraphStageExport {
     #[must_use]
     pub fn column(&self) -> &str {
         match self {
-            Self::NodeKey { column, .. } | Self::AggregateValue { column, .. } => column,
+            Self::NodeKey { column, .. }
+            | Self::RelationshipKey { column, .. }
+            | Self::AggregateValue { column, .. } => column,
             Self::ScalarValue { source, .. } => source,
         }
     }

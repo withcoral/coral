@@ -5921,6 +5921,9 @@ fn compile_staged_multi_part(
     if let Some(query) = compile_staged_order_limit_multi_part(query, context)? {
         return Ok(Some(query));
     }
+    if let Some(query) = compile_staged_relationship_carry_multi_part(query, context)? {
+        return Ok(Some(query));
+    }
     if let Some(query) = compile_staged_scalar_alias_multi_part(query, context)? {
         return Ok(Some(query));
     }
@@ -6003,6 +6006,86 @@ fn compile_staged_order_limit_multi_part(
     })))
 }
 
+fn compile_staged_relationship_carry_multi_part(
+    query: &MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some(shape) = staged_relationship_carry_multi_part_shape(query, context)? else {
+        return Ok(None);
+    };
+
+    let mut stage_plan = GraphPlan::default();
+    let mut stage_state = compile_state_for_multi_part(query, context);
+    compile_reading_clauses_into(
+        &shape.part.reading_clauses,
+        "parts[0].match",
+        &mut stage_plan,
+        &mut stage_state,
+        context,
+    )?;
+    if !stage_state.path_variables.is_empty()
+        || !stage_state.relationship_element_path_variables.is_empty()
+        || !stage_state.scalar_aliases.is_empty()
+    {
+        return Ok(None);
+    }
+    let visible = visible_graph_variables(&stage_plan, &stage_state);
+    if !visible.contains(&shape.carried_relationship)
+        || !shape
+            .carried_nodes
+            .iter()
+            .all(|variable| visible.contains(variable))
+    {
+        return Ok(None);
+    }
+
+    apply_terminal_graph_with_modifiers(&shape.part.with, &mut stage_plan, &stage_state, context)?;
+    let mut exports = Vec::with_capacity(1 + shape.carried_nodes.len());
+    let with_variables = staged_relationship_carry_with_variables(&shape.part.with)
+        .ok_or_else(|| CoreError::internal("validated staged relationship WITH was missing"))?;
+    for variable in with_variables {
+        let export_column = stage_export_column(&variable);
+        stage_plan.projections.push(Projection::Key {
+            variable: variable.clone(),
+            alias: export_column.clone(),
+        });
+        if variable == shape.carried_relationship {
+            exports.push(GraphStageExport::RelationshipKey {
+                variable,
+                column: export_column,
+            });
+        } else {
+            exports.push(GraphStageExport::NodeKey {
+                variable,
+                column: export_column,
+            });
+        }
+    }
+
+    let mut final_plan = GraphPlan {
+        nodes: shape.final_match.nodes,
+        relationships: vec![shape.final_match.relationship],
+        optional_relationships: vec![0],
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: shape.final_match.optional_node_indices,
+            relationship_indices: vec![0],
+            predicate: None,
+        }],
+        ..GraphPlan::default()
+    };
+    let final_state = CypherCompileState::default();
+    compile_return(shape.return_clause, &mut final_plan, &final_state, context)?;
+    reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
+
+    Ok(Some(GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![GraphStage {
+            plan: stage_plan,
+            exports,
+        }],
+        final_plan,
+    })))
+}
+
 struct StagedOrderLimitShape<'a> {
     part: &'a MultiPartQueryPart,
     return_clause: &'a Return,
@@ -6022,11 +6105,344 @@ struct StagedFinalMatchShape {
     graph_variables: BTreeSet<String>,
 }
 
+struct StagedRelationshipCarryShape<'a> {
+    part: &'a MultiPartQueryPart,
+    return_clause: &'a Return,
+    carried_relationship: String,
+    carried_nodes: Vec<String>,
+    final_match: StagedRelationshipCarryFinalMatch,
+}
+
+struct StagedRelationshipCarryInitialMatch {
+    relationship_variable: String,
+    endpoint_variables: BTreeSet<String>,
+    endpoint_labels: BTreeMap<String, String>,
+}
+
+struct StagedRelationshipCarryFinalMatch {
+    nodes: Vec<NodePattern>,
+    relationship: RelationshipPattern,
+    optional_node_indices: Vec<usize>,
+    graph_variables: BTreeSet<String>,
+}
+
 struct StagedScalarAliasShape<'a> {
     part: &'a MultiPartQueryPart,
     return_clause: &'a Return,
     scalar_item_index: usize,
     scalar_alias: String,
+}
+
+fn staged_relationship_carry_multi_part_shape<'a>(
+    query: &'a MultiPartQuery,
+    context: &CypherCompileContext,
+) -> Result<Option<StagedRelationshipCarryShape<'a>>, CoreError> {
+    let [part] = query.parts.as_slice() else {
+        return Ok(None);
+    };
+    if !part.updating_clauses.is_empty()
+        || part.with.distinct
+        || part.with.star
+        || part.with.where_clause.is_some()
+        || part.with.skip.is_some()
+        || part.with.limit.is_none()
+    {
+        return Ok(None);
+    }
+    let Some(limit) = part.with.limit.as_ref() else {
+        return Ok(None);
+    };
+    if compile_limit(limit, "parts[0].with.limit", context)? == 0 {
+        return Ok(None);
+    }
+    let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
+        return Ok(None);
+    };
+    let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
+    if return_clause.distinct
+        || return_clause.order.is_some()
+        || return_clause.skip.is_some()
+        || return_clause.limit.is_some()
+    {
+        return Ok(None);
+    }
+    let Some(initial_match) = staged_relationship_carry_initial_match_shape(part) else {
+        return Ok(None);
+    };
+    let Some(with_variables) = staged_relationship_carry_with_variables(&part.with) else {
+        return Ok(None);
+    };
+    if !with_variables.contains(&initial_match.relationship_variable) {
+        return Ok(None);
+    }
+    let carried_nodes = with_variables
+        .iter()
+        .filter(|variable| *variable != &initial_match.relationship_variable)
+        .cloned()
+        .collect::<Vec<_>>();
+    if carried_nodes
+        .iter()
+        .any(|variable| !initial_match.endpoint_variables.contains(variable))
+    {
+        return Ok(None);
+    }
+    if !staged_relationship_carry_with_order_shape(
+        &part.with,
+        &initial_match.relationship_variable,
+        context,
+    ) {
+        return Ok(None);
+    }
+    let Some(final_match) = staged_relationship_carry_final_match_shape(
+        match_clause,
+        &initial_match.relationship_variable,
+        &carried_nodes.iter().cloned().collect(),
+        &initial_match.endpoint_labels,
+    ) else {
+        return Ok(None);
+    };
+    if !staged_relationship_carry_return_shape(
+        return_clause,
+        &initial_match.relationship_variable,
+        &final_match.graph_variables,
+        context,
+    ) {
+        return Ok(None);
+    }
+
+    Ok(Some(StagedRelationshipCarryShape {
+        part,
+        return_clause,
+        carried_relationship: initial_match.relationship_variable,
+        carried_nodes,
+        final_match,
+    }))
+}
+
+fn staged_relationship_carry_with_variables(with: &With) -> Option<Vec<String>> {
+    if with.items.is_empty() || with.items.len() > 2 {
+        return None;
+    }
+    let mut variables = Vec::with_capacity(with.items.len());
+    let mut unique = BTreeSet::new();
+    for item in &with.items {
+        if item.alias.is_some() {
+            return None;
+        }
+        let Expression::Variable(variable) = &item.expression else {
+            return None;
+        };
+        let variable = variable_name(variable);
+        if !unique.insert(variable.clone()) {
+            return None;
+        }
+        variables.push(variable);
+    }
+    Some(variables)
+}
+
+fn staged_relationship_carry_initial_match_shape(
+    part: &MultiPartQueryPart,
+) -> Option<StagedRelationshipCarryInitialMatch> {
+    let [ReadingClause::Match(match_clause)] = part.reading_clauses.as_slice() else {
+        return None;
+    };
+    if match_clause.optional || match_clause.where_clause.is_some() {
+        return None;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return None;
+    };
+    if pattern_part.variable.is_some() {
+        return None;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return None;
+    };
+    let [chain] = chains.as_slice() else {
+        return None;
+    };
+    if chain.relationship.direction != CypherRelationshipDirection::Right
+        || chain.relationship.quantifier.is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.range.as_ref())
+            .is_some()
+        || !chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.types.as_ref())
+            .is_some_and(staged_static_label)
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.properties.as_ref())
+            .is_some()
+        || !staged_single_static_label(&start.labels)
+        || !staged_single_static_label(&chain.node.labels)
+    {
+        return None;
+    }
+    let relationship_variable = chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.variable.as_ref())
+        .map(variable_name)?;
+    let endpoint_variables = [path_node_variable(start), path_node_variable(&chain.node)]
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let endpoint_labels = [
+        (
+            path_node_variable(start),
+            staged_static_label_name(&start.labels),
+        ),
+        (
+            path_node_variable(&chain.node),
+            staged_static_label_name(&chain.node.labels),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(variable, label)| Some((variable?, label?)))
+    .collect::<BTreeMap<_, _>>();
+
+    Some(StagedRelationshipCarryInitialMatch {
+        relationship_variable,
+        endpoint_variables,
+        endpoint_labels,
+    })
+}
+
+fn staged_relationship_carry_with_order_shape(
+    with: &With,
+    carried_relationship: &str,
+    context: &CypherCompileContext,
+) -> bool {
+    let Some(order) = &with.order else {
+        return true;
+    };
+    let [item] = order.items.as_slice() else {
+        return false;
+    };
+    if matches!(item.direction, Some(SortDirection::Descending)) {
+        return false;
+    }
+    staged_id_lookup(&item.expression, context).as_deref() == Some(carried_relationship)
+}
+
+fn staged_relationship_carry_final_match_shape(
+    match_clause: &Match,
+    carried_relationship: &str,
+    carried_nodes: &BTreeSet<String>,
+    carried_node_labels: &BTreeMap<String, String>,
+) -> Option<StagedRelationshipCarryFinalMatch> {
+    if !match_clause.optional || match_clause.where_clause.is_some() {
+        return None;
+    }
+    let [pattern_part] = match_clause.pattern.parts.as_slice() else {
+        return None;
+    };
+    if pattern_part.variable.is_some() {
+        return None;
+    }
+    let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
+        return None;
+    };
+    let [chain] = chains.as_slice() else {
+        return None;
+    };
+    if chain.relationship.direction != CypherRelationshipDirection::Right
+        || chain.relationship.quantifier.is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.range.as_ref())
+            .is_some()
+        || chain
+            .relationship
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.properties.as_ref())
+            .is_some()
+    {
+        return None;
+    }
+    let relationship_variable = chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.variable.as_ref())
+        .map(variable_name)?;
+    if relationship_variable != carried_relationship {
+        return None;
+    }
+    let relationship_type = chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.types.as_ref())
+        .and_then(staged_static_label_expression_name)?;
+    let start_variable = path_node_variable(start)?;
+    let end_variable = path_node_variable(&chain.node)?;
+    if start.properties.is_some()
+        || chain.node.properties.is_some()
+        || !staged_final_node_label_shape(&start.labels, &start_variable, Some(carried_nodes))
+        || !staged_final_node_label_shape(&chain.node.labels, &end_variable, Some(carried_nodes))
+    {
+        return None;
+    }
+
+    let mut graph_variables = BTreeSet::new();
+    let mut nodes = Vec::with_capacity(2);
+    let mut optional_node_indices = Vec::new();
+    for (variable, labels) in [
+        (start_variable.clone(), start.labels.as_slice()),
+        (end_variable.clone(), chain.node.labels.as_slice()),
+    ] {
+        if !graph_variables.insert(variable.clone()) {
+            return None;
+        }
+        let label = staged_static_label_name(labels)
+            .or_else(|| carried_node_labels.get(&variable).cloned())?;
+        if !carried_nodes.contains(&variable) {
+            optional_node_indices.push(nodes.len());
+        }
+        nodes.push(NodePattern { variable, label });
+    }
+
+    Some(StagedRelationshipCarryFinalMatch {
+        nodes,
+        relationship: RelationshipPattern {
+            variable: Some(relationship_variable),
+            relationship_type,
+            left: start_variable,
+            direction: Direction::Outgoing,
+            right: end_variable,
+        },
+        optional_node_indices,
+        graph_variables,
+    })
+}
+
+fn staged_relationship_carry_return_shape(
+    return_clause: &Return,
+    carried_relationship: &str,
+    graph_variables: &BTreeSet<String>,
+    context: &CypherCompileContext,
+) -> bool {
+    !return_clause.star
+        && return_clause.items.iter().all(|item| {
+            staged_property_lookup(&item.expression)
+                .is_some_and(|(variable, _)| graph_variables.contains(&variable))
+                || staged_id_lookup(&item.expression, context)
+                    .is_some_and(|variable| variable == carried_relationship)
+        })
 }
 
 fn compile_staged_scalar_alias_multi_part(
@@ -6636,6 +7052,13 @@ fn staged_fixed_final_match_shape(
     if match_clause.optional {
         return None;
     }
+    staged_fixed_final_match_shape_body(match_clause, allowed_anchor_variables)
+}
+
+fn staged_fixed_final_match_shape_body(
+    match_clause: &Match,
+    allowed_anchor_variables: Option<&BTreeSet<String>>,
+) -> Option<StagedFinalMatchShape> {
     let [pattern_part] = match_clause.pattern.parts.as_slice() else {
         return None;
     };
@@ -6843,9 +7266,6 @@ fn staged_multi_part_shape<'a>(
     let [ReadingClause::Match(match_clause)] = query.final_part.reading_clauses.as_slice() else {
         return Ok(None);
     };
-    if match_clause.optional {
-        return Ok(None);
-    }
     let return_clause = return_clause_from_single_part(&query.final_part, "final_part")?;
     if return_clause.distinct
         || return_clause.order.is_some()
@@ -6927,11 +7347,15 @@ fn staged_order_limit_final_match_shape(
     match_clause: &Match,
     carried_variable: &str,
 ) -> Option<StagedFinalMatchShape> {
-    if match_clause.optional || match_clause.where_clause.is_some() {
+    if match_clause.where_clause.is_some() {
         return None;
     }
     let carried_variables = BTreeSet::from([carried_variable.to_string()]);
-    staged_fixed_final_match_shape(match_clause, Some(&carried_variables))
+    if match_clause.optional {
+        staged_fixed_final_match_shape_body(match_clause, Some(&carried_variables))
+    } else {
+        staged_fixed_final_match_shape(match_clause, Some(&carried_variables))
+    }
 }
 
 fn staged_return_shape(return_clause: &Return, graph_variables: &BTreeSet<String>) -> bool {
@@ -6953,6 +7377,34 @@ fn staged_property_lookup(expression: &Expression) -> Option<(String, &str)> {
         }
         _ => None,
     }
+}
+
+fn staged_id_lookup(expression: &Expression, context: &CypherCompileContext) -> Option<String> {
+    match expression {
+        Expression::Parenthesized(inner) => staged_id_lookup(inner, context),
+        Expression::FunctionCall(function)
+            if qualified_function_name(function).eq_ignore_ascii_case("id") =>
+        {
+            context
+                .variable_function_argument(function)
+                .map(ToString::to_string)
+        }
+        _ => None,
+    }
+}
+
+fn staged_static_label_name(labels: &[LabelExpression]) -> Option<String> {
+    let [LabelExpression::Static(label)] = labels else {
+        return None;
+    };
+    Some(label.name.clone())
+}
+
+fn staged_static_label_expression_name(label: &LabelExpression) -> Option<String> {
+    let LabelExpression::Static(label) = label else {
+        return None;
+    };
+    Some(label.name.clone())
 }
 
 fn staged_single_static_label(labels: &[LabelExpression]) -> bool {

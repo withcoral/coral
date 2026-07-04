@@ -16,6 +16,7 @@ use super::*;
 pub(super) struct FromClauseBuilder<'a, 'r> {
     lowerer: &'r SqlRenderer<'a>,
     joined_nodes: BTreeSet<&'a str>,
+    joined_relationship_indices: BTreeSet<usize>,
     joined_stage_aliases: BTreeSet<String>,
     optional_relationships_joined: bool,
     from_clause: String,
@@ -135,7 +136,14 @@ impl<'a> SqlRenderer<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        Self::render_condition_disjunction(&conditions)
+        let condition = Self::render_condition_disjunction(&conditions)?;
+        Self::condition_with_stage_relationship_key(
+            validated,
+            relationship,
+            relationship_alias,
+            pattern,
+            condition,
+        )
     }
 
     fn relationship_known_node_condition(
@@ -165,7 +173,40 @@ impl<'a> SqlRenderer<'a> {
                 )
             })
             .collect::<Vec<_>>();
-        Self::render_condition_disjunction(&conditions)
+        let condition = Self::render_condition_disjunction(&conditions)?;
+        Self::condition_with_stage_relationship_key(
+            validated,
+            relationship,
+            relationship_alias,
+            pattern,
+            condition,
+        )
+    }
+
+    fn condition_with_stage_relationship_key(
+        validated: &ValidatedGraphPlan<'a>,
+        relationship: &Relationship,
+        relationship_alias: &str,
+        pattern: &'a RelationshipPattern,
+        condition: String,
+    ) -> Result<String, CoreError> {
+        let Some(variable) = pattern.variable.as_deref() else {
+            return Ok(condition);
+        };
+        let Some((stage_alias, key_column)) = validated.stage_relationship_column_ref(variable)
+        else {
+            return Ok(condition);
+        };
+        let relationship_key = relationship.key.as_deref().ok_or_else(|| {
+            CoreError::internal("validated staged relationship did not have a key")
+        })?;
+        Ok(format!(
+            "({condition}) AND ({}.{} = {}.{})",
+            quote_ident(relationship_alias),
+            quote_ident(relationship_key),
+            quote_ident(stage_alias),
+            quote_ident(key_column)
+        ))
     }
 
     fn node_key_ref(
@@ -305,6 +346,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         Self {
             lowerer,
             joined_nodes: BTreeSet::new(),
+            joined_relationship_indices: BTreeSet::new(),
             joined_stage_aliases: BTreeSet::new(),
             optional_relationships_joined: false,
             from_clause: String::new(),
@@ -313,11 +355,13 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
 
     pub(super) fn build(mut self) -> Result<String, CoreError> {
         let plan = self.lowerer.validated.plan();
-        let first_node = plan
-            .nodes
-            .first()
-            .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
-        self.start_from_node(first_node.variable.as_str())?;
+        if !self.try_start_from_staged_relationship()? {
+            let first_node = plan
+                .nodes
+                .first()
+                .ok_or_else(|| CoreError::internal("validated graph plan had no nodes"))?;
+            self.start_from_node(first_node.variable.as_str())?;
+        }
 
         self.join_mandatory_relationships()?;
         self.cross_join_isolated_nodes()?;
@@ -325,6 +369,127 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         self.cross_join_scalar_stages()?;
 
         Ok(self.from_clause)
+    }
+
+    fn try_start_from_staged_relationship(&mut self) -> Result<bool, CoreError> {
+        if self.lowerer.validated.has_stage_node_keys() {
+            return Ok(false);
+        }
+        let Some((index, pattern)) = self
+            .lowerer
+            .validated
+            .plan()
+            .relationships
+            .iter()
+            .enumerate()
+            .find(|(_, pattern)| {
+                pattern.variable.as_deref().is_some_and(|variable| {
+                    self.lowerer
+                        .validated
+                        .stage_relationship_column_ref(variable)
+                        .is_some()
+                })
+            })
+        else {
+            return Ok(false);
+        };
+        let variable = pattern
+            .variable
+            .as_deref()
+            .ok_or_else(|| CoreError::internal("staged relationship variable was missing"))?;
+        let (stage_alias, key_column) = self
+            .lowerer
+            .validated
+            .stage_relationship_column_ref(variable)
+            .ok_or_else(|| CoreError::internal("staged relationship key binding was missing"))?;
+        let relationship = self.lowerer.validated.relationship_mapping(index)?;
+        let relationship_key = relationship.key.as_deref().ok_or_else(|| {
+            CoreError::internal("validated staged relationship did not have a key")
+        })?;
+        let relationship_alias = self.lowerer.validated.relationship_alias(index, pattern);
+        self.joined_stage_aliases.insert(stage_alias.to_string());
+        self.from_clause = format!(
+            "FROM {} AS {} JOIN {} AS {} ON {}.{} = {}.{}",
+            quote_ident(stage_alias),
+            quote_ident(stage_alias),
+            render_table_ref(&relationship.table),
+            quote_ident(&relationship_alias),
+            quote_ident(&relationship_alias),
+            quote_ident(relationship_key),
+            quote_ident(stage_alias),
+            quote_ident(key_column)
+        );
+        self.joined_relationship_indices.insert(index);
+        self.join_endpoint_nodes_from_staged_relationship(
+            pattern,
+            relationship,
+            &relationship_alias,
+        )?;
+        Ok(true)
+    }
+
+    fn join_endpoint_nodes_from_staged_relationship(
+        &mut self,
+        pattern: &'a RelationshipPattern,
+        relationship: &Relationship,
+        relationship_alias: &str,
+    ) -> Result<(), CoreError> {
+        let orientations =
+            SqlRenderer::relationship_orientations(&self.lowerer.validated, relationship, pattern)?;
+        let [orientation] = orientations.as_slice() else {
+            return Err(CoreError::internal(
+                "staged relationship carry supports one deterministic orientation",
+            ));
+        };
+        let optional = self
+            .lowerer
+            .validated
+            .plan()
+            .relationships
+            .iter()
+            .position(|candidate| candidate == pattern)
+            .is_some_and(|index| self.lowerer.validated.relationship_is_optional(index));
+        self.join_endpoint_node_from_staged_relationship(
+            pattern.left.as_str(),
+            relationship_alias,
+            &orientation.left_relationship_key,
+            optional,
+        )?;
+        self.join_endpoint_node_from_staged_relationship(
+            pattern.right.as_str(),
+            relationship_alias,
+            &orientation.right_relationship_key,
+            optional,
+        )
+    }
+
+    fn join_endpoint_node_from_staged_relationship(
+        &mut self,
+        variable: &'a str,
+        relationship_alias: &str,
+        relationship_key: &str,
+        optional: bool,
+    ) -> Result<(), CoreError> {
+        if self.joined_nodes.contains(variable) {
+            return Ok(());
+        }
+        let node = self.lowerer.validated.node_binding(variable)?;
+        let binding = self.lowerer.validated.binding(variable)?;
+        let join_operator = if optional { " LEFT JOIN " } else { " JOIN " };
+        write!(
+            self.from_clause,
+            "{}{} AS {} ON {}.{} = {}.{}",
+            join_operator,
+            render_table_ref(&node.table),
+            quote_ident(binding.alias()),
+            quote_ident(relationship_alias),
+            quote_ident(relationship_key),
+            quote_ident(binding.alias()),
+            quote_ident(&node.key)
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        self.joined_nodes.insert(variable);
+        Ok(())
     }
 
     fn start_from_node(&mut self, variable: &'a str) -> Result<(), CoreError> {
@@ -467,6 +632,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         let optional_nodes = self.lowerer.optional_relationship_node_variables();
         let mut remaining_relationships = (0..plan.relationships.len())
             .filter(|index| !validated.relationship_is_optional(*index))
+            .filter(|index| !self.joined_relationship_indices.contains(index))
             .collect::<BTreeSet<_>>();
         while !remaining_relationships.is_empty() {
             let progressed =
@@ -544,6 +710,7 @@ impl FromClauseBuilder<'_, '_> {
             .iter()
             .copied()
             .filter(|index| !scoped_relationships.contains(index))
+            .filter(|index| !self.joined_relationship_indices.contains(index))
             .collect::<BTreeSet<_>>();
         self.join_relationship_index_set(&mut remaining_relationships, true)
     }
@@ -573,6 +740,19 @@ impl FromClauseBuilder<'_, '_> {
     fn join_optional_match_scopes(&mut self) -> Result<(), CoreError> {
         let mut remaining_scopes =
             (0..self.lowerer.validated.plan().optional_matches.len()).collect::<BTreeSet<_>>();
+        remaining_scopes.retain(|scope_index| {
+            self.lowerer
+                .validated
+                .plan()
+                .optional_matches
+                .get(*scope_index)
+                .is_none_or(|optional_match| {
+                    !optional_match
+                        .relationship_indices
+                        .iter()
+                        .all(|index| self.joined_relationship_indices.contains(index))
+                })
+        });
         while !remaining_scopes.is_empty() {
             let mut progressed = false;
             for index in remaining_scopes.iter().copied().collect::<Vec<_>>() {
@@ -1047,6 +1227,7 @@ impl FromClauseBuilder<'_, '_> {
                         optional_predicate: optional_predicate.as_deref(),
                     },
                 )?;
+                self.joined_relationship_indices.insert(index);
                 remaining_relationships.remove(&index);
                 progressed = true;
             }

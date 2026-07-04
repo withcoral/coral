@@ -280,6 +280,15 @@ impl<'a> SqlRenderer<'a> {
     }
 
     pub(super) fn render_binding_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
+        if let Some((stage_alias, key_column)) =
+            self.validated.stage_relationship_column_ref(variable)
+        {
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(stage_alias),
+                quote_ident(key_column)
+            ));
+        }
         let binding = self.validated.binding(variable)?;
         let column = match binding.kind() {
             ValidatedBindingKind::Node(node) => node.key.as_str(),
@@ -364,6 +373,15 @@ impl<'a> SqlRenderer<'a> {
     }
 
     fn render_relationship_presence_ref(&self, variable: &str) -> Result<String, CoreError> {
+        if let Some((stage_alias, key_column)) =
+            self.validated.stage_relationship_column_ref(variable)
+        {
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(stage_alias),
+                quote_ident(key_column)
+            ));
+        }
         let binding = self.validated.binding(variable)?;
         let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
             return Err(CoreError::internal(
@@ -420,6 +438,15 @@ impl<'a> SqlRenderer<'a> {
     }
 
     pub(super) fn render_binding_key_ref(&self, variable: &str) -> Result<String, CoreError> {
+        if let Some((stage_alias, key_column)) =
+            self.validated.stage_relationship_column_ref(variable)
+        {
+            return Ok(format!(
+                "{}.{}",
+                quote_ident(stage_alias),
+                quote_ident(key_column)
+            ));
+        }
         let binding = self.validated.binding(variable)?;
         let key = match binding.kind() {
             ValidatedBindingKind::Node(node) => node.key.as_str(),

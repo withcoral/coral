@@ -227,6 +227,7 @@ fn write_tck_fixture(dir: &Path) {
             json!({"id": 102, "person_id": 1, "friend_id": 3, "since": 2022, "strength": 0.3}),
         ],
     );
+    write_jsonl_file(dir, "likes.jsonl", &[]);
 }
 
 fn tck_manifest(dir: &Path) -> Value {
@@ -261,6 +262,17 @@ fn tck_manifest(dir: &Path) -> Value {
                     { "name": "since", "type": "Int64" },
                     { "name": "strength", "type": "Float64" }
                 ]
+            },
+            {
+                "name": "likes",
+                "description": "Synthetic openCypher TCK-style empty LIKES edges",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "likes.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "person_id", "type": "Int64" },
+                    { "name": "liked_person_id", "type": "Int64" }
+                ]
             }
         ]
     })
@@ -288,4 +300,9 @@ relationships:
     properties:
       since: since
       strength: strength
+  - type: LIKES
+    table: { schema: tck, name: likes }
+    key: id
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: liked_person_id }
 ";

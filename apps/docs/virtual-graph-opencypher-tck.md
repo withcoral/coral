@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-609 scenarios, which is 37.71% of the full upstream scenario-definition inventory
-and 47.06% of the read-candidate inventory.
+614 scenarios, which is 38.02% of the full upstream scenario-definition inventory
+and 47.45% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 609 representative read-only scenarios:
+The baseline currently contains 614 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -183,7 +183,7 @@ The baseline currently contains 609 representative read-only scenarios:
   grouping, statistical aggregates, distinct statistical aggregates,
   `percentileCont(...)`, `count(DISTINCT ...)`, hidden aggregate ordering, and
   selected static-map aggregate targets.
-- `With`: 40 scenarios for transparent scope filtering, scalar alias filters,
+- `With`: 45 scenarios for transparent scope filtering, scalar alias filters,
   `WITH *` filtering and carry-forward into later `MATCH`, variable dropping,
   node and relationship variable renaming, non-terminal scalar aliases carried
   into a later `MATCH`, interleaved multi-stage `WITH` pipelines, bare boolean
@@ -191,9 +191,10 @@ The baseline currently contains 609 representative read-only scenarios:
   `WITH DISTINCT` scalar and graph-variable projections, relationship-property
   alias filtering, terminal `WITH ORDER BY` / `SKIP` / `LIMIT` row modifiers
   with filtering, terminal `WITH *, expr AS alias RETURN *`, staged fixed
-  multi-hop final `MATCH` chains after row-limited and aggregate `WITH`, and
-  explicit rejection coverage for aggregate `WITH` chains that require staged
-  planning.
+  multi-hop final `MATCH` chains after row-limited and aggregate `WITH`,
+  staged final `OPTIONAL MATCH` after row-limited `WITH`, relationship-key
+  carry into staged optional finals, and explicit rejection coverage for
+  aggregate `WITH` chains that require staged planning.
 - `CountSubquery`: 10 scenarios for `COUNT { ... }` projections, predicates,
   hidden ordering, scoped scalar `RETURN` validation, `RETURN DISTINCT scalar`
   row-counting, distinct-count threshold predicates, and reversed

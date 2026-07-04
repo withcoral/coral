@@ -64,14 +64,17 @@ nodes:
 relationships:
   - type: KNOWS
     table: { schema: ops, name: knows }
+    key: id
     from: { label: Person, key: person_id }
     to: { label: Person, key: friend_id }
   - type: LIKES
     table: { schema: ops, name: likes }
+    key: id
     from: { label: Person, key: person_id }
     to: { label: Person, key: liked_person_id }
   - type: OWNS
     table: { schema: ops, name: ownerships }
+    key: id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
 ",
@@ -5001,6 +5004,126 @@ fn compiles_staged_with_multiple_carried_property_returns() {
             },
         ]
     );
+}
+
+#[test]
+fn compiles_staged_with_optional_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 1 \
+             OPTIONAL MATCH (a)-[:LIKES]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged route should allow optional final matches from carried variables");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("optional final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: None,
+            relationship_type: "LIKES".to_string(),
+            left: "a".to_string(),
+            direction: Direction::Outgoing,
+            right: "b".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+}
+
+#[test]
+fn compiles_staged_relationship_carry_optional_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) \
+             WITH r LIMIT 1 \
+             OPTIONAL MATCH (a2:Person)-[r:KNOWS]->(b2:Person) \
+             RETURN a2.name AS a, id(r) AS r, b2.name AS b",
+    )
+    .expect("staged route should carry relationship keys into optional final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("relationship carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport::RelationshipKey {
+            variable: "r".to_string(),
+            column: "r_id".to_string(),
+        }]
+    );
+    assert_eq!(
+        stage.plan.projections,
+        vec![Projection::Key {
+            variable: "r".to_string(),
+            alias: "r_id".to_string(),
+        }]
+    );
+    assert_eq!(stage.plan.limit, Some(1));
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a2".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+}
+
+#[test]
+fn compiles_staged_node_and_relationship_carry_optional_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
+             WITH r, a1 LIMIT 1 \
+             OPTIONAL MATCH (a1)-[r:KNOWS]->(b2:Person) \
+             RETURN a1.name AS a, id(r) AS r, b2.name AS b",
+    )
+    .expect("staged route should carry node and relationship keys together");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("node plus relationship carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::RelationshipKey {
+                variable: "r".to_string(),
+                column: "r_id".to_string(),
+            },
+            GraphStageExport::NodeKey {
+                variable: "a1".to_string(),
+                column: "a1_id".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a1".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use arrow::array::Array;
 use coral_engine::{
     ComparisonOperator, CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphDirection,
     GraphGraphqlVariableValue, GraphLiteral, GraphOrderDirection, GraphOrderExpression,
@@ -162,6 +163,127 @@ async fn cypher_staged_with_order_limit_executes_with_second_relationship_type()
             json!({"a": "Alice", "b": "Bob"}),
             json!({"a": "Bob", "b": "Carol"}),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_optional_match_preserves_empty_optional_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 1 \
+         OPTIONAL MATCH (a)-[:LIKES]->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged optional query with empty optional side should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"a": "Bob"})]
+    );
+    assert_eq!(execution.execution().row_count(), 1);
+    let batch = execution
+        .execution()
+        .batches()
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .expect("empty optional query should return one row");
+    let b = batch
+        .column_by_name("b")
+        .expect("empty optional query should project b");
+    assert!(b.is_null(0), "optional-only b should be NULL");
+}
+
+#[tokio::test]
+async fn cypher_staged_optional_match_preserves_matched_optional_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 1 \
+         OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged optional query with matched optional side should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"a": "Bob", "b": "Carol"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_relationship_carry_optional_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) \
+         WITH r ORDER BY id(r) LIMIT 1 \
+         OPTIONAL MATCH (a2:Person)-[r:KNOWS]->(b2:Person) \
+         RETURN a2.name AS a, id(r) AS r, b2.name AS b",
+    )
+    .await
+    .expect("staged relationship carry optional query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"r_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"a": "Alice", "r": 100, "b": "Bob"})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_node_and_relationship_carry_optional_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_keyed_fixture(temp.path());
+    let source = build_source(staged_planning_keyed_manifest(temp.path()));
+    let graph = staged_planning_keyed_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
+         WITH r, a1 ORDER BY id(r) LIMIT 1 \
+         OPTIONAL MATCH (a1)-[r:KNOWS]->(b2:Person) \
+         RETURN a1.name AS a, id(r) AS r, b2.name AS b",
+    )
+    .await
+    .expect("staged node and relationship carry optional query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"a": "Alice", "r": 100, "b": "Bob"})]
     );
 }
 
@@ -19232,6 +19354,61 @@ fn staged_planning_test_graph() -> GraphDeclaration {
     GraphDeclaration::from_yaml(STAGED_PLANNING_GRAPH).expect("staged graph should parse")
 }
 
+fn write_staged_planning_keyed_fixture(dir: &Path) {
+    write_staged_planning_fixture(dir);
+    write_jsonl_file(
+        dir,
+        "staged_knows.jsonl",
+        &[
+            json!({"id": 100, "person_id": 1, "friend_id": 2}),
+            json!({"id": 101, "person_id": 1, "friend_id": 3}),
+            json!({"id": 102, "person_id": 2, "friend_id": 3}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_likes.jsonl",
+        &[
+            json!({"id": 200, "person_id": 1, "liked_person_id": 2}),
+            json!({"id": 201, "person_id": 3, "liked_person_id": 1}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_ownerships.jsonl",
+        &[
+            json!({"id": 300, "person_id": 1, "service_id": 10}),
+            json!({"id": 301, "person_id": 2, "service_id": 20}),
+            json!({"id": 302, "person_id": 3, "service_id": 30}),
+        ],
+    );
+}
+
+fn staged_planning_keyed_manifest(dir: &Path) -> Value {
+    let mut manifest = staged_planning_manifest(dir);
+    let tables = manifest
+        .get_mut("tables")
+        .and_then(Value::as_array_mut)
+        .expect("staged manifest should contain tables");
+    for table_name in ["knows", "likes", "ownerships"] {
+        let table = tables
+            .iter_mut()
+            .find(|table| table.get("name").and_then(Value::as_str) == Some(table_name))
+            .expect("keyed relationship table should exist");
+        let columns = table
+            .get_mut("columns")
+            .and_then(Value::as_array_mut)
+            .expect("keyed relationship table should contain columns");
+        columns.insert(0, json!({"name": "id", "type": "Int64"}));
+    }
+    manifest
+}
+
+fn staged_planning_keyed_test_graph() -> GraphDeclaration {
+    GraphDeclaration::from_yaml(STAGED_PLANNING_KEYED_GRAPH)
+        .expect("keyed staged graph should parse")
+}
+
 fn write_ops_fixture(dir: &Path) {
     write_jsonl_file(
         dir,
@@ -19556,6 +19733,40 @@ relationships:
     to: { label: Person, key: liked_person_id }
   - type: OWNS
     table: { schema: staged, name: ownerships }
+    from: { label: Person, key: person_id }
+    to: { label: Service, key: service_id }
+";
+
+const STAGED_PLANNING_KEYED_GRAPH: &str = r"
+version: 1
+name: staged_planning
+description: Synthetic keyed staged planning graph
+nodes:
+  - label: Person
+    table: { schema: staged, name: people }
+    key: id
+    properties:
+      name: full_name
+      age: age
+  - label: Service
+    table: { schema: staged, name: services }
+    key: id
+    properties:
+      name: service_name
+relationships:
+  - type: KNOWS
+    table: { schema: staged, name: knows }
+    key: id
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+  - type: LIKES
+    table: { schema: staged, name: likes }
+    key: id
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: liked_person_id }
+  - type: OWNS
+    table: { schema: staged, name: ownerships }
+    key: id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
 ";

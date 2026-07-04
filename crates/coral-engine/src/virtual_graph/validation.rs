@@ -75,11 +75,18 @@ pub(crate) enum ValidatedBindingKind<'a> {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StageColumnBindings {
     node_keys: BTreeMap<String, StageNodeColumnBinding>,
+    relationship_keys: BTreeMap<String, StageRelationshipColumnBinding>,
     scalar_values: BTreeMap<String, StageScalarColumnBinding>,
 }
 
 #[derive(Debug, Clone)]
 struct StageNodeColumnBinding {
+    stage_alias: String,
+    key_column: String,
+}
+
+#[derive(Debug, Clone)]
+struct StageRelationshipColumnBinding {
     stage_alias: String,
     key_column: String,
 }
@@ -266,6 +273,17 @@ impl<'a> ValidatedGraphPlan<'a> {
                 )
                 .into_core_error()
             })
+    }
+
+    pub(crate) fn stage_relationship_column_ref(&self, variable: &str) -> Option<(&str, &str)> {
+        self.stage_columns
+            .relationship_keys
+            .get(variable)
+            .map(|binding| (binding.stage_alias.as_str(), binding.key_column.as_str()))
+    }
+
+    pub(crate) fn has_stage_node_keys(&self) -> bool {
+        !self.stage_columns.node_keys.is_empty()
     }
 
     pub(crate) fn scalar_stage_aliases(&self) -> BTreeSet<&str> {
@@ -854,6 +872,7 @@ fn stage_column_bindings_with_catalog(
     let mut bindings = StageColumnBindings::default();
     for (index, stage) in staged.stages.iter().enumerate() {
         let stage_alias = format!("stage{index}");
+        let validated_stage = GraphPlanValidator::new(graph, &stage.plan, catalog).validate()?;
         let projection_types = GraphPlanValidator::new(graph, &stage.plan, catalog)
             .validate_and_infer_projection_scalar_types()?;
         for export in &stage.exports {
@@ -886,6 +905,16 @@ fn stage_column_bindings_with_catalog(
                             "staged graph query exported variable '{variable}' more than once",
                         )));
                     }
+                }
+                GraphStageExport::RelationshipKey { variable, column } => {
+                    bind_stage_relationship_key_export(
+                        &mut bindings,
+                        &stage_alias,
+                        &validated_stage,
+                        projection,
+                        variable,
+                        column,
+                    )?;
                 }
                 GraphStageExport::AggregateValue { alias, column } => {
                     if !projection.is_aggregate() {
@@ -939,6 +968,54 @@ fn stage_column_bindings_with_catalog(
         }
     }
     Ok(bindings)
+}
+
+fn bind_stage_relationship_key_export(
+    bindings: &mut StageColumnBindings,
+    stage_alias: &str,
+    validated_stage: &ValidatedGraphPlan<'_>,
+    projection: &Projection,
+    variable: &str,
+    column: &str,
+) -> Result<(), CoreError> {
+    match projection {
+        Projection::Key {
+            variable: projected_variable,
+            ..
+        } if projected_variable == variable => {}
+        _ => {
+            return Err(CoreError::internal(format!(
+                "staged graph query exported non-key column '{column}' as relationship key",
+            )));
+        }
+    }
+    let binding = validated_stage.binding(variable)?;
+    let ValidatedBindingKind::Relationship(relationship) = binding.kind() else {
+        return Err(CoreError::internal(format!(
+            "staged graph query exported non-relationship variable '{variable}' as relationship key",
+        )));
+    };
+    if relationship.key.is_none() {
+        return Err(CoreError::internal(format!(
+            "staged graph query exported keyless relationship variable '{variable}'",
+        )));
+    }
+    if bindings
+        .relationship_keys
+        .insert(
+            variable.to_string(),
+            StageRelationshipColumnBinding {
+                stage_alias: stage_alias.to_string(),
+                key_column: column.to_string(),
+            },
+        )
+        .is_some()
+    {
+        return Err(CoreError::internal(format!(
+            "staged graph query exported relationship variable '{variable}' more than once",
+        )));
+    }
+    Ok(())
 }
 
 fn stage_projection_type(

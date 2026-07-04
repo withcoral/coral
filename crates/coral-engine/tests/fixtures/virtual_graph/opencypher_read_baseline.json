@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 40
+    "With": 45
   },
   "scenarios": [
     {
@@ -11170,6 +11170,76 @@
             "b": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "with-order-limit-optional-final-empty",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 1 OPTIONAL MATCH (a)-[:LIKES]->(b:Person) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-optional-final-matched",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 1 OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Bob",
+            "b": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-relationship-carry-optional-final",
+      "feature": "With",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WITH r ORDER BY id(r) LIMIT 1 OPTIONAL MATCH (a2:Person)-[r:KNOWS]->(b2:Person) RETURN a2.name AS a, id(r) AS r, b2.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Alice",
+            "r": 100,
+            "b": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-order-limit-node-relationship-carry-optional-final",
+      "feature": "With",
+      "query": "MATCH (a1:Person)-[r:KNOWS]->(:Person) WITH r, a1 ORDER BY id(r) LIMIT 1 OPTIONAL MATCH (a1)-[r:KNOWS]->(b2:Person) RETURN a1.name AS a, id(r) AS r, b2.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Alice",
+            "r": 100,
+            "b": "Bob"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-distinct-relationship-carry-optional-final-rejected",
+      "feature": "With",
+      "query": "MATCH (a:Person)-[r:KNOWS]->(b:Person) WITH DISTINCT r LIMIT 1 OPTIONAL MATCH (a2:Person)-[r:KNOWS]->(b2:Person) RETURN a2.name AS a, id(r) AS r, b2.name AS b",
+      "expected": {
+        "kind": "error",
+        "contains": "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
       }
     },
     {

@@ -55,6 +55,7 @@ nodes:
 relationships:
   - type: KNOWS
     table: { schema: ops, name: knows }
+    key: id
     from: { label: Person, key: person_id }
     to: { label: Person, key: friend_id }
 ";
@@ -340,6 +341,168 @@ fn lower_graph_query_renders_staged_multihop_final_match() {
              JOIN \"ops\".\"knows\" AS \"r1\" ON \"r1\".\"person_id\" = \"n1\".\"id\" \
              JOIN \"ops\".\"people\" AS \"n2\" ON \"r1\".\"friend_id\" = \"n2\".\"id\""
     );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_optional_final_match() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let mut query = staged_order_limit_query(RelationshipPattern {
+        variable: None,
+        relationship_type: "KNOWS".to_string(),
+        left: "a".to_string(),
+        direction: Direction::Outgoing,
+        right: "b".to_string(),
+    });
+    let GraphQuery::Staged(staged) = &mut query else {
+        panic!("helper should produce a staged query");
+    };
+    staged.final_plan.optional_relationships = vec![0];
+    staged.final_plan.optional_matches = vec![OptionalMatchScope {
+        node_indices: vec![1],
+        relationship_indices: vec![0],
+        predicate: None,
+    }];
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged optional graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 2) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             LEFT JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_staged_relationship_key_optional_match() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let query = staged_relationship_key_optional_query();
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged relationship-key optional graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"r0\".\"id\" AS \"r_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" LIMIT 1) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"stage0\".\"r_id\" AS \"r\", \"n1\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"id\" = \"stage0\".\"r_id\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\""
+    );
+}
+
+fn staged_relationship_key_optional_query() -> GraphQuery {
+    GraphQuery::Staged(GraphStagedQuery {
+        stages: vec![staged_relationship_key_stage()],
+        final_plan: staged_relationship_key_optional_final_plan(),
+    })
+}
+
+fn staged_relationship_key_stage() -> GraphStage {
+    GraphStage {
+        plan: GraphPlan {
+            nodes: vec![
+                NodePattern {
+                    variable: "a".to_string(),
+                    label: "Person".to_string(),
+                },
+                NodePattern {
+                    variable: "b".to_string(),
+                    label: "Person".to_string(),
+                },
+            ],
+            relationships: vec![RelationshipPattern {
+                variable: Some("r".to_string()),
+                relationship_type: "KNOWS".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            }],
+            optional_relationships: Vec::new(),
+            optional_matches: Vec::new(),
+            distinct: false,
+            projections: vec![Projection::Key {
+                variable: "r".to_string(),
+                alias: "r_id".to_string(),
+            }],
+            predicates: Vec::new(),
+            predicate: None,
+            post_projection_predicate: None,
+            order_by: Vec::new(),
+            skip: None,
+            limit: Some(1),
+        },
+        exports: vec![GraphStageExport::RelationshipKey {
+            variable: "r".to_string(),
+            column: "r_id".to_string(),
+        }],
+    }
+}
+
+fn staged_relationship_key_optional_final_plan() -> GraphPlan {
+    GraphPlan {
+        nodes: vec![
+            NodePattern {
+                variable: "a2".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "b2".to_string(),
+                label: "Person".to_string(),
+            },
+        ],
+        relationships: vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "KNOWS".to_string(),
+            left: "a2".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }],
+        optional_relationships: vec![0],
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: vec![0, 1],
+            relationship_indices: vec![0],
+            predicate: None,
+        }],
+        distinct: false,
+        projections: vec![
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "a2".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("a".to_string()),
+            },
+            Projection::Key {
+                variable: "r".to_string(),
+                alias: "r".to_string(),
+            },
+            Projection::Property {
+                property: PropertyRef {
+                    variable: "b2".to_string(),
+                    property: "name".to_string(),
+                },
+                alias: Some("b".to_string()),
+            },
+        ],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    }
 }
 
 #[test]
