@@ -159,6 +159,22 @@ struct PersistSourceRequest<'a> {
     materialization_tmp: Option<PathBuf>,
 }
 
+struct MaterializationTmpCleanup {
+    path: Option<PathBuf>,
+}
+
+impl MaterializationTmpCleanup {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for MaterializationTmpCleanup {
+    fn drop(&mut self) {
+        cleanup_materialization_tmp(self.path.as_deref());
+    }
+}
+
 struct SourceRollbackState {
     source: InstalledSource,
     manifest_yaml: Option<String>,
@@ -706,6 +722,8 @@ impl SourceManager {
         workspace_name: &WorkspaceName,
         request: PersistSourceRequest<'_>,
     ) -> Result<InstalledSource, AppError> {
+        let _materialization_tmp_cleanup =
+            MaterializationTmpCleanup::new(request.materialization_tmp.clone());
         let source_name = request.candidate.name.clone();
         let credential_set_id = CredentialSetId::for_source(&source_name);
         let credential_guard = self
@@ -2505,6 +2523,70 @@ tables:
                 .to_string()
                 .contains("missing required source secret 'API_TOKEN'"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn readd_source_cleans_materialization_tmp_when_rollback_snapshot_fails() {
+        let temp = TempDir::new().expect("temp dir");
+        let layout =
+            AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
+        layout.ensure().expect("ensure layout");
+        let config_store = ConfigStore::new(layout.clone());
+        let credential_manager = CredentialManager::new(CredentialStore::new(layout.clone()));
+        let manager = SourceManager::new(
+            config_store,
+            credential_manager,
+            layout.clone(),
+            crate::workspaces::WorkspaceLifecycleLock::default(),
+        );
+
+        let workspace_name = default_workspace();
+        let manifest = manifest_without_secrets();
+        manager
+            .import_source(
+                &workspace_name,
+                &ImportSourceCommand {
+                    manifest_yaml: manifest.clone(),
+                    bindings: SourceBindings::default(),
+                },
+            )
+            .expect("initial import");
+
+        let source_name = SourceName::parse("public_messages").expect("source");
+        std::fs::remove_file(layout.manifest_file(&workspace_name, &source_name))
+            .expect("remove imported manifest");
+        let materialization_tmp = temp.path().join("materialization_tmp");
+        std::fs::create_dir(&materialization_tmp).expect("create materialization tmp");
+        std::fs::write(
+            materialization_tmp.join("marker"),
+            b"temporary materialization",
+        )
+        .expect("write materialization tmp marker");
+        let candidate =
+            describe_manifest(&manifest, SourceOrigin::Imported, false).expect("describe manifest");
+        let bindings = ValidatedBindings {
+            variables: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            replaced_oauth_inputs: BTreeSet::new(),
+        };
+
+        manager
+            .persist_source(
+                &workspace_name,
+                PersistSourceRequest {
+                    candidate: &candidate,
+                    manifest_yaml: Some(&manifest),
+                    bindings,
+                    origin: SourceOrigin::Imported,
+                    materialization_tmp: Some(materialization_tmp.clone()),
+                },
+            )
+            .expect_err("missing rollback manifest should fail");
+
+        assert!(
+            !materialization_tmp.exists(),
+            "materialization temp dir should be removed on rollback snapshot failure"
         );
     }
 
