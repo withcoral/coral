@@ -109,6 +109,12 @@ pub struct PropertyRef {
 pub enum PredicateRhs {
     /// Compare against a literal value.
     Literal(Literal),
+    /// Compare against an adapter-marked string that validation may coerce to
+    /// the left-hand property's temporal kind.
+    TemporalCoercion {
+        /// Original string operand from the adapter.
+        source: String,
+    },
     /// Compare against another graph property.
     Property(PropertyRef),
     /// Compare against the stable mapped key for a graph variable.
@@ -1335,7 +1341,9 @@ fn predicate_rhs_references_outside_scope(rhs: &PredicateRhs, scope: &BTreeSet<S
         PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
             variable_references_outside_scope(variable, scope)
         }
-        PredicateRhs::Literal(_) | PredicateRhs::List(_) => false,
+        PredicateRhs::Literal(_)
+        | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::List(_) => false,
     }
 }
 

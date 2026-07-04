@@ -1168,6 +1168,120 @@ fn validate_graph_plan_rejects_temporal_date_string_comparison() {
 }
 
 #[test]
+fn validate_graph_plan_accepts_temporal_coercion_for_catalog_typed_property() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+        property: PropertyRef {
+            variable: "owns".to_string(),
+            property: "since".to_string(),
+        },
+        operator: ComparisonOperator::GreaterThan,
+        rhs: PredicateRhs::TemporalCoercion {
+            source: "2020-06-01T09:00:00Z".to_string(),
+        },
+    }));
+
+    graph
+        .validate_graph_plan_against_catalog(
+            &plan,
+            &typed_ownership_catalog_with_since_type("Timestamp(Nanosecond, None)"),
+        )
+        .expect("timestamp-shaped coercion should validate for localdatetime properties");
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_coercion_kind_mismatch() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+        property: PropertyRef {
+            variable: "owns".to_string(),
+            property: "since".to_string(),
+        },
+        operator: ComparisonOperator::GreaterThan,
+        rhs: PredicateRhs::TemporalCoercion {
+            source: "2020-06-01T09:00:00Z".to_string(),
+        },
+    }));
+
+    let error = graph
+        .validate_graph_plan_against_catalog(
+            &plan,
+            &typed_ownership_catalog_with_since_type("Date32"),
+        )
+        .expect_err("timestamp-shaped coercion should reject for date properties");
+
+    assert!(
+        error
+            .to_string()
+            .contains("cannot coerce string '2020-06-01T09:00:00Z' to date for comparison"),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_still_rejects_string_literal_for_catalog_typed_temporal_property() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+        property: PropertyRef {
+            variable: "owns".to_string(),
+            property: "since".to_string(),
+        },
+        operator: ComparisonOperator::GreaterThan,
+        rhs: PredicateRhs::Literal(Literal::String("2020-06-01T09:00:00Z".to_string())),
+    }));
+
+    let error = graph
+        .validate_graph_plan_against_catalog(
+            &plan,
+            &typed_ownership_catalog_with_since_type("Timestamp(Nanosecond, None)"),
+        )
+        .expect_err("literal string should remain invalid for localdatetime properties");
+
+    assert!(
+        error.to_string().contains(
+            "scalar predicate operands require compatible scalar types, got localdatetime and string"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_treats_temporal_coercion_as_string_for_non_temporal_property() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut coerced_plan = ownership_plan();
+    coerced_plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+        property: PropertyRef {
+            variable: "service".to_string(),
+            property: "tier".to_string(),
+        },
+        operator: ComparisonOperator::Equal,
+        rhs: PredicateRhs::TemporalCoercion {
+            source: "prod".to_string(),
+        },
+    }));
+    let mut literal_plan = ownership_plan();
+    literal_plan.predicate = Some(PredicateExpression::Comparison(PropertyPredicate {
+        property: PropertyRef {
+            variable: "service".to_string(),
+            property: "tier".to_string(),
+        },
+        operator: ComparisonOperator::Equal,
+        rhs: PredicateRhs::Literal(Literal::String("prod".to_string())),
+    }));
+    let catalog = typed_ownership_catalog();
+
+    graph
+        .validate_graph_plan_against_catalog(&coerced_plan, &catalog)
+        .expect("temporal coercion should degrade to string validation");
+    graph
+        .validate_graph_plan_against_catalog(&literal_plan, &catalog)
+        .expect("literal string should validate for string property");
+}
+
+#[test]
 fn validate_graph_plan_accepts_temporal_localdatetime_scalar_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan();
@@ -2709,6 +2823,10 @@ fn validate_graph_plan_accepts_optional_match_from_disconnected_component() {
 }
 
 fn typed_ownership_catalog() -> CatalogInfo {
+    typed_ownership_catalog_with_since_type("Utf8")
+}
+
+fn typed_ownership_catalog_with_since_type(since_type: &str) -> CatalogInfo {
     CatalogInfo {
         tables: vec![
             typed_table("ops", "people", &[("id", "Int64"), ("full_name", "Utf8")]),
@@ -2723,7 +2841,7 @@ fn typed_ownership_catalog() -> CatalogInfo {
                 &[
                     ("person_id", "Int64"),
                     ("service_id", "Int64"),
-                    ("since", "Utf8"),
+                    ("since", since_type),
                 ],
             ),
         ],

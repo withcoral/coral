@@ -293,7 +293,9 @@ fn reject_ignored_path_variable_references_in_predicate_rhs(
         PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
             reject_ignored_path_variable(variable, state, path)
         }
-        PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(()),
+        PredicateRhs::Literal(_)
+        | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::List(_) => Ok(()),
     }
 }
 

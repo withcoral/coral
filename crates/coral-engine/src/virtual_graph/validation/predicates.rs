@@ -103,6 +103,13 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                 Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
+            PredicateRhs::TemporalCoercion { source } => {
+                Self::validate_temporal_coercion_literal_predicate(
+                    &path,
+                    predicate.operator,
+                    source,
+                )
+            }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -227,6 +234,13 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                 Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
+            PredicateRhs::TemporalCoercion { source } => {
+                Self::validate_temporal_coercion_literal_predicate(
+                    &path,
+                    predicate.operator,
+                    source,
+                )
+            }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -324,6 +338,13 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                 Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
+            PredicateRhs::TemporalCoercion { source } => {
+                Self::validate_element_id_temporal_coercion_predicate(
+                    &path,
+                    predicate.operator,
+                    source,
+                )
+            }
             PredicateRhs::ElementId { variable } => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -416,6 +437,44 @@ impl<'a> GraphPlanValidator<'a> {
             .into_core_error()),
         }
     }
+
+    fn validate_temporal_coercion_literal_predicate(
+        path: &str,
+        operator: ComparisonOperator,
+        source: &str,
+    ) -> Result<(), CoreError> {
+        if operator == ComparisonOperator::In {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                path,
+                "IN predicates require a literal list right-hand side",
+            )
+            .into_core_error());
+        }
+        let literal = Literal::String(source.to_string());
+        Self::validate_string_predicate(path, operator, &literal)?;
+        Self::validate_literal_predicate(path, operator, &literal)
+    }
+
+    fn validate_element_id_temporal_coercion_predicate(
+        path: &str,
+        operator: ComparisonOperator,
+        source: &str,
+    ) -> Result<(), CoreError> {
+        if operator == ComparisonOperator::In {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                path,
+                "IN predicates require a literal list right-hand side",
+            )
+            .into_core_error());
+        }
+        let literal = Literal::String(source.to_string());
+        Self::validate_element_id_literal(path, &literal)?;
+        Self::validate_string_predicate(path, operator, &literal)?;
+        Self::validate_literal_predicate(path, operator, &literal)
+    }
+
     fn validate_presence_predicate(
         &self,
         predicate: &PresencePredicate,

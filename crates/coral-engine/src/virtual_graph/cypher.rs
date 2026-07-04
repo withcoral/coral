@@ -2950,6 +2950,13 @@ fn branch_predicate_rhs_as_scalar_rhs(
                 was_missing_property: false,
             }
         }
+        PredicateRhs::TemporalCoercion { source } => BranchScalarPredicateRhs {
+            value: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(
+                source,
+            ))),
+            is_null_literal: false,
+            was_missing_property: false,
+        },
         PredicateRhs::Property(property)
             if branch_property_is_missing(graph, nodes, relationships, &property) =>
         {
@@ -2993,6 +3000,7 @@ fn branch_predicate_rhs_is_missing_property(
             branch_property_is_missing(graph, nodes, relationships, property)
         }
         PredicateRhs::Literal(_)
+        | PredicateRhs::TemporalCoercion { .. }
         | PredicateRhs::Key { .. }
         | PredicateRhs::ElementId { .. }
         | PredicateRhs::List(_) => false,

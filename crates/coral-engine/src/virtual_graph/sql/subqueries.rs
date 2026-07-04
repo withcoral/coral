@@ -953,7 +953,9 @@ impl<'a> SqlRenderer<'a> {
             PredicateRhs::ElementId { variable } => self
                 .node_element_id_correlation_operand(variable, local_nodes, local_aliases)
                 .map(Some),
-            PredicateRhs::Literal(_) | PredicateRhs::List(_) => Ok(None),
+            PredicateRhs::Literal(_)
+            | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::List(_) => Ok(None),
         }
     }
 

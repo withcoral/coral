@@ -259,7 +259,8 @@ impl<'a> SqlRenderer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value)),
+                PredicateRhs::Literal(Literal::String(value))
+                | PredicateRhs::TemporalCoercion { source: value },
             ) => Ok(format!(
                 "{property} LIKE {} ESCAPE '\\'",
                 render_like_pattern(predicate.operator, value)
@@ -293,6 +294,11 @@ impl<'a> SqlRenderer<'a> {
                 PredicateRhs::Literal(Literal::Null),
             ) => Err(CoreError::internal(
                 "validated graph predicate contained an invalid null comparison",
+            )),
+            (_, PredicateRhs::TemporalCoercion { source }) => Ok(format!(
+                "{property} {} {}",
+                render_operator(predicate.operator),
+                self.render_temporal_coercion_predicate_rhs(&predicate.property, source)?
             )),
             _ => Ok(format!(
                 "{property} {} {}",
@@ -427,7 +433,8 @@ impl<'a> SqlRenderer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value)),
+                PredicateRhs::Literal(Literal::String(value))
+                | PredicateRhs::TemporalCoercion { source: value },
             ) => Ok(format!(
                 "{key} LIKE {} ESCAPE '\\'",
                 render_like_pattern(predicate.operator, value)
@@ -494,7 +501,8 @@ impl<'a> SqlRenderer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value)),
+                PredicateRhs::Literal(Literal::String(value))
+                | PredicateRhs::TemporalCoercion { source: value },
             ) => Ok(format!(
                 "{element_id} LIKE {} ESCAPE '\\'",
                 render_like_pattern(predicate.operator, value)
@@ -626,7 +634,8 @@ impl<'a> SqlRenderer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value)),
+                PredicateRhs::Literal(Literal::String(value))
+                | PredicateRhs::TemporalCoercion { source: value },
             ) => Ok(format!(
                 "{property} LIKE {} ESCAPE '\\'",
                 render_like_pattern(predicate.operator, value)
@@ -666,6 +675,16 @@ impl<'a> SqlRenderer<'a> {
             ) => Err(CoreError::internal(
                 "validated EXISTS predicate contained an invalid null comparison",
             )),
+            (_, PredicateRhs::TemporalCoercion { source }) => Ok(format!(
+                "{property} {} {}",
+                render_operator(predicate.operator),
+                self.render_exists_temporal_coercion_predicate_rhs(
+                    &predicate.property,
+                    source,
+                    relationships,
+                    local_nodes,
+                )?
+            )),
             _ => Ok(format!(
                 "{property} {} {}",
                 render_operator(predicate.operator),
@@ -695,12 +714,35 @@ impl<'a> SqlRenderer<'a> {
     fn render_predicate_rhs(&self, rhs: &PredicateRhs) -> Result<String, CoreError> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
+            PredicateRhs::TemporalCoercion { source } => Ok(quote_string_literal(source)),
             PredicateRhs::Property(property) => self.render_property_ref(property),
             PredicateRhs::Key { variable } => self.render_binding_key_ref(variable),
             PredicateRhs::ElementId { variable } => self.render_binding_element_id_ref(variable),
             PredicateRhs::List(_) => Err(CoreError::internal(
                 "validated literal list predicate reached generic RHS renderer",
             )),
+        }
+    }
+
+    fn render_temporal_coercion_predicate_rhs(
+        &self,
+        property: &PropertyRef,
+        source: &str,
+    ) -> Result<String, CoreError> {
+        let kind = self.validated.property_ref_temporal_kind(property)?;
+        Ok(Self::render_temporal_coercion_rhs_for_kind(source, kind))
+    }
+
+    pub(super) fn render_temporal_coercion_rhs_for_kind(
+        source: &str,
+        kind: Option<TemporalKind>,
+    ) -> String {
+        let literal = quote_string_literal(source);
+        match kind {
+            Some(TemporalKind::Date) => format!("CAST({literal} AS DATE)"),
+            Some(TemporalKind::LocalDateTime) => format!("CAST({literal} AS TIMESTAMP)"),
+            Some(TemporalKind::LocalTime) => format!("CAST({literal} AS TIME)"),
+            Some(TemporalKind::Duration) | None => literal,
         }
     }
 

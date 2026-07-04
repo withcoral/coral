@@ -15,8 +15,9 @@ use super::diagnostic_codes;
 use super::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, ComparisonOperator,
     CountSubqueryPattern, Direction, ElementIdPredicate, ExistsPatternPredicate, GraphPlan,
-    GraphQuery, GraphStageExport, GraphUnionOuterProjection, GraphUnionOuterProjectionItem,
-    GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType, NodePattern,
+    GraphQuery, GraphStageExport, GraphStagedQuery, GraphUnionOuterProjection,
+    GraphUnionOuterProjectionItem, GraphUnwind, GraphUnwindProjection, KeyPredicate, Literal,
+    LiteralListElementType, NodePattern,
     OptionalMatchScope, OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate,
     Projection, ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
@@ -48,6 +49,7 @@ use self::type_classifiers::*;
 pub(crate) struct ValidatedGraphPlan<'a> {
     graph: &'a Declaration,
     plan: &'a GraphPlan,
+    catalog: Option<&'a CatalogInfo>,
     bindings: BTreeMap<&'a str, ValidatedBinding<'a>>,
     stage_columns: StageColumnBindings,
     relationship_mappings: Vec<&'a Relationship>,
@@ -121,15 +123,43 @@ impl Declaration {
         GraphPlanValidator::new_with_stage_columns(self, plan, None, stage_columns).validate()
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_graph_plan_against_catalog(
         &self,
         plan: &GraphPlan,
         catalog: &CatalogInfo,
     ) -> Result<(), CoreError> {
-        self.validate_against_catalog(catalog)?;
-        GraphPlanValidator::new(self, plan, Some(catalog))
-            .validate()
+        self.validated_graph_plan_against_catalog(plan, catalog)
             .map(|_| ())
+    }
+
+    pub(crate) fn validated_graph_plan_against_catalog<'a>(
+        &'a self,
+        plan: &'a GraphPlan,
+        catalog: &'a CatalogInfo,
+    ) -> Result<ValidatedGraphPlan<'a>, CoreError> {
+        self.validate_against_catalog(catalog)?;
+        GraphPlanValidator::new(self, plan, Some(catalog)).validate()
+    }
+
+    pub(crate) fn validate_graph_plan_with_stage_columns_against_catalog<'a>(
+        &'a self,
+        plan: &'a GraphPlan,
+        stage_columns: StageColumnBindings,
+        catalog: &'a CatalogInfo,
+    ) -> Result<ValidatedGraphPlan<'a>, CoreError> {
+        self.validate_against_catalog(catalog)?;
+        GraphPlanValidator::new_with_stage_columns(self, plan, Some(catalog), stage_columns)
+            .validate()
+    }
+
+    pub(crate) fn stage_column_bindings_against_catalog(
+        &self,
+        staged: &GraphStagedQuery,
+        catalog: &CatalogInfo,
+    ) -> Result<StageColumnBindings, CoreError> {
+        self.validate_against_catalog(catalog)?;
+        stage_column_bindings_with_catalog(self, staged, Some(catalog))
     }
 
     pub(crate) fn validate_graph_query(&self, query: &GraphQuery) -> Result<(), CoreError> {
@@ -266,6 +296,62 @@ impl<'a> ValidatedGraphPlan<'a> {
 
     pub(crate) fn plan(&self) -> &'a GraphPlan {
         self.plan
+    }
+
+    pub(super) fn property_ref_temporal_kind(
+        &self,
+        property: &PropertyRef,
+    ) -> Result<Option<TemporalKind>, CoreError> {
+        if self.catalog.is_none() {
+            return Ok(None);
+        }
+        let binding = self.binding(&property.variable)?;
+        let Some(column) = binding.column_for_property(&property.property) else {
+            return Ok(None);
+        };
+        let table = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                &node.table
+            }
+            ValidatedBindingKind::Relationship(relationship) => &relationship.table,
+        };
+        Ok(self.column_temporal_kind(table, column))
+    }
+
+    pub(super) fn column_temporal_kind(
+        &self,
+        table: &TableRef,
+        column: &str,
+    ) -> Option<TemporalKind> {
+        let catalog = self.catalog?;
+        let scalar_type = catalog
+            .tables
+            .iter()
+            .find(|candidate| {
+                candidate.schema_name == table.schema && candidate.table_name == table.name
+            })
+            .and_then(|table| {
+                table
+                    .columns
+                    .iter()
+                    .find(|candidate| candidate.name == column)
+            })
+            .map_or(ScalarType::Unknown, |column| {
+                scalar_type_for_data_type(&column.data_type)
+            });
+        match scalar_type {
+            ScalarType::Temporal(
+                kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime),
+            ) => Some(kind),
+            ScalarType::Unknown
+            | ScalarType::Null
+            | ScalarType::String
+            | ScalarType::Integer
+            | ScalarType::Float
+            | ScalarType::Boolean
+            | ScalarType::Temporal(TemporalKind::Duration)
+            | ScalarType::Other => None,
+        }
     }
 
     pub(crate) fn binding(&self, variable: &str) -> Result<&ValidatedBinding<'a>, CoreError> {
@@ -419,6 +505,7 @@ impl<'a> GraphPlanValidator<'a> {
         Ok(ValidatedGraphPlan {
             graph: self.graph,
             plan: self.plan,
+            catalog: self.catalog,
             bindings: self.bindings,
             stage_columns: self.stage_columns,
             relationship_mappings: self.relationship_mappings,

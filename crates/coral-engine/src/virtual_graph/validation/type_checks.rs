@@ -7,6 +7,7 @@
     reason = "Leaf type-check helpers are split into a child module while preserving parent-private access."
 )]
 use super::*;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime};
 
 #[allow(
     clippy::allow_attributes,
@@ -136,10 +137,84 @@ impl<'a> GraphPlanValidator<'a> {
                 ScalarType::String,
                 path,
             ),
+            PredicateRhs::TemporalCoercion { source } => {
+                Self::validate_temporal_coercion_operand_types(operator, lhs_type, source, path)
+            }
             PredicateRhs::List(literals) => {
                 Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
             }
         }
+    }
+
+    pub(super) fn validate_temporal_coercion_operand_types(
+        operator: ComparisonOperator,
+        lhs_type: ScalarType,
+        source: &str,
+        path: &str,
+    ) -> Result<(), CoreError> {
+        match lhs_type {
+            ScalarType::Temporal(
+                kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime),
+            ) => {
+                Self::validate_temporal_coercion_source(source, kind, format!("{path}.rhs"))?;
+                Self::validate_scalar_predicate_operand_types(operator, lhs_type, lhs_type, path)
+            }
+            ScalarType::Temporal(TemporalKind::Duration) => Err(Self::temporal_coercion_error(
+                source,
+                TemporalKind::Duration,
+                format!("{path}.rhs"),
+            )),
+            ScalarType::Unknown
+            | ScalarType::Null
+            | ScalarType::String
+            | ScalarType::Integer
+            | ScalarType::Float
+            | ScalarType::Boolean
+            | ScalarType::Other => Self::validate_scalar_predicate_operand_types(
+                operator,
+                lhs_type,
+                ScalarType::String,
+                path,
+            ),
+        }
+    }
+
+    fn validate_temporal_coercion_source(
+        source: &str,
+        kind: TemporalKind,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        let valid = match kind {
+            TemporalKind::Date => NaiveDate::parse_from_str(source, "%Y-%m-%d").is_ok(),
+            TemporalKind::LocalDateTime => {
+                DateTime::parse_from_rfc3339(source).is_ok()
+                    || NaiveDateTime::parse_from_str(source, "%Y-%m-%dT%H:%M:%S%.f").is_ok()
+                    || NaiveDateTime::parse_from_str(source, "%Y-%m-%d %H:%M:%S%.f").is_ok()
+            }
+            TemporalKind::LocalTime => NaiveTime::parse_from_str(source, "%H:%M:%S%.f").is_ok(),
+            TemporalKind::Duration => false,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(Self::temporal_coercion_error(source, kind, path))
+        }
+    }
+
+    fn temporal_coercion_error(
+        source: &str,
+        kind: TemporalKind,
+        path: impl Into<String>,
+    ) -> CoreError {
+        Diagnostic::new(
+            diagnostic_codes::INVALID_SCALAR_TYPE,
+            path,
+            format!(
+                "cannot coerce string '{source}' to {} for comparison",
+                kind.name()
+            ),
+        )
+        .into_core_error()
     }
 
     pub(super) fn validate_scalar_in_list_operand_types(

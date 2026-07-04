@@ -59,7 +59,9 @@ impl<'a> SqlRenderer<'a> {
             PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
                 Self::scoped_variable_is_inner(variable, relationship_bindings, local_nodes)
             }
-            PredicateRhs::Literal(_) | PredicateRhs::List(_) => true,
+            PredicateRhs::Literal(_)
+            | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::List(_) => true,
         }
     }
 
@@ -1719,7 +1721,8 @@ impl<'a> SqlRenderer<'a> {
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value)),
+                PredicateRhs::Literal(Literal::String(value))
+                | PredicateRhs::TemporalCoercion { source: value },
             ) => Ok(format!(
                 "{lhs} LIKE {} ESCAPE '\\'",
                 render_like_pattern(operator, value)
@@ -3055,6 +3058,7 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         match rhs {
             PredicateRhs::Literal(literal) => Ok(render_literal(literal)),
+            PredicateRhs::TemporalCoercion { source } => Ok(quote_string_literal(source)),
             PredicateRhs::Property(property) => {
                 self.render_exists_property_ref(property, relationships, local_nodes, local_aliases)
             }
@@ -3069,6 +3073,45 @@ impl<'a> SqlRenderer<'a> {
                 "validated EXISTS literal list predicate reached generic RHS renderer",
             )),
         }
+    }
+
+    pub(super) fn render_exists_temporal_coercion_predicate_rhs<'b>(
+        &self,
+        property: &PropertyRef,
+        source: &str,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<String, CoreError> {
+        let kind = self.exists_property_ref_temporal_kind(property, relationships, local_nodes)?;
+        Ok(Self::render_temporal_coercion_rhs_for_kind(source, kind))
+    }
+
+    fn exists_property_ref_temporal_kind<'b>(
+        &self,
+        property: &PropertyRef,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+    ) -> Result<Option<TemporalKind>, CoreError> {
+        if let Some(relationship) =
+            Self::exists_relationship_for_variable(relationships, property.variable.as_str())
+        {
+            let Some(column) = relationship
+                .relationship
+                .column_for_property(&property.property)
+            else {
+                return Ok(None);
+            };
+            return Ok(self
+                .validated
+                .column_temporal_kind(&relationship.relationship.table, column));
+        }
+        if let Some(node) = local_nodes.get(property.variable.as_str()).copied() {
+            let Some(column) = node.column_for_property(&property.property) else {
+                return Ok(None);
+            };
+            return Ok(self.validated.column_temporal_kind(&node.table, column));
+        }
+        self.validated.property_ref_temporal_kind(property)
     }
 
     pub(super) fn render_exists_property_ref<'b>(

@@ -453,6 +453,19 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_string_predicate(path.clone(), predicate.operator, literal)?;
                 Self::validate_literal_predicate(path.clone(), predicate.operator, literal)
             }
+            PredicateRhs::TemporalCoercion { source } => {
+                if predicate.operator == ComparisonOperator::In {
+                    return Err(Diagnostic::new(
+                        diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                        path.clone(),
+                        "IN predicates require a literal list right-hand side",
+                    )
+                    .into_core_error());
+                }
+                let literal = Literal::String(source.clone());
+                Self::validate_string_predicate(path.clone(), predicate.operator, &literal)?;
+                Self::validate_literal_predicate(path.clone(), predicate.operator, &literal)
+            }
             PredicateRhs::Property(property) => {
                 if predicate.operator == ComparisonOperator::In {
                     return Err(Diagnostic::new(
@@ -678,6 +691,14 @@ impl<'a> GraphPlanValidator<'a> {
                 ScalarType::String,
                 path,
             ),
+            PredicateRhs::TemporalCoercion { source } => {
+                Self::validate_temporal_coercion_operand_types(
+                    predicate.operator,
+                    lhs_type,
+                    source,
+                    path,
+                )
+            }
             PredicateRhs::List(literals) => {
                 Self::validate_scalar_in_list_operand_types(lhs_type, literals, path)
             }

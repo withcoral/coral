@@ -237,8 +237,7 @@ impl CoralQuery {
     ) -> Result<GraphExecution, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
         let catalog = query_runtime.catalog_info(None);
-        graph.validate_graph_plan_against_catalog(plan, &catalog)?;
-        let translation = graph.lower_graph_plan(plan)?;
+        let translation = graph.lower_graph_plan_against_catalog(plan, &catalog)?;
         let execution = query_runtime.execute_sql(translation.sql()).await?;
         Ok(GraphExecution::new(translation, execution))
     }
@@ -260,8 +259,7 @@ impl CoralQuery {
     ) -> Result<GraphQueryPlan, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
         let catalog = query_runtime.catalog_info(None);
-        graph.validate_graph_plan_against_catalog(plan, &catalog)?;
-        let translation = graph.lower_graph_plan(plan)?;
+        let translation = graph.lower_graph_plan_against_catalog(plan, &catalog)?;
         let query_plan = query_runtime.explain_sql(translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))
     }
@@ -283,8 +281,7 @@ impl CoralQuery {
     ) -> Result<GraphExecution, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
         let catalog = query_runtime.catalog_info(None);
-        graph.validate_graph_query_against_catalog(query, &catalog)?;
-        let translation = graph.lower_graph_query(query)?;
+        let translation = graph.lower_graph_query_against_catalog(query, &catalog)?;
         let execution = query_runtime.execute_sql(translation.sql()).await?;
         Ok(GraphExecution::new(translation, execution))
     }
@@ -303,8 +300,7 @@ impl CoralQuery {
     ) -> Result<GraphQueryPlan, CoreError> {
         let query_runtime = runtime::query::build_runtime(sources, runtime).await?;
         let catalog = query_runtime.catalog_info(None);
-        graph.validate_graph_query_against_catalog(query, &catalog)?;
-        let translation = graph.lower_graph_query(query)?;
+        let translation = graph.lower_graph_query_against_catalog(query, &catalog)?;
         let query_plan = query_runtime.explain_sql(translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))
     }
@@ -340,8 +336,7 @@ impl CoralQuery {
             &BTreeMap::new(),
             &catalog,
         )?;
-        graph.validate_graph_query_against_catalog(&query, &catalog)?;
-        let translation = graph.lower_graph_query(&query)?;
+        let translation = graph.lower_graph_query_against_catalog(&query, &catalog)?;
         let execution = query_runtime.execute_sql(translation.sql()).await?;
         Ok(GraphExecution::new(translation, execution))
     }
@@ -376,8 +371,7 @@ impl CoralQuery {
         let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
             graph, cypher, parameters, &catalog,
         )?;
-        graph.validate_graph_query_against_catalog(&query, &catalog)?;
-        let translation = graph.lower_graph_query(&query)?;
+        let translation = graph.lower_graph_query_against_catalog(&query, &catalog)?;
         let execution = query_runtime.execute_sql(translation.sql()).await?;
         Ok(GraphExecution::new(translation, execution))
     }
@@ -409,8 +403,7 @@ impl CoralQuery {
             &BTreeMap::new(),
             &catalog,
         )?;
-        graph.validate_graph_query_against_catalog(&query, &catalog)?;
-        let translation = graph.lower_graph_query(&query)?;
+        let translation = graph.lower_graph_query_against_catalog(&query, &catalog)?;
         let query_plan = query_runtime.explain_sql(translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))
     }
@@ -441,8 +434,7 @@ impl CoralQuery {
         let query = virtual_graph::compile_cypher_query_for_graph_with_parameters_and_catalog(
             graph, cypher, parameters, &catalog,
         )?;
-        graph.validate_graph_query_against_catalog(&query, &catalog)?;
-        let translation = graph.lower_graph_query(&query)?;
+        let translation = graph.lower_graph_query_against_catalog(&query, &catalog)?;
         let query_plan = query_runtime.explain_sql(translation.sql()).await?;
         Ok(GraphQueryPlan::new(translation, query_plan))
     }

@@ -25,7 +25,7 @@ use super::ir::{
     TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings};
-use crate::CoreError;
+use crate::{CatalogInfo, CoreError};
 
 mod joins;
 mod metadata;
@@ -85,6 +85,15 @@ impl Declaration {
         SqlRenderer::new(validated).lower()
     }
 
+    pub(crate) fn lower_graph_plan_against_catalog(
+        &self,
+        plan: &GraphPlan,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        let validated = self.validated_graph_plan_against_catalog(plan, catalog)?;
+        SqlRenderer::new(validated).lower()
+    }
+
     /// Lowers a read-only virtual graph query into `DataFusion` SQL.
     ///
     /// # Errors
@@ -113,6 +122,22 @@ impl Declaration {
             format!("SELECT UNNEST({list_sql}) AS {}", quote_ident(alias)),
             Vec::new(),
         ))
+    }
+
+    pub(crate) fn lower_graph_query_against_catalog(
+        &self,
+        query: &GraphQuery,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        self.validate_graph_query_against_catalog(query, catalog)?;
+        match query {
+            GraphQuery::Plan(plan) => self.lower_graph_plan_against_catalog(plan, catalog),
+            GraphQuery::Staged(staged) => {
+                self.lower_graph_staged_query_against_catalog(staged, catalog)
+            }
+            GraphQuery::Union(union) => self.lower_graph_union_against_catalog(union, catalog),
+            GraphQuery::Unwind(unwind) => Self::lower_graph_unwind(unwind),
+        }
     }
 
     fn lower_graph_staged_query(
@@ -146,6 +171,41 @@ impl Declaration {
         ))
     }
 
+    fn lower_graph_staged_query_against_catalog(
+        &self,
+        staged: &GraphStagedQuery,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        if staged.stages.is_empty() {
+            return Err(CoreError::internal("staged graph query had no stages"));
+        }
+
+        let mut ctes = Vec::with_capacity(staged.stages.len());
+        let mut diagnostics = Vec::new();
+        for (index, stage) in staged.stages.iter().enumerate() {
+            let translation = self.lower_graph_plan_against_catalog(&stage.plan, catalog)?;
+            diagnostics.extend(translation.diagnostics().iter().cloned());
+            ctes.push(format!(
+                "{} AS ({})",
+                quote_ident(&format!("stage{index}")),
+                translation.sql()
+            ));
+        }
+
+        let stage_columns = self.stage_column_bindings_against_catalog(staged, catalog)?;
+        let final_validated = self.validate_graph_plan_with_stage_columns_against_catalog(
+            &staged.final_plan,
+            stage_columns,
+            catalog,
+        )?;
+        let final_translation = SqlRenderer::new(final_validated).lower()?;
+        diagnostics.extend(final_translation.diagnostics().iter().cloned());
+        Ok(SqlTranslation::new(
+            format!("WITH {} {}", ctes.join(", "), final_translation.sql()),
+            diagnostics,
+        ))
+    }
+
     fn lower_graph_union(&self, union: &GraphUnion) -> Result<SqlTranslation, CoreError> {
         if union.branches.is_empty() {
             return Err(CoreError::internal("graph union had no union branches"));
@@ -164,6 +224,42 @@ impl Declaration {
                 index,
             )?;
             let translation = self.lower_graph_plan(&branch.plan)?;
+            diagnostics.extend(translation.diagnostics().iter().cloned());
+            write!(
+                sql,
+                " {} {}",
+                if branch.all { "UNION ALL" } else { "UNION" },
+                render_union_branch_sql(translation.sql(), index + 1)
+            )
+            .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
+        }
+
+        let sql = render_union_outer_sql(sql, union)?;
+        Ok(SqlTranslation::new(sql, diagnostics))
+    }
+
+    fn lower_graph_union_against_catalog(
+        &self,
+        union: &GraphUnion,
+        catalog: &CatalogInfo,
+    ) -> Result<SqlTranslation, CoreError> {
+        if union.branches.is_empty() {
+            return Err(CoreError::internal("graph union had no union branches"));
+        }
+
+        let expected_names = union.first.projection_output_names();
+        let mut diagnostics = Vec::new();
+        let first = self.lower_graph_plan_against_catalog(&union.first, catalog)?;
+        diagnostics.extend(first.diagnostics().iter().cloned());
+        let mut sql = render_union_branch_sql(first.sql(), 0);
+
+        for (index, branch) in union.branches.iter().enumerate() {
+            validate_union_branch_output_names(
+                &expected_names,
+                &branch.plan.projection_output_names(),
+                index,
+            )?;
+            let translation = self.lower_graph_plan_against_catalog(&branch.plan, catalog)?;
             diagnostics.extend(translation.diagnostics().iter().cloned());
             write!(
                 sql,

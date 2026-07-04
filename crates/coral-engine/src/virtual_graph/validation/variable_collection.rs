@@ -236,7 +236,9 @@ impl<'a> GraphPlanValidator<'a> {
             PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
                 variables.insert(variable.as_str());
             }
-            PredicateRhs::Literal(_) | PredicateRhs::List(_) => {}
+            PredicateRhs::Literal(_)
+            | PredicateRhs::TemporalCoercion { .. }
+            | PredicateRhs::List(_) => {}
         }
     }
 

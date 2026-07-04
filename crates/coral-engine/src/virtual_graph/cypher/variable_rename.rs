@@ -195,7 +195,9 @@ fn rename_predicate_rhs_variables(rhs: &mut PredicateRhs, renames: &BTreeMap<Str
         PredicateRhs::Key { variable } | PredicateRhs::ElementId { variable } => {
             rename_string(variable, renames);
         }
-        PredicateRhs::Literal(_) | PredicateRhs::List(_) => {}
+        PredicateRhs::Literal(_)
+        | PredicateRhs::TemporalCoercion { .. }
+        | PredicateRhs::List(_) => {}
     }
 }
 
