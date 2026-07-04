@@ -9407,24 +9407,24 @@ fn compiles_static_list_comprehension_length_maps() {
 }
 
 #[test]
-fn compiles_static_list_comprehension_strict_cast_maps() {
+fn compiles_static_list_comprehension_cast_maps() {
     let graph = star_test_graph();
     let plan = compile_cypher_for_graph(
         &graph,
         "MATCH (service:Service) \
-             RETURN [x IN ['1', '2', null] | toInteger(x)] AS ints, \
-                    [x IN ['1.5', '2.25', null] | toFloat(x)] AS floats, \
-                    [x IN ['true', 'FALSE', null] | toBoolean(x)] AS booleans, \
+             RETURN [x IN ['bad', '3', null] | toInteger(x)] AS ints, \
+                    [x IN ['bad', '2.5', null] | toFloat(x)] AS floats, \
+                    [x IN ['maybe', 'true', null] | toBoolean(x)] AS booleans, \
                     [x IN [1, 2, null] | toString(x)] AS strings",
     )
-    .expect("static list comprehension strict cast maps should compile");
+    .expect("static list comprehension cast maps should compile");
 
     assert_eq!(
         plan.projections,
         vec![
             Projection::Expression {
                 expression: ScalarExpression::TypedLiteralList {
-                    literals: vec![Literal::Integer(1), Literal::Integer(2), Literal::Null],
+                    literals: vec![Literal::Null, Literal::Integer(3), Literal::Null],
                     element_type: LiteralListElementType::Integer,
                 },
                 alias: "ints".to_string(),
@@ -9432,8 +9432,8 @@ fn compiles_static_list_comprehension_strict_cast_maps() {
             Projection::Expression {
                 expression: ScalarExpression::TypedLiteralList {
                     literals: vec![
-                        Literal::Float(OrderedFloat(1.5)),
-                        Literal::Float(OrderedFloat(2.25)),
+                        Literal::Null,
+                        Literal::Float(OrderedFloat(2.5)),
                         Literal::Null
                     ],
                     element_type: LiteralListElementType::Float,
@@ -9442,11 +9442,7 @@ fn compiles_static_list_comprehension_strict_cast_maps() {
             },
             Projection::Expression {
                 expression: ScalarExpression::TypedLiteralList {
-                    literals: vec![
-                        Literal::Boolean(true),
-                        Literal::Boolean(false),
-                        Literal::Null
-                    ],
+                    literals: vec![Literal::Null, Literal::Boolean(true), Literal::Null],
                     element_type: LiteralListElementType::Boolean,
                 },
                 alias: "booleans".to_string(),
@@ -9877,19 +9873,6 @@ fn rejects_static_list_comprehension_numeric_function_maps_with_invalid_argument
         error
             .to_string()
             .contains("static numeric map expressions require numeric operands"),
-        "{error}"
-    );
-
-    let error = compile_cypher_for_graph(
-        &star_test_graph(),
-        "MATCH (service:Service) RETURN [x IN ['bad'] | toInteger(x)] AS values",
-    )
-    .expect_err("toInteger() should reject invalid strict casts");
-
-    assert!(
-        error
-            .to_string()
-            .contains("toInteger() in static list comprehension maps cannot cast value to integer"),
         "{error}"
     );
 

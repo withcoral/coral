@@ -13942,7 +13942,7 @@ fn evaluate_static_map_expression(
         }
         _ => Err(unsupported(
             path,
-            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), strict and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), haversin(), isNaN(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
+            "static list comprehension map expressions support the item variable, scalar literals, scalar parameters, arithmetic, predicate expressions, coalesce(), nullIf(), size()/char_length(), plain and nullable scalar casts, abs(), ceil()/ceiling(), floor(), round(), sqrt(), sign(), exp(), log()/ln(), log10(), pow()/power(), pi(), e(), sin(), cos(), tan(), cot(), asin(), acos(), atan(), atan2(), degrees(), radians(), haversin(), isNaN(), toLower()/lower(), toUpper()/upper(), trim()/btrim(), lTrim(), rTrim(), replace(), substring(), left(), right(), and reverse()",
         )),
     }
 }
@@ -14089,28 +14089,22 @@ fn evaluate_static_map_cast_function(
         return evaluate_static_map_to_string(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_integer_function(function) {
-        return evaluate_static_map_to_integer(function, path.to_string(), evaluation, false)
-            .map(Some);
+        return evaluate_static_map_to_integer(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_integer_or_null_function(function) {
-        return evaluate_static_map_to_integer(function, path.to_string(), evaluation, true)
-            .map(Some);
+        return evaluate_static_map_to_integer(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_float_function(function) {
-        return evaluate_static_map_to_float(function, path.to_string(), evaluation, false)
-            .map(Some);
+        return evaluate_static_map_to_float(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_float_or_null_function(function) {
-        return evaluate_static_map_to_float(function, path.to_string(), evaluation, true)
-            .map(Some);
+        return evaluate_static_map_to_float(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_boolean_function(function) {
-        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation, false)
-            .map(Some);
+        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation).map(Some);
     }
     if is_to_boolean_or_null_function(function) {
-        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation, true)
-            .map(Some);
+        return evaluate_static_map_to_boolean(function, path.to_string(), evaluation).map(Some);
     }
     Ok(None)
 }
@@ -14898,7 +14892,6 @@ fn evaluate_static_map_to_integer(
     function: &FunctionInvocation,
     path: impl Into<String>,
     evaluation: StaticFilterEvaluation<'_>,
-    nullable: bool,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     let function_name = qualified_function_name(function);
@@ -14912,12 +14905,9 @@ fn evaluate_static_map_to_integer(
         Literal::Integer(value) => Ok(Literal::Integer(value)),
         Literal::String(value) => match value.trim().parse::<i64>() {
             Ok(value) => Ok(Literal::Integer(value)),
-            Err(_) if nullable => Ok(Literal::Null),
-            Err(_) => Err(static_map_cast_error(path, &function_name, "integer")),
+            Err(_) => Ok(Literal::Null),
         },
-        Literal::Null => Ok(Literal::Null),
-        _ if nullable => Ok(Literal::Null),
-        _ => Err(static_map_cast_error(path, &function_name, "integer")),
+        _ => Ok(Literal::Null),
     }
 }
 
@@ -14925,7 +14915,6 @@ fn evaluate_static_map_to_float(
     function: &FunctionInvocation,
     path: impl Into<String>,
     evaluation: StaticFilterEvaluation<'_>,
-    nullable: bool,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     let function_name = qualified_function_name(function);
@@ -14948,8 +14937,7 @@ fn evaluate_static_map_to_float(
     };
     match value {
         Some(value) => Ok(Literal::Float(OrderedFloat(value))),
-        None if nullable => Ok(Literal::Null),
-        None => Err(static_map_cast_error(path, &function_name, "float")),
+        None => Ok(Literal::Null),
     }
 }
 
@@ -14957,7 +14945,6 @@ fn evaluate_static_map_to_boolean(
     function: &FunctionInvocation,
     path: impl Into<String>,
     evaluation: StaticFilterEvaluation<'_>,
-    nullable: bool,
 ) -> Result<Literal, CoreError> {
     let path = path.into();
     let function_name = qualified_function_name(function);
@@ -14976,22 +14963,8 @@ fn evaluate_static_map_to_boolean(
     };
     match value {
         Some(value) => Ok(Literal::Boolean(value)),
-        None if nullable => Ok(Literal::Null),
-        None => Err(static_map_cast_error(path, &function_name, "boolean")),
+        None => Ok(Literal::Null),
     }
-}
-
-fn static_map_cast_error(
-    path: impl Into<String>,
-    function_name: &str,
-    target_type: &str,
-) -> CoreError {
-    unsupported(
-        path,
-        format!(
-            "{function_name}() in static list comprehension maps cannot cast value to {target_type}"
-        ),
-    )
 }
 
 fn evaluate_static_map_unary_string_function(

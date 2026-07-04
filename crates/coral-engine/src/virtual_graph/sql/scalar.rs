@@ -340,24 +340,8 @@ impl<'a> SqlRenderer<'a> {
         expression: &ScalarExpression,
     ) -> Result<Option<String>, CoreError> {
         match expression {
-            ScalarExpression::ToString { expression } => {
-                if scalar_expression_is_duration(expression) {
-                    return self
-                        .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
-                        .map(Some);
-                }
-                self.render_cast_expression(expression, "VARCHAR").map(Some)
-            }
-            ScalarExpression::ToInteger { expression } => {
-                self.render_cast_expression(expression, "BIGINT").map(Some)
-            }
-            ScalarExpression::ToFloat { expression } => {
-                self.render_cast_expression(expression, "DOUBLE").map(Some)
-            }
-            ScalarExpression::ToBoolean { expression } => {
-                self.render_cast_expression(expression, "BOOLEAN").map(Some)
-            }
-            ScalarExpression::ToStringOrNull { expression } => {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToStringOrNull { expression } => {
                 if scalar_expression_is_duration(expression) {
                     return self
                         .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
@@ -366,28 +350,20 @@ impl<'a> SqlRenderer<'a> {
                 self.render_try_cast_expression(expression, "VARCHAR")
                     .map(Some)
             }
-            ScalarExpression::ToIntegerOrNull { expression } => self
+            ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToIntegerOrNull { expression } => self
                 .render_try_cast_expression(expression, "BIGINT")
                 .map(Some),
-            ScalarExpression::ToFloatOrNull { expression } => self
+            ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToFloatOrNull { expression } => self
                 .render_try_cast_expression(expression, "DOUBLE")
                 .map(Some),
-            ScalarExpression::ToBooleanOrNull { expression } => self
+            ScalarExpression::ToBoolean { expression }
+            | ScalarExpression::ToBooleanOrNull { expression } => self
                 .render_try_cast_expression(expression, "BOOLEAN")
                 .map(Some),
             _ => Ok(None),
         }
-    }
-
-    fn render_cast_expression(
-        &self,
-        expression: &ScalarExpression,
-        target_type: &str,
-    ) -> Result<String, CoreError> {
-        Ok(format!(
-            "CAST({} AS {target_type})",
-            self.render_scalar_expression(expression)?
-        ))
     }
 
     fn render_try_cast_expression(

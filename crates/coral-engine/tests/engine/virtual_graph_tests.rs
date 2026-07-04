@@ -12303,14 +12303,14 @@ async fn cypher_to_string_scalar_expressions_execute_against_synthetic_sources()
     assert!(
         execution
             .translated_sql()
-            .contains("CAST(\"n0\".\"risk_score\" AS VARCHAR) LIKE '0.9%' ESCAPE '\\'"),
+            .contains("TRY_CAST(\"n0\".\"risk_score\" AS VARCHAR) LIKE '0.9%' ESCAPE '\\'"),
         "{}",
         execution.translated_sql()
     );
     assert!(
         execution
             .translated_sql()
-            .contains("CAST(\"n0\".\"risk_score\" AS VARCHAR) AS \"risk_text\""),
+            .contains("TRY_CAST(\"n0\".\"risk_score\" AS VARCHAR) AS \"risk_text\""),
         "{}",
         execution.translated_sql()
     );
@@ -12347,21 +12347,21 @@ async fn cypher_scalar_cast_expressions_execute_against_synthetic_sources() {
     assert!(
         execution
             .translated_sql()
-            .contains("CAST(\"n0\".\"id\" AS BIGINT) = 10"),
+            .contains("TRY_CAST(\"n0\".\"id\" AS BIGINT) = 10"),
         "{}",
         execution.translated_sql()
     );
     assert!(
         execution
             .translated_sql()
-            .contains("CAST(\"n0\".\"risk_score\" AS DOUBLE) AS \"risk_float\""),
+            .contains("TRY_CAST(\"n0\".\"risk_score\" AS DOUBLE) AS \"risk_float\""),
         "{}",
         execution.translated_sql()
     );
     assert!(
         execution
             .translated_sql()
-            .contains("CAST(\"n0\".\"active\" AS BOOLEAN) AS \"active_bool\""),
+            .contains("TRY_CAST(\"n0\".\"active\" AS BOOLEAN) AS \"active_bool\""),
         "{}",
         execution.translated_sql()
     );
@@ -12371,6 +12371,70 @@ async fn cypher_scalar_cast_expressions_execute_against_synthetic_sources() {
             "id_int": 10,
             "risk_float": 0.9,
             "active_bool": true,
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_invalid_scalar_casts_yield_null_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service {name: 'billing-api'}) \
+         RETURN toInteger('abc') AS invalid_int, \
+                toInteger('42') AS valid_int, \
+                toFloat('x') AS invalid_float, \
+                toBoolean('nope') AS invalid_bool, \
+                toInteger(service.name) AS invalid_property, \
+                coalesce(toInteger(service.name), -1) AS property_fallback",
+    )
+    .await
+    .expect("invalid scalar casts should yield null instead of failing");
+
+    for expected in [
+        "TRY_CAST('abc' AS BIGINT) AS \"invalid_int\"",
+        "TRY_CAST('42' AS BIGINT) AS \"valid_int\"",
+        "TRY_CAST('x' AS DOUBLE) AS \"invalid_float\"",
+        "TRY_CAST('nope' AS BOOLEAN) AS \"invalid_bool\"",
+        "TRY_CAST(\"n0\".\"service_name\" AS BIGINT) AS \"invalid_property\"",
+    ] {
+        assert!(
+            execution.translated_sql().contains(expected),
+            "{}",
+            execution.translated_sql()
+        );
+    }
+
+    let projected_columns = execution
+        .execution()
+        .schema()
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "invalid_int",
+        "valid_int",
+        "invalid_float",
+        "invalid_bool",
+        "invalid_property",
+        "property_fallback",
+    ] {
+        assert!(
+            projected_columns.contains(&expected),
+            "missing projected column {expected}: {projected_columns:?}"
+        );
+    }
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "valid_int": 42,
+            "property_fallback": -1,
         })]
     );
 }
@@ -12475,7 +12539,7 @@ async fn cypher_arithmetic_scalar_expressions_execute_against_synthetic_sources(
     assert!(
         execution
             .translated_sql()
-            .contains("CAST((\"n0\".\"id\" / 10) AS BIGINT) AS \"id_bucket\""),
+            .contains("TRY_CAST((\"n0\".\"id\" / 10) AS BIGINT) AS \"id_bucket\""),
         "{}",
         execution.translated_sql()
     );
@@ -18973,9 +19037,9 @@ async fn cypher_static_list_comprehension_cast_maps_execute_against_synthetic_so
         "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
          RETURN person.name AS owner, \
                 service.name AS service, \
-                [x IN ['1', '2', null] | toInteger(x)] AS ints, \
-                [x IN ['1.5', '2.25', null] | toFloat(x)] AS floats, \
-                [x IN ['true', 'FALSE', null] | toBoolean(x)] AS booleans, \
+                [x IN ['bad', '3', null] | toInteger(x)] AS ints, \
+                [x IN ['bad', '2.5', null] | toFloat(x)] AS floats, \
+                [x IN ['maybe', 'true', null] | toBoolean(x)] AS booleans, \
                 [x IN ['bad', '3', null] | toIntegerOrNull(x)] AS nullable_ints, \
                 [x IN ['maybe', 'true', null] | toBooleanOrNull(x)] AS nullable_booleans \
          ORDER BY owner, service",
@@ -18986,16 +19050,16 @@ async fn cypher_static_list_comprehension_cast_maps_execute_against_synthetic_so
     assert!(
         execution
             .translated_sql()
-            .contains("make_array(1, 2, NULL) AS \"ints\""),
+            .contains("make_array(NULL, 3, NULL) AS \"ints\""),
         "{}",
         execution.translated_sql()
     );
     assert_eq!(
         execution_to_rows(execution.execution()),
         vec![
-            json!({"owner": "Ada Lovelace", "service": "billing-api", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
-            json!({"owner": "Grace Hopper", "service": "deployments", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
-            json!({"owner": "Katherine Johnson", "service": "experiments", "ints": [1, 2, null], "floats": [1.5, 2.25, null], "booleans": [true, false, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api", "ints": [null, 3, null], "floats": [null, 2.5, null], "booleans": [null, true, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+            json!({"owner": "Grace Hopper", "service": "deployments", "ints": [null, 3, null], "floats": [null, 2.5, null], "booleans": [null, true, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
+            json!({"owner": "Katherine Johnson", "service": "experiments", "ints": [null, 3, null], "floats": [null, 2.5, null], "booleans": [null, true, null], "nullable_ints": [null, 3, null], "nullable_booleans": [null, true, null]}),
         ]
     );
 }

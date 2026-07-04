@@ -25,7 +25,7 @@
     "RowModifiers": 24,
     "ScalarExpressions": 86,
     "Temporal": 86,
-    "TypeConversion": 16,
+    "TypeConversion": 17,
     "Union": 17,
     "Unwind": 13,
     "VariableLengthPaths": 16,
@@ -5810,30 +5810,68 @@
       }
     },
     {
-      "id": "strict-to-integer-invalid-string-rejected",
+      "id": "plain-to-integer-invalid-string-yields-null",
       "feature": "TypeConversion",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toInteger('abc') AS invalid_int",
       "expected": {
-        "kind": "error",
-        "contains": "Cannot cast string"
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "invalid_int": null
+          }
+        ]
       }
     },
     {
-      "id": "strict-to-float-invalid-string-rejected",
+      "id": "plain-to-float-invalid-string-yields-null",
       "feature": "TypeConversion",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toFloat('abc') AS invalid_float",
       "expected": {
-        "kind": "error",
-        "contains": "Cannot cast string"
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "invalid_float": null
+          }
+        ]
       }
     },
     {
-      "id": "strict-to-boolean-invalid-string-rejected",
+      "id": "plain-to-boolean-invalid-string-yields-null",
       "feature": "TypeConversion",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toBoolean('maybe') AS invalid_bool",
       "expected": {
-        "kind": "error",
-        "contains": "Cannot cast value"
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "invalid_bool": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "plain-to-integer-property-invalid-string-yields-null-after-with",
+      "feature": "TypeConversion",
+      "query": "MATCH (p:Person {name: 'Alice'}) WITH * MATCH (n:Person) RETURN n.name AS name, toInteger(n.name) AS parsed_name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice",
+            "parsed_name": null
+          },
+          {
+            "name": "Bob",
+            "parsed_name": null
+          },
+          {
+            "name": "Carol",
+            "parsed_name": null
+          }
+        ]
       }
     },
     {

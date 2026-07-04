@@ -2571,7 +2571,7 @@ fn lower_graph_plan_renders_identity_scalar_expressions() {
     assert!(
         translation
             .sql()
-            .contains("ORDER BY CAST(\"n1\".\"id\" AS VARCHAR) ASC"),
+            .contains("ORDER BY TRY_CAST(\"n1\".\"id\" AS VARCHAR) ASC"),
         "{}",
         translation.sql()
     );
@@ -2689,7 +2689,7 @@ fn lower_graph_plan_renders_temporal_date_expressions() {
 
     assert!(
         translation.sql().contains(
-            "SELECT make_date(1984, 10, 11) AS \"d\", CAST(make_date(1984, 10, 11) AS VARCHAR) AS \"text\""
+            "SELECT make_date(1984, 10, 11) AS \"d\", TRY_CAST(make_date(1984, 10, 11) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -2749,7 +2749,7 @@ fn lower_graph_plan_renders_temporal_localdatetime_expressions() {
     assert!(
         translation.sql().contains(
             "SELECT CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS \"d\", \
-             CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
+             TRY_CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -2805,7 +2805,7 @@ fn lower_graph_plan_renders_temporal_localtime_expressions() {
     assert!(
         translation.sql().contains(
             "SELECT CAST('12:34:56' AS TIME) AS \"t\", \
-             CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
+             TRY_CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -3362,6 +3362,76 @@ fn lower_graph_plan_renders_string_predicate_function_expressions() {
         "{}",
         translation.sql()
     );
+}
+
+#[test]
+fn lower_graph_plan_renders_scalar_cast_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        expression_projection(
+            "id_text",
+            ScalarExpression::ToString {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "service".to_string(),
+                    property: "id".to_string(),
+                })),
+            },
+        ),
+        expression_projection(
+            "risk_float",
+            ScalarExpression::ToFloat {
+                expression: Box::new(service_risk_expression()),
+            },
+        ),
+        expression_projection(
+            "active_bool",
+            ScalarExpression::ToBoolean {
+                expression: Box::new(ScalarExpression::Literal(Literal::String(
+                    "true".to_string(),
+                ))),
+            },
+        ),
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: ScalarExpression::ToInteger {
+            expression: Box::new(ScalarExpression::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "id".to_string(),
+            })),
+        },
+        operator: ComparisonOperator::GreaterThan,
+        rhs: ScalarPredicateRhs::Expression(integer_literal(0)),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(ScalarExpression::ToInteger {
+            expression: Box::new(ScalarExpression::Property(PropertyRef {
+                variable: "service".to_string(),
+                property: "id".to_string(),
+            })),
+        }),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("scalar casts should lower");
+
+    for expected in [
+        "TRY_CAST(\"n1\".\"id\" AS VARCHAR) AS \"id_text\"",
+        "TRY_CAST(\"n1\".\"risk_score\" AS DOUBLE) AS \"risk_float\"",
+        "TRY_CAST('true' AS BOOLEAN) AS \"active_bool\"",
+        "WHERE TRY_CAST(\"n1\".\"id\" AS BIGINT) > 0",
+        "ORDER BY TRY_CAST(\"n1\".\"id\" AS BIGINT) ASC",
+    ] {
+        assert!(
+            translation.sql().contains(expected),
+            "{}",
+            translation.sql()
+        );
+    }
 }
 
 #[test]
@@ -5313,7 +5383,7 @@ fn renders_date_from_string_projection() {
     assert!(
         translation.sql().contains(
             "SELECT CAST('2015-07-21' AS DATE) AS \"d\", \
-             CAST(CAST('2015-07-21' AS DATE) AS VARCHAR) AS \"text\""
+             TRY_CAST(CAST('2015-07-21' AS DATE) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -5398,7 +5468,7 @@ fn renders_localdatetime_from_string_projection() {
     assert!(
         translation.sql().contains(
             "SELECT CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS \"d\", \
-             CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
+             TRY_CAST(CAST('2020-01-15T12:34:56' AS TIMESTAMP) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -5484,7 +5554,7 @@ fn renders_localtime_from_string_projection() {
     assert!(
         translation.sql().contains(
             "SELECT CAST('12:34:56' AS TIME) AS \"t\", \
-             CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
+             TRY_CAST(CAST('12:34:56' AS TIME) AS VARCHAR) AS \"text\""
         ),
         "{}",
         translation.sql()

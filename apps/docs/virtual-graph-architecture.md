@@ -424,8 +424,8 @@ The supported foundation subset is intentionally narrow:
   numeric map functions, and scalar parameters;
 - scalar string, numeric, and conversion expressions in projections,
   predicates, and ordering, including arithmetic `+`, `-`, `*`, `/`, `%`,
-  and `^`, unary numeric negation, `coalesce`, strict scalar casts lowered to
-  DataFusion `CAST`, nullable scalar casts lowered to `TRY_CAST`, `nullIf`
+  and `^`, unary numeric negation, `coalesce`, plain and nullable scalar casts lowered to
+  DataFusion `TRY_CAST` so unparseable values produce `NULL`, `nullIf`
   lowered to DataFusion `NULLIF`, string case
   conversion, whitespace trimming, `replace`, character length via `size`,
   `char_length`, and `character_length`, and zero-based `substring` lowered

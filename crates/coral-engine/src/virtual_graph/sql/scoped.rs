@@ -2424,17 +2424,6 @@ impl<'a> SqlRenderer<'a> {
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<Option<String>, CoreError> {
-        let cast = |expression: &ScalarExpression, target_type: &str| {
-            Ok(Some(format!(
-                "CAST({} AS {target_type})",
-                self.render_scoped_scalar_expression(
-                    expression,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )?
-            )))
-        };
         let try_cast = |expression: &ScalarExpression, target_type: &str| {
             Ok(Some(format!(
                 "TRY_CAST({} AS {target_type})",
@@ -2447,24 +2436,8 @@ impl<'a> SqlRenderer<'a> {
             )))
         };
         match expression {
-            ScalarExpression::ToString { expression } => {
-                if scoped_scalar_expression_is_duration(expression) {
-                    return Ok(Some(format!(
-                        "coral_duration_to_iso({})",
-                        self.render_scoped_scalar_expression(
-                            expression,
-                            relationships,
-                            local_nodes,
-                            local_aliases,
-                        )?
-                    )));
-                }
-                cast(expression, "VARCHAR")
-            }
-            ScalarExpression::ToInteger { expression } => cast(expression, "BIGINT"),
-            ScalarExpression::ToFloat { expression } => cast(expression, "DOUBLE"),
-            ScalarExpression::ToBoolean { expression } => cast(expression, "BOOLEAN"),
-            ScalarExpression::ToStringOrNull { expression } => {
+            ScalarExpression::ToString { expression }
+            | ScalarExpression::ToStringOrNull { expression } => {
                 if scoped_scalar_expression_is_duration(expression) {
                     return Ok(Some(format!(
                         "coral_duration_to_iso({})",
@@ -2478,9 +2451,12 @@ impl<'a> SqlRenderer<'a> {
                 }
                 try_cast(expression, "VARCHAR")
             }
-            ScalarExpression::ToIntegerOrNull { expression } => try_cast(expression, "BIGINT"),
-            ScalarExpression::ToFloatOrNull { expression } => try_cast(expression, "DOUBLE"),
-            ScalarExpression::ToBooleanOrNull { expression } => try_cast(expression, "BOOLEAN"),
+            ScalarExpression::ToInteger { expression }
+            | ScalarExpression::ToIntegerOrNull { expression } => try_cast(expression, "BIGINT"),
+            ScalarExpression::ToFloat { expression }
+            | ScalarExpression::ToFloatOrNull { expression } => try_cast(expression, "DOUBLE"),
+            ScalarExpression::ToBoolean { expression }
+            | ScalarExpression::ToBooleanOrNull { expression } => try_cast(expression, "BOOLEAN"),
             _ => Ok(None),
         }
     }
