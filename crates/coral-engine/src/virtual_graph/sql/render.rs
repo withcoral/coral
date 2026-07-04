@@ -324,6 +324,7 @@ pub(super) fn render_literal(literal: &Literal) -> String {
         Literal::Float(value) => render_float_literal((*value).into_inner()),
         Literal::Boolean(value) => value.to_string(),
         Literal::Null => "NULL".to_string(),
+        Literal::List(values) => render_literal_list(values),
     }
 }
 
@@ -358,7 +359,11 @@ pub(super) fn render_typed_literal_list(
     element_type: LiteralListElementType,
 ) -> String {
     if !literals.is_empty() {
-        return render_literal_list(literals);
+        let values = literals
+            .iter()
+            .map(|literal| render_typed_list_element(literal, element_type))
+            .collect::<Vec<_>>();
+        return render_sql_array(&values);
     }
     format!(
         "array_resize(make_array(CAST(NULL AS {})), 0)",
@@ -372,6 +377,24 @@ fn render_literal_list_element_type(element_type: LiteralListElementType) -> &'s
         LiteralListElementType::Integer => "BIGINT",
         LiteralListElementType::Float => "DOUBLE",
         LiteralListElementType::Boolean => "BOOLEAN",
+        LiteralListElementType::StringList => "ARRAY<VARCHAR>",
+        LiteralListElementType::IntegerList => "ARRAY<BIGINT>",
+        LiteralListElementType::FloatList => "ARRAY<DOUBLE>",
+        LiteralListElementType::BooleanList => "ARRAY<BOOLEAN>",
+    }
+}
+
+fn render_typed_list_element(literal: &Literal, element_type: LiteralListElementType) -> String {
+    match element_type.list_element_type() {
+        Some(inner_type) => match literal {
+            Literal::List(values) => render_typed_literal_list(values, inner_type),
+            Literal::Null => format!(
+                "CAST(NULL AS {})",
+                render_literal_list_element_type(element_type)
+            ),
+            _ => render_literal(literal),
+        },
+        None => render_literal(literal),
     }
 }
 

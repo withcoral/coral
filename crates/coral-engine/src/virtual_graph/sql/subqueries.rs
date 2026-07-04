@@ -370,6 +370,9 @@ impl<'a> SqlRenderer<'a> {
                 self.collect_scalar_expression_subquery_candidates(start, required, candidates);
                 self.collect_scalar_expression_subquery_candidates(end, required, candidates);
             }
+            ScalarExpression::ListIndex { list, .. } => {
+                self.collect_scalar_expression_subquery_candidates(list, required, candidates);
+            }
             ScalarExpression::Case {
                 alternatives,
                 else_expression,

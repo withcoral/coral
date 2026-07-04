@@ -18751,6 +18751,76 @@ async fn cypher_dynamic_unwind_alias_sources_execute_against_synthetic_sources()
 }
 
 #[tokio::test]
+async fn cypher_nested_literal_unwind_sources_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let pairs = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [[1, 2], [3, 4]] AS pair RETURN pair",
+    )
+    .await
+    .expect("nested literal UNWIND row source should execute");
+
+    assert!(
+        pairs.translated_sql().contains("make_array(make_array"),
+        "{}",
+        pairs.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(pairs.execution()),
+        vec![json!({"pair": [1, 2]}), json!({"pair": [3, 4]})]
+    );
+
+    let first_values = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [[1, 2], [3, 4]] AS pair RETURN pair[0] AS first ORDER BY first",
+    )
+    .await
+    .expect("nested literal UNWIND list index should execute");
+
+    assert_eq!(
+        execution_to_rows(first_values.execution()),
+        vec![json!({"first": 1}), json!({"first": 3})]
+    );
+
+    let max_list = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "UNWIND [[1], [2], [2, 1]] AS x RETURN max(x) AS max_x",
+    )
+    .await
+    .expect("nested literal UNWIND list max should execute");
+
+    assert_eq!(
+        execution_to_rows(max_list.execution()),
+        vec![json!({"max_x": [2, 1]})]
+    );
+
+    let error = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "UNWIND [['a', 1], [1, null]] AS x RETURN x",
+    )
+    .await
+    .expect_err("heterogeneous nested literal UNWIND should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("nested lists require each non-empty nested list"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
 async fn cypher_node_property_key_unwind_sources_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

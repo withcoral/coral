@@ -80,6 +80,9 @@ pub enum Literal {
     Boolean(bool),
     /// Null literal.
     Null,
+    /// Literal list value used when a statically folded outer list contains
+    /// list-valued elements.
+    List(Vec<Literal>),
 }
 
 /// Element type carried by a statically folded list when the list may be empty.
@@ -93,6 +96,40 @@ pub enum LiteralListElementType {
     Float,
     /// Boolean elements.
     Boolean,
+    /// List elements whose non-null members are strings.
+    StringList,
+    /// List elements whose non-null members are signed integers.
+    IntegerList,
+    /// List elements whose non-null members are floating-point values.
+    FloatList,
+    /// List elements whose non-null members are booleans.
+    BooleanList,
+}
+
+impl LiteralListElementType {
+    /// Returns the scalar element type for a list-valued element type.
+    #[must_use]
+    pub fn list_element_type(self) -> Option<Self> {
+        match self {
+            Self::StringList => Some(Self::String),
+            Self::IntegerList => Some(Self::Integer),
+            Self::FloatList => Some(Self::Float),
+            Self::BooleanList => Some(Self::Boolean),
+            Self::String | Self::Integer | Self::Float | Self::Boolean => None,
+        }
+    }
+
+    /// Returns the list-valued element type for scalar list members.
+    #[must_use]
+    pub fn list_of(element_type: Self) -> Option<Self> {
+        match element_type {
+            Self::String => Some(Self::StringList),
+            Self::Integer => Some(Self::IntegerList),
+            Self::Float => Some(Self::FloatList),
+            Self::Boolean => Some(Self::BooleanList),
+            Self::StringList | Self::IntegerList | Self::FloatList | Self::BooleanList => None,
+        }
+    }
 }
 
 /// Property reference bound to a node or relationship variable.
@@ -262,6 +299,15 @@ pub enum ScalarExpression {
         left: Box<ScalarExpression>,
         /// Right list operand.
         right: Box<ScalarExpression>,
+    },
+    /// Runtime index into a list-valued scalar expression.
+    ListIndex {
+        /// List-valued expression.
+        list: Box<ScalarExpression>,
+        /// Zero-based Cypher index.
+        index: i64,
+        /// Known scalar element type returned by this index.
+        element_type: LiteralListElementType,
     },
     /// Ordered mapped keys for graph variables that make up a materialized path
     /// element list such as `nodes(path)` or `relationships(path)`.
@@ -1461,6 +1507,7 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::Substring { .. }
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::ListConcat { .. }
+        | ScalarExpression::ListIndex { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => {
             structural_scalar_expression_references_outside_scope(expression, scope)
@@ -1616,6 +1663,10 @@ fn scalar_expression_unary_operand(expression: &ScalarExpression) -> Option<&Sca
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "This exhaustive scalar IR walker keeps scope recursion total over every structural variant."
+)]
 fn structural_scalar_expression_references_outside_scope(
     expression: &ScalarExpression,
     scope: &BTreeSet<String>,
@@ -1704,6 +1755,9 @@ fn structural_scalar_expression_references_outside_scope(
         | ScalarExpression::Atan2 { y: left, x: right } => {
             scalar_expression_references_outside_scope(left, scope)
                 || scalar_expression_references_outside_scope(right, scope)
+        }
+        ScalarExpression::ListIndex { list, .. } => {
+            scalar_expression_references_outside_scope(list, scope)
         }
         ScalarExpression::Case {
             alternatives,

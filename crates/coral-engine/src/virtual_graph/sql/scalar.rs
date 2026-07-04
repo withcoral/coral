@@ -77,6 +77,11 @@ impl<'a> SqlRenderer<'a> {
                 self.render_scalar_expression(left)?,
                 self.render_scalar_expression(right)?
             )),
+            ScalarExpression::ListIndex { list, index, .. } => Ok(format!(
+                "{}[{}]",
+                self.render_scalar_expression(list)?,
+                index + 1
+            )),
             ScalarExpression::Predicate(predicate) => {
                 self.render_scalar_predicate_expression(predicate)
             }

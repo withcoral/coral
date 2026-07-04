@@ -238,6 +238,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
             | ScalarExpression::ListConcat { .. }
+            | ScalarExpression::ListIndex { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => {
                 self.reject_unprecomputed_projection_structural_subqueries(expression)?;
@@ -383,6 +384,9 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
                 self.reject_unprecomputed_projection_scalar_subqueries(start)?;
                 self.reject_unprecomputed_projection_scalar_subqueries(end)?;
+            }
+            ScalarExpression::ListIndex { list, .. } => {
+                self.reject_unprecomputed_projection_scalar_subqueries(list)?;
             }
             ScalarExpression::Case {
                 alternatives,

@@ -93,6 +93,12 @@ impl<'a> GraphPlanValidator<'a> {
                 self.infer_scalar_expression_type(right, format!("{path}.right"))?;
                 Ok(ScalarType::Other)
             }
+            ScalarExpression::ListIndex {
+                list, element_type, ..
+            } => {
+                self.infer_scalar_expression_type(list, format!("{path}.list"))?;
+                Ok(scalar_type_for_literal_list_element(*element_type))
+            }
             _ => self.infer_scalar_function_type(expression, &path),
         }
     }

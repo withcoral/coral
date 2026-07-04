@@ -210,6 +210,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::Temporal(_)
             | ScalarExpression::Arithmetic { .. }
             | ScalarExpression::ListConcat { .. }
+            | ScalarExpression::ListIndex { .. }
             | ScalarExpression::Case { .. }
             | ScalarExpression::Atan2 { .. } => Self::scoped_structural_scalar_expression_is_inner(
                 expression,
@@ -389,6 +390,9 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
             ScalarExpression::Temporal(TemporalExpr::DurationInUnits { start, end, .. }) => {
                 Self::scoped_scalar_pair_is_inner(start, end, relationship_bindings, local_nodes)
+            }
+            ScalarExpression::ListIndex { list, .. } => {
+                Self::scoped_scalar_expression_is_inner(list, relationship_bindings, local_nodes)
             }
             ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
                 Self::scoped_scalar_expression_is_inner(
@@ -2078,6 +2082,16 @@ impl<'a> SqlRenderer<'a> {
                 literals,
                 element_type,
             } => Ok(render_typed_literal_list(literals, *element_type)),
+            ScalarExpression::ListIndex { list, index, .. } => Ok(format!(
+                "{}[{}]",
+                self.render_scoped_scalar_expression(
+                    list,
+                    relationships,
+                    local_nodes,
+                    local_aliases
+                )?,
+                index + 1
+            )),
             ScalarExpression::GraphKeyList { variables } => self.render_scoped_graph_key_list_ref(
                 variables,
                 relationships,

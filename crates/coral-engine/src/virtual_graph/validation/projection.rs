@@ -568,10 +568,7 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         let path = path.into();
         for literal in literals {
-            let Some(kind) = literal_list_element_kind(literal) else {
-                continue;
-            };
-            if kind != element_type {
+            if !literal_matches_element_type(literal, element_type) {
                 return Err(Diagnostic::new(
                     diagnostic_codes::INVALID_TYPED_LITERAL_LIST,
                     path,
@@ -581,5 +578,16 @@ impl<'a> GraphPlanValidator<'a> {
             }
         }
         Ok(())
+    }
+}
+
+fn literal_matches_element_type(literal: &Literal, element_type: LiteralListElementType) -> bool {
+    match (literal, element_type.list_element_type()) {
+        (Literal::Null, _) => true,
+        (Literal::List(values), Some(inner_type)) => values
+            .iter()
+            .all(|value| literal_matches_element_type(value, inner_type)),
+        (Literal::List(_), None) | (_, Some(_)) => false,
+        (_, None) => literal_list_element_kind(literal).is_some_and(|kind| kind == element_type),
     }
 }

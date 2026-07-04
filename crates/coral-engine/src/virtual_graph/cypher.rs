@@ -31,7 +31,7 @@ use decypher::ast::clause::{
 use decypher::ast::expr::{
     BinaryOperator as CypherBinaryOperator, CaseExpression, CollectSubqueryExpression,
     ComparisonOperator as CypherComparisonOperator, CountSubqueryExpression, ExistsExpression,
-    ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension,
+    ExistsInner, Expression, FilterExpression, FunctionInvocation, ListComprehension, ListLiteral,
     Literal as CypherLiteral, MapLiteral, NumberLiteral, Parameter as CypherParameter,
     StringLiteral, UnaryOperator,
 };
@@ -501,6 +501,7 @@ struct CypherCompileState {
     hidden_graph_variables: BTreeSet<String>,
     out_of_scope_graph_names: BTreeSet<String>,
     scalar_aliases: Vec<Projection>,
+    list_alias_element_types: BTreeMap<String, LiteralListElementType>,
 }
 
 #[derive(Debug, Default)]
@@ -1212,6 +1213,7 @@ fn compile_dynamic_unwind_row_source(
         },
         alias: variable.clone(),
     });
+    record_unwind_list_alias(&mut final_state, &variable, source.element_type);
     compile_reading_clauses_into(
         remaining,
         format!("{path}.final_part.reading_clauses"),
@@ -1278,6 +1280,7 @@ fn compile_literal_unwind_terminal_with_row_source(
         expression: ScalarExpression::StageValue { alias: variable },
         alias: unwind.variable.clone(),
     });
+    record_unwind_list_alias(&mut state, &unwind.variable, element_type);
     let mut final_plan = GraphPlan::default();
     compile_unwind_terminal_with_clause(&part.with, &mut final_plan, &state, context)?;
     let return_clause = return_clause_from_single_part(&multi_part.final_part, "final_part")?;
@@ -1404,6 +1407,7 @@ fn compile_unwind_terminal_query(
         },
         alias: variable,
     });
+    record_unwind_list_alias(&mut final_state, &unwind.variable, element_type);
     compile_return(return_clause, &mut final_plan, &final_state, context)?;
     reject_ignored_path_variable_references(&final_plan, &final_state, "return")?;
 
@@ -1411,6 +1415,18 @@ fn compile_unwind_terminal_query(
         unwind,
         final_plan,
     }))
+}
+
+fn record_unwind_list_alias(
+    state: &mut CypherCompileState,
+    variable: &str,
+    element_type: LiteralListElementType,
+) {
+    if let Some(inner_type) = element_type.list_element_type() {
+        state
+            .list_alias_element_types
+            .insert(variable.to_string(), inner_type);
+    }
 }
 
 fn dynamic_unwind_variable_name(unwind: &Unwind, context: &CypherCompileContext) -> String {
@@ -1648,7 +1664,7 @@ fn compile_optional_literal_unwind_row_source_list(
                 .iter()
                 .enumerate()
                 .map(|(index, expression)| {
-                    compile_literal(expression, format!("{path}[{index}]"), context)
+                    compile_literal_list_element(expression, format!("{path}[{index}]"), context)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let element_type = literal_unwind_row_source_element_type(&literals, &path)?;
@@ -1665,6 +1681,33 @@ fn literal_unwind_row_source_element_type(
     literals: &[Literal],
     path: &str,
 ) -> Result<LiteralListElementType, CoreError> {
+    let mut contains_nested_list = false;
+    let mut contains_scalar = false;
+    for literal in literals {
+        match literal {
+            Literal::List(values) => {
+                contains_nested_list = true;
+                if values.iter().any(|value| !matches!(value, Literal::Null))
+                    && infer_scalar_literal_list_element_type(values).is_none()
+                {
+                    return Err(unsupported(
+                        path,
+                        "literal UNWIND row-source nested lists require each non-empty nested list to have one scalar element type",
+                    ));
+                }
+            }
+            Literal::Null => {}
+            Literal::String(_) | Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_) => {
+                contains_scalar = true;
+            }
+        }
+    }
+    if contains_nested_list && contains_scalar {
+        return Err(unsupported(
+            path,
+            "literal UNWIND row-source lists cannot mix nested-list elements with scalar elements",
+        ));
+    }
     if let Some(element_type) = infer_literal_list_element_type(literals) {
         return Ok(element_type);
     }
@@ -1674,9 +1717,12 @@ fn literal_unwind_row_source_element_type(
     {
         return Ok(LiteralListElementType::Integer);
     }
+    if contains_nested_list && !contains_scalar {
+        return Ok(LiteralListElementType::IntegerList);
+    }
     Err(unsupported(
         path,
-        "literal UNWIND row-source lists require all non-null elements to have the same scalar type",
+        "literal UNWIND row-source lists require all non-null elements to have the same scalar or nested-list element type",
     ))
 }
 
@@ -2833,6 +2879,13 @@ fn cypher_literal_expression(literal: &Literal, span: decypher::error::Span) -> 
         Literal::Float(value) => CypherLiteral::Number(NumberLiteral::Float(value.into_inner())),
         Literal::Boolean(value) => CypherLiteral::Boolean(*value),
         Literal::Null => CypherLiteral::Null,
+        Literal::List(values) => CypherLiteral::List(ListLiteral {
+            elements: values
+                .iter()
+                .map(|value| cypher_literal_expression(value, span))
+                .collect(),
+            span,
+        }),
     })
 }
 
@@ -13380,6 +13433,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::ListConcat { .. }
+        | ScalarExpression::ListIndex { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::Case { .. } => None,
         ScalarExpression::ToString { .. }
@@ -13503,6 +13557,9 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         | ScalarExpression::ListConcat { left, right } => {
             hidden_subquery_order_expression_can_be_precomputed(left)
                 && hidden_subquery_order_expression_can_be_precomputed(right)
+        }
+        ScalarExpression::ListIndex { list, .. } => {
+            hidden_subquery_order_expression_can_be_precomputed(list)
         }
         ScalarExpression::Atan2 { y, x } => {
             hidden_subquery_order_expression_can_be_precomputed(y)
@@ -13721,6 +13778,9 @@ fn compound_scalar_expression_correlated_subquery_count(
             scalar_expression_correlated_subquery_count(left)
                 + scalar_expression_correlated_subquery_count(right),
         ),
+        ScalarExpression::ListIndex { list, .. } => {
+            Some(scalar_expression_correlated_subquery_count(list))
+        }
         ScalarExpression::Atan2 { y, x } => Some(
             scalar_expression_correlated_subquery_count(y)
                 + scalar_expression_correlated_subquery_count(x),
@@ -13836,6 +13896,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::Temporal(_)
         | ScalarExpression::Arithmetic { .. }
         | ScalarExpression::ListConcat { .. }
+        | ScalarExpression::ListIndex { .. }
         | ScalarExpression::Atan2 { .. }
         | ScalarExpression::ToString { .. }
         | ScalarExpression::ToInteger { .. }
@@ -15236,7 +15297,7 @@ fn cast_static_literal_to_string_or_null(literal: &Literal) -> Literal {
         Literal::Integer(value) => Literal::String(value.to_string()),
         Literal::Float(value) => Literal::String(value.into_inner().to_string()),
         Literal::Boolean(value) => Literal::String(value.to_string()),
-        Literal::Null => Literal::Null,
+        Literal::Null | Literal::List(_) => Literal::Null,
     }
 }
 
@@ -15258,7 +15319,7 @@ fn cast_static_literal_to_integer_or_null(
             .parse::<i64>()
             .map_or(Literal::Null, Literal::Integer)),
         Literal::Boolean(value) => Ok(Literal::Integer(i64::from(*value))),
-        Literal::Null => Ok(Literal::Null),
+        Literal::Null | Literal::List(_) => Ok(Literal::Null),
     }
 }
 
@@ -15290,7 +15351,7 @@ fn cast_static_literal_to_float_or_null(literal: &Literal) -> Literal {
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite()),
-        Literal::Boolean(_) | Literal::Null => None,
+        Literal::Boolean(_) | Literal::Null | Literal::List(_) => None,
     };
     match value {
         Some(value) => Literal::Float(OrderedFloat(value)),
@@ -15304,7 +15365,7 @@ fn cast_static_literal_to_boolean_or_null(literal: &Literal) -> Literal {
         Literal::String(value) if value.trim().eq_ignore_ascii_case("true") => Some(true),
         Literal::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
         Literal::Integer(value) => Some(*value != 0),
-        Literal::Float(_) | Literal::String(_) | Literal::Null => None,
+        Literal::Float(_) | Literal::String(_) | Literal::Null | Literal::List(_) => None,
     };
     match value {
         Some(value) => Literal::Boolean(value),
@@ -16338,7 +16399,7 @@ fn evaluate_static_map_to_string(
         Literal::Integer(value) => Literal::String(value.to_string()),
         Literal::Float(value) => Literal::String(value.into_inner().to_string()),
         Literal::Boolean(value) => Literal::String(value.to_string()),
-        Literal::Null => Literal::Null,
+        Literal::Null | Literal::List(_) => Literal::Null,
     })
 }
 
@@ -16387,7 +16448,7 @@ fn evaluate_static_map_to_float(
             .ok()
             .filter(|value| value.is_finite()),
         Literal::Null => return Ok(Literal::Null),
-        Literal::Boolean(_) => None,
+        Literal::Boolean(_) | Literal::List(_) => None,
     };
     match value {
         Some(value) => Ok(Literal::Float(OrderedFloat(value))),
@@ -16413,7 +16474,7 @@ fn evaluate_static_map_to_boolean(
         Literal::String(value) if value.trim().eq_ignore_ascii_case("true") => Some(true),
         Literal::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
         Literal::Null => return Ok(Literal::Null),
-        Literal::Integer(_) | Literal::Float(_) | Literal::String(_) => None,
+        Literal::Integer(_) | Literal::Float(_) | Literal::String(_) | Literal::List(_) => None,
     };
     match value {
         Some(value) => Ok(Literal::Boolean(value)),
@@ -18775,6 +18836,11 @@ fn compile_projection(
 ) -> Result<Projection, CoreError> {
     let path = path.into();
     if let Some(projection) =
+        compile_optional_stage_list_index_projection(item, path.clone(), state, context)?
+    {
+        return Ok(projection);
+    }
+    if let Some(projection) =
         compile_optional_graph_scalar_projection(item, path.clone(), context, plan, state)?
     {
         return Ok(projection);
@@ -18865,6 +18931,30 @@ fn compile_projection(
             alias: item.alias.as_ref().map(variable_name),
         }),
     }
+}
+
+fn compile_optional_stage_list_index_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+    context: &CypherCompileContext,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    compile_optional_stage_list_index_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        Some(state),
+        context,
+    )
+    .map(|expression| {
+        expression.map(|expression| Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "expression".to_string(), variable_name),
+        })
+    })
 }
 
 fn compile_count_subquery_projection(
@@ -22838,6 +22928,14 @@ fn compile_list_index_scalar_expression_in_mode(
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     let plan = mode.static_metadata_plan();
+    if let Some(expression) = compile_optional_stage_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        mode.scalar_alias_state(),
+        context,
+    )? {
+        return Ok(expression);
+    }
     if let Some(expression) =
         compile_optional_path_list_index_scalar_expression(expression, path.clone(), mode, context)?
     {
@@ -22864,6 +22962,44 @@ fn compile_list_index_scalar_expression_in_mode(
     Ok(ScalarExpression::Literal(compile_literal(
         expression, path, context,
     )?))
+}
+
+fn compile_optional_stage_list_index_scalar_expression(
+    expression: &Expression,
+    path: impl Into<String>,
+    state: Option<&CypherCompileState>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    let path = path.into();
+    let Expression::ListIndex { list, index, .. } = expression else {
+        return Ok(None);
+    };
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let Some(alias) = expression_variable_name(list) else {
+        return Ok(None);
+    };
+    let Some(element_type) = state.list_alias_element_types.get(&alias).copied() else {
+        return Ok(None);
+    };
+    let Literal::Integer(index) = compile_literal(index, format!("{path}.index"), context)? else {
+        return Err(unsupported(
+            format!("{path}.index"),
+            "UNWIND list indexes require an integer literal or scalar integer parameter",
+        ));
+    };
+    if index < 0 {
+        return Err(unsupported(
+            format!("{path}.index"),
+            "UNWIND list indexes over dynamic list values require a non-negative integer index",
+        ));
+    }
+    Ok(Some(ScalarExpression::ListIndex {
+        list: Box::new(ScalarExpression::StageValue { alias }),
+        index,
+        element_type,
+    }))
 }
 
 fn compile_scalar_expression_in_mode(
@@ -23410,6 +23546,14 @@ fn compile_list_index_scalar_or_property_expression_in_mode(
     context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let plan = mode.static_metadata_plan();
+    if let Some(expression) = compile_optional_stage_list_index_scalar_expression(
+        expression,
+        path.clone(),
+        mode.scalar_alias_state(),
+        context,
+    )? {
+        return Ok(expression);
+    }
     if let Some((expression, _)) = compile_optional_endpoint_property_scalar_expression(
         expression,
         path.clone(),
@@ -29297,6 +29441,13 @@ fn static_list_element_family(
             path.to_string(),
             "ordered static list predicates require string or numeric list elements",
         )),
+        LiteralListElementType::StringList
+        | LiteralListElementType::IntegerList
+        | LiteralListElementType::FloatList
+        | LiteralListElementType::BooleanList => Err(unsupported(
+            path.to_string(),
+            "ordered static list predicates require string or numeric scalar list elements",
+        )),
     }
 }
 
@@ -29308,9 +29459,9 @@ fn literal_static_list_element_family(
         Literal::String(_) => Ok(Some(StaticListElementFamily::String)),
         Literal::Integer(_) | Literal::Float(_) => Ok(Some(StaticListElementFamily::Numeric)),
         Literal::Null => Ok(None),
-        Literal::Boolean(_) => Err(unsupported(
+        Literal::Boolean(_) | Literal::List(_) => Err(unsupported(
             path.to_string(),
-            "ordered static list predicates require string or numeric list elements",
+            "ordered static list predicates require string or numeric scalar list elements",
         )),
     }
 }
@@ -29883,6 +30034,14 @@ fn is_literal_list_source_expression(expression: &Expression) -> bool {
     }
 }
 
+fn is_literal_list_value_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_literal_list_value_expression(inner),
+        Expression::Literal(CypherLiteral::List(_)) => true,
+        _ => false,
+    }
+}
+
 fn compile_optional_scalar_binary_comparison(
     lhs: &Expression,
     operator: ComparisonOperator,
@@ -30034,6 +30193,12 @@ fn compile_in_predicate(
     context: &CypherCompileContext,
 ) -> Result<PredicateExpression, CoreError> {
     let path = path.into();
+    if is_literal_list_value_expression(lhs) {
+        return Err(unsupported(
+            format!("{path}.lhs"),
+            "only string, numeric, boolean, and null literals are supported",
+        ));
+    }
     if let Some(plan) = mode.graph_plan() {
         if let Some(predicate) =
             compile_label_membership_predicate(lhs, rhs, path.clone(), plan, context)?
@@ -32748,7 +32913,7 @@ fn compile_literal_list(
             .iter()
             .enumerate()
             .map(|(index, expression)| {
-                compile_literal(expression, format!("{path}[{index}]"), context)
+                compile_literal_list_element(expression, format!("{path}[{index}]"), context)
             })
             .collect(),
         Expression::Parameter(parameter) => {
@@ -32968,6 +33133,21 @@ fn compile_literal(
             path,
             "only string, numeric, boolean, and null literals are supported",
         )),
+    }
+}
+
+fn compile_literal_list_element(
+    expression: &Expression,
+    path: impl Into<String>,
+    context: &CypherCompileContext,
+) -> Result<Literal, CoreError> {
+    let path = path.into();
+    match expression {
+        Expression::Parenthesized(inner) => compile_literal_list_element(inner, path, context),
+        Expression::Literal(CypherLiteral::List(_)) => {
+            compile_literal_list(expression, path, context).map(Literal::List)
+        }
+        _ => compile_literal(expression, path, context),
     }
 }
 
@@ -33254,7 +33434,33 @@ fn literal_list_element_kind(literal: &Literal) -> Option<LiteralListElementType
         Literal::Float(_) => Some(LiteralListElementType::Float),
         Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
         Literal::Null => None,
+        Literal::List(values) => {
+            infer_scalar_literal_list_element_type(values).and_then(LiteralListElementType::list_of)
+        }
     }
+}
+
+fn infer_scalar_literal_list_element_type(literals: &[Literal]) -> Option<LiteralListElementType> {
+    let mut expected = None;
+    for literal in literals {
+        let kind = match literal {
+            Literal::String(_) => Some(LiteralListElementType::String),
+            Literal::Integer(_) => Some(LiteralListElementType::Integer),
+            Literal::Float(_) => Some(LiteralListElementType::Float),
+            Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
+            Literal::Null => None,
+            Literal::List(_) => return None,
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        match expected {
+            Some(expected) if expected != kind => return None,
+            Some(_) => {}
+            None => expected = Some(kind),
+        }
+    }
+    expected
 }
 
 fn is_literal_projection_expression(expression: &Expression) -> bool {

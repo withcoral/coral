@@ -205,6 +205,85 @@ fn lower_graph_query_renders_empty_literal_unwind_row_source() {
 }
 
 #[test]
+fn lower_graph_query_renders_nested_literal_unwind_row_source() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::Unwind(GraphUnwind {
+        input: None,
+        list: ScalarExpression::TypedLiteralList {
+            literals: vec![
+                Literal::List(vec![Literal::Integer(1), Literal::Integer(2)]),
+                Literal::List(vec![Literal::Integer(3), Literal::Integer(4)]),
+            ],
+            element_type: LiteralListElementType::IntegerList,
+        },
+        element_type: LiteralListElementType::IntegerList,
+        variable: "pair".to_string(),
+        projections: vec![GraphUnwindProjection::Variable {
+            alias: "pair".to_string(),
+        }],
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("nested literal UNWIND row source should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT UNNEST(make_array(make_array(1, 2), make_array(3, 4))) AS \"pair\""
+    );
+}
+
+#[test]
+fn lower_graph_query_renders_nested_literal_unwind_list_index_projection() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let query = GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind: GraphUnwind {
+            input: None,
+            list: ScalarExpression::TypedLiteralList {
+                literals: vec![
+                    Literal::List(vec![Literal::Integer(1), Literal::Integer(2)]),
+                    Literal::List(vec![Literal::Integer(3), Literal::Integer(4)]),
+                ],
+                element_type: LiteralListElementType::IntegerList,
+            },
+            element_type: LiteralListElementType::IntegerList,
+            variable: "pair".to_string(),
+            projections: vec![GraphUnwindProjection::Variable {
+                alias: "pair".to_string(),
+            }],
+        },
+        final_plan: GraphPlan {
+            projections: vec![Projection::Expression {
+                expression: ScalarExpression::ListIndex {
+                    list: Box::new(ScalarExpression::StageValue {
+                        alias: "pair".to_string(),
+                    }),
+                    index: 0,
+                    element_type: LiteralListElementType::Integer,
+                },
+                alias: "first".to_string(),
+            }],
+            order_by: vec![OrderKey {
+                expression: OrderExpression::ProjectionAlias("first".to_string()),
+                direction: OrderDirection::Ascending,
+                nulls: None,
+            }],
+            ..GraphPlan::default()
+        },
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("nested literal UNWIND list index projection should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT UNNEST(make_array(make_array(1, 2), make_array(3, 4))) AS \"pair\") \
+         SELECT \"stage0\".\"pair\"[1] AS \"first\" FROM \"stage0\" AS \"stage0\" ORDER BY \"first\" ASC"
+    );
+}
+
+#[test]
 fn lower_graph_query_renders_literal_unwind_aggregate_projection() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let query = GraphQuery::UnwindPipeline(GraphUnwindPipeline {

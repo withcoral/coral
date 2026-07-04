@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 33,
+    "Unwind": 37,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -6794,6 +6794,72 @@
         "kind": "rows",
         "ordered": false,
         "rows": []
+      }
+    },
+    {
+      "id": "unwind-nested-list-row-source",
+      "feature": "Unwind",
+      "query": "UNWIND [[1, 2], [3, 4]] AS pair RETURN pair",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "pair": [
+              1,
+              2
+            ]
+          },
+          {
+            "pair": [
+              3,
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-nested-list-index",
+      "feature": "Unwind",
+      "query": "UNWIND [[1, 2], [3, 4]] AS pair RETURN pair[0] AS first ORDER BY first",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "first": 1
+          },
+          {
+            "first": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-nested-list-max-aggregate",
+      "feature": "Unwind",
+      "query": "UNWIND [[1], [2], [2, 1]] AS x RETURN max(x) AS max_x",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "max_x": [
+              2,
+              1
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-heterogeneous-nested-list-rejected",
+      "feature": "Unwind",
+      "query": "UNWIND [['a', 1], [1, null]] AS x RETURN x",
+      "expected": {
+        "kind": "error",
+        "contains": "nested lists require each non-empty nested list"
       }
     },
     {

@@ -1364,6 +1364,10 @@ fn scalar_type_for_literal_list_element(element_type: LiteralListElementType) ->
         LiteralListElementType::Integer => ScalarType::Integer,
         LiteralListElementType::Float => ScalarType::Float,
         LiteralListElementType::Boolean => ScalarType::Boolean,
+        LiteralListElementType::StringList
+        | LiteralListElementType::IntegerList
+        | LiteralListElementType::FloatList
+        | LiteralListElementType::BooleanList => ScalarType::Other,
     }
 }
 

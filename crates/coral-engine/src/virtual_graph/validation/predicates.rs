@@ -435,12 +435,14 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<(), CoreError> {
         match literal {
             Literal::String(_) | Literal::Null => Ok(()),
-            Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_) => Err(Diagnostic::new(
-                diagnostic_codes::INVALID_PREDICATE_OPERAND,
-                path,
-                "elementId() predicates require string or null literal operands",
-            )
-            .into_core_error()),
+            Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_) | Literal::List(_) => {
+                Err(Diagnostic::new(
+                    diagnostic_codes::INVALID_PREDICATE_OPERAND,
+                    path,
+                    "elementId() predicates require string or null literal operands",
+                )
+                .into_core_error())
+            }
         }
     }
 

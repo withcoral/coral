@@ -35,6 +35,7 @@ pub(super) fn literal_scalar_type(literal: &Literal) -> ScalarType {
         Literal::Float(_) => ScalarType::Float,
         Literal::Boolean(_) => ScalarType::Boolean,
         Literal::Null => ScalarType::Null,
+        Literal::List(_) => ScalarType::Other,
     }
 }
 
@@ -212,7 +213,33 @@ pub(super) fn literal_list_element_kind(literal: &Literal) -> Option<LiteralList
         Literal::Float(_) => Some(LiteralListElementType::Float),
         Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
         Literal::Null => None,
+        Literal::List(values) => {
+            infer_scalar_literal_list_element_type(values).and_then(LiteralListElementType::list_of)
+        }
     }
+}
+
+fn infer_scalar_literal_list_element_type(literals: &[Literal]) -> Option<LiteralListElementType> {
+    let mut expected = None;
+    for literal in literals {
+        let kind = match literal {
+            Literal::String(_) => Some(LiteralListElementType::String),
+            Literal::Integer(_) => Some(LiteralListElementType::Integer),
+            Literal::Float(_) => Some(LiteralListElementType::Float),
+            Literal::Boolean(_) => Some(LiteralListElementType::Boolean),
+            Literal::Null => None,
+            Literal::List(_) => return None,
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+        match expected {
+            Some(expected) if expected != kind => return None,
+            Some(_) => {}
+            None => expected = Some(kind),
+        }
+    }
+    expected
 }
 
 pub(super) fn aggregate_function_name(function: AggregateFunction) -> &'static str {

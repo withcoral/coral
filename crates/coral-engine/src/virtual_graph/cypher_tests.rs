@@ -572,6 +572,34 @@ fn compiles_empty_literal_unwind_row_source() {
 }
 
 #[test]
+fn compiles_nested_literal_unwind_row_source() {
+    let query = compile_cypher_query("UNWIND [[1, 2], [3, 4]] AS pair RETURN pair")
+        .expect("nested literal UNWIND row source should compile");
+
+    let GraphQuery::Unwind(unwind) = query else {
+        panic!("expected nested literal UNWIND row source query");
+    };
+    assert_eq!(unwind.variable, "pair");
+    assert_eq!(unwind.element_type, LiteralListElementType::IntegerList);
+    assert_eq!(
+        unwind.list,
+        ScalarExpression::TypedLiteralList {
+            literals: vec![
+                Literal::List(vec![Literal::Integer(1), Literal::Integer(2)]),
+                Literal::List(vec![Literal::Integer(3), Literal::Integer(4)]),
+            ],
+            element_type: LiteralListElementType::IntegerList,
+        }
+    );
+    assert_eq!(
+        unwind.projections,
+        vec![GraphUnwindProjection::Variable {
+            alias: "pair".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn compiles_literal_unwind_aggregate_return_as_pipeline() {
     let query = compile_cypher_query("UNWIND [1, 2, 3] AS x RETURN count(x) AS c")
         .expect("literal UNWIND aggregate row source should compile");
@@ -622,6 +650,44 @@ fn compiles_literal_unwind_ordered_return_as_pipeline() {
         pipeline.final_plan.order_by,
         vec![OrderKey {
             expression: OrderExpression::ProjectionAlias("x".to_string()),
+            direction: OrderDirection::Ascending,
+            nulls: None,
+        }]
+    );
+}
+
+#[test]
+fn compiles_nested_literal_unwind_list_index_return_as_pipeline() {
+    let query = compile_cypher_query(
+        "UNWIND [[1, 2], [3, 4]] AS pair RETURN pair[0] AS first ORDER BY first",
+    )
+    .expect("nested literal UNWIND list index return should compile");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected nested list-index UNWIND to compile as a row-source pipeline");
+    };
+    assert_eq!(pipeline.unwind.variable, "pair");
+    assert_eq!(
+        pipeline.unwind.element_type,
+        LiteralListElementType::IntegerList
+    );
+    assert_eq!(
+        pipeline.final_plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::ListIndex {
+                list: Box::new(ScalarExpression::StageValue {
+                    alias: "pair".to_string(),
+                }),
+                index: 0,
+                element_type: LiteralListElementType::Integer,
+            },
+            alias: "first".to_string(),
+        }]
+    );
+    assert_eq!(
+        pipeline.final_plan.order_by,
+        vec![OrderKey {
+            expression: OrderExpression::ProjectionAlias("first".to_string()),
             direction: OrderDirection::Ascending,
             nulls: None,
         }]
@@ -953,8 +1019,15 @@ fn compiles_with_alias_unwind_match_as_pipeline() {
 }
 
 #[test]
-fn rejects_nested_literal_unwind_row_source() {
-    assert_unsupported("UNWIND [[1], [2]] AS x RETURN x");
+fn rejects_heterogeneous_nested_literal_unwind_row_source() {
+    let error = compile_cypher_query("UNWIND [['a', 1], [1, null]] AS x RETURN x")
+        .expect_err("heterogeneous nested literal UNWIND should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("nested lists require each non-empty nested list"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
