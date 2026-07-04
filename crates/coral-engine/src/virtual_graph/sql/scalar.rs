@@ -684,6 +684,22 @@ impl<'a> SqlRenderer<'a> {
         end: &ScalarExpression,
         scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
+        if matches!(
+            unit,
+            TemporalDurationUnit::Between | TemporalDurationUnit::Months
+        ) {
+            let function_name = if matches!(unit, TemporalDurationUnit::Between) {
+                "coral_duration_between"
+            } else {
+                "coral_duration_in_months"
+            };
+            return Ok(format!(
+                "{function_name}({}, {})",
+                self.render_temporal_duration_between_argument(start, scope)?,
+                self.render_temporal_duration_between_argument(end, scope)?
+            ));
+        }
+
         let start_timestamp = self.render_temporal_duration_timestamp(start, end, scope)?;
         let end_timestamp = self.render_temporal_duration_timestamp(end, start, scope)?;
         if matches!(unit, TemporalDurationUnit::Days)
@@ -699,17 +715,32 @@ impl<'a> SqlRenderer<'a> {
             ));
         }
         let epoch_diff = format!("date_part('epoch', ({end_timestamp} - {start_timestamp}))");
-        let interval = match unit {
-            TemporalDurationUnit::Seconds => dynamic_seconds_interval(&epoch_diff),
-            TemporalDurationUnit::Days => {
-                dynamic_days_interval(&format!("trunc({epoch_diff} / 86400)"))
-            }
+        let interval = if matches!(unit, TemporalDurationUnit::Seconds) {
+            dynamic_seconds_interval(&epoch_diff)
+        } else {
+            dynamic_days_interval(&format!("trunc({epoch_diff} / 86400)"))
         };
         Ok(render_null_checked_interval(
             &start_timestamp,
             &end_timestamp,
             &interval,
         ))
+    }
+
+    fn render_temporal_duration_between_argument<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let expression_sql = self.render_scalar_in_scope(expression, scope)?;
+        match temporal_scalar_kind(expression) {
+            Some(TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime) => {
+                Ok(expression_sql)
+            }
+            Some(TemporalKind::Duration) | None => {
+                Ok(format!("CAST({expression_sql} AS TIMESTAMP)"))
+            }
+        }
     }
 
     fn render_temporal_duration_timestamp<'b, 'c>(

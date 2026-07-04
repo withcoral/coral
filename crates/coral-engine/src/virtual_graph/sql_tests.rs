@@ -2958,6 +2958,22 @@ fn lower_graph_plan_renders_temporal_duration_unit_total_functions() {
     plan.projections = vec![
         Projection::Expression {
             expression: duration_in_units_expression(
+                TemporalDurationUnit::Between,
+                date_from_string_expression("1984-10-11"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "between_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Months,
+                date_from_string_expression("1984-10-11"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "months_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
                 TemporalDurationUnit::Seconds,
                 localdatetime_from_string_expression("2020-01-01T00:00:00"),
                 localdatetime_from_string_expression("2020-03-01T12:00:00"),
@@ -2996,6 +3012,20 @@ fn lower_graph_plan_renders_temporal_duration_unit_total_functions() {
         .lower_graph_plan(&plan)
         .expect("duration unit-total functions should lower through ISO formatter");
 
+    assert!(
+        translation.sql().contains(
+            "coral_duration_to_iso(coral_duration_between(CAST('1984-10-11' AS DATE), CAST('2015-06-24' AS DATE))) AS \"between_duration\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "coral_duration_to_iso(coral_duration_in_months(CAST('1984-10-11' AS DATE), CAST('2015-06-24' AS DATE))) AS \"months_duration\""
+        ),
+        "{}",
+        translation.sql()
+    );
     assert!(
         translation.sql().contains(
             "coral_duration_to_iso(CASE WHEN CAST('2020-01-01T00:00:00' AS TIMESTAMP) IS NULL OR CAST('2020-03-01T12:00:00' AS TIMESTAMP) IS NULL THEN CAST(NULL AS INTERVAL) ELSE CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-03-01T12:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL) END) AS \"seconds_duration\""

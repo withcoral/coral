@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 79,
+    "Temporal": 86,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -11213,10 +11213,108 @@
     {
       "id": "temporal-duration-between-rejected",
       "feature": "Temporal",
-      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-01'), date('2020-01-02')) AS gap",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('1984-10-11'), date('2015-06-24')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P30Y8M13D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-inmonths-date-date-tck",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inMonths(date('1984-10-11'), date('2015-06-24')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P30Y8M"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-date-localdatetime-tck",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('1984-10-11'), localdatetime('2016-07-21T21:45:22.142')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P31Y9M10DT21H45M22.142S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-month-end-leap-documented",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-31'), date('2020-02-29')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P29D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-month-end-march-documented",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-31'), date('2020-03-30')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P1M30D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-month-end-april-documented",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-31'), date('2020-04-30')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P2M30D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-negative-date-date-documented",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2015-06-24'), date('1984-10-11')) AS d",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "d": "P-30Y-8M-13D"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-between-zoned-datetime-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d",
       "expected": {
         "kind": "error",
-        "contains": "RETURN function 'duration.between' is not supported yet"
+        "contains": "duration.between() does not support zoned datetime() or time() arguments yet"
       }
     },
     {

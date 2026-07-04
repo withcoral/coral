@@ -2538,7 +2538,9 @@ fn compiles_duration_constructor_scalar_expressions() {
 fn compiles_temporal_duration_unit_total_functions() {
     let plan = compile_cypher(
         "MATCH (person:Person) \
-         RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS secondsDuration, \
+         RETURN duration.between(date('1984-10-11'), date('2015-06-24')) AS betweenDuration, \
+                duration.inMonths(date('1984-10-11'), date('2015-06-24')) AS monthsDuration, \
+                duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS secondsDuration, \
                 duration.inDays(date('1984-10-11'), date('2015-06-24')) AS daysDuration, \
                 toString(duration.inSeconds(null, null)) AS nullDuration",
     )
@@ -2547,6 +2549,22 @@ fn compiles_temporal_duration_unit_total_functions() {
     assert_eq!(
         plan.projections,
         vec![
+            Projection::Expression {
+                expression: duration_in_units_expression(
+                    TemporalDurationUnit::Between,
+                    date_from_string_expression("1984-10-11"),
+                    date_from_string_expression("2015-06-24"),
+                ),
+                alias: "betweenDuration".to_string(),
+            },
+            Projection::Expression {
+                expression: duration_in_units_expression(
+                    TemporalDurationUnit::Months,
+                    date_from_string_expression("1984-10-11"),
+                    date_from_string_expression("2015-06-24"),
+                ),
+                alias: "monthsDuration".to_string(),
+            },
             Projection::Expression {
                 expression: duration_in_units_expression(
                     TemporalDurationUnit::Seconds,
@@ -2670,6 +2688,10 @@ fn rejects_unsupported_duration_constructor_and_multiply_forms() {
         (
             "MATCH (person:Person) RETURN duration.inDays(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d",
             "duration.inDays() does not support zoned datetime() or time() arguments yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration.between(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d",
+            "duration.between() does not support zoned datetime() or time() arguments yet",
         ),
         (
             "MATCH (person:Person) RETURN date('2020-01-01') + duration('P1D') * person.age AS shifted",

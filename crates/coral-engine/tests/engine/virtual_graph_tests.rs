@@ -1044,7 +1044,14 @@ async fn cypher_temporal_duration_unit_totals_execute_against_synthetic_sources(
         &graph,
         "MATCH (person:Person) \
          WHERE person.name = 'Ada Lovelace' \
-         RETURN duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS seconds_duration, \
+         RETURN duration.between(date('1984-10-11'), date('2015-06-24')) AS between_duration, \
+                duration.inMonths(date('1984-10-11'), date('2015-06-24')) AS months_duration, \
+                duration.between(date('1984-10-11'), localdatetime('2016-07-21T21:45:22.142')) AS mixed_between_duration, \
+                duration.between(date('2020-01-31'), date('2020-02-29')) AS leap_month_end, \
+                duration.between(date('2020-01-31'), date('2020-03-30')) AS march_month_boundary, \
+                duration.between(date('2020-01-31'), date('2020-04-30')) AS april_month_end, \
+                duration.between(date('2015-06-24'), date('1984-10-11')) AS negative_between_duration, \
+                duration.inSeconds(localdatetime('2020-01-01T00:00:00'), localdatetime('2020-03-01T12:00:00')) AS seconds_duration, \
                 duration.inDays(date('1984-10-11'), date('2015-06-24')) AS days_duration, \
                 duration.inDays(localdatetime('2015-07-21T21:40:32.142'), date('2015-06-24')) AS negative_partial_days, \
                 duration.inSeconds(localdatetime('2014-07-21T21:40:36.143'), localdatetime('2014-07-21T21:40:36.142')) AS negative_subsecond, \
@@ -1058,7 +1065,14 @@ async fn cypher_temporal_duration_unit_totals_execute_against_synthetic_sources(
         &CoralQuery::execute_sql(
             &[source],
             test_runtime(),
-            "SELECT coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-03-01T12:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS seconds_duration, \
+            "SELECT coral_duration_to_iso(coral_duration_between(CAST('1984-10-11' AS DATE), CAST('2015-06-24' AS DATE))) AS between_duration, \
+                    coral_duration_to_iso(coral_duration_in_months(CAST('1984-10-11' AS DATE), CAST('2015-06-24' AS DATE))) AS months_duration, \
+                    coral_duration_to_iso(coral_duration_between(CAST('1984-10-11' AS DATE), CAST('2016-07-21T21:45:22.142' AS TIMESTAMP))) AS mixed_between_duration, \
+                    coral_duration_to_iso(coral_duration_between(CAST('2020-01-31' AS DATE), CAST('2020-02-29' AS DATE))) AS leap_month_end, \
+                    coral_duration_to_iso(coral_duration_between(CAST('2020-01-31' AS DATE), CAST('2020-03-30' AS DATE))) AS march_month_boundary, \
+                    coral_duration_to_iso(coral_duration_between(CAST('2020-01-31' AS DATE), CAST('2020-04-30' AS DATE))) AS april_month_end, \
+                    coral_duration_to_iso(coral_duration_between(CAST('2015-06-24' AS DATE), CAST('1984-10-11' AS DATE))) AS negative_between_duration, \
+                    coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2020-03-01T12:00:00' AS TIMESTAMP) - CAST('2020-01-01T00:00:00' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS seconds_duration, \
                     coral_duration_to_iso(CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST(CAST('1984-10-11' AS DATE) AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)) AS days_duration, \
                     coral_duration_to_iso(CAST(concat('0 months ', coalesce(CAST(trunc(date_part('epoch', (CAST(CAST('2015-06-24' AS DATE) AS TIMESTAMP) - CAST('2015-07-21T21:40:32.142' AS TIMESTAMP))) / 86400) AS VARCHAR), '0'), ' days 0 seconds') AS INTERVAL)) AS negative_partial_days, \
                     coral_duration_to_iso(CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (CAST('2014-07-21T21:40:36.142' AS TIMESTAMP) - CAST('2014-07-21T21:40:36.143' AS TIMESTAMP))) AS VARCHAR), '0'), ' seconds') AS INTERVAL)) AS negative_subsecond, \
@@ -1076,10 +1090,24 @@ async fn cypher_temporal_duration_unit_totals_execute_against_synthetic_sources(
         "{}",
         execution.translated_sql()
     );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("coral_duration_between"),
+        "{}",
+        execution.translated_sql()
+    );
     assert_eq!(graph_rows, sql_rows);
     assert_eq!(
         graph_rows,
         vec![json!({
+            "between_duration": "P30Y8M13D",
+            "months_duration": "P30Y8M",
+            "mixed_between_duration": "P31Y9M10DT21H45M22.142S",
+            "leap_month_end": "P29D",
+            "march_month_boundary": "P1M30D",
+            "april_month_end": "P2M30D",
+            "negative_between_duration": "P-30Y-8M-13D",
             "seconds_duration": "PT1452H",
             "days_duration": "P11213D",
             "negative_partial_days": "P-27D",

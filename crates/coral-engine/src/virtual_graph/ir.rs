@@ -643,9 +643,13 @@ pub enum TemporalComponentUnit {
     Microsecond,
 }
 
-/// Duration unit-total functions supported by the temporal IR.
+/// Duration decomposition and unit-total functions supported by the temporal IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalDurationUnit {
+    /// Calendar-aware duration between two temporal values.
+    Between,
+    /// Calendar month duration between two temporal values.
+    Months,
     /// Whole-day duration between two temporal instants.
     Days,
     /// Total seconds duration between two temporal instants.
@@ -726,9 +730,9 @@ pub enum TemporalExpr {
         /// Nanosecond clock component within the current second.
         nanos: i64,
     },
-    /// Construct a duration containing total whole days or total seconds between temporals.
+    /// Construct a duration between temporals, optionally truncated to one unit family.
     DurationInUnits {
-        /// Unit-total function to evaluate.
+        /// Duration function to evaluate.
         unit: TemporalDurationUnit,
         /// Start temporal expression.
         start: Box<ScalarExpression>,
@@ -803,6 +807,8 @@ impl TemporalComponentUnit {
 impl TemporalDurationUnit {
     pub(super) fn function_name(self) -> &'static str {
         match self {
+            Self::Between => "duration.between",
+            Self::Months => "duration.inMonths",
             Self::Days => "duration.inDays",
             Self::Seconds => "duration.inSeconds",
         }

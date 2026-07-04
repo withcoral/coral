@@ -1,15 +1,26 @@
-//! Coral-specific string scalar functions used by virtual graph SQL lowering.
+//! Coral-specific string and temporal scalar functions used by virtual graph SQL lowering.
 
 use std::any::Any;
 use std::sync::Arc;
 
-use arrow::array::types::IntervalMonthDayNanoType;
-use arrow::array::{Array, ArrayRef, Int64Builder, ListBuilder, StringBuilder};
-use arrow::datatypes::{DataType, Field, IntervalUnit};
-use datafusion::common::cast::{
-    as_interval_mdn_array, as_large_string_array, as_string_array, as_string_view_array,
+use arrow::array::temporal_conversions::{
+    NANOSECONDS_IN_DAY, date32_to_datetime, time64ns_to_time, time64us_to_time,
+    timestamp_ms_to_datetime, timestamp_ns_to_datetime, timestamp_s_to_datetime,
+    timestamp_us_to_datetime,
 };
-use datafusion::common::{Result as DataFusionResult, exec_err};
+use arrow::array::types::IntervalMonthDayNanoType;
+use arrow::array::{
+    Array, ArrayRef, Int64Builder, IntervalMonthDayNanoBuilder, ListBuilder, StringBuilder,
+};
+use arrow::datatypes::{DataType, Field, IntervalUnit, TimeUnit};
+use chrono::{Datelike, Months, NaiveDate, NaiveDateTime, NaiveTime};
+use datafusion::common::cast::{
+    as_date32_array, as_interval_mdn_array, as_large_string_array, as_string_array,
+    as_string_view_array, as_time64_microsecond_array, as_time64_nanosecond_array,
+    as_timestamp_microsecond_array, as_timestamp_millisecond_array, as_timestamp_nanosecond_array,
+    as_timestamp_second_array,
+};
+use datafusion::common::{DataFusionError, Result as DataFusionResult, exec_err};
 use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
@@ -20,6 +31,14 @@ pub(crate) fn register_string_functions(
 ) -> DataFusionResult<()> {
     registry.register_udf(Arc::new(ScalarUDF::from(StringIndices::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationToIso::new())))?;
+    registry.register_udf(Arc::new(ScalarUDF::from(DurationBetween::new(
+        "coral_duration_between",
+        DurationBetweenMode::Full,
+    ))))?;
+    registry.register_udf(Arc::new(ScalarUDF::from(DurationBetween::new(
+        "coral_duration_in_months",
+        DurationBetweenMode::MonthsOnly,
+    ))))?;
     Ok(())
 }
 
@@ -115,6 +134,61 @@ impl ScalarUDFImpl for DurationToIso {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DurationBetweenMode {
+    Full,
+    MonthsOnly,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct DurationBetween {
+    name: &'static str,
+    mode: DurationBetweenMode,
+    signature: Signature,
+}
+
+impl DurationBetween {
+    fn new(name: &'static str, mode: DurationBetweenMode) -> Self {
+        Self {
+            name,
+            mode,
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for DurationBetween {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(DataType::Interval(IntervalUnit::MonthDayNano))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        let [start, end] = args.args.as_slice() else {
+            return exec_err!("{} expects exactly two arguments", self.name);
+        };
+        let start = start.to_array_of_size(args.number_rows)?;
+        let end = end.to_array_of_size(args.number_rows)?;
+        Ok(ColumnarValue::Array(duration_between_array(
+            &start,
+            &end,
+            args.number_rows,
+            self.mode,
+        )?))
+    }
+}
+
 fn indices_return_type() -> DataType {
     DataType::List(Arc::new(Field::new_list_field(DataType::Int64, true)))
 }
@@ -165,11 +239,10 @@ fn string_indices(source: &str, pattern: &str) -> DataFusionResult<Vec<i64>> {
             .get(byte_index..)
             .is_some_and(|tail| tail.starts_with(pattern))
         {
-            indices.push(i64::try_from(char_index).map_err(|error| {
-                datafusion::common::DataFusionError::Internal(format!(
-                    "string index overflow: {error}"
-                ))
-            })?);
+            indices.push(
+                i64::try_from(char_index)
+                    .map_err(|error| internal_error(format!("string index overflow: {error}")))?,
+            );
         }
     }
     Ok(indices)
@@ -222,6 +295,203 @@ fn duration_to_iso_string(months: i32, days: i32, nanos: i64) -> String {
     output
 }
 
+fn duration_between_array(
+    start: &ArrayRef,
+    end: &ArrayRef,
+    rows: usize,
+    mode: DurationBetweenMode,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = IntervalMonthDayNanoBuilder::with_capacity(rows);
+    for row in 0..rows {
+        let Some(start) = temporal_input_value(start.as_ref(), row)? else {
+            builder.append_null();
+            continue;
+        };
+        let Some(end) = temporal_input_value(end.as_ref(), row)? else {
+            builder.append_null();
+            continue;
+        };
+        let parts = duration_between(start, end, mode)?;
+        builder.append_value(IntervalMonthDayNanoType::make_value(
+            parts.months,
+            parts.days,
+            parts.nanos,
+        ));
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DurationParts {
+    months: i32,
+    days: i32,
+    nanos: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemporalInput {
+    Date(NaiveDate),
+    DateTime(NaiveDateTime),
+    Time(NaiveTime),
+}
+
+impl TemporalInput {
+    fn date(self) -> Option<NaiveDate> {
+        match self {
+            Self::Date(date) => Some(date),
+            Self::DateTime(datetime) => Some(datetime.date()),
+            Self::Time(_) => None,
+        }
+    }
+
+    fn anchored_datetime(self, peer: Self) -> DataFusionResult<NaiveDateTime> {
+        match self {
+            Self::Date(date) => Ok(date.and_time(NaiveTime::MIN)),
+            Self::DateTime(datetime) => Ok(datetime),
+            Self::Time(time) => Ok(peer.date().unwrap_or(epoch_date()?).and_time(time)),
+        }
+    }
+}
+
+fn temporal_input_value(
+    array: &dyn Array,
+    index: usize,
+) -> DataFusionResult<Option<TemporalInput>> {
+    if array.is_null(index) {
+        return Ok(None);
+    }
+    match array.data_type() {
+        DataType::Date32 => {
+            let datetime =
+                date32_to_datetime(as_date32_array(array)?.value(index)).ok_or_else(|| {
+                    internal_error("coral_duration_between received out-of-range Date32 value")
+                })?;
+            Ok(Some(TemporalInput::Date(datetime.date())))
+        }
+        DataType::Timestamp(TimeUnit::Second, None) => Ok(Some(TemporalInput::DateTime(
+            timestamp_s_to_datetime(as_timestamp_second_array(array)?.value(index)).ok_or_else(
+                || {
+                    internal_error(
+                        "coral_duration_between received out-of-range timestamp-second value",
+                    )
+                },
+            )?,
+        ))),
+        DataType::Timestamp(TimeUnit::Millisecond, None) => Ok(Some(TemporalInput::DateTime(
+            timestamp_ms_to_datetime(as_timestamp_millisecond_array(array)?.value(index))
+                .ok_or_else(|| {
+                    internal_error(
+                        "coral_duration_between received out-of-range timestamp-millisecond value",
+                    )
+                })?,
+        ))),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => Ok(Some(TemporalInput::DateTime(
+            timestamp_us_to_datetime(as_timestamp_microsecond_array(array)?.value(index))
+                .ok_or_else(|| {
+                    internal_error(
+                        "coral_duration_between received out-of-range timestamp-microsecond value",
+                    )
+                })?,
+        ))),
+        DataType::Timestamp(TimeUnit::Nanosecond, None) => Ok(Some(TemporalInput::DateTime(
+            timestamp_ns_to_datetime(as_timestamp_nanosecond_array(array)?.value(index))
+                .ok_or_else(|| {
+                    internal_error(
+                        "coral_duration_between received out-of-range timestamp-nanosecond value",
+                    )
+                })?,
+        ))),
+        DataType::Time64(TimeUnit::Microsecond) => Ok(Some(TemporalInput::Time(
+            time64us_to_time(as_time64_microsecond_array(array)?.value(index)).ok_or_else(
+                || {
+                    internal_error(
+                        "coral_duration_between received out-of-range time-microsecond value",
+                    )
+                },
+            )?,
+        ))),
+        DataType::Time64(TimeUnit::Nanosecond) => Ok(Some(TemporalInput::Time(
+            time64ns_to_time(as_time64_nanosecond_array(array)?.value(index)).ok_or_else(|| {
+                internal_error("coral_duration_between received out-of-range time-nanosecond value")
+            })?,
+        ))),
+        data_type => exec_err!(
+            "coral_duration_between expects date, timestamp, or time arguments, got {data_type}"
+        ),
+    }
+}
+
+fn duration_between(
+    start: TemporalInput,
+    end: TemporalInput,
+    mode: DurationBetweenMode,
+) -> DataFusionResult<DurationParts> {
+    let start_datetime = start.anchored_datetime(end)?;
+    let end_datetime = end.anchored_datetime(start)?;
+    let months = whole_months_between(start_datetime, end_datetime);
+    if matches!(mode, DurationBetweenMode::MonthsOnly) {
+        return Ok(DurationParts {
+            months: i32::try_from(months).map_err(|error| {
+                internal_error(format!("duration month component overflow: {error}"))
+            })?,
+            days: 0,
+            nanos: 0,
+        });
+    }
+
+    let candidate = checked_add_signed_months(start_datetime, months)?;
+    let remainder_nanos = (end_datetime - candidate)
+        .num_nanoseconds()
+        .ok_or_else(|| {
+            internal_error("duration day/time remainder exceeded chrono nanosecond range")
+        })?;
+    Ok(DurationParts {
+        months: i32::try_from(months).map_err(|error| {
+            internal_error(format!("duration month component overflow: {error}"))
+        })?,
+        days: i32::try_from(remainder_nanos / NANOSECONDS_IN_DAY)
+            .map_err(|error| internal_error(format!("duration day component overflow: {error}")))?,
+        nanos: remainder_nanos % NANOSECONDS_IN_DAY,
+    })
+}
+
+fn whole_months_between(start: NaiveDateTime, end: NaiveDateTime) -> i64 {
+    // Neo4j DurationValue.between follows java.time LocalDate.until(MONTHS):
+    // pack proleptic-month and day-of-month before dividing by 32, so a
+    // chrono-clamped arrival day before the start day is not a whole month.
+    let packed_start = packed_date_for_java_until_months(start.date());
+    let packed_end = packed_date_for_java_until_months(end.date());
+    (packed_end - packed_start) / 32
+}
+
+fn packed_date_for_java_until_months(date: NaiveDate) -> i64 {
+    (i64::from(date.year()) * 12 + i64::from(date.month0())) * 32 + i64::from(date.day())
+}
+
+fn checked_add_signed_months(
+    datetime: NaiveDateTime,
+    months: i64,
+) -> DataFusionResult<NaiveDateTime> {
+    let month_count = u32::try_from(months.unsigned_abs())
+        .map_err(|error| internal_error(format!("duration month component overflow: {error}")))?;
+    let month_delta = Months::new(month_count);
+    let shifted = if months >= 0 {
+        datetime.checked_add_months(month_delta)
+    } else {
+        datetime.checked_sub_months(month_delta)
+    };
+    shifted.ok_or_else(|| internal_error("duration month advance is out of range"))
+}
+
+fn epoch_date() -> DataFusionResult<NaiveDate> {
+    NaiveDate::from_ymd_opt(1970, 1, 1)
+        .ok_or_else(|| internal_error("chrono could not construct Unix epoch date"))
+}
+
+fn internal_error(message: impl Into<String>) -> DataFusionError {
+    DataFusionError::Internal(message.into())
+}
+
 fn append_duration_time_component(output: &mut String, value: i64, suffix: char) {
     if value != 0 {
         output.push_str(&value.to_string());
@@ -256,7 +526,12 @@ fn append_duration_seconds(output: &mut String, nanos: i64, force: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration_to_iso_string, string_indices};
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+
+    use super::{
+        DurationBetweenMode, TemporalInput, duration_between, duration_to_iso_string,
+        string_indices,
+    };
 
     #[test]
     fn string_indices_returns_zero_based_character_positions() {
@@ -297,5 +572,101 @@ mod tests {
         ] {
             assert_eq!(duration_to_iso_string(months, days, nanos), expected);
         }
+    }
+
+    #[test]
+    fn duration_between_matches_pinned_temporal10_rows() {
+        assert_between_iso(
+            date(1984, 10, 11),
+            date(2015, 6, 24),
+            DurationBetweenMode::Full,
+            "P30Y8M13D",
+        );
+        assert_between_iso(
+            date(1984, 10, 11),
+            datetime("2016-07-21T21:45:22.142"),
+            DurationBetweenMode::Full,
+            "P31Y9M10DT21H45M22.142S",
+        );
+        assert_between_iso(
+            date(1984, 10, 11),
+            date(2015, 6, 24),
+            DurationBetweenMode::MonthsOnly,
+            "P30Y8M",
+        );
+        assert_between_iso(
+            datetime("2015-07-21T21:40:32.142"),
+            date(2015, 6, 24),
+            DurationBetweenMode::Full,
+            "P-27DT-21H-40M-32.142S",
+        );
+        assert_between_iso(
+            time("14:30:00"),
+            datetime("2016-07-21T21:45:22.142"),
+            DurationBetweenMode::Full,
+            "PT7H15M22.142S",
+        );
+    }
+
+    #[test]
+    fn duration_between_pins_documented_month_end_and_negative_cases() {
+        // These month-end rows are not present in upstream Temporal10. They document
+        // java.time LocalDate.until(MONTHS), which Neo4j DurationValue.between
+        // wraps: month counts are computed from packed proleptic-month/day values,
+        // then chrono's checked_add_months supplies the TCK-consistent anchor.
+        assert_between_iso(
+            date(2020, 1, 31),
+            date(2020, 2, 29),
+            DurationBetweenMode::Full,
+            "P29D",
+        );
+        assert_between_iso(
+            date(2020, 1, 31),
+            date(2020, 3, 30),
+            DurationBetweenMode::Full,
+            "P1M30D",
+        );
+        assert_between_iso(
+            date(2020, 1, 31),
+            date(2020, 4, 30),
+            DurationBetweenMode::Full,
+            "P2M30D",
+        );
+        assert_between_iso(
+            date(2015, 6, 24),
+            date(1984, 10, 11),
+            DurationBetweenMode::Full,
+            "P-30Y-8M-13D",
+        );
+    }
+
+    fn assert_between_iso(
+        start: TemporalInput,
+        end: TemporalInput,
+        mode: DurationBetweenMode,
+        expected: &str,
+    ) {
+        let parts = duration_between(start, end, mode).expect("duration should compute");
+        assert_eq!(
+            duration_to_iso_string(parts.months, parts.days, parts.nanos),
+            expected
+        );
+    }
+
+    fn date(year: i32, month: u32, day: u32) -> TemporalInput {
+        TemporalInput::Date(NaiveDate::from_ymd_opt(year, month, day).expect("valid test date"))
+    }
+
+    fn datetime(text: &str) -> TemporalInput {
+        TemporalInput::DateTime(
+            NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+                .expect("valid test datetime"),
+        )
+    }
+
+    fn time(text: &str) -> TemporalInput {
+        TemporalInput::Time(
+            NaiveTime::parse_from_str(text, "%H:%M:%S%.f").expect("valid test time"),
+        )
     }
 }

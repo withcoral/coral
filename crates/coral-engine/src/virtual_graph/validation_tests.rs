@@ -1007,6 +1007,22 @@ fn validate_graph_plan_accepts_temporal_duration_unit_total_functions() {
     plan.projections = vec![
         Projection::Expression {
             expression: duration_in_units_expression(
+                TemporalDurationUnit::Between,
+                date_from_string_expression("1984-10-11"),
+                localdatetime_from_string_expression("2016-07-21T21:45:22.142"),
+            ),
+            alias: "between_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
+                TemporalDurationUnit::Months,
+                date_from_string_expression("1984-10-11"),
+                date_from_string_expression("2015-06-24"),
+            ),
+            alias: "months_duration".to_string(),
+        },
+        Projection::Expression {
+            expression: duration_in_units_expression(
                 TemporalDurationUnit::Seconds,
                 localdatetime_from_string_expression("2020-01-01T00:00:00"),
                 localdatetime_from_string_expression("2020-03-01T12:00:00"),
@@ -1034,7 +1050,7 @@ fn validate_graph_plan_rejects_invalid_temporal_duration_unit_arguments() {
     let mut plan = ownership_plan();
     plan.projections = vec![Projection::Expression {
         expression: duration_in_units_expression(
-            TemporalDurationUnit::Seconds,
+            TemporalDurationUnit::Months,
             date_from_string_expression("2020-01-01"),
             ScalarExpression::Literal(Literal::String("not temporal".to_string())),
         ),
@@ -1047,7 +1063,7 @@ fn validate_graph_plan_rejects_invalid_temporal_duration_unit_arguments() {
 
     assert!(
         error.to_string().contains(
-            "duration.inSeconds() requires date, localdatetime, or localtime arguments, got string"
+            "duration.inMonths() requires date, localdatetime, or localtime arguments, got string"
         ),
         "{error}"
     );

@@ -303,7 +303,11 @@ pub(super) fn duration_namespaced_function(
     if !namespace.name.eq_ignore_ascii_case("duration") {
         return None;
     }
-    if name.name.eq_ignore_ascii_case("inDays") {
+    if name.name.eq_ignore_ascii_case("between") {
+        Some(TemporalDurationUnit::Between)
+    } else if name.name.eq_ignore_ascii_case("inMonths") {
+        Some(TemporalDurationUnit::Months)
+    } else if name.name.eq_ignore_ascii_case("inDays") {
         Some(TemporalDurationUnit::Days)
     } else if name.name.eq_ignore_ascii_case("inSeconds") {
         Some(TemporalDurationUnit::Seconds)
