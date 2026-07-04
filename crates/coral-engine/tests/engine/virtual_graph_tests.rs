@@ -228,6 +228,41 @@ async fn cypher_staged_with_order_limit_undirected_final_match_executes() {
 }
 
 #[tokio::test]
+async fn cypher_staged_with_order_limit_multihop_final_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .await
+    .expect("staged multi-hop final match should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"a_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains("\"r1\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"a": "Alice", "b": "Carol"})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_staged_with_order_limit_rehydrates_multiple_carried_properties() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_fixture(temp.path());
@@ -423,6 +458,29 @@ async fn cypher_staged_aggregate_alias_filters_in_final_match() {
             json!({"name": "Alice", "deg": 2}),
         ]
     );
+}
+
+#[tokio::test]
+async fn cypher_staged_aggregate_multihop_final_match_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, c.name AS c, deg",
+    )
+    .await
+    .expect("staged aggregate multi-hop final match should execute");
+
+    let rows = execution_to_rows(execution.execution());
+    assert_eq!(rows, vec![json!({"name": "Alice", "c": "Carol", "deg": 2})]);
 }
 
 #[tokio::test]

@@ -5917,15 +5917,14 @@ fn compile_staged_order_limit_multi_part(
     query: &MultiPartQuery,
     context: &CypherCompileContext,
 ) -> Result<Option<GraphQuery>, CoreError> {
-    let Some((part, return_clause, carried_variable)) = staged_multi_part_shape(query, context)?
-    else {
+    let Some(shape) = staged_multi_part_shape(query, context)? else {
         return Ok(None);
     };
 
     let mut stage_plan = GraphPlan::default();
     let mut stage_state = compile_state_for_multi_part(query, context);
     compile_reading_clauses_into(
-        &part.reading_clauses,
+        &shape.part.reading_clauses,
         "parts[0].match",
         &mut stage_plan,
         &mut stage_state,
@@ -5938,20 +5937,20 @@ fn compile_staged_order_limit_multi_part(
         return Ok(None);
     }
     let visible = visible_graph_variables(&stage_plan, &stage_state);
-    if visible.len() != 1 || !visible.contains(&carried_variable) {
+    if visible.len() != 1 || !visible.contains(&shape.carried_variable) {
         return Ok(None);
     }
 
-    apply_terminal_graph_with_modifiers(&part.with, &mut stage_plan, &stage_state, context)?;
-    let export_column = stage_export_column(&carried_variable);
+    apply_terminal_graph_with_modifiers(&shape.part.with, &mut stage_plan, &stage_state, context)?;
+    let export_column = stage_export_column(&shape.carried_variable);
     stage_plan.projections.push(Projection::Key {
-        variable: carried_variable.clone(),
+        variable: shape.carried_variable.clone(),
         alias: export_column.clone(),
     });
     let carried_node = stage_plan
         .nodes
         .iter()
-        .find(|node| node.variable == carried_variable)
+        .find(|node| node.variable == shape.carried_variable)
         .cloned()
         .ok_or_else(|| CoreError::internal("staged WITH carried variable was not a node"))?;
 
@@ -5967,26 +5966,33 @@ fn compile_staged_order_limit_multi_part(
         &mut final_state,
         context,
     )?;
-    if !matches!(
-        final_plan.relationships.as_slice(),
-        [RelationshipPattern { left, right, .. }]
-            if left == &carried_variable || right == &carried_variable
-    ) {
+    if final_plan.relationships.is_empty()
+        || !final_plan.relationships.iter().any(|relationship| {
+            relationship.left == shape.carried_variable
+                || relationship.right == shape.carried_variable
+        })
+    {
         return Ok(None);
     }
-    compile_return(return_clause, &mut final_plan, &final_state, context)?;
+    compile_return(shape.return_clause, &mut final_plan, &final_state, context)?;
     reject_ignored_path_variable_references(&final_plan, &final_state, "final_part.return")?;
 
     Ok(Some(GraphQuery::Staged(GraphStagedQuery {
         stages: vec![GraphStage {
             plan: stage_plan,
             exports: vec![GraphStageExport::NodeKey {
-                variable: carried_variable,
+                variable: shape.carried_variable,
                 column: export_column,
             }],
         }],
         final_plan,
     })))
+}
+
+struct StagedOrderLimitShape<'a> {
+    part: &'a MultiPartQueryPart,
+    return_clause: &'a Return,
+    carried_variable: String,
 }
 
 struct StagedAggregationShape<'a> {
@@ -5998,7 +6004,8 @@ struct StagedAggregationShape<'a> {
 }
 
 struct StagedFinalMatchShape {
-    target_variable: String,
+    anchor_variable: String,
+    graph_variables: BTreeSet<String>,
 }
 
 struct StagedScalarAliasShape<'a> {
@@ -6439,7 +6446,7 @@ fn staged_aggregation_multi_part_shape<'a>(
     if !staged_aggregation_return_shape(
         return_clause,
         &group_variable_set,
-        &final_match.target_variable,
+        &final_match.graph_variables,
         &aggregate_aliases,
     ) {
         return Ok(None);
@@ -6577,16 +6584,8 @@ fn staged_aggregation_final_match_shape(
     match_clause: &Match,
     group_variables: &BTreeSet<String>,
 ) -> Option<StagedFinalMatchShape> {
-    let shape = staged_single_final_match_shape(match_clause, Some(group_variables))?;
-    if !group_variables.contains(&shape.anchor_variable) {
-        return None;
-    }
-    if !shape.target_labeled && !group_variables.contains(&shape.target_variable) {
-        return None;
-    }
-    Some(StagedFinalMatchShape {
-        target_variable: shape.target_variable,
-    })
+    staged_fixed_final_match_shape(match_clause, Some(group_variables))
+        .filter(|shape| group_variables.contains(&shape.anchor_variable))
 }
 
 fn staged_aggregation_final_where_shape(
@@ -6602,11 +6601,11 @@ fn staged_aggregation_final_where_shape(
 fn staged_aggregation_return_shape(
     return_clause: &Return,
     group_variables: &BTreeSet<String>,
-    target_variable: &str,
+    final_match_variables: &BTreeSet<String>,
     aggregate_aliases: &BTreeSet<String>,
 ) -> bool {
     let mut graph_variables = group_variables.clone();
-    graph_variables.insert(target_variable.to_string());
+    graph_variables.extend(final_match_variables.iter().cloned());
     !return_clause.star
         && return_clause.items.iter().all(|item| {
             staged_property_lookup(&item.expression)
@@ -6616,16 +6615,10 @@ fn staged_aggregation_return_shape(
         })
 }
 
-struct StagedSingleFinalMatchShape {
-    anchor_variable: String,
-    target_variable: String,
-    target_labeled: bool,
-}
-
-fn staged_single_final_match_shape(
+fn staged_fixed_final_match_shape(
     match_clause: &Match,
     allowed_anchor_variables: Option<&BTreeSet<String>>,
-) -> Option<StagedSingleFinalMatchShape> {
+) -> Option<StagedFinalMatchShape> {
     if match_clause.optional {
         return None;
     }
@@ -6638,63 +6631,85 @@ fn staged_single_final_match_shape(
     let PatternElement::Path { start, chains } = &pattern_part.anonymous.element else {
         return None;
     };
-    let [chain] = chains.as_slice() else {
-        return None;
-    };
-    if chain.relationship.quantifier.is_some()
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.range.as_ref())
-            .is_some()
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.variable.as_ref())
-            .is_some()
-        || !chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.types.as_ref())
-            .is_some_and(staged_static_label)
-        || chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.properties.as_ref())
-            .is_some()
-    {
+    if chains.is_empty() {
         return None;
     }
+    for chain in chains {
+        if chain.relationship.quantifier.is_some()
+            || chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.range.as_ref())
+                .is_some()
+            || chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.variable.as_ref())
+                .is_some()
+            || !chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.types.as_ref())
+                .is_some_and(staged_static_label)
+            || chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.properties.as_ref())
+                .is_some()
+        {
+            return None;
+        }
+    }
+
     let start_variable = path_node_variable(start)?;
-    let end_variable = path_node_variable(&chain.node)?;
-    if start_variable == end_variable
-        || start.properties.is_some()
-        || chain.node.properties.is_some()
-        || !(start.labels.is_empty() || staged_single_static_label(&start.labels))
-        || !(chain.node.labels.is_empty() || staged_single_static_label(&chain.node.labels))
+    let end_variable = path_node_variable(&chains.last()?.node)?;
+    let anchor_variable = [start_variable.clone(), end_variable]
+        .into_iter()
+        .find(|variable| {
+            allowed_anchor_variables.is_none_or(|variables| variables.contains(variable))
+        })?;
+
+    if start.properties.is_some()
+        || !staged_final_node_label_shape(&start.labels, &start_variable, allowed_anchor_variables)
     {
         return None;
     }
-    [
-        StagedSingleFinalMatchShape {
-            anchor_variable: start_variable.clone(),
-            target_variable: end_variable.clone(),
-            target_labeled: !chain.node.labels.is_empty(),
-        },
-        StagedSingleFinalMatchShape {
-            anchor_variable: end_variable,
-            target_variable: start_variable,
-            target_labeled: !start.labels.is_empty(),
-        },
-    ]
-    .into_iter()
-    .find(|shape| {
-        allowed_anchor_variables.is_none_or(|variables| variables.contains(&shape.anchor_variable))
+
+    let mut graph_variables = BTreeSet::from([start_variable]);
+    for chain in chains {
+        let variable = path_node_variable(&chain.node)?;
+        if chain.node.properties.is_some()
+            || !staged_final_node_label_shape(
+                &chain.node.labels,
+                &variable,
+                allowed_anchor_variables,
+            )
+            || !graph_variables.insert(variable)
+        {
+            return None;
+        }
+    }
+
+    Some(StagedFinalMatchShape {
+        anchor_variable,
+        graph_variables,
     })
+}
+
+fn staged_final_node_label_shape(
+    labels: &[LabelExpression],
+    variable: &str,
+    allowed_unlabeled_variables: Option<&BTreeSet<String>>,
+) -> bool {
+    if allowed_unlabeled_variables.is_some_and(|variables| variables.contains(variable)) {
+        labels.is_empty() || staged_single_static_label(labels)
+    } else {
+        staged_single_static_label(labels)
+    }
 }
 
 fn staged_single_outgoing_match_shape(
@@ -6790,7 +6805,7 @@ fn expression_uses_variable(expression: &Expression, variable: &str) -> bool {
 fn staged_multi_part_shape<'a>(
     query: &'a MultiPartQuery,
     context: &CypherCompileContext,
-) -> Result<Option<(&'a MultiPartQueryPart, &'a Return, String)>, CoreError> {
+) -> Result<Option<StagedOrderLimitShape<'a>>, CoreError> {
     let [part] = query.parts.as_slice() else {
         return Ok(None);
     };
@@ -6838,17 +6853,22 @@ fn staged_multi_part_shape<'a>(
         return Ok(None);
     };
     let carried_variable = variable_name(variable);
-    let Some(target_variable) = staged_final_match_target(match_clause, &carried_variable) else {
+    let Some(final_match) = staged_order_limit_final_match_shape(match_clause, &carried_variable)
+    else {
         return Ok(None);
     };
     if !staged_initial_match_shape(part, &carried_variable)
         || !staged_with_order_shape(&part.with, &carried_variable)
-        || !staged_return_shape(return_clause, &carried_variable, &target_variable)
+        || !staged_return_shape(return_clause, &final_match.graph_variables)
     {
         return Ok(None);
     }
 
-    Ok(Some((part, return_clause, carried_variable)))
+    Ok(Some(StagedOrderLimitShape {
+        part,
+        return_clause,
+        carried_variable,
+    }))
 }
 
 fn staged_initial_match_shape(part: &MultiPartQueryPart, carried_variable: &str) -> bool {
@@ -6889,25 +6909,22 @@ fn staged_with_order_shape(with: &With, carried_variable: &str) -> bool {
     variable == carried_variable && property == "age"
 }
 
-fn staged_final_match_target(match_clause: &Match, carried_variable: &str) -> Option<String> {
+fn staged_order_limit_final_match_shape(
+    match_clause: &Match,
+    carried_variable: &str,
+) -> Option<StagedFinalMatchShape> {
     if match_clause.optional || match_clause.where_clause.is_some() {
         return None;
     }
     let carried_variables = BTreeSet::from([carried_variable.to_string()]);
-    let shape = staged_single_final_match_shape(match_clause, Some(&carried_variables))?;
-    shape.target_labeled.then_some(shape.target_variable)
+    staged_fixed_final_match_shape(match_clause, Some(&carried_variables))
 }
 
-fn staged_return_shape(
-    return_clause: &Return,
-    carried_variable: &str,
-    target_variable: &str,
-) -> bool {
+fn staged_return_shape(return_clause: &Return, graph_variables: &BTreeSet<String>) -> bool {
     !return_clause.star
         && return_clause.items.iter().all(|item| {
-            staged_property_lookup(&item.expression).is_some_and(|(variable, _)| {
-                variable == carried_variable || variable == target_variable
-            })
+            staged_property_lookup(&item.expression)
+                .is_some_and(|(variable, _)| graph_variables.contains(&variable))
         })
 }
 

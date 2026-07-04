@@ -4718,6 +4718,78 @@ fn compiles_staged_with_undirected_final_match() {
 }
 
 #[test]
+fn compiles_staged_with_multihop_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(b:Person) \
+             RETURN a.name AS a, b.name AS b",
+    )
+    .expect("staged route should allow fixed multi-hop final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("multi-hop final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "x".to_string(),
+            },
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "x".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_staged_with_incoming_multihop_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (x:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(a) \
+             RETURN a.name AS a, x.name AS x",
+    )
+    .expect("staged route should allow incoming fixed multi-hop final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("incoming multi-hop final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "x".to_string(),
+                direction: Direction::Outgoing,
+                right: "b".to_string(),
+            },
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "b".to_string(),
+                direction: Direction::Outgoing,
+                right: "a".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn compiles_staged_with_second_relationship_type() {
     let graph = staged_planning_test_graph();
     let query = compile_cypher_query_for_graph(
@@ -5191,6 +5263,42 @@ fn compiles_staged_aggregate_with_undirected_final_match() {
 }
 
 #[test]
+fn compiles_staged_aggregate_with_multihop_final_match() {
+    let graph = staged_planning_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+         WITH a, count(b) AS deg \
+         MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(c:Person) \
+         RETURN a.name AS name, c.name AS c, deg",
+    )
+    .expect("staged aggregate route should allow fixed multi-hop final matches");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("aggregate multi-hop final match should compile to a staged graph query");
+    };
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "a".to_string(),
+                direction: Direction::Outgoing,
+                right: "x".to_string(),
+            },
+            RelationshipPattern {
+                variable: None,
+                relationship_type: "KNOWS".to_string(),
+                left: "x".to_string(),
+                direction: Direction::Outgoing,
+                right: "c".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn rejects_adjacent_staged_aggregation_shapes() {
     let cases = [
         (
@@ -5206,13 +5314,6 @@ fn rejects_adjacent_staged_aggregation_shapes() {
              WITH a.name AS name, count(b) AS deg \
              MATCH (a)-[:KNOWS]->(c:Person) \
              RETURN name, deg",
-        ),
-        (
-            "multi-hop final match",
-            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
-             WITH a, count(b) AS deg \
-             MATCH (a)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) \
-             RETURN a.name AS name, deg",
         ),
         (
             "initial WHERE before aggregate WITH",
@@ -5265,6 +5366,13 @@ fn rejects_adjacent_staged_aggregation_shapes() {
              MATCH (a)-[:KNOWS]->(d:Person) \
              RETURN a.name AS name, deg",
         ),
+        (
+            "unlabeled intermediate multi-hop final match",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) \
+             WITH a, count(b) AS deg \
+             MATCH (a)-[:KNOWS]->(c)-[:KNOWS]->(d:Person) \
+             RETURN a.name AS name, deg",
+        ),
     ];
 
     for (name, cypher) in cases {
@@ -5282,13 +5390,6 @@ fn rejects_adjacent_staged_with_order_limit_shapes() {
              WITH a ORDER BY a.age LIMIT 2 \
              MATCH (a)-[:KNOWS]->(b:Person) \
              RETURN a.name AS a, b.name AS b",
-        ),
-        (
-            "multi-hop final match",
-            "MATCH (a:Person) \
-             WITH a ORDER BY a.age LIMIT 2 \
-             MATCH (a)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) \
-             RETURN a.name AS a, b.name AS b, c.name AS c",
         ),
         (
             "graph-object return",
@@ -5332,11 +5433,45 @@ fn rejects_adjacent_staged_with_order_limit_shapes() {
              MATCH (b) WHERE b.id = friendId \
              RETURN b.name AS b",
         ),
+        (
+            "unlabeled intermediate multi-hop final match",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b)-[:KNOWS]->(c:Person) \
+             RETURN a.name AS a, c.name AS c",
+        ),
+        (
+            "unlabeled final multi-hop target",
+            "MATCH (a:Person) \
+             WITH a ORDER BY a.age LIMIT 2 \
+             MATCH (a)-[:KNOWS]->(b:Person)-[:KNOWS]->(c) \
+             RETURN a.name AS a, b.name AS b",
+        ),
     ];
 
     for (name, cypher) in cases {
         assert_staged_planning_reject(name, cypher);
     }
+}
+
+#[test]
+fn rejects_staged_with_variable_length_final_relationship() {
+    let graph = staged_planning_test_graph();
+    let error = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a:Person) \
+         WITH a ORDER BY a.age LIMIT 2 \
+         MATCH (a)-[:KNOWS*]->(b:Person) \
+         RETURN a.name AS a, b.name AS b",
+    )
+    .expect_err("variable-length final relationship should remain outside multi-hop staging");
+
+    assert!(
+        error
+            .to_string()
+            .contains("variable-length relationship ranges require finite non-negative bounds"),
+        "{error}"
+    );
 }
 
 #[test]

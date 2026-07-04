@@ -296,6 +296,53 @@ fn lower_graph_query_renders_staged_undirected_final_match() {
 }
 
 #[test]
+fn lower_graph_query_renders_staged_multihop_final_match() {
+    let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
+    let mut query = staged_order_limit_query(RelationshipPattern {
+        variable: None,
+        relationship_type: "KNOWS".to_string(),
+        left: "a".to_string(),
+        direction: Direction::Outgoing,
+        right: "x".to_string(),
+    });
+    let GraphQuery::Staged(staged) = &mut query else {
+        panic!("helper should produce a staged query");
+    };
+    let Some(target_node) = staged.final_plan.nodes.get_mut(1) else {
+        panic!("helper should include a final target node");
+    };
+    target_node.variable = "x".to_string();
+    staged.final_plan.nodes.push(NodePattern {
+        variable: "b".to_string(),
+        label: "Person".to_string(),
+    });
+    staged.final_plan.relationships.push(RelationshipPattern {
+        variable: None,
+        relationship_type: "KNOWS".to_string(),
+        left: "x".to_string(),
+        direction: Direction::Outgoing,
+        right: "b".to_string(),
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("staged multi-hop graph query should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "WITH \"stage0\" AS (SELECT \"n0\".\"id\" AS \"a_id\" \
+             FROM \"ops\".\"people\" AS \"n0\" ORDER BY \"n0\".\"age\" ASC LIMIT 2) \
+             SELECT \"n0\".\"full_name\" AS \"a\", \"n2\".\"full_name\" AS \"b\" \
+             FROM \"stage0\" AS \"stage0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"n0\".\"id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"knows\" AS \"r0\" ON \"r0\".\"person_id\" = \"stage0\".\"a_id\" \
+             JOIN \"ops\".\"people\" AS \"n1\" ON \"r0\".\"friend_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"knows\" AS \"r1\" ON \"r1\".\"person_id\" = \"n1\".\"id\" \
+             JOIN \"ops\".\"people\" AS \"n2\" ON \"r1\".\"friend_id\" = \"n2\".\"id\""
+    );
+}
+
+#[test]
 fn lower_graph_query_renders_staged_scalar_alias_cte() {
     let graph = Declaration::from_yaml(STAGED_GRAPH).expect("graph should parse");
     let query = GraphQuery::Staged(GraphStagedQuery {

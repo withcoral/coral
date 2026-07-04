@@ -30,7 +30,7 @@
     "Unwind": 13,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 38
+    "With": 40
   },
   "scenarios": [
     {
@@ -11158,6 +11158,21 @@
       }
     },
     {
+      "id": "with-order-limit-multihop-final-match",
+      "feature": "With",
+      "query": "MATCH (a:Person) WITH a ORDER BY a.age LIMIT 2 MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(b:Person) RETURN a.name AS a, b.name AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a": "Alice",
+            "b": "Carol"
+          }
+        ]
+      }
+    },
+    {
       "id": "with-limit-zero-before-match-rejected",
       "feature": "With",
       "query": "MATCH (p:Person) WITH p ORDER BY p.name LIMIT 0 MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name AS friend",
@@ -11185,6 +11200,22 @@
           {
             "name": "Bob",
             "deg": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-aggregate-stage-multihop-final-match",
+      "feature": "With",
+      "query": "MATCH (a:Person)-[:KNOWS]->(b:Person) WITH a, count(b) AS deg MATCH (a)-[:KNOWS]->(x:Person)-[:KNOWS]->(c:Person) RETURN a.name AS name, c.name AS c, deg",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "c": "Carol",
+            "deg": 2,
+            "name": "Alice"
           }
         ]
       }

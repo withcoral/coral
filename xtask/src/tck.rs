@@ -1255,7 +1255,7 @@ mod tests {
             .expect("baseline fixture should parse");
 
         assert_eq!(report.suite, "coral-opencypher-read-baseline");
-        assert_eq!(report.scenario_count, 598);
+        assert_eq!(report.scenario_count, 600);
         assert_eq!(report.expected_error_count, 70);
         assert_eq!(report.feature_counts.get("Aggregation"), Some(&26));
         assert_eq!(report.feature_counts.get("CollectSubquery"), Some(&3));
@@ -1283,7 +1283,7 @@ mod tests {
         assert_eq!(report.feature_counts.get("Unwind"), Some(&13));
         assert_eq!(report.feature_counts.get("VariableLengthPaths"), Some(&16));
         assert_eq!(report.feature_counts.get("Where"), Some(&30));
-        assert_eq!(report.feature_counts.get("With"), Some(&38));
+        assert_eq!(report.feature_counts.get("With"), Some(&40));
         assert!(report.feature_floor_violations.is_empty());
         assert!(report.undeclared_features.is_empty());
         assert!(feature_floors_satisfied(&report));
@@ -1430,7 +1430,7 @@ mod tests {
         assert_eq!(report.feature_file_count, 6);
         assert_eq!(report.scenario_count, 6);
         assert_eq!(report.read_candidate_scenario_count, 4);
-        assert_eq!(report.coral_baseline_scenario_count, 598);
+        assert_eq!(report.coral_baseline_scenario_count, 600);
         assert_eq!(
             report
                 .category_counts
