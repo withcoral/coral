@@ -988,7 +988,7 @@ fn validate_graph_plan_accepts_temporal_duration_arithmetic() {
 }
 
 #[test]
-fn lower_graph_plan_rejects_bare_duration_projection() {
+fn lower_graph_plan_renders_bare_duration_projection() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan();
     plan.projections = vec![Projection::Expression {
@@ -996,15 +996,16 @@ fn lower_graph_plan_rejects_bare_duration_projection() {
         alias: "duration_value".to_string(),
     }];
 
-    let error = graph
+    let translation = graph
         .lower_graph_plan(&plan)
-        .expect_err("bare duration projection should reject until rendering is supported");
+        .expect("bare duration projection should render through Coral ISO formatter");
 
     assert!(
-        error
-            .to_string()
-            .contains("bare duration result rendering is not supported yet"),
-        "{error}"
+        translation
+            .sql()
+            .contains("coral_duration_to_iso(CAST('0 months 1 days 0 seconds' AS INTERVAL)) AS \"duration_value\""),
+        "{}",
+        translation.sql()
     );
 }
 
@@ -1019,6 +1020,14 @@ fn validate_graph_plan_rejects_invalid_temporal_arithmetic_combinations() {
                 right: Box::new(date_from_string_expression("2020-01-02")),
             },
             "temporal arithmetic does not support date + date",
+        ),
+        (
+            ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Subtract,
+                left: Box::new(date_from_string_expression("2020-01-02")),
+                right: Box::new(date_from_string_expression("2020-01-01")),
+            },
+            "temporal arithmetic does not support date - date",
         ),
         (
             ScalarExpression::Arithmetic {

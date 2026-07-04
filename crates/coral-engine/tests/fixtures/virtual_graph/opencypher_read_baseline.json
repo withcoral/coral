@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 62,
+    "Temporal": 72,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10549,8 +10549,140 @@
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1Y2M3DT4H') AS dur",
       "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "dur": "P1Y2M3DT4H"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-compound",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "P12Y5M14DT16H13M10.000000001S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-signed-days",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({years: 12, months: 5, days: -14, hours: 16})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "P12Y5M-14DT16H"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-seconds-underflow",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({minutes: 12, seconds: -60})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "PT11M"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-subsecond",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({seconds: 2, milliseconds: -1})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "PT1.999S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-negative-subsecond",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({seconds: -60, milliseconds: -1})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "PT-1M-0.001S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-day-subsecond",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({days: 1, milliseconds: 1})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "P1DT0.001S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-zero",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(duration({})) AS ts",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "ts": "PT0S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-to-string-roundtrip",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration(toString(duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1}))) = duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1}) AS compound, duration(toString(duration({years: 12, months: 5, days: -14, hours: 16}))) = duration({years: 12, months: 5, days: -14, hours: 16}) AS signed_days, duration(toString(duration({minutes: 12, seconds: -60}))) = duration({minutes: 12, seconds: -60}) AS seconds_underflow, duration(toString(duration({seconds: 2, milliseconds: -1}))) = duration({seconds: 2, milliseconds: -1}) AS subsecond, duration(toString(duration({seconds: -60, milliseconds: -1}))) = duration({seconds: -60, milliseconds: -1}) AS negative_subsecond, duration(toString(duration({days: 1, milliseconds: 1}))) = duration({days: 1, milliseconds: 1}) AS day_subsecond, duration(toString(duration({}))) = duration({}) AS zero_duration",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "compound": true,
+            "day_subsecond": true,
+            "negative_subsecond": true,
+            "seconds_underflow": true,
+            "signed_days": true,
+            "subsecond": true,
+            "zero_duration": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-duration-component-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1D').day AS days",
+      "expected": {
         "kind": "error",
-        "contains": "bare duration result rendering is not supported yet"
+        "contains": "day is not supported for duration values"
       }
     },
     {
@@ -11058,6 +11190,15 @@
       "expected": {
         "kind": "error",
         "contains": "temporal arithmetic does not support date + date"
+      }
+    },
+    {
+      "id": "temporal-date-date-subtraction-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-02') - date('2020-01-01') AS d",
+      "expected": {
+        "kind": "error",
+        "contains": "temporal arithmetic does not support date - date"
       }
     },
     {

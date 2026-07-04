@@ -113,11 +113,6 @@ pub(super) fn temporal_arithmetic_result_type(
             ScalarType::Temporal(TemporalKind::Duration),
         ) => Some(Ok(ScalarType::Temporal(kind))),
         (
-            ArithmeticOperator::Subtract,
-            ScalarType::Temporal(left_kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
-            ScalarType::Temporal(right_kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
-        ) if left_kind == right_kind => Some(Ok(ScalarType::Temporal(TemporalKind::Duration))),
-        (
             ArithmeticOperator::Add | ArithmeticOperator::Subtract,
             ScalarType::Temporal(TemporalKind::Duration),
             ScalarType::Temporal(TemporalKind::Duration),
@@ -132,7 +127,7 @@ pub(super) fn temporal_arithmetic_result_type(
                 diagnostic_codes::INVALID_SCALAR_TYPE,
                 path,
                 format!(
-                    "temporal arithmetic does not support {} {} {}; supported forms are temporal +/- duration, same-kind temporal - temporal, duration +/- duration, and duration * numeric literal",
+                    "temporal arithmetic does not support {} {} {}; supported forms are temporal +/- duration, duration +/- duration, and duration * numeric literal",
                     left.name(),
                     arithmetic_operator_name(operator),
                     right.name()

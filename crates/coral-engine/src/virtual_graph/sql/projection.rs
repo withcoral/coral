@@ -176,12 +176,7 @@ impl<'a> SqlRenderer<'a> {
         expression: &ScalarExpression,
     ) -> Result<String, CoreError> {
         if scalar_expression_projects_duration(expression) {
-            return Err(Diagnostic::new(
-                diagnostic_codes::INVALID_SCALAR_TYPE,
-                "projection.expression",
-                "bare duration result rendering is not supported yet",
-            )
-            .into_core_error());
+            return self.render_duration_to_iso_expression(expression, ScalarScope::TopLevel);
         }
         self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
         self.render_scalar_expression(expression)
@@ -837,7 +832,7 @@ fn arithmetic_expression_projects_duration(
     left: &ScalarExpression,
     right: &ScalarExpression,
 ) -> bool {
-    let arithmetic_result_is_duration = match operator {
+    match operator {
         ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
             scalar_expression_projects_duration(left) && scalar_expression_projects_duration(right)
         }
@@ -845,32 +840,5 @@ fn arithmetic_expression_projects_duration(
         ArithmeticOperator::Divide | ArithmeticOperator::Modulo | ArithmeticOperator::Power => {
             false
         }
-    };
-    arithmetic_result_is_duration
-        || matches!(
-            (operator, temporal_scalar_kind(left), temporal_scalar_kind(right)),
-            (
-                ArithmeticOperator::Subtract,
-                Some(left_kind),
-                Some(right_kind)
-            ) if left_kind == right_kind && left_kind != TemporalKind::Duration
-        )
-}
-
-fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
-    match expression {
-        ScalarExpression::Temporal(
-            TemporalExpr::MakeDate { .. } | TemporalExpr::DateFromString { .. },
-        ) => Some(TemporalKind::Date),
-        ScalarExpression::Temporal(
-            TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. },
-        ) => Some(TemporalKind::LocalDateTime),
-        ScalarExpression::Temporal(
-            TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. },
-        ) => Some(TemporalKind::LocalTime),
-        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => {
-            Some(TemporalKind::Duration)
-        }
-        _ => None,
     }
 }

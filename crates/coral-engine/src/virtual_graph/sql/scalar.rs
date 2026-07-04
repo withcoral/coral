@@ -340,6 +340,11 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<Option<String>, CoreError> {
         match expression {
             ScalarExpression::ToString { expression } => {
+                if scalar_expression_is_duration(expression) {
+                    return self
+                        .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
+                        .map(Some);
+                }
                 self.render_cast_expression(expression, "VARCHAR").map(Some)
             }
             ScalarExpression::ToInteger { expression } => {
@@ -386,6 +391,17 @@ impl<'a> SqlRenderer<'a> {
         Ok(format!(
             "TRY_CAST({} AS {target_type})",
             self.render_scalar_expression(expression)?
+        ))
+    }
+
+    pub(super) fn render_duration_to_iso_expression<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "coral_duration_to_iso({})",
+            self.render_scalar_in_scope(expression, scope)?
         ))
     }
 

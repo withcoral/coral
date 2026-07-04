@@ -965,6 +965,73 @@ async fn cypher_temporal_duration_arithmetic_executes_against_synthetic_sources(
 }
 
 #[tokio::test]
+async fn cypher_duration_results_render_as_iso_strings_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1}) AS compound, \
+                toString(duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1})) AS compound_text, \
+                duration({years: 12, months: 5, days: -14, hours: 16}) AS signed_days, \
+                toString(duration({minutes: 12, seconds: -60})) AS seconds_underflow, \
+                toString(duration({seconds: 2, milliseconds: -1})) AS subsecond, \
+                toString(duration({seconds: -60, milliseconds: -1})) AS negative_subsecond, \
+                duration({days: 1, milliseconds: 1}) AS day_subsecond, \
+                duration({}) AS zero_duration",
+    )
+    .await
+    .expect("Cypher duration rendering should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT 'P12Y5M14DT16H13M10.000000001S' AS compound, \
+                    'P12Y5M14DT16H13M10.000000001S' AS compound_text, \
+                    'P12Y5M-14DT16H' AS signed_days, \
+                    'PT11M' AS seconds_underflow, \
+                    'PT1.999S' AS subsecond, \
+                    'PT-1M-0.001S' AS negative_subsecond, \
+                    'P1DT0.001S' AS day_subsecond, \
+                    'PT0S' AS zero_duration \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent duration rendering SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("coral_duration_to_iso("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "compound": "P12Y5M14DT16H13M10.000000001S",
+            "compound_text": "P12Y5M14DT16H13M10.000000001S",
+            "signed_days": "P12Y5M-14DT16H",
+            "seconds_underflow": "PT11M",
+            "subsecond": "PT1.999S",
+            "negative_subsecond": "PT-1M-0.001S",
+            "day_subsecond": "P1DT0.001S",
+            "zero_duration": "PT0S"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_stored_temporal_components_execute_against_rich_fixture() {
     let temp = TempDir::new().expect("temp dir");
     write_rich_fixture(temp.path());

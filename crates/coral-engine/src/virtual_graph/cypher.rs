@@ -20049,7 +20049,9 @@ fn compile_scalar_function_expression_in_mode(
     } else if let Some(target) = path_list_size_target(function) {
         compile_path_element_id_list_scalar_expression(function, target, path, mode, context)
             .map(Some)
-    } else if let Some(expression) = compile_temporal_scalar_function_expression(function, &path)? {
+    } else if let Some(expression) =
+        compile_temporal_scalar_function_expression(function, &path, mode, context)?
+    {
         Ok(Some(expression))
     } else if let Some(expression) =
         compile_core_scalar_function_expression(function, &path, mode, context)?
@@ -20063,6 +20065,8 @@ fn compile_scalar_function_expression_in_mode(
 fn compile_temporal_scalar_function_expression(
     function: &FunctionInvocation,
     path: &str,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
 ) -> Result<Option<ScalarExpression>, CoreError> {
     if is_date_function(function) {
         compile_date_scalar_expression(function, path).map(Some)
@@ -20071,7 +20075,7 @@ fn compile_temporal_scalar_function_expression(
     } else if is_localtime_function(function) {
         compile_localtime_scalar_expression(function, path).map(Some)
     } else if is_duration_function(function) {
-        compile_duration_scalar_expression(function, path).map(Some)
+        compile_duration_scalar_expression(function, path, mode, context).map(Some)
     } else {
         Ok(None)
     }
@@ -20493,6 +20497,8 @@ impl DurationParts {
 fn compile_duration_scalar_expression(
     function: &FunctionInvocation,
     path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     let [argument] = function.arguments.as_slice() else {
@@ -20501,17 +20507,24 @@ fn compile_duration_scalar_expression(
             "duration() requires exactly one argument",
         ));
     };
-    compile_duration_argument_scalar_expression(argument, format!("{path}.arguments[0]"))
+    compile_duration_argument_scalar_expression(
+        argument,
+        format!("{path}.arguments[0]"),
+        mode,
+        context,
+    )
 }
 
 fn compile_duration_argument_scalar_expression(
     argument: &Expression,
     path: impl Into<String>,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
 ) -> Result<ScalarExpression, CoreError> {
     let path = path.into();
     match argument {
         Expression::Parenthesized(inner) => {
-            compile_duration_argument_scalar_expression(inner, path)
+            compile_duration_argument_scalar_expression(inner, path, mode, context)
         }
         Expression::Literal(CypherLiteral::Map(map)) => {
             compile_duration_map_scalar_expression(map, path)
@@ -20519,6 +20532,22 @@ fn compile_duration_argument_scalar_expression(
         Expression::Literal(CypherLiteral::String(value)) => {
             parse_iso_duration_literal(&value.value, &path)
                 .map(DurationParts::into_scalar_expression)
+        }
+        Expression::FunctionCall(function) if is_to_string_function(function) => {
+            let expression = compile_single_scalar_function_argument(
+                function,
+                path.clone(),
+                "toString",
+                mode,
+                context,
+            )?;
+            if scalar_expression_has_duration_value(&expression) {
+                return Ok(expression);
+            }
+            Err(unsupported(
+                path,
+                "duration(toString(...)) requires a duration-valued argument",
+            ))
         }
         Expression::Literal(_) => Err(unsupported(
             path,
@@ -20870,6 +20899,27 @@ fn compile_duration_multiply_expression(
     Ok(Some(
         scale_duration_parts(duration, factor, path)?.into_scalar_expression(),
     ))
+}
+
+fn scalar_expression_has_duration_value(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => match operator {
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
+                scalar_expression_has_duration_value(left)
+                    && scalar_expression_has_duration_value(right)
+            }
+            ArithmeticOperator::Multiply => scalar_expression_has_duration_value(left),
+            ArithmeticOperator::Divide | ArithmeticOperator::Modulo | ArithmeticOperator::Power => {
+                false
+            }
+        },
+        _ => false,
+    }
 }
 
 fn duration_parts_from_scalar_expression(expression: &ScalarExpression) -> Option<DurationParts> {
@@ -21734,6 +21784,7 @@ fn is_potential_temporal_component_base(
             is_date_function(function)
                 || is_localdatetime_function(function)
                 || is_localtime_function(function)
+                || is_duration_function(function)
         }
         Expression::Variable(variable) => mode.scalar_alias_state().is_some_and(|state| {
             scalar_alias_projection(state, &variable_name(variable)).is_some()

@@ -2444,7 +2444,20 @@ impl<'a> SqlRenderer<'a> {
             )))
         };
         match expression {
-            ScalarExpression::ToString { expression } => cast(expression, "VARCHAR"),
+            ScalarExpression::ToString { expression } => {
+                if scoped_scalar_expression_is_duration(expression) {
+                    return Ok(Some(format!(
+                        "coral_duration_to_iso({})",
+                        self.render_scoped_scalar_expression(
+                            expression,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?
+                    )));
+                }
+                cast(expression, "VARCHAR")
+            }
             ScalarExpression::ToInteger { expression } => cast(expression, "BIGINT"),
             ScalarExpression::ToFloat { expression } => cast(expression, "DOUBLE"),
             ScalarExpression::ToBoolean { expression } => cast(expression, "BOOLEAN"),
@@ -3136,5 +3149,26 @@ impl<'a> SqlRenderer<'a> {
         relationships
             .iter()
             .find(|relationship| relationship.pattern.variable.as_deref() == Some(variable))
+    }
+}
+
+fn scoped_scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
+    match expression {
+        ScalarExpression::Temporal(TemporalExpr::MakeDuration { .. }) => true,
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => match operator {
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
+                scoped_scalar_expression_is_duration(left)
+                    && scoped_scalar_expression_is_duration(right)
+            }
+            ArithmeticOperator::Multiply => scoped_scalar_expression_is_duration(left),
+            ArithmeticOperator::Divide | ArithmeticOperator::Modulo | ArithmeticOperator::Power => {
+                false
+            }
+        },
+        _ => false,
     }
 }

@@ -2907,6 +2907,38 @@ fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
 }
 
 #[test]
+fn lower_graph_plan_renders_duration_results_as_iso_strings() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: duration_expression(149, 14, 58_390, 1),
+            alias: "bare".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(duration_expression(0, 0, -61, 999_000_000)),
+            },
+            alias: "text".to_string(),
+        },
+    ];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("duration projections should lower through ISO formatter");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT coral_duration_to_iso(CAST('149 months 14 days 58390.000000001 seconds' AS INTERVAL)) AS \"bare\", \
+             coral_duration_to_iso(CAST('0 months 0 days -60.001 seconds' AS INTERVAL)) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_temporal_component_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);

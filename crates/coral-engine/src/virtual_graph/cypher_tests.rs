@@ -2491,7 +2491,9 @@ fn compiles_duration_constructor_scalar_expressions() {
     let plan = compile_cypher(
         "MATCH (person:Person) \
          RETURN duration('P1Y2M3DT4H') AS iso, \
-                duration({years: 1, months: 2, weeks: 1, days: 3, hours: 4, minutes: 5, seconds: 6, milliseconds: 7, microseconds: 8, nanoseconds: 9}) AS map",
+                duration({years: 1, months: 2, weeks: 1, days: 3, hours: 4, minutes: 5, seconds: 6, milliseconds: 7, microseconds: 8, nanoseconds: 9}) AS map, \
+                toString(duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 1})) AS text, \
+                duration(toString(duration({seconds: 2, milliseconds: -1}))) AS roundtrip",
     )
     .expect("literal duration constructors should compile");
 
@@ -2505,6 +2507,16 @@ fn compiles_duration_constructor_scalar_expressions() {
             Projection::Expression {
                 expression: duration_expression(14, 10, 14_706, 7_008_009),
                 alias: "map".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(duration_expression(149, 14, 58_390, 1)),
+                },
+                alias: "text".to_string(),
+            },
+            Projection::Expression {
+                expression: duration_expression(0, 0, 1, 999_000_000),
+                alias: "roundtrip".to_string(),
             },
         ]
     );
@@ -2591,6 +2603,14 @@ fn rejects_unsupported_duration_constructor_and_multiply_forms() {
         (
             "MATCH (person:Person) RETURN duration('P') AS d",
             "duration() requires an ISO-8601 duration string literal",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration(toString(date('2020-01-01'))) AS d",
+            "duration(toString(...)) requires a duration-valued argument",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration('P1D').day AS days",
+            "day is not supported for duration values",
         ),
         (
             "MATCH (person:Person) RETURN date('2020-01-01') + duration('P1D') * person.age AS shifted",
