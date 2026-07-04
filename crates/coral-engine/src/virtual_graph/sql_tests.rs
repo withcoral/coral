@@ -5,7 +5,8 @@ use crate::virtual_graph::ir::{
     KeyPredicate, Literal, NodePattern, OptionalMatchScope, OrderDirection, OrderExpression,
     OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
-    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
+    RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr,
 };
 
 const GRAPH: &str = r"
@@ -109,6 +110,16 @@ fn localtime_expression(
         millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
         microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
         nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+    })
+}
+
+fn temporal_component_expression(
+    expression: ScalarExpression,
+    unit: TemporalComponentUnit,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::Component {
+        expression: Box::new(expression),
+        unit,
     })
 }
 
@@ -2579,6 +2590,88 @@ fn lower_graph_plan_renders_temporal_localtime_expressions() {
         translation
             .sql()
             .contains("ORDER BY CAST('12:34:56' AS TIME) ASC"),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_temporal_component_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: temporal_component_expression(
+                date_from_string_expression("2020-01-15"),
+                TemporalComponentUnit::Year,
+            ),
+            alias: "year".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                TemporalComponentUnit::Hour,
+            ),
+            alias: "hour".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localdatetime_from_string_expression("2020-01-15T12:34:56.789123456"),
+                TemporalComponentUnit::Millisecond,
+            ),
+            alias: "millisecond".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localtime_from_string_expression("12:34:56.789123456"),
+                TemporalComponentUnit::Microsecond,
+            ),
+            alias: "microsecond".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: temporal_component_expression(
+            localdatetime_from_string_expression("2020-01-15T12:34:56"),
+            TemporalComponentUnit::Hour,
+        ),
+        operator: ComparisonOperator::GreaterThan,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(11))),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(temporal_component_expression(
+            localtime_from_string_expression("12:34:56"),
+            TemporalComponentUnit::Minute,
+        )),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("temporal component scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+             "SELECT CAST(date_part('year', CAST('2020-01-15' AS DATE)) AS BIGINT) AS \"year\", \
+             CAST(date_part('hour', CAST('2020-01-15T12:34:56' AS TIMESTAMP)) AS BIGINT) AS \"hour\", \
+             (CAST(date_part('millisecond', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) % 1000) AS \"millisecond\", \
+             (CAST(date_part('microsecond', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) % 1000000) AS \"microsecond\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "WHERE CAST(date_part('hour', CAST('2020-01-15T12:34:56' AS TIMESTAMP)) AS BIGINT) > 11"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation
+            .sql()
+            .contains("ORDER BY CAST(date_part('minute', CAST('12:34:56' AS TIME)) AS BIGINT) ASC"),
         "{}",
         translation.sql()
     );

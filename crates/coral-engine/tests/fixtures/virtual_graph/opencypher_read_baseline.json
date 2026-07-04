@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 32,
+    "Temporal": 47,
     "TypeConversion": 16,
     "Union": 17,
     "Unwind": 13,
@@ -10749,12 +10749,194 @@
       }
     },
     {
-      "id": "temporal-date-component-access-rejected",
+      "id": "temporal-date-component-year",
       "feature": "Temporal",
-      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01').year AS year",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').year AS year",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "year": 2020
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-component-month",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').month AS month",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "month": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-component-day",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').day AS day",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "day": 15
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-component-hour",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56').hour AS hour",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "hour": 12
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-component-minute",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56').minute AS minute",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "minute": 34
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-component-second",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56').second AS second",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "second": 56
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-component-hour",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56').hour AS hour",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "hour": 12
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localdatetime-subsecond-components-within-second",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56.789123456').millisecond AS millisecond, localdatetime('2020-01-15T12:34:56.789123456').microsecond AS microsecond",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "millisecond": 789,
+            "microsecond": 789123
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-localtime-subsecond-components-within-second",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56.789123456').millisecond AS millisecond, localtime('12:34:56.789123456').microsecond AS microsecond",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "millisecond": 789,
+            "microsecond": 789123
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-date-component-week-year-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').weekYear AS weekYear",
       "expected": {
         "kind": "error",
-        "contains": "property references must be variable.property or startNode()/endNode() relationship endpoint properties"
+        "contains": "weekYear is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-component-week-day-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').weekDay AS weekDay",
+      "expected": {
+        "kind": "error",
+        "contains": "weekDay is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-component-ordinal-day-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').ordinalDay AS ordinalDay",
+      "expected": {
+        "kind": "error",
+        "contains": "ordinalDay is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-component-day-of-quarter-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').dayOfQuarter AS dayOfQuarter",
+      "expected": {
+        "kind": "error",
+        "contains": "dayOfQuarter is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-date-component-access-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WITH p.name AS d RETURN d.year AS year",
+      "expected": {
+        "kind": "error",
+        "contains": "stored temporal component access is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-localtime-component-nanosecond-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56.789123456').nanosecond AS ns",
+      "expected": {
+        "kind": "error",
+        "contains": "nanosecond is not supported yet"
+      }
+    },
+    {
+      "id": "temporal-localtime-component-year-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56').year AS year",
+      "expected": {
+        "kind": "error",
+        "contains": "year is not supported for localtime values"
       }
     },
     {

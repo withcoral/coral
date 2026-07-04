@@ -20,7 +20,7 @@ use super::ir::{
     PredicateRhs, PresencePredicate, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
-    ScalarPredicate, ScalarPredicateRhs, TemporalExpr, TemporalKind,
+    ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
     UndirectedRelationshipEndpoint,
 };
 use crate::{CatalogInfo, CoreError};

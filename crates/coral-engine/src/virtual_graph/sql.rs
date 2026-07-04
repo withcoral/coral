@@ -20,8 +20,8 @@ use super::ir::{
     OrderExpression, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
-    UndirectedRelationshipEndpoint,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr, UndirectedRelationshipEndpoint,
 };
 use super::validation::{ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings};
 use crate::CoreError;

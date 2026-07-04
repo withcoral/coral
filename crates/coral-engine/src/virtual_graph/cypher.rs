@@ -62,8 +62,8 @@ use super::ir::{
     OrderExpression, OrderKey, PredicateExpression, PredicateRhs, PresencePredicate, Projection,
     ProjectionPredicate, ProjectionPredicateExpression, ProjectionPredicateRhs,
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
-    UndirectedRelationshipEndpoint,
+    ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
+    TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
 };
 use crate::CoreError;
 
@@ -7247,6 +7247,15 @@ fn apply_terminal_return_projection_aliases(
     let mut available = plan.projections.clone();
     let mut returned_aliases = BTreeSet::new();
     for (index, item) in return_clause.items.iter().enumerate() {
+        if terminal_return_item_is_stored_temporal_component_access(
+            &item.expression,
+            &plan.projections,
+        ) {
+            return Err(unsupported(
+                format!("final_part.return.items[{index}].expression"),
+                "stored temporal component access is not supported yet",
+            ));
+        }
         let Expression::Variable(variable) = &item.expression else {
             return Err(unsupported(
                 format!("final_part.return.items[{index}].expression"),
@@ -7277,6 +7286,31 @@ fn apply_terminal_return_projection_aliases(
     }
     plan.projections = reordered;
     Ok(())
+}
+
+fn terminal_return_item_is_stored_temporal_component_access(
+    expression: &Expression,
+    projections: &[Projection],
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            terminal_return_item_is_stored_temporal_component_access(inner, projections)
+        }
+        Expression::PropertyLookup { base, property, .. } => {
+            let component = property.name.name.as_str();
+            if !temporal_component_name_is_reserved(component) {
+                return false;
+            }
+            let Expression::Variable(variable) = base.as_ref() else {
+                return false;
+            };
+            let alias = variable_name(variable);
+            projections
+                .iter()
+                .any(|projection| projection_output_alias(projection) == Some(alias.as_str()))
+        }
+        _ => false,
+    }
 }
 
 fn expand_terminal_with_star_return_star(
@@ -8191,7 +8225,8 @@ fn unary_scalar_expression_operand_mut(
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
             | TemporalExpr::LocalDateTimeFromString { text: expression }
-            | TemporalExpr::LocalTimeFromString { text: expression },
+            | TemporalExpr::LocalTimeFromString { text: expression }
+            | TemporalExpr::Component { expression, .. },
         )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
@@ -8311,7 +8346,8 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
             | TemporalExpr::LocalDateTimeFromString { text: expression }
-            | TemporalExpr::LocalTimeFromString { text: expression },
+            | TemporalExpr::LocalTimeFromString { text: expression }
+            | TemporalExpr::Component { expression, .. },
         )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
@@ -17051,6 +17087,23 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map_or(output_name, variable_name),
         }));
     }
+    if let Some(expression) = compile_optional_temporal_component_scalar_expression(
+        &item.expression,
+        format!("{path}.expression"),
+        PredicateCompileMode::Graph {
+            plan,
+            path_state: Some(state),
+        },
+        context,
+    )? {
+        return Ok(Some(Projection::Expression {
+            expression,
+            alias: item
+                .alias
+                .as_ref()
+                .map_or_else(|| "expression".to_string(), variable_name),
+        }));
+    }
     if let Some(projection) =
         compile_optional_static_map_lookup_projection(item, path.clone(), plan, state, context)?
     {
@@ -20340,6 +20393,14 @@ fn compile_property_lookup_scalar_expression_in_mode(
     )? {
         return Ok(expression);
     }
+    if let Some(expression) = compile_optional_temporal_component_scalar_expression(
+        expression,
+        path.clone(),
+        mode,
+        context,
+    )? {
+        return Ok(expression);
+    }
     if let Some(expression) = compile_optional_static_map_lookup_scalar_expression(
         expression,
         path.clone(),
@@ -20351,6 +20412,147 @@ fn compile_property_lookup_scalar_expression_in_mode(
     Ok(ScalarExpression::Property(compile_property_ref(
         expression, path, plan, context,
     )?))
+}
+
+fn compile_optional_temporal_component_scalar_expression(
+    expression: &Expression,
+    path: String,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<Option<ScalarExpression>, CoreError> {
+    match expression {
+        Expression::Parenthesized(inner) => {
+            compile_optional_temporal_component_scalar_expression(inner, path, mode, context)
+        }
+        Expression::PropertyLookup { base, property, .. } => {
+            let component = property.name.name.as_str();
+            if !temporal_component_name_is_reserved(component)
+                && matches!(
+                    base.as_ref(),
+                    Expression::PropertyLookup { .. } | Expression::Variable(_)
+                )
+            {
+                return Ok(None);
+            }
+            if !is_potential_temporal_component_base(base, mode) {
+                return Ok(None);
+            }
+            let base_expression = compile_scalar_expression_in_predicate_mode(
+                base,
+                format!("{path}.base"),
+                mode,
+                context,
+            )?;
+            let ScalarExpression::Temporal(temporal) = &base_expression else {
+                if temporal_component_name_is_reserved(component) {
+                    return Err(unsupported(
+                        format!("{path}.base"),
+                        "stored temporal component access is not supported yet",
+                    ));
+                }
+                return Ok(None);
+            };
+            let Some(kind) = temporal_expression_value_kind(temporal) else {
+                return Err(unsupported(
+                    format!("{path}.base"),
+                    "temporal component access requires a temporal value",
+                ));
+            };
+            let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
+            if !unit.supports_kind(kind) {
+                return Err(unsupported(
+                    format!("{path}.property"),
+                    format!("{component} is not supported for {} values", kind.name()),
+                ));
+            }
+            Ok(Some(ScalarExpression::Temporal(TemporalExpr::Component {
+                expression: Box::new(base_expression),
+                unit,
+            })))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn is_potential_temporal_component_base(
+    expression: &Expression,
+    mode: PredicateCompileMode<'_>,
+) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_potential_temporal_component_base(inner, mode),
+        Expression::FunctionCall(function) => {
+            is_date_function(function)
+                || is_localdatetime_function(function)
+                || is_localtime_function(function)
+        }
+        Expression::Variable(variable) => mode.scalar_alias_state().is_some_and(|state| {
+            scalar_alias_projection(state, &variable_name(variable)).is_some()
+        }),
+        Expression::PropertyLookup { .. } => true,
+        _ => false,
+    }
+}
+
+fn compile_temporal_component_unit(
+    component: &str,
+    path: impl Into<String>,
+) -> Result<TemporalComponentUnit, CoreError> {
+    match component {
+        "year" => Ok(TemporalComponentUnit::Year),
+        "quarter" => Ok(TemporalComponentUnit::Quarter),
+        "month" => Ok(TemporalComponentUnit::Month),
+        "week" => Ok(TemporalComponentUnit::Week),
+        "day" => Ok(TemporalComponentUnit::Day),
+        "hour" => Ok(TemporalComponentUnit::Hour),
+        "minute" => Ok(TemporalComponentUnit::Minute),
+        "second" => Ok(TemporalComponentUnit::Second),
+        "millisecond" => Ok(TemporalComponentUnit::Millisecond),
+        "microsecond" => Ok(TemporalComponentUnit::Microsecond),
+        _ => Err(unsupported(
+            path,
+            format!("{component} is not supported yet"),
+        )),
+    }
+}
+
+fn temporal_component_name_is_reserved(component: &str) -> bool {
+    matches!(
+        component,
+        "year"
+            | "quarter"
+            | "month"
+            | "week"
+            | "day"
+            | "hour"
+            | "minute"
+            | "second"
+            | "millisecond"
+            | "microsecond"
+            | "nanosecond"
+            | "weekYear"
+            | "weekDay"
+            | "ordinalDay"
+            | "dayOfQuarter"
+            | "timezone"
+            | "offset"
+            | "offsetMinutes"
+            | "offsetSeconds"
+    )
+}
+
+fn temporal_expression_value_kind(expression: &TemporalExpr) -> Option<TemporalKind> {
+    match expression {
+        TemporalExpr::MakeDate { .. } | TemporalExpr::DateFromString { .. } => {
+            Some(TemporalKind::Date)
+        }
+        TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. } => {
+            Some(TemporalKind::LocalDateTime)
+        }
+        TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. } => {
+            Some(TemporalKind::LocalTime)
+        }
+        TemporalExpr::Component { .. } => None,
+    }
 }
 
 fn compile_list_index_scalar_or_property_expression_in_mode(
@@ -20910,10 +21112,20 @@ fn compile_optional_predicate_scalar_expression(
         Expression::ListSlice { .. } => {
             compile_optional_predicate_list_slice_scalar_expression(expression, path, mode, context)
         }
-        Expression::PropertyLookup { .. } => Ok(
-            compile_optional_endpoint_property_scalar_expression(expression, path, plan, context)?
-                .map(|(expression, _)| expression),
-        ),
+        Expression::PropertyLookup { .. } => {
+            if let Some(expression) = compile_optional_temporal_component_scalar_expression(
+                expression,
+                path.clone(),
+                mode,
+                context,
+            )? {
+                return Ok(Some(expression));
+            }
+            Ok(compile_optional_endpoint_property_scalar_expression(
+                expression, path, plan, context,
+            )?
+            .map(|(expression, _)| expression))
+        }
         Expression::Variable(_) => {
             compile_optional_scalar_alias_expression(expression, path, mode.scalar_alias_state())
         }

@@ -508,7 +508,8 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Temporal(
                 TemporalExpr::DateFromString { text: expression }
                 | TemporalExpr::LocalDateTimeFromString { text: expression }
-                | TemporalExpr::LocalTimeFromString { text: expression },
+                | TemporalExpr::LocalTimeFromString { text: expression }
+                | TemporalExpr::Component { expression, .. },
             )
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,

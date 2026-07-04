@@ -634,6 +634,96 @@ async fn cypher_localtime_constructors_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_temporal_components_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN date('2020-01-15').year AS date_year, \
+                date('2020-01-15').quarter AS date_quarter, \
+                date('2020-01-15').month AS date_month, \
+                date('2020-01-15').week AS date_week, \
+                date('2020-01-15').day AS date_day, \
+                localdatetime('2020-01-15T12:34:56.789123456').hour AS datetime_hour, \
+                localdatetime('2020-01-15T12:34:56.789123456').minute AS datetime_minute, \
+                localdatetime('2020-01-15T12:34:56.789123456').second AS datetime_second, \
+                localdatetime('2020-01-15T12:34:56.789123456').millisecond AS datetime_millisecond, \
+                localdatetime('2020-01-15T12:34:56.789123456').microsecond AS datetime_microsecond, \
+                localtime('12:34:56.789123456').hour AS time_hour, \
+                localtime('12:34:56.789123456').minute AS time_minute, \
+                localtime('12:34:56.789123456').second AS time_second, \
+                localtime('12:34:56.789123456').millisecond AS time_millisecond, \
+                localtime('12:34:56.789123456').microsecond AS time_microsecond",
+    )
+    .await
+    .expect("Cypher temporal component access should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT CAST(date_part('year', CAST('2020-01-15' AS DATE)) AS BIGINT) AS date_year, \
+                    CAST(date_part('quarter', CAST('2020-01-15' AS DATE)) AS BIGINT) AS date_quarter, \
+                    CAST(date_part('month', CAST('2020-01-15' AS DATE)) AS BIGINT) AS date_month, \
+                    CAST(date_part('week', CAST('2020-01-15' AS DATE)) AS BIGINT) AS date_week, \
+                    CAST(date_part('day', CAST('2020-01-15' AS DATE)) AS BIGINT) AS date_day, \
+                    CAST(date_part('hour', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) AS datetime_hour, \
+                    CAST(date_part('minute', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) AS datetime_minute, \
+                    CAST(date_part('second', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) AS datetime_second, \
+                    (CAST(date_part('millisecond', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) % 1000) AS datetime_millisecond, \
+                    (CAST(date_part('microsecond', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) % 1000000) AS datetime_microsecond, \
+                    CAST(date_part('hour', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) AS time_hour, \
+                    CAST(date_part('minute', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) AS time_minute, \
+                    CAST(date_part('second', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) AS time_second, \
+                    (CAST(date_part('millisecond', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) % 1000) AS time_millisecond, \
+                    (CAST(date_part('microsecond', CAST('12:34:56.789123456' AS TIME)) AS BIGINT) % 1000000) AS time_microsecond \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent temporal component SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains(
+                "(CAST(date_part('millisecond', CAST('2020-01-15T12:34:56.789123456' AS TIMESTAMP)) AS BIGINT) % 1000)"
+            ),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "date_year": 2020,
+            "date_quarter": 1,
+            "date_month": 1,
+            "date_week": 3,
+            "date_day": 15,
+            "datetime_hour": 12,
+            "datetime_minute": 34,
+            "datetime_second": 56,
+            "datetime_millisecond": 789,
+            "datetime_microsecond": 789_123,
+            "time_hour": 12,
+            "time_minute": 34,
+            "time_second": 56,
+            "time_millisecond": 789,
+            "time_microsecond": 789_123
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_parenthesized_path_patterns_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

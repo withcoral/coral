@@ -484,6 +484,9 @@ impl<'a> SqlRenderer<'a> {
             TemporalExpr::LocalTimeFromString { text } => {
                 self.render_localtime_from_string_expression(text, scope)
             }
+            TemporalExpr::Component { expression, unit } => {
+                self.render_temporal_component_expression(expression, *unit, scope)
+            }
         }
     }
 
@@ -620,6 +623,24 @@ impl<'a> SqlRenderer<'a> {
             "CAST({} AS TIME)",
             self.render_scalar_in_scope(text, scope)?
         ))
+    }
+
+    pub(super) fn render_temporal_component_expression<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        unit: TemporalComponentUnit,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let date_part_sql = format!(
+            "CAST(date_part('{}', {}) AS BIGINT)",
+            unit.date_part_unit(),
+            self.render_scalar_in_scope(expression, scope)?
+        );
+        match unit {
+            TemporalComponentUnit::Millisecond => Ok(format!("({date_part_sql} % 1000)")),
+            TemporalComponentUnit::Microsecond => Ok(format!("({date_part_sql} % 1000000)")),
+            _ => Ok(date_part_sql),
+        }
     }
 
     fn render_zero_padded_component<'b, 'c>(

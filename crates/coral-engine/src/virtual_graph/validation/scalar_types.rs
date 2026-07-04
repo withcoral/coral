@@ -297,6 +297,10 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Temporal scalar type inference stays exhaustive over every temporal IR variant."
+    )]
     fn infer_temporal_scalar_type(
         &self,
         expression: &TemporalExpr,
@@ -400,7 +404,53 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
             }
+            TemporalExpr::Component { expression, unit } => {
+                self.validate_temporal_component_expression(expression, *unit, path)
+            }
         }
+    }
+
+    fn validate_temporal_component_expression(
+        &self,
+        expression: &ScalarExpression,
+        unit: TemporalComponentUnit,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        let ScalarType::Temporal(kind) = expression_type else {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                format!("{path}.expression"),
+                format!(
+                    "temporal component access requires a temporal scalar expression, got {}",
+                    expression_type.name()
+                ),
+            )
+            .into_core_error());
+        };
+        Self::validate_temporal_component_kind(unit, kind, format!("{path}.unit"))?;
+        Ok(ScalarType::Integer)
+    }
+
+    pub(super) fn validate_temporal_component_kind(
+        unit: TemporalComponentUnit,
+        kind: TemporalKind,
+        path: impl Into<String>,
+    ) -> Result<(), CoreError> {
+        if unit.supports_kind(kind) {
+            return Ok(());
+        }
+        Err(Diagnostic::new(
+            diagnostic_codes::INVALID_SCALAR_TYPE,
+            path,
+            format!(
+                "{} is not supported for {} values",
+                unit.component_name(),
+                kind.name()
+            ),
+        )
+        .into_core_error())
     }
 
     fn infer_string_scalar_function_type(

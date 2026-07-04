@@ -3,7 +3,7 @@ use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ArithmeticOperator, Direction, KeyPredicate, NodePattern,
     OptionalMatchScope, OrderDirection, OrderExpression, OrderKey, PredicateExpression,
     PredicateRhs, Projection, PropertyPredicate, PropertyRef, RelationshipPattern,
-    ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalExpr,
+    ScalarExpression, ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr,
 };
 use crate::{ColumnInfo, TableInfo};
 
@@ -100,6 +100,16 @@ fn localtime_expression(
 fn localtime_from_string_expression(text: &str) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::LocalTimeFromString {
         text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
+fn temporal_component_expression(
+    expression: ScalarExpression,
+    unit: TemporalComponentUnit,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::Component {
+        expression: Box::new(expression),
+        unit,
     })
 }
 
@@ -1074,6 +1084,102 @@ fn validate_graph_plan_rejects_temporal_localtime_cross_kind_comparisons() {
 
         assert!(error.to_string().contains(expected), "{error}");
     }
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_component_scalar_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: temporal_component_expression(
+                date_from_string_expression("2020-01-15"),
+                TemporalComponentUnit::Year,
+            ),
+            alias: "year".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                TemporalComponentUnit::Hour,
+            ),
+            alias: "hour".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localtime_from_string_expression("12:34:56"),
+                TemporalComponentUnit::Minute,
+            ),
+            alias: "minute".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                localtime_from_string_expression("12:34:56.789123456"),
+                TemporalComponentUnit::Microsecond,
+            ),
+            alias: "microsecond".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: temporal_component_expression(
+            date_from_string_expression("2020-01-15"),
+            TemporalComponentUnit::Day,
+        ),
+        operator: ComparisonOperator::Equal,
+        rhs: ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Integer(15))),
+    }));
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("temporal component scalar expressions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_component_on_non_temporal_expression() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: temporal_component_expression(
+            ScalarExpression::Literal(Literal::String("2020-01-15".to_string())),
+            TemporalComponentUnit::Year,
+        ),
+        alias: "year".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("temporal component on string should fail validation");
+
+    assert!(
+        error.to_string().contains(
+            "temporal component access requires a temporal scalar expression, got string"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_component_kind_mismatch() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![Projection::Expression {
+        expression: temporal_component_expression(
+            localtime_from_string_expression("12:34:56"),
+            TemporalComponentUnit::Year,
+        ),
+        alias: "year".to_string(),
+    }];
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("date component on localtime should fail validation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("year is not supported for localtime values"),
+        "{error}"
+    );
 }
 
 #[test]

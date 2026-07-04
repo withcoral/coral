@@ -618,6 +618,31 @@ pub enum ScalarExpression {
     },
 }
 
+/// Native temporal component units supported by `DataFusion` `date_part`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalComponentUnit {
+    /// Calendar year.
+    Year,
+    /// Calendar quarter.
+    Quarter,
+    /// Calendar month.
+    Month,
+    /// ISO week number.
+    Week,
+    /// Calendar day of month.
+    Day,
+    /// Hour of day.
+    Hour,
+    /// Minute of hour.
+    Minute,
+    /// Second of minute.
+    Second,
+    /// Millisecond fraction.
+    Millisecond,
+    /// Microsecond fraction.
+    Microsecond,
+}
+
 /// Temporal scalar expressions in the shared graph IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemporalExpr {
@@ -681,6 +706,13 @@ pub enum TemporalExpr {
         /// ISO local time string expression.
         text: Box<ScalarExpression>,
     },
+    /// Extract an integer component from a native temporal value.
+    Component {
+        /// Temporal value expression.
+        expression: Box<ScalarExpression>,
+        /// Component unit to extract.
+        unit: TemporalComponentUnit,
+    },
 }
 
 /// Supported temporal scalar kinds.
@@ -692,6 +724,48 @@ pub(super) enum TemporalKind {
     LocalDateTime,
     /// Native local time value.
     LocalTime,
+}
+
+impl TemporalKind {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::LocalDateTime => "localdatetime",
+            Self::LocalTime => "localtime",
+        }
+    }
+}
+
+impl TemporalComponentUnit {
+    pub(super) fn component_name(self) -> &'static str {
+        match self {
+            Self::Year => "year",
+            Self::Quarter => "quarter",
+            Self::Month => "month",
+            Self::Week => "week",
+            Self::Day => "day",
+            Self::Hour => "hour",
+            Self::Minute => "minute",
+            Self::Second => "second",
+            Self::Millisecond => "millisecond",
+            Self::Microsecond => "microsecond",
+        }
+    }
+
+    pub(super) fn date_part_unit(self) -> &'static str {
+        self.component_name()
+    }
+
+    pub(super) fn supports_kind(self, kind: TemporalKind) -> bool {
+        match self {
+            Self::Year | Self::Quarter | Self::Month | Self::Week | Self::Day => {
+                matches!(kind, TemporalKind::Date | TemporalKind::LocalDateTime)
+            }
+            Self::Hour | Self::Minute | Self::Second | Self::Millisecond | Self::Microsecond => {
+                matches!(kind, TemporalKind::LocalDateTime | TemporalKind::LocalTime)
+            }
+        }
+    }
 }
 
 /// Read-only scoped graph pattern counted by `COUNT { ... }`.
@@ -1517,6 +1591,9 @@ fn temporal_expression_references_outside_scope(
         } => [hour, minute, second, millisecond, microsecond, nanosecond]
             .iter()
             .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
+        TemporalExpr::Component { expression, .. } => {
+            scalar_expression_references_outside_scope(expression, scope)
+        }
     }
 }
 

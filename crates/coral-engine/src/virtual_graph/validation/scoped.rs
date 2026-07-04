@@ -914,6 +914,10 @@ impl<'a> GraphPlanValidator<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Scoped temporal scalar type inference stays exhaustive over every temporal IR variant."
+    )]
     fn infer_scoped_temporal_scalar_type<'b>(
         &self,
         expression: &TemporalExpr,
@@ -1011,6 +1015,26 @@ impl<'a> GraphPlanValidator<'a> {
                     "localtime string constructor",
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalTime))
+            }
+            TemporalExpr::Component { expression, unit } => {
+                let expression_type = self.infer_scoped_scalar_expression_type(
+                    expression,
+                    scope,
+                    format!("{path}.expression"),
+                )?;
+                let ScalarType::Temporal(kind) = expression_type else {
+                    return Err(Diagnostic::new(
+                        diagnostic_codes::INVALID_SCALAR_TYPE,
+                        format!("{path}.expression"),
+                        format!(
+                            "temporal component access requires a temporal scalar expression, got {}",
+                            expression_type.name()
+                        ),
+                    )
+                    .into_core_error());
+                };
+                Self::validate_temporal_component_kind(*unit, kind, format!("{path}.unit"))?;
+                Ok(ScalarType::Integer)
             }
         }
     }

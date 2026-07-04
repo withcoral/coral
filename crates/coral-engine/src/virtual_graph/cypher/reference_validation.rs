@@ -413,17 +413,15 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
     if let Some((first, second, third)) = path_variable_scalar_triple_operands(expression) {
         return reject_path_variables_in_scalar_triple(first, second, third, state, path);
     }
+    if let Some((name, expression)) = temporal_scalar_single_operand(expression) {
+        return reject_ignored_path_variable_references_in_scalar_expression(
+            expression,
+            state,
+            format!("{path}.{name}"),
+        );
+    }
 
     match expression {
-        ScalarExpression::Temporal(
-            TemporalExpr::DateFromString { text }
-            | TemporalExpr::LocalDateTimeFromString { text }
-            | TemporalExpr::LocalTimeFromString { text },
-        ) => reject_ignored_path_variable_references_in_scalar_expression(
-            text,
-            state,
-            format!("{path}.text"),
-        ),
         ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
             year,
             month,
@@ -503,6 +501,22 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             reject_ignored_path_variable_references_in_non_structural_scalar_expression(expression);
             Ok(())
         }
+    }
+}
+
+fn temporal_scalar_single_operand(
+    expression: &ScalarExpression,
+) -> Option<(&'static str, &ScalarExpression)> {
+    match expression {
+        ScalarExpression::Temporal(
+            TemporalExpr::DateFromString { text }
+            | TemporalExpr::LocalDateTimeFromString { text }
+            | TemporalExpr::LocalTimeFromString { text },
+        ) => Some(("text", text)),
+        ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
+            Some(("expression", expression))
+        }
+        _ => None,
     }
 }
 

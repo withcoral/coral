@@ -185,6 +185,16 @@ fn localtime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+fn temporal_component_expression(
+    expression: ScalarExpression,
+    unit: TemporalComponentUnit,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::Component {
+        expression: Box::new(expression),
+        unit,
+    })
+}
+
 fn route_test_graph() -> Declaration {
     Declaration::from_yaml(
         r"
@@ -2407,6 +2417,133 @@ fn rejects_unsupported_localtime_constructor_forms() {
     ] {
         let error =
             compile_cypher(cypher).expect_err("unsupported localtime form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn compiles_constructed_temporal_component_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN date('2020-01-15').year AS year, \
+                date('2020-01-15').month AS month, \
+                date('2020-01-15').day AS day, \
+                localdatetime('2020-01-15T12:34:56').hour AS hour, \
+                localdatetime('2020-01-15T12:34:56').minute AS minute, \
+                localdatetime('2020-01-15T12:34:56').second AS second, \
+                localdatetime('2020-01-15T12:34:56.789123456').millisecond AS millisecond, \
+                localdatetime('2020-01-15T12:34:56.789123456').microsecond AS microsecond, \
+                localtime('12:34:56').hour AS timeHour",
+    )
+    .expect("constructed temporal component access should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    date_from_string_expression("2020-01-15"),
+                    TemporalComponentUnit::Year,
+                ),
+                alias: "year".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    date_from_string_expression("2020-01-15"),
+                    TemporalComponentUnit::Month,
+                ),
+                alias: "month".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    date_from_string_expression("2020-01-15"),
+                    TemporalComponentUnit::Day,
+                ),
+                alias: "day".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                    TemporalComponentUnit::Hour,
+                ),
+                alias: "hour".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                    TemporalComponentUnit::Minute,
+                ),
+                alias: "minute".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localdatetime_from_string_expression("2020-01-15T12:34:56"),
+                    TemporalComponentUnit::Second,
+                ),
+                alias: "second".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localdatetime_from_string_expression("2020-01-15T12:34:56.789123456"),
+                    TemporalComponentUnit::Millisecond,
+                ),
+                alias: "millisecond".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localdatetime_from_string_expression("2020-01-15T12:34:56.789123456"),
+                    TemporalComponentUnit::Microsecond,
+                ),
+                alias: "microsecond".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    localtime_from_string_expression("12:34:56"),
+                    TemporalComponentUnit::Hour,
+                ),
+                alias: "timeHour".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_temporal_component_access() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').weekYear AS weekYear",
+            "weekYear is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').weekDay AS weekDay",
+            "weekDay is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').ordinalDay AS ordinalDay",
+            "ordinalDay is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').dayOfQuarter AS dayOfQuarter",
+            "dayOfQuarter is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime('12:34:56.789123456').nanosecond AS ns",
+            "nanosecond is not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN localtime('12:34:56').year AS year",
+            "year is not supported for localtime values",
+        ),
+        (
+            "MATCH (person:Person) WITH person.name AS d RETURN d.year AS year",
+            "stored temporal component access is not supported yet",
+        ),
+    ] {
+        let error =
+            compile_cypher(cypher).expect_err("unsupported temporal component should reject");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?}, got {error}"
