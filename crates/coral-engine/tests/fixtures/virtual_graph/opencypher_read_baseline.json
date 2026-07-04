@@ -27,7 +27,7 @@
     "Temporal": 90,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 30,
+    "Unwind": 33,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 45
@@ -6104,12 +6104,83 @@
       }
     },
     {
-      "id": "unwind-node-keys-rejected",
+      "id": "unwind-node-keys",
       "feature": "GraphMetadata",
-      "query": "MATCH (p:Person) UNWIND keys(p) AS key RETURN DISTINCT key AS property_key",
+      "query": "MATCH (p:Person) UNWIND keys(p) AS key RETURN DISTINCT key AS property_key ORDER BY property_key",
       "expected": {
-        "kind": "error",
-        "contains": "UNWIND currently supports literal lists"
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "property_key": "active"
+          },
+          {
+            "property_key": "age"
+          },
+          {
+            "property_key": "city"
+          },
+          {
+            "property_key": "name"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-optional-node-keys",
+      "feature": "Unwind",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Bob', 'Carol'] OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) UNWIND keys(friend) AS key RETURN DISTINCT key AS property_key ORDER BY property_key",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "property_key": "active"
+          },
+          {
+            "property_key": "age"
+          },
+          {
+            "property_key": "city"
+          },
+          {
+            "property_key": "name"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-relationship-keys",
+      "feature": "Unwind",
+      "query": "MATCH ()-[r:KNOWS]-() UNWIND keys(r) AS key RETURN DISTINCT key AS property_key ORDER BY property_key",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "property_key": "since"
+          },
+          {
+            "property_key": "strength"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-optional-relationship-keys",
+      "feature": "Unwind",
+      "query": "MATCH (p:Person) WHERE p.name IN ['Bob', 'Carol'] OPTIONAL MATCH (p)-[r:KNOWS]->(:Person) UNWIND keys(r) AS key RETURN DISTINCT key AS property_key ORDER BY property_key",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "property_key": "since"
+          },
+          {
+            "property_key": "strength"
+          }
+        ]
       }
     },
     {

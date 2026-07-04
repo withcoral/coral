@@ -18751,6 +18751,129 @@ async fn cypher_dynamic_unwind_alias_sources_execute_against_synthetic_sources()
 }
 
 #[tokio::test]
+async fn cypher_node_property_key_unwind_sources_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let node_keys = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         UNWIND keys(person) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("node keys() UNWIND source should execute");
+
+    assert_eq!(
+        execution_to_rows(node_keys.execution()),
+        vec![
+            json!({"property_key": "name"}),
+            json!({"property_key": "team"}),
+        ]
+    );
+
+    let unlabeled_node_keys = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (entity) \
+         UNWIND keys(entity) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("unlabeled node keys() UNWIND source should execute");
+
+    assert_eq!(
+        execution_to_rows(unlabeled_node_keys.execution()),
+        vec![
+            json!({"property_key": "active"}),
+            json!({"property_key": "cost_center"}),
+            json!({"property_key": "id"}),
+            json!({"property_key": "name"}),
+            json!({"property_key": "risk"}),
+            json!({"property_key": "team"}),
+            json!({"property_key": "tier"}),
+        ]
+    );
+
+    let optional_node_keys = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         UNWIND keys(person) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("optional node keys() UNWIND source should execute");
+
+    assert_eq!(
+        execution_to_rows(optional_node_keys.execution()),
+        vec![
+            json!({"property_key": "name"}),
+            json!({"property_key": "team"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_relationship_property_key_unwind_sources_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let relationship_keys = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (:Person)-[owns:OWNS]->(:Service) \
+         UNWIND keys(owns) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("relationship keys() UNWIND source should execute");
+
+    assert_eq!(
+        execution_to_rows(relationship_keys.execution()),
+        vec![
+            json!({"property_key": "since"}),
+            json!({"property_key": "source"}),
+        ]
+    );
+
+    let optional_relationship_keys = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (:Person)-[owns:OWNS]->(service) \
+         UNWIND keys(owns) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("optional relationship keys() UNWIND source should execute");
+
+    assert_eq!(
+        execution_to_rows(optional_relationship_keys.execution()),
+        vec![
+            json!({"property_key": "since"}),
+            json!({"property_key": "source"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_unwind_non_bare_returns_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

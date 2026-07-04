@@ -248,6 +248,7 @@ enum StaticUnwindSite {
 struct ExpandedSingleQuery {
     query: SingleQuery,
     force_empty: bool,
+    required_presences: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,6 +298,12 @@ struct StaticListValue {
     presence_variable: Option<String>,
     literals: Vec<Literal>,
     element_type: Option<LiteralListElementType>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaticUnwindValue {
+    presence_variable: Option<String>,
+    literals: Vec<Literal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1005,10 +1012,7 @@ fn compile_single_query_as_graph_query(
             }
             return Ok(query);
         }
-        let mut plan = compile_single_query(&variant.query, context)?;
-        if variant.force_empty {
-            force_empty_plan(&mut plan);
-        }
+        let plan = compile_expanded_single_query_plan(variant, context)?;
         return Ok(GraphQuery::Plan(plan));
     }
 
@@ -1042,13 +1046,7 @@ fn compile_single_query_as_graph_query(
     }
     let plans = variants
         .iter()
-        .map(|variant| {
-            let mut plan = compile_single_query(&variant.query, context)?;
-            if variant.force_empty {
-                force_empty_plan(&mut plan);
-            }
-            Ok(plan)
-        })
+        .map(|variant| compile_expanded_single_query_plan(variant, context))
         .collect::<Result<Vec<_>, CoreError>>()?;
     let mut plans = plans;
     rewrite_missing_branch_properties_as_null(&mut plans, context)?;
@@ -1080,6 +1078,18 @@ fn compile_single_query_as_graph_query(
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
     graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+}
+
+fn compile_expanded_single_query_plan(
+    variant: &ExpandedSingleQuery,
+    context: &CypherCompileContext,
+) -> Result<GraphPlan, CoreError> {
+    let mut plan = compile_single_query(&variant.query, context)?;
+    apply_required_presence_predicates(&mut plan, &variant.required_presences);
+    if variant.force_empty {
+        force_empty_plan(&mut plan);
+    }
+    Ok(plan)
 }
 
 fn compile_single_query_row_source_before_expansion(
@@ -1753,6 +1763,7 @@ fn expand_single_query_static_branches(
             expanded.push(ExpandedSingleQuery {
                 query: pattern_variant.query,
                 force_empty: variant.force_empty || pattern_variant.force_empty,
+                required_presences: variant.required_presences.clone(),
             });
         }
     }
@@ -1767,6 +1778,7 @@ fn expand_single_query_static_unwinds(
     let mut expanded = vec![ExpandedSingleQuery {
         query: single_query.clone(),
         force_empty: false,
+        required_presences: BTreeSet::new(),
     }];
 
     loop {
@@ -1777,6 +1789,30 @@ fn expand_single_query_static_unwinds(
                 next.push(variant);
                 continue;
             };
+            let unwind = static_unwind_at_site(&variant.query, site)?;
+            if static_unwind_expression_uses_graph_metadata(unwind, context)?
+                && first_static_label_type_alternative_site(&variant.query, context)?.is_some()
+            {
+                progressed = true;
+                let pattern_variants =
+                    expand_single_query_pattern_alternatives(&variant.query, context)?;
+                for pattern_variant in pattern_variants {
+                    if next.len() >= MAX_PATTERN_ALTERNATIVE_BRANCHES {
+                        return Err(unsupported(
+                            path,
+                            format!(
+                                "static branch expansion produced more than {MAX_PATTERN_ALTERNATIVE_BRANCHES} branches; simplify the query or split it explicitly"
+                            ),
+                        ));
+                    }
+                    next.push(ExpandedSingleQuery {
+                        query: pattern_variant.query,
+                        force_empty: variant.force_empty || pattern_variant.force_empty,
+                        required_presences: variant.required_presences.clone(),
+                    });
+                }
+                continue;
+            }
             progressed = true;
             let alternatives = expand_static_unwind_at_site(&variant, site, context, path)?;
             for alternative in alternatives {
@@ -1865,19 +1901,27 @@ fn expand_static_unwind_at_site(
     let variable = variable_name(&unwind.variable);
     validate_static_unwind_scope(&variant.query, site, &variable, path)?;
     let reading_clause_path = static_unwind_reading_clause_path(path, site);
-    let values = compile_static_unwind_values(unwind, &reading_clause_path, context)?;
+    let metadata_plan = compile_static_unwind_metadata_plan(&variant.query, site, context, path)?;
+    let value = compile_static_unwind_values(
+        unwind,
+        &reading_clause_path,
+        metadata_plan.as_ref(),
+        context,
+    )?;
 
-    if values.is_empty() {
+    if value.literals.is_empty() {
         return Ok(vec![expand_static_unwind_literal_branch(
             variant,
             site,
             &variable,
             &Literal::Null,
             true,
+            value.presence_variable.as_deref(),
         )?]);
     }
 
-    values
+    value
+        .literals
         .iter()
         .map(|literal| {
             expand_static_unwind_literal_branch(
@@ -1886,9 +1930,41 @@ fn expand_static_unwind_at_site(
                 &variable,
                 literal,
                 variant.force_empty,
+                value.presence_variable.as_deref(),
             )
         })
         .collect()
+}
+
+fn compile_static_unwind_metadata_plan(
+    query: &SingleQuery,
+    site: StaticUnwindSite,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphPlan>, CoreError> {
+    let (reading_clauses, prefix_len, path) = match (&query.kind, site) {
+        (
+            SingleQueryKind::SinglePart(single_part),
+            StaticUnwindSite::SinglePart {
+                reading_clause_index,
+            },
+        ) => (
+            single_part.reading_clauses.as_slice(),
+            reading_clause_index,
+            format!("{path}.reading_clauses"),
+        ),
+        _ => return Ok(None),
+    };
+    if prefix_len == 0 {
+        return Ok(None);
+    }
+    let mut plan = GraphPlan::default();
+    let mut state = CypherCompileState::default();
+    let prefix = reading_clauses.get(..prefix_len).ok_or_else(|| {
+        CoreError::internal("static UNWIND metadata plan prefix exceeded reading clauses")
+    })?;
+    compile_reading_clauses_into(prefix, path, &mut plan, &mut state, context)?;
+    Ok(Some(plan))
 }
 
 fn static_unwind_at_site(
@@ -1976,13 +2052,19 @@ fn static_unwind_reading_clause_path(path: &str, site: StaticUnwindSite) -> Stri
 fn compile_static_unwind_values(
     unwind: &Unwind,
     reading_clause_path: &str,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
-) -> Result<Vec<Literal>, CoreError> {
+) -> Result<StaticUnwindValue, CoreError> {
     let expression_path = format!("{reading_clause_path}.unwind.expression");
     let value = if let Some(source) = context.unwind_expression_source(unwind) {
-        compile_static_unwind_value_source(source, expression_path.clone(), context)?
+        compile_static_unwind_value_source(source, expression_path.clone(), plan, context)?
     } else {
-        compile_optional_static_unwind_value(&unwind.expression, expression_path.clone(), context)?
+        compile_optional_static_unwind_value(
+            &unwind.expression,
+            expression_path.clone(),
+            plan,
+            context,
+        )?
     }
     .ok_or_else(|| {
         unsupported(
@@ -1990,42 +2072,162 @@ fn compile_static_unwind_values(
             "UNWIND currently supports literal lists, list parameters, and folded static list expressions; dynamic graph property lists require row-source planning",
         )
     })?;
-    if value.presence_variable.is_some() {
-        return Err(unsupported(
-            expression_path,
-            "UNWIND over optional graph metadata lists requires row-source planning and is not supported yet",
-        ));
+    Ok(StaticUnwindValue {
+        presence_variable: value.presence_variable,
+        literals: value.literals,
+    })
+}
+
+fn static_unwind_expression_uses_graph_metadata(
+    unwind: &Unwind,
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    if let Some(source) = context.unwind_expression_source(unwind) {
+        let (expression, _) =
+            parse_cypher_expression_fragment(source, "unwind.expression", context)?;
+        return Ok(expression_uses_graph_metadata_list(&expression));
     }
-    Ok(value.literals)
+    Ok(expression_uses_graph_metadata_list(&unwind.expression))
+}
+
+fn expression_uses_graph_metadata_list(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => expression_uses_graph_metadata_list(inner),
+        Expression::FunctionCall(function) => {
+            is_keys_function(function)
+                || function
+                    .arguments
+                    .iter()
+                    .any(expression_uses_graph_metadata_list)
+        }
+        Expression::ListSlice {
+            list, start, end, ..
+        } => {
+            expression_uses_graph_metadata_list(list)
+                || start
+                    .as_deref()
+                    .is_some_and(expression_uses_graph_metadata_list)
+                || end
+                    .as_deref()
+                    .is_some_and(expression_uses_graph_metadata_list)
+        }
+        Expression::ListIndex { list, index, .. } => {
+            expression_uses_graph_metadata_list(list) || expression_uses_graph_metadata_list(index)
+        }
+        Expression::ListComprehension(comprehension) => {
+            comprehension
+                .filter
+                .as_deref()
+                .is_some_and(expression_uses_graph_metadata_list)
+                || comprehension
+                    .map
+                    .as_ref()
+                    .is_some_and(expression_uses_graph_metadata_list)
+        }
+        Expression::BinaryOp { lhs, rhs, .. } | Expression::In { lhs, rhs, .. } => {
+            expression_uses_graph_metadata_list(lhs) || expression_uses_graph_metadata_list(rhs)
+        }
+        Expression::Comparison { lhs, operators, .. } => {
+            expression_uses_graph_metadata_list(lhs)
+                || operators
+                    .iter()
+                    .any(|(_, rhs)| expression_uses_graph_metadata_list(rhs))
+        }
+        Expression::UnaryOp { operand, .. } | Expression::IsNull { operand, .. } => {
+            expression_uses_graph_metadata_list(operand)
+        }
+        Expression::Case(case) => {
+            case.scrutinee
+                .as_deref()
+                .is_some_and(expression_uses_graph_metadata_list)
+                || case.alternatives.iter().any(|alternative| {
+                    expression_uses_graph_metadata_list(&alternative.when)
+                        || expression_uses_graph_metadata_list(&alternative.then)
+                })
+                || case
+                    .default
+                    .as_deref()
+                    .is_some_and(expression_uses_graph_metadata_list)
+        }
+        Expression::PropertyLookup { base, .. } => expression_uses_graph_metadata_list(base),
+        Expression::Literal(literal) => literal_uses_graph_metadata_list(literal),
+        Expression::All(filter)
+        | Expression::Any(filter)
+        | Expression::None(filter)
+        | Expression::Single(filter) => {
+            expression_uses_graph_metadata_list(&filter.collection)
+                || filter
+                    .predicate
+                    .as_deref()
+                    .is_some_and(expression_uses_graph_metadata_list)
+        }
+        Expression::PatternComprehension(comprehension) => {
+            comprehension
+                .where_clause
+                .as_ref()
+                .is_some_and(expression_uses_graph_metadata_list)
+                || expression_uses_graph_metadata_list(&comprehension.map)
+        }
+        Expression::Variable(_)
+        | Expression::Parameter(_)
+        | Expression::CountStar { .. }
+        | Expression::NodeLabels { .. }
+        | Expression::Pattern(_)
+        | Expression::Exists(_)
+        | Expression::CountSubquery(_)
+        | Expression::CollectSubquery(_)
+        | Expression::MapProjection(_) => false,
+    }
+}
+
+fn literal_uses_graph_metadata_list(literal: &CypherLiteral) -> bool {
+    match literal {
+        CypherLiteral::List(list) => list
+            .elements
+            .iter()
+            .any(expression_uses_graph_metadata_list),
+        CypherLiteral::Map(map) => map
+            .entries
+            .iter()
+            .any(|(_, value)| expression_uses_graph_metadata_list(value)),
+        CypherLiteral::Number(_)
+        | CypherLiteral::String(_)
+        | CypherLiteral::Boolean(_)
+        | CypherLiteral::Null => false,
+    }
 }
 
 fn compile_static_unwind_value_source(
     source: &str,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<Option<StaticListValue>, CoreError> {
     let path = path.into();
     let (expression, fragment_context) =
         parse_cypher_expression_fragment(source, path.clone(), context)?;
-    compile_optional_static_unwind_value(&expression, path, &fragment_context)
+    compile_optional_static_unwind_value(&expression, path, plan, &fragment_context)
 }
 
 fn compile_optional_static_unwind_value(
     expression: &Expression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<Option<StaticListValue>, CoreError> {
     let path = path.into();
     match expression {
         Expression::Parenthesized(inner) => {
-            compile_optional_static_unwind_value(inner, path, context)
+            compile_optional_static_unwind_value(inner, path, plan, context)
         }
-        Expression::Case(case) => compile_optional_static_unwind_case_value(case, path, context),
+        Expression::Case(case) => {
+            compile_optional_static_unwind_case_value(case, path, plan, context)
+        }
         Expression::ListSlice {
             list, start, end, ..
         } => {
             if let Some(value) =
-                compile_optional_static_unwind_value(list, format!("{path}.list"), context)?
+                compile_optional_static_unwind_value(list, format!("{path}.list"), plan, context)?
             {
                 return slice_static_list_value(
                     value,
@@ -2036,20 +2238,22 @@ fn compile_optional_static_unwind_value(
                 )
                 .map(Some);
             }
-            compile_optional_static_list_value(expression, path, None, context)
+            compile_optional_static_list_value(expression, path, plan, context)
         }
-        _ => compile_optional_static_list_value(expression, path, None, context),
+        _ => compile_optional_static_list_value(expression, path, plan, context),
     }
 }
 
 fn compile_optional_static_unwind_case_value(
     case: &CaseExpression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
 ) -> Result<Option<StaticListValue>, CoreError> {
     compile_optional_static_folded_case_list_value(
         case,
         path,
+        plan,
         context,
         "UNWIND over list-valued CASE expressions requires statically foldable WHEN predicates",
     )
@@ -2058,6 +2262,7 @@ fn compile_optional_static_unwind_case_value(
 fn compile_optional_static_folded_case_list_value(
     case: &CaseExpression,
     path: impl Into<String>,
+    plan: Option<&GraphPlan>,
     context: &CypherCompileContext,
     non_foldable_message: &'static str,
 ) -> Result<Option<StaticListValue>, CoreError> {
@@ -2065,7 +2270,7 @@ fn compile_optional_static_folded_case_list_value(
     let Some(parts) = compile_optional_static_list_case_parts(
         case,
         path.clone(),
-        PredicateCompileMode::CaseWhen { plan: None },
+        PredicateCompileMode::CaseWhen { plan },
         context,
     )?
     else {
@@ -2424,10 +2629,19 @@ fn expand_static_unwind_literal_branch(
     variable: &str,
     literal: &Literal,
     force_empty: bool,
+    presence_variable: Option<&str>,
 ) -> Result<ExpandedSingleQuery, CoreError> {
     let mut query = variant.query.clone();
     substitute_static_unwind_literal(&mut query, site, variable, literal)?;
-    Ok(ExpandedSingleQuery { query, force_empty })
+    let mut required_presences = variant.required_presences.clone();
+    if let Some(presence_variable) = presence_variable {
+        required_presences.insert(presence_variable.to_string());
+    }
+    Ok(ExpandedSingleQuery {
+        query,
+        force_empty,
+        required_presences,
+    })
 }
 
 fn substitute_static_unwind_literal(
@@ -2624,6 +2838,18 @@ fn cypher_literal_expression(literal: &Literal, span: decypher::error::Span) -> 
 
 fn force_empty_plan(plan: &mut GraphPlan) {
     append_predicate_expression(PredicateExpression::Boolean(false), plan);
+}
+
+fn apply_required_presence_predicates(plan: &mut GraphPlan, variables: &BTreeSet<String>) {
+    for variable in variables {
+        append_predicate_expression(
+            PredicateExpression::Presence(PresencePredicate {
+                variable: variable.clone(),
+                operator: ComparisonOperator::NotEqual,
+            }),
+            plan,
+        );
+    }
 }
 
 fn graph_query_from_alternative_plans(
@@ -4891,6 +5117,7 @@ fn expand_single_query_pattern_alternatives(
     let mut expanded = vec![ExpandedSingleQuery {
         query: single_query.clone(),
         force_empty: false,
+        required_presences: BTreeSet::new(),
     }];
     loop {
         let mut progressed = false;
@@ -4920,6 +5147,7 @@ fn expand_single_query_pattern_alternatives(
                     next.push(ExpandedSingleQuery {
                         query: variant,
                         force_empty: expanded_query.force_empty,
+                        required_presences: expanded_query.required_presences.clone(),
                     });
                 }
                 continue;
@@ -4953,6 +5181,7 @@ fn expand_single_query_pattern_alternatives(
                     next.push(ExpandedSingleQuery {
                         query: variant,
                         force_empty: expanded_query.force_empty || alternative.force_empty,
+                        required_presences: expanded_query.required_presences.clone(),
                     });
                 }
                 continue;
@@ -31140,6 +31369,7 @@ fn compile_dynamic_label_expressions(
             match compile_optional_static_folded_case_list_value(
                 case,
                 path.clone(),
+                None,
                 context,
                 "dynamic label CASE expressions require statically foldable WHEN predicates",
             )? {

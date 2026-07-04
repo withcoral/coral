@@ -849,18 +849,79 @@ fn rejects_collect_unwind_nested_list_elements_for_later_widening() {
 }
 
 #[test]
-fn rejects_property_key_unwind_row_source_for_later_widening() {
-    let error = compile_cypher_query(
+fn compiles_property_key_unwind_row_sources() {
+    let graph = star_test_graph();
+    let node_query = compile_cypher_query_for_graph(
+        &graph,
         "MATCH (person:Person) \
          UNWIND keys(person) AS key \
-         RETURN key",
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
     )
-    .expect_err("property-list-sourced UNWIND should remain out of scope");
-
-    assert!(
-        error.to_string().contains("UNSUPPORTED_CYPHER"),
-        "unexpected error: {error}"
+    .expect("node keys() UNWIND should compile");
+    assert_eq!(
+        static_unwind_literal_outputs(&node_query, "property_key"),
+        vec!["name".to_string(), "team".to_string()]
     );
+
+    let relationship_query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+         UNWIND keys(owns) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .expect("relationship keys() UNWIND should compile");
+    assert_eq!(
+        static_unwind_literal_outputs(&relationship_query, "property_key"),
+        vec!["since".to_string(), "source".to_string()]
+    );
+
+    let unlabeled_query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (entity) \
+         UNWIND keys(entity) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .expect("unlabeled node keys() UNWIND should compile through label branches");
+    assert_eq!(
+        static_unwind_literal_outputs(&unlabeled_query, "property_key"),
+        vec![
+            "name".to_string(),
+            "team".to_string(),
+            "name".to_string(),
+            "tier".to_string(),
+            "name".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn compiles_optional_property_key_unwind_with_presence_filters() {
+    let graph = star_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person)-[:OWNS]->(service) \
+         UNWIND keys(person) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .expect("optional node keys() UNWIND should compile with presence filters");
+
+    let plans = graph_query_plans(&query);
+    assert_eq!(
+        static_unwind_literal_outputs(&query, "property_key"),
+        vec!["name".to_string(), "team".to_string()]
+    );
+    assert!(plans.iter().all(|plan| {
+        predicate_contains_presence(
+            plan.predicate.as_ref(),
+            "person",
+            ComparisonOperator::NotEqual,
+        )
+    }));
 }
 
 #[test]
@@ -20767,6 +20828,71 @@ fn predicate_contains_boolean_false(predicate: Option<&PredicateExpression>) -> 
             | PredicateExpression::KeyComparison(_)
             | PredicateExpression::ElementIdComparison(_)
             | PredicateExpression::Presence(_)
+            | PredicateExpression::PropertyKeyMembership(_)
+            | PredicateExpression::ExistsPattern(_)
+            | PredicateExpression::ScalarComparison(_),
+        )
+        | None => false,
+    }
+}
+
+fn graph_query_plans(query: &GraphQuery) -> Vec<&GraphPlan> {
+    match query {
+        GraphQuery::Plan(plan) => vec![plan],
+        GraphQuery::Union(union) => std::iter::once(&union.first)
+            .chain(union.branches.iter().map(|branch| &branch.plan))
+            .collect(),
+        GraphQuery::Unwind(_)
+        | GraphQuery::UnwindPipeline(_)
+        | GraphQuery::Staged(_)
+        | GraphQuery::StagedUnwind(_) => Vec::new(),
+    }
+}
+
+fn static_unwind_literal_outputs(query: &GraphQuery, alias: &str) -> Vec<String> {
+    graph_query_plans(query)
+        .into_iter()
+        .filter_map(|plan| {
+            plan.projections.iter().find_map(|projection| {
+                let Projection::Literal {
+                    literal: Literal::String(value),
+                    alias: projection_alias,
+                } = projection
+                else {
+                    return None;
+                };
+                (projection_alias == alias).then(|| value.clone())
+            })
+        })
+        .collect()
+}
+
+fn predicate_contains_presence(
+    predicate: Option<&PredicateExpression>,
+    variable: &str,
+    operator: ComparisonOperator,
+) -> bool {
+    match predicate {
+        Some(PredicateExpression::Presence(PresencePredicate {
+            variable: candidate,
+            operator: candidate_operator,
+        })) => candidate == variable && *candidate_operator == operator,
+        Some(
+            PredicateExpression::And { left, right }
+            | PredicateExpression::Or { left, right }
+            | PredicateExpression::Xor { left, right },
+        ) => {
+            predicate_contains_presence(Some(left), variable, operator)
+                || predicate_contains_presence(Some(right), variable, operator)
+        }
+        Some(PredicateExpression::Not { expression }) => {
+            predicate_contains_presence(Some(expression), variable, operator)
+        }
+        Some(
+            PredicateExpression::Boolean(_)
+            | PredicateExpression::Comparison(_)
+            | PredicateExpression::KeyComparison(_)
+            | PredicateExpression::ElementIdComparison(_)
             | PredicateExpression::PropertyKeyMembership(_)
             | PredicateExpression::ExistsPattern(_)
             | PredicateExpression::ScalarComparison(_),
