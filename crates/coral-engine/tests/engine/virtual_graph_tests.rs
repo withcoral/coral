@@ -1135,8 +1135,9 @@ async fn cypher_zoneddatetime_constructors_execute_against_synthetic_sources() {
                 datetime('2015-07-21T21:40:32.142+02:00[Europe/Stockholm]') AS named_offset_datetime, \
                 datetime('2015-07-21T21:40:32.142[Europe/London]') AS named_datetime, \
                 datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123, timezone: 'Europe/Stockholm'}) AS from_map, \
+                datetime('2020-06-01T08:00:00Z') AS utc_datetime, \
                 datetime('2020-06-01T09:00:00+01:00') < datetime('2020-06-01T08:30:00Z') AS ordered, \
-                toString(datetime('2020-06-01T09:00:00+01:00')) AS text",
+                toString(datetime('2015-07-21T21:40:32.142[Europe/London]')) AS text",
     )
     .await
     .expect("Cypher DATETIME constructors should execute");
@@ -1145,12 +1146,13 @@ async fn cypher_zoneddatetime_constructors_execute_against_synthetic_sources() {
         &CoralQuery::execute_sql(
             &[source],
             test_runtime(),
-            "SELECT arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS offset_datetime, \
-                    arrow_cast('2015-07-21T21:40:32.142+02:00', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS named_offset_datetime, \
-                    arrow_cast('2015-07-21T21:40:32.142', 'Timestamp(ns, Some(\"Europe/London\"))') AS named_datetime, \
-                    arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS from_map, \
+            "SELECT coral_zoneddatetime_to_iso(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))'), '+01:00') AS offset_datetime, \
+                    coral_zoneddatetime_to_iso(arrow_cast('2015-07-21T21:40:32.142+02:00', 'Timestamp(ns, Some(\"Europe/Stockholm\"))'), 'Europe/Stockholm') AS named_offset_datetime, \
+                    coral_zoneddatetime_to_iso(arrow_cast('2015-07-21T21:40:32.142', 'Timestamp(ns, Some(\"Europe/London\"))'), 'Europe/London') AS named_datetime, \
+                    coral_zoneddatetime_to_iso(arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))'), 'Europe/Stockholm') AS from_map, \
+                    coral_zoneddatetime_to_iso(arrow_cast('2020-06-01T08:00:00Z', 'Timestamp(ns, Some(\"+00:00\"))'), '+00:00') AS utc_datetime, \
                     arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') < arrow_cast('2020-06-01T08:30:00Z', 'Timestamp(ns, Some(\"+00:00\"))') AS ordered, \
-                    CAST(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS VARCHAR) AS text \
+                    coral_zoneddatetime_to_iso(arrow_cast('2015-07-21T21:40:32.142', 'Timestamp(ns, Some(\"Europe/London\"))'), 'Europe/London') AS text \
              FROM ops.people \
              WHERE people.full_name = 'Ada Lovelace'",
         )
@@ -1170,11 +1172,12 @@ async fn cypher_zoneddatetime_constructors_execute_against_synthetic_sources() {
         graph_rows,
         vec![json!({
             "offset_datetime": "2020-06-01T09:00:00+01:00",
-            "named_offset_datetime": "2015-07-21T21:40:32.142+02:00",
-            "named_datetime": "2015-07-21T21:40:32.142+01:00",
-            "from_map": "1984-10-11T12:31:14.645876123+01:00",
+            "named_offset_datetime": "2015-07-21T21:40:32.142+02:00[Europe/Stockholm]",
+            "named_datetime": "2015-07-21T21:40:32.142+01:00[Europe/London]",
+            "from_map": "1984-10-11T12:31:14.645876123+01:00[Europe/Stockholm]",
+            "utc_datetime": "2020-06-01T08:00:00Z",
             "ordered": true,
-            "text": "2020-06-01T09:00:00+01:00"
+            "text": "2015-07-21T21:40:32.142+01:00[Europe/London]"
         })]
     );
 }

@@ -3052,7 +3052,8 @@ fn compiles_zoneddatetime_string_constructor_scalar_expressions() {
          RETURN datetime('2020-06-01T09:00:00+01:00') AS offset_datetime, \
                 datetime('2015-07-21T21:40:32.142+02:00[Europe/Stockholm]') AS named_offset_datetime, \
                 datetime('2015-07-21T21:40:32.142[Europe/London]') AS named_datetime, \
-                toString(datetime('2020-06-01T09:00:00+01:00')) AS text",
+                toString(datetime('2020-06-01T09:00:00+01:00')) AS offset_text, \
+                toString(datetime('2015-07-21T21:40:32.142[Europe/London]')) AS named_text",
     )
     .expect("literal datetime string constructors should compile");
 
@@ -3087,7 +3088,16 @@ fn compiles_zoneddatetime_string_constructor_scalar_expressions() {
                         "+01:00",
                     )),
                 },
-                alias: "text".to_string(),
+                alias: "offset_text".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(zoneddatetime_from_string_expression(
+                        "2015-07-21T21:40:32.142",
+                        "Europe/London",
+                    )),
+                },
+                alias: "named_text".to_string(),
             },
         ]
     );

@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 101,
+    "Temporal": 103,
     "TypeConversion": 17,
     "Union": 17,
     "Unwind": 37,
@@ -11460,7 +11460,7 @@
         "ordered": false,
         "rows": [
           {
-            "dt": "2015-07-21T21:40:32.142+01:00"
+            "dt": "2015-07-21T21:40:32.142+01:00[Europe/London]"
           }
         ]
       }
@@ -11474,7 +11474,35 @@
         "ordered": false,
         "rows": [
           {
-            "dt": "1984-10-11T12:31:14.645876123+01:00"
+            "dt": "1984-10-11T12:31:14.645876123+01:00[Europe/Stockholm]"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-to-string-named-zone-tck",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(datetime('2020-06-01T09:00:00[Europe/London]')) AS text",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "text": "2020-06-01T09:00:00+01:00[Europe/London]"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-datetime-z-string-constructor-renders-z",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T08:00:00Z') AS dt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "dt": "2020-06-01T08:00:00Z"
           }
         ]
       }
@@ -11557,7 +11585,7 @@
         "ordered": false,
         "rows": [
           {
-            "shifted": "2020-06-01T12:00:00+01:00"
+            "shifted": "2020-06-01T12:00:00+01:00[Europe/London]"
           }
         ]
       }

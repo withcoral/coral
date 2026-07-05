@@ -369,6 +369,36 @@ impl<'a> ValidatedGraphPlan<'a> {
         Ok(self.column_temporal_kind(table, column))
     }
 
+    pub(crate) fn property_ref_zoned_timezone(
+        &self,
+        property: &PropertyRef,
+    ) -> Result<Option<String>, CoreError> {
+        let Some((table, column)) = self.property_ref_table_column(property)? else {
+            return Ok(None);
+        };
+        Ok(self.column_zoned_timezone(table, column))
+    }
+
+    fn property_ref_table_column(
+        &self,
+        property: &PropertyRef,
+    ) -> Result<Option<(&TableRef, &str)>, CoreError> {
+        if self.catalog.is_none() {
+            return Ok(None);
+        }
+        let binding = self.binding(&property.variable)?;
+        let Some(column) = binding.column_for_property(&property.property) else {
+            return Ok(None);
+        };
+        let table = match binding.kind() {
+            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
+                &node.table
+            }
+            ValidatedBindingKind::Relationship(relationship) => &relationship.table,
+        };
+        Ok(Some((table, column)))
+    }
+
     pub(super) fn column_temporal_kind(
         &self,
         table: &TableRef,
@@ -403,6 +433,23 @@ impl<'a> ValidatedGraphPlan<'a> {
             | ScalarType::Temporal(TemporalKind::ZonedDateTime | TemporalKind::Duration)
             | ScalarType::Other => None,
         }
+    }
+
+    fn column_zoned_timezone(&self, table: &TableRef, column: &str) -> Option<String> {
+        let catalog = self.catalog?;
+        catalog
+            .tables
+            .iter()
+            .find(|candidate| {
+                candidate.schema_name == table.schema && candidate.table_name == table.name
+            })
+            .and_then(|table| {
+                table
+                    .columns
+                    .iter()
+                    .find(|candidate| candidate.name == column)
+            })
+            .and_then(|column| zoned_timezone_for_data_type(&column.data_type))
     }
 
     pub(crate) fn binding(&self, variable: &str) -> Result<&ValidatedBinding<'a>, CoreError> {
@@ -511,6 +558,13 @@ impl<'a> ValidatedBinding<'a> {
             }
         }
     }
+}
+
+fn zoned_timezone_for_data_type(data_type: &str) -> Option<String> {
+    let start = data_type.find("Some(\"")? + "Some(\"".len();
+    let rest = data_type.get(start..)?;
+    let end = rest.find('"')?;
+    Some(rest.get(..end)?.to_string())
 }
 
 struct GraphPlanValidator<'a> {

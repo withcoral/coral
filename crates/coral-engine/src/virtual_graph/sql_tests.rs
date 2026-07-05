@@ -3607,8 +3607,8 @@ fn lower_graph_plan_renders_temporal_zoneddatetime_expressions() {
         Projection::Expression {
             expression: ScalarExpression::ToString {
                 expression: Box::new(zoneddatetime_from_string_expression(
-                    "2020-06-01T09:00:00+01:00",
-                    "+01:00",
+                    "1984-10-11T12:31:14.645876123",
+                    "Europe/Stockholm",
                 )),
             },
             alias: "text".to_string(),
@@ -3637,9 +3637,9 @@ fn lower_graph_plan_renders_temporal_zoneddatetime_expressions() {
 
     assert!(
         translation.sql().contains(
-            "SELECT arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS \"offset_datetime\", \
-             arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS \"named_datetime\", \
-             TRY_CAST(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS VARCHAR) AS \"text\""
+            "SELECT coral_zoneddatetime_to_iso(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))'), '+01:00') AS \"offset_datetime\", \
+             coral_zoneddatetime_to_iso(arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))'), 'Europe/Stockholm') AS \"named_datetime\", \
+             coral_zoneddatetime_to_iso(arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))'), 'Europe/Stockholm') AS \"text\""
         ),
         "{}",
         translation.sql()
@@ -3654,6 +3654,51 @@ fn lower_graph_plan_renders_temporal_zoneddatetime_expressions() {
     assert!(
         translation.sql().contains(
             "ORDER BY arrow_cast('2020-06-01T09:00:00', 'Timestamp(ns, Some(\"Europe/London\"))') ASC"
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
+fn lower_graph_plan_formats_stored_zoneddatetime_projection_from_catalog_type() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.relationships
+        .get_mut(0)
+        .expect("ownership plan should have a relationship")
+        .variable = Some("owns".to_string());
+    plan.projections = vec![
+        Projection::Property {
+            property: PropertyRef {
+                variable: "owns".to_string(),
+                property: "since".to_string(),
+            },
+            alias: Some("since".to_string()),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(ScalarExpression::Property(PropertyRef {
+                    variable: "owns".to_string(),
+                    property: "since".to_string(),
+                })),
+            },
+            alias: "since_text".to_string(),
+        },
+    ];
+
+    let translation = graph
+        .lower_graph_plan_against_catalog(
+            &plan,
+            &typed_ownership_catalog_with_since_type("Timestamp(ns, Some(\"Europe/London\"))"),
+        )
+        .expect("stored zoned timestamp projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT coral_zoneddatetime_to_iso(\"r0\".\"since\", 'Europe/London') AS \"since\", \
+             coral_zoneddatetime_to_iso(\"r0\".\"since\", 'Europe/London') AS \"since_text\""
         ),
         "{}",
         translation.sql()
@@ -3817,7 +3862,7 @@ fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
              (CAST('2020-01-01T00:00:00' AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS \"datetime_shift\", \
              CAST((CAST(concat('1970-01-01T', CAST(CAST('12:00:00' AS TIME) AS VARCHAR)) AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS TIME) AS \"time_shift\", \
              (CAST('2020-01-01' AS DATE) + CAST('0 months 2 days 0 seconds' AS INTERVAL)) AS \"scaled_date_shift\", \
-             (arrow_cast('2020-03-29T00:30:00', 'Timestamp(ns, Some(\"Europe/London\"))') + CAST('0 months 0 days 3600 seconds' AS INTERVAL)) AS \"zoned_shift\""
+             coral_zoneddatetime_to_iso((arrow_cast('2020-03-29T00:30:00', 'Timestamp(ns, Some(\"Europe/London\"))') + CAST('0 months 0 days 3600 seconds' AS INTERVAL)), 'Europe/London') AS \"zoned_shift\""
         ),
         "{}",
         translation.sql()

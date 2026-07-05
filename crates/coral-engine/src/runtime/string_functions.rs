@@ -12,6 +12,7 @@ use arrow::array::types::IntervalMonthDayNanoType;
 use arrow::array::{
     Array, ArrayRef, Int64Builder, IntervalMonthDayNanoBuilder, ListBuilder, StringBuilder,
 };
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, IntervalUnit, TimeUnit};
 use chrono::{Datelike, Months, NaiveDate, NaiveDateTime, NaiveTime};
 use datafusion::common::cast::{
@@ -31,6 +32,7 @@ pub(crate) fn register_string_functions(
 ) -> DataFusionResult<()> {
     registry.register_udf(Arc::new(ScalarUDF::from(StringIndices::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationToIso::new())))?;
+    registry.register_udf(Arc::new(ScalarUDF::from(ZonedDateTimeToIso::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationPart::new())))?;
     registry.register_udf(Arc::new(ScalarUDF::from(DurationBetween::new(
         "coral_duration_between",
@@ -130,6 +132,50 @@ impl ScalarUDFImpl for DurationToIso {
         let duration = duration.to_array_of_size(args.number_rows)?;
         Ok(ColumnarValue::Array(duration_to_iso_array(
             &duration,
+            args.number_rows,
+        )?))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct ZonedDateTimeToIso {
+    signature: Signature,
+}
+
+impl ZonedDateTimeToIso {
+    fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for ZonedDateTimeToIso {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &'static str {
+        "coral_zoneddatetime_to_iso"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _arg_types: &[DataType]) -> DataFusionResult<DataType> {
+        Ok(DataType::Utf8)
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> DataFusionResult<ColumnarValue> {
+        let [timestamp, timezone] = args.args.as_slice() else {
+            return exec_err!("coral_zoneddatetime_to_iso expects exactly two arguments");
+        };
+        let timestamp = timestamp.to_array_of_size(args.number_rows)?;
+        let timezone = timezone.to_array_of_size(args.number_rows)?;
+        Ok(ColumnarValue::Array(zoned_datetime_to_iso_array(
+            &timestamp,
+            &timezone,
             args.number_rows,
         )?))
     }
@@ -311,6 +357,64 @@ fn duration_to_iso_array(duration: &ArrayRef, rows: usize) -> DataFusionResult<A
         builder.append_value(duration_to_iso_string(months, days, nanos));
     }
     Ok(Arc::new(builder.finish()))
+}
+
+fn zoned_datetime_to_iso_array(
+    timestamp: &ArrayRef,
+    timezone: &ArrayRef,
+    rows: usize,
+) -> DataFusionResult<ArrayRef> {
+    if !matches!(timestamp.data_type(), DataType::Timestamp(_, Some(_))) {
+        return exec_err!(
+            "coral_zoneddatetime_to_iso expects a zoned timestamp argument, got {}",
+            timestamp.data_type()
+        );
+    }
+    let timestamp_text = cast(timestamp.as_ref(), &DataType::Utf8)?;
+    let mut builder = StringBuilder::new();
+    for row in 0..rows {
+        if timestamp.is_null(row) {
+            builder.append_null();
+            continue;
+        }
+        let Some(timestamp_text) = string_value(timestamp_text.as_ref(), row)? else {
+            builder.append_null();
+            continue;
+        };
+        let Some(timezone) = string_value(timezone.as_ref(), row)? else {
+            builder.append_null();
+            continue;
+        };
+        builder.append_value(zoned_datetime_to_iso_string(timestamp_text, timezone));
+    }
+    Ok(Arc::new(builder.finish()))
+}
+
+fn zoned_datetime_to_iso_string(timestamp_text: &str, timezone: &str) -> String {
+    if is_fixed_offset_timezone(timezone) {
+        timestamp_text.to_string()
+    } else {
+        format!("{timestamp_text}[{timezone}]")
+    }
+}
+
+fn is_fixed_offset_timezone(timezone: &str) -> bool {
+    if timezone.eq_ignore_ascii_case("z") {
+        return true;
+    }
+    let mut chars = timezone.chars();
+    let Some(sign @ ('+' | '-')) = chars.next() else {
+        return false;
+    };
+    let rest = chars.collect::<String>();
+    let Some((hours, minutes)) = rest.split_once(':') else {
+        return false;
+    };
+    matches!(sign, '+' | '-')
+        && hours.len() == 2
+        && minutes.len() == 2
+        && hours.chars().all(|value| value.is_ascii_digit())
+        && minutes.chars().all(|value| value.is_ascii_digit())
 }
 
 fn duration_part_array(
@@ -631,7 +735,7 @@ mod tests {
 
     use super::{
         DurationBetweenMode, TemporalInput, duration_between, duration_part_value,
-        duration_to_iso_string, string_indices,
+        duration_to_iso_string, string_indices, zoned_datetime_to_iso_string,
     };
 
     #[test]
@@ -673,6 +777,26 @@ mod tests {
         ] {
             assert_eq!(duration_to_iso_string(months, days, nanos), expected);
         }
+    }
+
+    #[test]
+    fn zoned_datetime_to_iso_appends_only_named_timezone_brackets() {
+        assert_eq!(
+            zoned_datetime_to_iso_string("2020-06-01T09:00:00+01:00", "Europe/London"),
+            "2020-06-01T09:00:00+01:00[Europe/London]"
+        );
+        assert_eq!(
+            zoned_datetime_to_iso_string("2020-06-01T09:00:00+01:00", "+01:00"),
+            "2020-06-01T09:00:00+01:00"
+        );
+        assert_eq!(
+            zoned_datetime_to_iso_string("2020-06-01T08:00:00Z", "+00:00"),
+            "2020-06-01T08:00:00Z"
+        );
+        assert_eq!(
+            zoned_datetime_to_iso_string("2020-06-01T08:00:00Z", "Z"),
+            "2020-06-01T08:00:00Z"
+        );
     }
 
     #[test]

@@ -35,7 +35,15 @@ impl<'a> SqlRenderer<'a> {
     fn render_projection_select_item(&self, projection: &Projection) -> Result<String, CoreError> {
         match projection {
             Projection::Property { property, alias } => {
-                let expression = self.render_property_ref(property)?;
+                let expression =
+                    if let Some(timezone) = self.validated.property_ref_zoned_timezone(property)? {
+                        Self::render_zoneddatetime_to_iso_sql(
+                            &self.render_property_ref(property)?,
+                            &timezone,
+                        )
+                    } else {
+                        self.render_property_ref(property)?
+                    };
                 let alias = alias
                     .as_deref()
                     .map_or_else(|| projection.output_name(), ToString::to_string);
@@ -177,6 +185,13 @@ impl<'a> SqlRenderer<'a> {
     ) -> Result<String, CoreError> {
         if scalar_expression_projects_duration(expression) {
             return self.render_duration_to_iso_expression(expression, ScalarScope::TopLevel);
+        }
+        if let Some(timezone) = self.zoned_datetime_render_timezone(expression)? {
+            return self.render_zoneddatetime_to_iso_expression(
+                expression,
+                &timezone,
+                ScalarScope::TopLevel,
+            );
         }
         self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
         self.render_scalar_expression(expression)

@@ -2524,6 +2524,18 @@ impl<'a> SqlRenderer<'a> {
                         )?
                     )));
                 }
+                if let Some(timezone) = scoped_scalar_expression_zoned_timezone(expression) {
+                    return Ok(Some(format!(
+                        "coral_zoneddatetime_to_iso({}, {})",
+                        self.render_scoped_scalar_expression(
+                            expression,
+                            relationships,
+                            local_nodes,
+                            local_aliases,
+                        )?,
+                        quote_string_literal(&timezone)
+                    )));
+                }
                 try_cast(expression, "VARCHAR")
             }
             ScalarExpression::ToInteger { expression }
@@ -3311,4 +3323,36 @@ fn scoped_scalar_expression_is_zoneddatetime(expression: &ScalarExpression) -> b
             TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. }
         )
     )
+}
+
+fn scoped_scalar_expression_zoned_timezone(expression: &ScalarExpression) -> Option<String> {
+    match expression {
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeZonedDateTime { timezone, .. }
+            | TemporalExpr::ZonedDateTimeFromString { timezone, .. },
+        ) => Some(timezone.clone()),
+        ScalarExpression::PresenceGated { expression, .. } => {
+            scoped_scalar_expression_zoned_timezone(expression)
+        }
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => match operator {
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract
+                if scoped_scalar_expression_is_zoneddatetime(left)
+                    && scoped_scalar_expression_is_duration(right) =>
+            {
+                scoped_scalar_expression_zoned_timezone(left)
+            }
+            ArithmeticOperator::Add
+                if scoped_scalar_expression_is_duration(left)
+                    && scoped_scalar_expression_is_zoneddatetime(right) =>
+            {
+                scoped_scalar_expression_zoned_timezone(right)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }

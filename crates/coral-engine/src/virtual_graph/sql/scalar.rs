@@ -361,6 +361,15 @@ impl<'a> SqlRenderer<'a> {
                         .render_duration_to_iso_expression(expression, ScalarScope::TopLevel)
                         .map(Some);
                 }
+                if let Some(timezone) = self.zoned_datetime_render_timezone(expression)? {
+                    return self
+                        .render_zoneddatetime_to_iso_expression(
+                            expression,
+                            &timezone,
+                            ScalarScope::TopLevel,
+                        )
+                        .map(Some);
+                }
                 self.render_try_cast_expression(expression, "VARCHAR")
                     .map(Some)
             }
@@ -400,6 +409,60 @@ impl<'a> SqlRenderer<'a> {
             "coral_duration_to_iso({})",
             self.render_scalar_in_scope(expression, scope)?
         ))
+    }
+
+    pub(super) fn render_zoneddatetime_to_iso_expression<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        timezone: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(Self::render_zoneddatetime_to_iso_sql(
+            &self.render_scalar_in_scope(expression, scope)?,
+            timezone,
+        ))
+    }
+
+    pub(super) fn render_zoneddatetime_to_iso_sql(expression_sql: &str, timezone: &str) -> String {
+        format!(
+            "coral_zoneddatetime_to_iso({expression_sql}, {})",
+            quote_string_literal(timezone)
+        )
+    }
+
+    pub(super) fn zoned_datetime_render_timezone(
+        &self,
+        expression: &ScalarExpression,
+    ) -> Result<Option<String>, CoreError> {
+        match expression {
+            ScalarExpression::Temporal(temporal) => Ok(temporal_zoned_timezone(temporal)),
+            ScalarExpression::Property(property) => {
+                self.validated.property_ref_zoned_timezone(property)
+            }
+            ScalarExpression::PresenceGated { expression, .. } => {
+                self.zoned_datetime_render_timezone(expression)
+            }
+            ScalarExpression::Arithmetic {
+                operator,
+                left,
+                right,
+            } => match operator {
+                ArithmeticOperator::Add | ArithmeticOperator::Subtract
+                    if scalar_expression_is_zoneddatetime(left)
+                        && scalar_expression_is_duration(right) =>
+                {
+                    self.zoned_datetime_render_timezone(left)
+                }
+                ArithmeticOperator::Add
+                    if scalar_expression_is_duration(left)
+                        && scalar_expression_is_zoneddatetime(right) =>
+                {
+                    self.zoned_datetime_render_timezone(right)
+                }
+                _ => Ok(None),
+            },
+            _ => Ok(None),
+        }
     }
 
     fn render_unary_function_expression(
@@ -1363,6 +1426,14 @@ fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
         ScalarExpression::Temporal(
             TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. },
         ) => Some(TemporalKind::Duration),
+        _ => None,
+    }
+}
+
+fn temporal_zoned_timezone(expression: &TemporalExpr) -> Option<String> {
+    match expression {
+        TemporalExpr::MakeZonedDateTime { timezone, .. }
+        | TemporalExpr::ZonedDateTimeFromString { timezone, .. } => Some(timezone.clone()),
         _ => None,
     }
 }
