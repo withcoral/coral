@@ -12035,6 +12035,33 @@ async fn cypher_unaliased_consecutive_optional_collects_use_expression_column_na
 }
 
 #[tokio::test]
+async fn cypher_labels_null_projection_executes_against_empty_optional_match() {
+    let temp = TempDir::new().expect("temp dir");
+    write_projection_name_fixture(temp.path());
+    let source = build_source(projection_name_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(PROJECTION_NAME_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (n:DoesNotExist) \
+         RETURN labels(n) AS missing_labels, labels(null) AS null_labels",
+    )
+    .await
+    .expect("labels(null) projection should execute");
+
+    let field_names = execution
+        .execution()
+        .schema()
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["missing_labels", "null_labels"]);
+    assert_eq!(execution_to_rows(execution.execution()), vec![json!({})]);
+}
+
+#[tokio::test]
 async fn cypher_anchored_optional_composes_after_consecutive_leading_optionals() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

@@ -6,7 +6,7 @@
     "CollectSubquery": 3,
     "CountSubquery": 10,
     "ExistsSubquery": 13,
-    "GraphMetadata": 19,
+    "GraphMetadata": 20,
     "ListExpressions": 40,
     "LiteralExpressions": 15,
     "MapExpressions": 25,
@@ -1658,6 +1658,22 @@
             "rows": 1,
             "a": 0,
             "b": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-labels-null-literal",
+      "feature": "GraphMetadata",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (n:DoesNotExist) RETURN labels(n) AS missing_labels, labels(null) AS null_labels",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing_labels": null,
+            "null_labels": null
           }
         ]
       }

@@ -25383,6 +25383,16 @@ fn compile_labels_projection(
     context: &CypherCompileContext,
 ) -> Result<Projection, CoreError> {
     let path = path.into();
+    let alias = item
+        .alias
+        .as_ref()
+        .map_or_else(|| "labels".to_string(), variable_name);
+    if has_single_literal_null_argument(function) {
+        return Ok(Projection::Expression {
+            expression: ScalarExpression::Literal(Literal::Null),
+            alias,
+        });
+    }
     if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
         function,
         format!("{path}.expression.arguments"),
@@ -25391,10 +25401,7 @@ fn compile_labels_projection(
     )? {
         return Ok(Projection::Expression {
             expression: same_label_undirected_endpoint_labels_scalar_expression(value),
-            alias: item
-                .alias
-                .as_ref()
-                .map_or_else(|| "labels".to_string(), variable_name),
+            alias,
         });
     }
     let (value, label) = compile_node_function_target_ref(
@@ -25407,19 +25414,13 @@ fn compile_labels_projection(
     if value.presence_variable.is_some() {
         return Ok(Projection::Expression {
             expression: graph_value_labels_scalar_expression(value, label),
-            alias: item
-                .alias
-                .as_ref()
-                .map_or_else(|| "labels".to_string(), variable_name),
+            alias,
         });
     }
     Ok(Projection::NodeLabels {
         variable: value.variable,
         label,
-        alias: item
-            .alias
-            .as_ref()
-            .map_or_else(|| "labels".to_string(), variable_name),
+        alias,
     })
 }
 
@@ -25430,6 +25431,9 @@ fn compile_labels_order_expression(
     context: &CypherCompileContext,
 ) -> Result<OrderExpression, CoreError> {
     let path = path.into();
+    if has_single_literal_null_argument(function) {
+        return Ok(OrderExpression::Literal(Literal::Null));
+    }
     if let Some(value) = compile_optional_same_label_undirected_endpoint_function_argument(
         function,
         format!("{path}.arguments"),
@@ -25456,6 +25460,18 @@ fn compile_labels_order_expression(
         variable: value.variable,
         label,
     })
+}
+
+fn has_single_literal_null_argument(function: &FunctionInvocation) -> bool {
+    matches!(function.arguments.as_slice(), [argument] if is_literal_null_expression(argument))
+}
+
+fn is_literal_null_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Parenthesized(inner) => is_literal_null_expression(inner),
+        Expression::Literal(CypherLiteral::Null) => true,
+        _ => false,
+    }
 }
 
 fn compile_keys_order_expression(

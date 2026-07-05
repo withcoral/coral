@@ -8498,6 +8498,23 @@ fn compiles_labels_projection() {
 }
 
 #[test]
+fn compiles_labels_null_projection() {
+    let plan = compile_cypher(
+        "MATCH (service:Service) \
+             RETURN labels(null) AS null_labels",
+    )
+    .expect("labels(null) projection should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::Literal(Literal::Null),
+            alias: "null_labels".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn compiles_order_by_id_and_type_functions() {
     let plan = compile_cypher(
         "MATCH (person:Person)-[owns:OWNS]->(service:Service) \
