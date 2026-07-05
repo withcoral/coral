@@ -1,0 +1,577 @@
+---
+title: "Temporal"
+description: "Dates, date-times, durations, and zoned values in the virtual graph's openCypher surface, with honest boundaries."
+---
+
+The virtual graph's openCypher temporal surface lets you construct, compare, sort, inspect, and render temporal values while Coral still compiles the query to SQL over your mapped tables.
+
+Temporal is the largest openCypher capability area in the compatibility baseline: 103 scenarios, with 80 supported read behaviors and 23 documented limits. This page covers openCypher only; GraphQL temporal filters are covered on the GraphQL reference page.
+
+<Note>
+For the typed, read-only virtual graph model, start with the [Virtual graph overview](/virtual-graph/overview).
+</Note>
+
+## Naive dates & times
+
+Use `date`, `localdatetime`, and `localtime` when the value has no timezone. String and map constructors are supported, and omitted map fields use the documented defaults.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') = date({year: 2020, month: 1, day: 1}) AS same
+```
+
+Returns:
+
+```json
+[
+  {
+    "same": true
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56') AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "2020-01-15T12:34:56"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime({year: 2020, month: 1, day: 15, hour: 12, minute: 34, second: 56}) AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "2020-01-15T12:34:56"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56') AS t
+```
+
+Returns:
+
+```json
+[
+  {
+    "t": "12:34:56"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime({hour: 12, minute: 34, second: 56}) AS t
+```
+
+Returns:
+
+```json
+[
+  {
+    "t": "12:34:56"
+  }
+]
+```
+
+Comparisons work for supported temporal values.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') < date('2021-06-15') AS lt
+```
+
+Returns:
+
+```json
+[
+  {
+    "lt": true
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:00:00') < localtime('13:00:00') AS lt, localtime('13:00:00') > localtime('12:00:00') AS gt, localtime('12:00:00') <= localtime('12:00:00') AS le, localtime('13:00:00') >= localtime('12:00:00') AS ge, localtime('12:34:56') = localtime({hour: 12, minute: 34, second: 56}) AS eq, localtime('12:34:56') <> localtime('12:34:57') AS ne
+```
+
+Returns:
+
+```json
+[
+  {
+    "eq": true,
+    "ge": true,
+    "gt": true,
+    "le": true,
+    "lt": true,
+    "ne": true
+  }
+]
+```
+
+Constructed values expose temporal components.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').year AS year
+```
+
+Returns:
+
+```json
+[
+  {
+    "year": 2020
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56').hour AS hour
+```
+
+Returns:
+
+```json
+[
+  {
+    "hour": 12
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56').hour AS hour
+```
+
+Returns:
+
+```json
+[
+  {
+    "hour": 12
+  }
+]
+```
+
+Stored warehouse `DATE` and `TIMESTAMP` columns mapped as properties are queryable as temporal values. You can return them, sort on them, and access their components.
+
+```cypher
+MATCH (p:Person) WHERE p.name IN ['Ada', 'Fay'] RETURN p.name AS name, p.joined AS joined ORDER BY p.joined
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Ada",
+    "joined": "2020-06-01T09:00:00Z"
+  },
+  {
+    "name": "Fay",
+    "joined": "2023-09-05T09:00:00Z"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.birthday.year AS y, p.birthday.month AS mo, p.birthday.day AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "y": 1990,
+    "mo": 5,
+    "d": 20
+  }
+]
+```
+
+<Tip>
+Temporal component access is type-aware. A `DATE` property has `year`, `month`, and `day`, while `hour` is only available on date-time values.
+</Tip>
+
+Boundaries are explicit. `localdatetime()` and `localtime()` reject timezone-bearing strings because they are naive constructors.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56+01:00') AS d
+```
+
+Rejects with:
+
+```json
+"localdatetime() does not accept a timezone; use a naive date-time string"
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56Z') AS t
+```
+
+Rejects with:
+
+```json
+"localtime() does not accept a timezone; use a naive time string"
+```
+
+Unsupported components are rejected instead of returning ambiguous values.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15').ordinalDay AS ordinalDay
+```
+
+Rejects with:
+
+```json
+"ordinalDay is not supported yet"
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Ada' RETURN p.birthday.hour AS h
+```
+
+Rejects with:
+
+```json
+"hour is not supported for date values"
+```
+
+## Durations
+
+Use `duration()` for ISO `P...` values, then add or subtract them from dates, local date-times, and local times.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1Y2M3DT4H') AS dur
+```
+
+Returns:
+
+```json
+[
+  {
+    "dur": "P1Y2M3DT4H"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-15') + duration('P10D') AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "2020-01-25"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-01T00:00:00') + duration('PT1H30M') AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "2020-01-01T01:30:00"
+  }
+]
+```
+
+Calendar-aware duration functions are supported for naive dates and date-times. Month-end behavior is captured by the baseline rather than approximated in the docs.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('1984-10-11'), date('2015-06-24')) AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "P30Y8M13D"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('2020-01-31'), date('2020-02-29')) AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "P29D"
+  }
+]
+```
+
+Use the `duration.in...` family when you need totals in a specific unit.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inDays(date('1984-10-11'), date('2015-06-24')) AS d
+```
+
+Returns:
+
+```json
+[
+  {
+    "d": "P11213D"
+  }
+]
+```
+
+Duration component access is supported for the documented fields and normalized views.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration({months: 14}).years AS years, duration({months: 14}).months AS months, duration({months: 14}).monthsOfYear AS monthsOfYear
+```
+
+Returns:
+
+```json
+[
+  {
+    "months": 14,
+    "monthsOfYear": 2,
+    "years": 1
+  }
+]
+```
+
+Boundaries are explicit here too. Duration multiplication currently requires a numeric literal factor, and component names must match the duration surface.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') * p.age AS shifted
+```
+
+Rejects with:
+
+```json
+"duration multiplication requires a numeric literal factor"
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1D').day AS days
+```
+
+Rejects with:
+
+```json
+"day is not supported for duration values"
+```
+
+## Zoned date-times
+
+Use `datetime()` for timezone-aware date-times. Supported forms include offset strings, `Z`, bracketed IANA zones, and map constructors with a `timezone` field.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T09:00:00+01:00') AS dt
+```
+
+Returns:
+
+```json
+[
+  {
+    "dt": "2020-06-01T09:00:00+01:00"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2015-07-21T21:40:32.142[Europe/London]') AS dt
+```
+
+Returns:
+
+```json
+[
+  {
+    "dt": "2015-07-21T21:40:32.142+01:00[Europe/London]"
+  }
+]
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123, timezone: 'Europe/Stockholm'}) AS dt
+```
+
+Returns:
+
+```json
+[
+  {
+    "dt": "1984-10-11T12:31:14.645876123+01:00[Europe/Stockholm]"
+  }
+]
+```
+
+Comparison and ordering use the instant, while rendering keeps the local representation.
+
+```cypher
+UNWIND [1, 2] AS choice MATCH (p:Person) WHERE p.name = 'Alice' RETURN CASE WHEN choice = 1 THEN datetime('2020-06-01T09:00:00+01:00') ELSE datetime('2020-06-01T08:30:00Z') END AS dt, datetime('2020-06-01T09:00:00+01:00') < datetime('2020-06-01T08:30:00Z') AS lt ORDER BY dt
+```
+
+Returns:
+
+```json
+[
+  {
+    "dt": "2020-06-01T09:00:00+01:00",
+    "lt": true
+  },
+  {
+    "dt": "2020-06-01T09:30:00+01:00",
+    "lt": true
+  }
+]
+```
+
+Zone-visible component access reads the value in its named zone.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').hour AS londonHour, datetime('2020-06-01T23:30:00-04:00[America/New_York]').day AS newYorkDay
+```
+
+Returns:
+
+```json
+[
+  {
+    "londonHour": 13,
+    "newYorkDay": 1
+  }
+]
+```
+
+The `.timezone`, `.offset`, `.offsetSeconds`, `.offsetMinutes`, `.epochSeconds`, and `.epochMillis` accessors expose zone and instant details.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').timezone AS timezone, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offset AS offset, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetSeconds AS offsetSeconds, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetMinutes AS offsetMinutes, datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochSeconds AS epochSeconds, datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochMillis AS epochMillis
+```
+
+Returns:
+
+```json
+[
+  {
+    "timezone": "Europe/London",
+    "offset": "+01:00",
+    "offsetSeconds": 3600,
+    "offsetMinutes": 60,
+    "epochSeconds": 1591012800,
+    "epochMillis": 1591012800000
+  }
+]
+```
+
+Duration arithmetic is DST-aware for named zones.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).hour AS shiftedHour, (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).offset AS shiftedOffset, datetime('2020-06-01T13:00:00+01:00[Europe/London]') - datetime('2020-06-01T12:00:00Z') AS delta
+```
+
+Returns:
+
+```json
+[
+  {
+    "shiftedHour": 2,
+    "shiftedOffset": "+01:00",
+    "delta": "PT0S"
+  }
+]
+```
+
+Rendering preserves the bracketed IANA zone form when the value has one.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN toString(datetime('2020-06-01T09:00:00[Europe/London]')) AS text
+```
+
+Returns:
+
+```json
+[
+  {
+    "text": "2020-06-01T09:00:00+01:00[Europe/London]"
+  }
+]
+```
+
+Zoned date-times are supported; timezone-aware time-of-day values are not. That deferral is covered on the Limits & design decisions page because the underlying SQL engine does not provide a timezone-aware `TIME` type.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN time('12:34:56Z') AS t
+```
+
+Rejects with:
+
+```json
+"RETURN function 'time' is not supported yet"
+```
+
+Coral also rejects named-zone values that fall inside daylight-saving gaps or overlaps instead of choosing a resolution that the compatibility baseline does not define.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2021-03-28T01:30:00[Europe/London]') AS dt
+```
+
+Rejects with:
+
+```json
+"daylight-saving gap"
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2021-10-31T01:30:00[Europe/London]') AS dt
+```
+
+Rejects with:
+
+```json
+"daylight-saving overlap"
+```
+
+`duration.between()` and `duration.inDays()` currently reject zoned `datetime()` arguments.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d
+```
+
+Rejects with:
+
+```json
+"duration.between() does not support zoned datetime() or time() arguments yet"
+```
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.inDays(datetime('2020-01-01T00:00:00+01:00'), date('2020-01-02')) AS d
+```
+
+Rejects with:
+
+```json
+"duration.inDays() does not support zoned datetime() or time() arguments yet"
+```
