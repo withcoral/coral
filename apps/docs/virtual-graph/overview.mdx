@@ -1,0 +1,98 @@
+---
+title: "Virtual graph"
+description: "Query your warehouse tables as a typed property graph using openCypher or GraphQL, compiled to SQL."
+---
+
+Coral virtual graph lets you declare a typed property-graph view over tables you already query through Coral. You model node labels and relationship types over warehouse tables, then read that graph with openCypher or GraphQL.
+
+Queries compile to SQL and run in place. Coral does not copy your data into a graph store, and the virtual graph is read-only by design: graph queries never write back to your tables.
+
+<Note>
+Virtual means the graph is a typed mapping over existing tables, not a separate database.
+</Note>
+
+## When to use it
+
+Use a virtual graph when your question is naturally about relationships: who knows whom, which services depend on which teams, what paths connect two records, or which neighborhoods of related data match a condition.
+
+Plain `coral sql` is still the right fit for tabular filtering, joins, and reporting. The virtual graph reads the same tables, but gives you graph-shaped ergonomics when a pattern, traversal, or agent-authored graph query is clearer than flat SQL.
+
+## The typed model
+
+A graph declaration maps each node label and relationship type to a specific table. For the example graph, `Person` nodes come from `tck.people`, `KNOWS` relationships connect one `Person` to another, and each exposed property is declared explicitly.
+
+That typing is a contract. Coral can generate predictable SQL, validate graph queries against the mapped labels and properties, and return honest errors when a query asks for something outside the declaration.
+
+The mapping declaration guide covers the declaration model, and the limits page covers the boundaries Coral documents deliberately.
+
+## Two query surfaces
+
+openCypher is the pattern-matching surface. Use it for `MATCH` patterns, staged `WITH` queries, `UNWIND`, aggregation, temporal predicates, and graph-style traversals.
+
+GraphQL is the generated read API. Use it when you want a typed selection shape with filters, ordering, pagination, aggregate fields, and a schema that matches the same graph declaration.
+
+<Tip>
+Both surfaces read the same virtual graph. Choose the language that makes the question easiest to express.
+</Tip>
+
+## A quick taste
+
+The docs use a small `Person` graph as the running example. It has `Person` nodes with `name`, `age`, `city`, and `active` properties, plus `KNOWS` and `LIKES` relationships between people.
+
+### openCypher
+
+```cypher
+MATCH (p:Person) RETURN p.name AS name ORDER BY name
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Bob"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+### GraphQL
+
+```graphql
+query { Person(where: { age: { gte: 30 }, active: { eq: true } }, orderBy: [{ field: name, direction: ASC }], limit: 2) { person: name city } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "person": "Alice",
+    "city": "London"
+  },
+  {
+    "person": "Carol",
+    "city": "Paris"
+  }
+]
+```
+
+## What's covered
+
+Coral tracks virtual graph behavior with executable, synthetic compatibility scenarios. The openCypher read surface has 726 conformance scenarios: 646 supported read behaviors and 80 documented limits. The GraphQL surface has 164 scenarios: 145 supported behaviors and 19 validation or error checks.
+
+This makes the feature comprehensive and honestly bounded. Coral documents what it supports, what it rejects, and why the virtual graph stays read-only. The limits and design decisions page covers those boundaries in full.
+
+## Next steps
+
+Continue with the rest of this section:
+
+- **Mapping declaration guide** — model labels, relationship types, keys, and properties over your tables.
+- **openCypher reference** — read graph patterns, traversals, and aggregation, with each capability's honest boundaries.
+- **GraphQL reference** — query the generated schema with filters, ordering, and aggregates.
+- **Limits & design decisions** — the read-only contract and the supported-subset boundaries.
