@@ -1,0 +1,407 @@
+---
+title: "GraphQL reference"
+description: "Query a virtual graph with the generated GraphQL read API: filters, ordering, aggregates, and nested relationships."
+---
+
+The virtual graph GraphQL surface is a generated, read-only API over your typed graph declaration. You query root node fields, filter by declared properties and relationships, select nested related nodes, and receive rows compiled from SQL in place.
+
+All examples on this page come from the GraphQL read baseline. That suite has 164 scenarios: 145 supported read behaviors and 19 validation or error checks. Returned JSON is the scenario's `expected.rows`; error examples show the scenario's `expected.contains` string verbatim.
+
+<Note>
+GraphQL virtual graph queries read the same typed graph described in the [virtual graph overview](/virtual-graph/overview). The API validates labels, properties, relationship fields, operators, and operation type before planning SQL.
+</Note>
+
+## Root selection
+
+Query a node label from the root, then select declared fields. Root selections can combine filters, ordering, aliases, and row limits.
+
+```graphql
+query { Person(where: { age: { gte: 30 }, active: { eq: true } }, orderBy: [{ field: name, direction: ASC }], limit: 2) { person: name city } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "person": "Alice",
+    "city": "London"
+  },
+  {
+    "person": "Carol",
+    "city": "Paris"
+  }
+]
+```
+
+Generated root aliases are part of the supported shape. This example uses the lowercase plural root and aliases `name` to `person`.
+
+```graphql
+query { persons(where: { city: "London" }, orderBy: [{ field: name, direction: ASC }]) { person: name active } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "person": "Alice",
+    "active": true
+  },
+  {
+    "person": "Bob",
+    "active": false
+  }
+]
+```
+
+## Scalar filters
+
+Use `where` to filter declared scalar properties. The baseline covers `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `notIn`, `isNull`, `isNotNull`, `contains`, `notContains`, `startsWith`, `notStartsWith`, `endsWith`, `notEndsWith`, `matches`, and `notMatches`.
+
+```graphql
+query { Person(where: { or: [{ name: { startsWith: "A" } }, { name: { contains: "ar" } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+List and nullability predicates compose with ordinary property filters.
+
+```graphql
+query { Person(where: { city: { in: ["London", "Paris"] }, active: { isNotNull: true } }, orderBy: [{ field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Bob"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+## Boolean filters
+
+Boolean composition uses `and`, `or`, `not`, and `xor` in `where`. Arrays represent grouped conditions, and nested groups stay readable as the predicate grows.
+
+```graphql
+query { Person(where: { xor: [{ active: { eq: true } }, { city: { eq: "Paris" } }], not: { name: { eq: "Bob" } } }, orderBy: [{ field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  }
+]
+```
+
+```graphql
+query { Person(where: { and: [{ or: [{ city: { eq: "London" } }, { city: { eq: "Paris" } }] }, { not: { active: { eq: false } } }] }, orderBy: [{ field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+## Temporal filters
+
+Temporal properties use string values in the generated API. The baseline covers value comparisons, range predicates, and list predicates over timestamp and date properties.
+
+```graphql
+query { Person(where: { joined: { gt: "2020-12-31T23:59:59Z" } }) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Bea"
+  },
+  {
+    "name": "Dot"
+  },
+  {
+    "name": "Fay"
+  }
+]
+```
+
+```graphql
+query { Person(where: { joined: { in: ["2020-06-01T09:00:00Z", "2018-07-22T09:00:00Z"] } }) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Ada"
+  },
+  {
+    "name": "Eve"
+  }
+]
+```
+
+## Nested relationships
+
+Relationship fields select related nodes from the current node. Use `out_TYPE`, `in_TYPE`, or `any_TYPE` fields, then pass node filters with `where` and edge filters with `relationshipWhere`.
+
+```graphql
+query { Person(where: { name: { eq: "Alice" } }) { source: name out_KNOWS(to: Person, relationshipWhere: { since: { gte: 2021 } }, where: { active: { eq: true } }) { target: name _edge { since: since } } } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "since": 2022
+  }
+]
+```
+
+You can also filter a root node by whether a matching relationship exists.
+
+```graphql
+query { Person(where: { out_KNOWS: { where: { city: { eq: "Paris" } }, relationshipWhere: { since: { gte: 2021 } } } }, orderBy: [{ field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Bob"
+  }
+]
+```
+
+## Ordering and row modifiers
+
+Use `orderBy` for deterministic ordering and `limit` or `offset` for page windows. `orderBy` accepts a list of sort objects with `field`, `direction`, and optional `nulls`.
+
+```graphql
+query { Person(orderBy: [{ field: age, direction: DESC }], offset: 1, limit: 1) { name age } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Alice",
+    "age": 34
+  }
+]
+```
+
+Null ordering is explicit when you need it.
+
+```graphql
+query { Person(orderBy: [{ field: city, direction: ASC, nulls: FIRST }, { field: name, direction: ASC }]) { name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "name": "Cee"
+  },
+  {
+    "name": "Eve"
+  },
+  {
+    "name": "Ada"
+  },
+  {
+    "name": "Bea"
+  },
+  {
+    "name": "Dot"
+  },
+  {
+    "name": "Fay"
+  }
+]
+```
+
+## Aggregates
+
+Aggregate selections use generated fields such as `_count`, `_min`, `_max`, `_avg`, `_sum`, and percentile functions. Aggregates can be selected globally or alongside grouped properties.
+
+```graphql
+query { Person { totalAge: _sum(field: age) youngest: _min(field: age) oldest: _max(field: age) } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "totalAge": 104,
+    "youngest": 29,
+    "oldest": 41
+  }
+]
+```
+
+Percentile aggregates take both `field` and `percentile` arguments.
+
+```graphql
+query { Person { p75Age: _percentileCont(field: age, percentile: 0.75) } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "p75Age": 37.5
+  }
+]
+```
+
+## Generated schema and client shape
+
+Every generated node type exposes identity fields. `_id` is numeric, and `_elementId` is the string element identity.
+
+```graphql
+query { Person(where: { name: { eq: "Alice" } }) { id: _id element: _elementId name } }
+```
+
+Returns:
+
+```json
+[
+  {
+    "id": 1,
+    "element": "1",
+    "name": "Alice"
+  }
+]
+```
+
+The generated schema supports ordinary GraphQL client shape features such as fragments, aliases, and `__typename`.
+
+```graphql
+query { Person(orderBy: [{ field: name, direction: ASC }], limit: 1) { __typename ...PersonFields } } fragment PersonFields on Person { person: name }
+```
+
+Returns:
+
+```json
+[
+  {
+    "__typename": "Person",
+    "person": "Alice"
+  }
+]
+```
+
+## Errors and boundaries
+
+The API validates your request and returns a clear error when a query leaves the supported read surface. These examples are documented error scenarios from the same baseline.
+
+Unknown properties are rejected before execution.
+
+```graphql
+query { Person { missingProperty } }
+```
+
+Rejects with:
+
+```json
+"UNKNOWN_PROPERTY"
+```
+
+Mutations and subscriptions are outside the read-only surface.
+
+```graphql
+mutation { Person { name } }
+```
+
+Rejects with:
+
+```json
+"mutations and subscriptions are not supported"
+```
+
+`xor` requires exactly two operands.
+
+```graphql
+query { Person(where: { xor: [{ active: { eq: true } }] }) { name } }
+```
+
+Rejects with:
+
+```json
+"requires exactly two objects"
+```
+
+Percentile aggregates require both arguments.
+
+```graphql
+query { Person { p: _percentileCont(field: age) } }
+```
+
+Rejects with:
+
+```json
+"requires exactly 'field' and 'percentile' arguments"
+```
+
+Temporal filters validate the literal type expected by the mapped property.
+
+```graphql
+query { Person(where: { birthday: { eq: "2020-06-01T09:00:00Z" } }) { name } }
+```
+
+Rejects with:
+
+```json
+"cannot coerce string"
+```
+
+<CardGroup cols={1}>
+  <Card title="Virtual graph overview" href="/virtual-graph/overview">
+    Review the typed virtual graph model and how the GraphQL surface relates to openCypher.
+  </Card>
+</CardGroup>
