@@ -433,27 +433,69 @@ fn graph_union_branch_plan_for_lowering(
             "null-preserving graph union expected one optional match scope per branch",
         ));
     };
-    if plan.nodes.len() != 1
-        || !plan.relationships.is_empty()
-        || !plan.optional_relationships.is_empty()
-        || optional_match.node_indices.as_slice() != [0]
-        || !optional_match.relationship_indices.is_empty()
-    {
+    if !is_null_preserving_union_branch(plan, optional_match) {
         return Err(CoreError::internal(
-            "null-preserving graph union expected pure node-only optional branches",
+            "null-preserving graph union expected pure leading optional branches",
         ));
     }
 
+    let optional_relationship_indices = optional_match.relationship_indices.clone();
     let mut rewritten = plan.clone();
     let predicate = rewritten
         .optional_matches
         .first_mut()
         .and_then(|scope| scope.predicate.take());
     rewritten.optional_matches.clear();
+    rewritten
+        .optional_relationships
+        .retain(|index| !optional_relationship_indices.contains(index));
     if let Some(predicate) = predicate {
         append_union_branch_predicate(&mut rewritten, predicate);
     }
     Ok(Cow::Owned(rewritten))
+}
+
+fn is_null_preserving_union_branch(plan: &GraphPlan, optional_match: &OptionalMatchScope) -> bool {
+    is_null_preserving_node_only_union_branch(plan, optional_match)
+        || is_null_preserving_relationship_union_branch(plan, optional_match)
+}
+
+fn is_null_preserving_node_only_union_branch(
+    plan: &GraphPlan,
+    optional_match: &OptionalMatchScope,
+) -> bool {
+    plan.nodes.len() == 1
+        && plan.relationships.is_empty()
+        && plan.optional_relationships.is_empty()
+        && optional_match.node_indices.as_slice() == [0]
+        && optional_match.relationship_indices.is_empty()
+}
+
+fn is_null_preserving_relationship_union_branch(
+    plan: &GraphPlan,
+    optional_match: &OptionalMatchScope,
+) -> bool {
+    let [relationship_index] = optional_match.relationship_indices.as_slice() else {
+        return false;
+    };
+    if plan.relationships.len() != 1
+        || *relationship_index != 0
+        || plan.optional_relationships.as_slice() != [0]
+    {
+        return false;
+    }
+    let Some(relationship) = plan.relationships.first() else {
+        return false;
+    };
+    let scoped_nodes = optional_match
+        .node_indices
+        .iter()
+        .filter_map(|node_index| plan.nodes.get(*node_index))
+        .map(|node| node.variable.as_str())
+        .collect::<Vec<_>>();
+    scoped_nodes.len() == plan.nodes.len()
+        && scoped_nodes.contains(&relationship.left.as_str())
+        && scoped_nodes.contains(&relationship.right.as_str())
 }
 
 fn append_union_branch_predicate(plan: &mut GraphPlan, predicate: PredicateExpression) {

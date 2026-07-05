@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-707 scenarios, which is 43.78% of the full upstream scenario-definition inventory
-and 54.64% of the read-candidate inventory.
+711 scenarios, which is 44.02% of the full upstream scenario-definition inventory
+and 54.95% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 707 representative read-only scenarios:
+The baseline currently contains 711 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -172,7 +172,7 @@ The baseline currently contains 707 representative read-only scenarios:
   membership, string predicates, regex predicates, optional null filtering, and
   `exists(property)`.
 - `RelationshipProperties`: 1 scenario for relationship property filtering.
-- `OptionalMatch`: 24 scenarios for null-preserving rows, null filtering,
+- `OptionalMatch`: 27 scenarios for null-preserving rows, null filtering,
   `coalesce(...)`, optional-local predicates, relationship-property
   projections, zero-count aggregation for unmatched rows, reverse traversal,
   bound-endpoint optional joins, multiple optional clauses, mandatory matches
@@ -274,7 +274,7 @@ The baseline currently contains 707 representative read-only scenarios:
 - `Parameters`: 14 scenarios for scalar/list/limit parameter binding,
   compile-time dynamic label-list parameters, and missing parameter rejection
   through the public parameterized Cypher execution API.
-- `Unwind`: 37 scenarios for `UNWIND` list expansion, including graph-free
+- `Unwind`: 38 scenarios for `UNWIND` list expansion, including graph-free
   literal-list row sources, large literal row-source fallback to dynamic
   `UNNEST`, `WITH` alias-bound list row sources, alias-bound list
   concatenation, homogeneous nested literal-list row sources with list indexing

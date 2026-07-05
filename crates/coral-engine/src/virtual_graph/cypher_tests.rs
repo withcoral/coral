@@ -19008,6 +19008,35 @@ fn compiles_leading_node_only_optional_match() {
 }
 
 #[test]
+fn compiles_leading_relationship_optional_match() {
+    let plan = compile_cypher(
+        "OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN owns.since AS since",
+    )
+    .expect("leading relationship OPTIONAL MATCH should compile");
+
+    assert_eq!(plan.optional_relationships, vec![0]);
+    assert_eq!(
+        plan.optional_matches,
+        vec![OptionalMatchScope {
+            node_indices: vec![0, 1],
+            relationship_indices: vec![0],
+            predicate: None,
+        }]
+    );
+    assert_eq!(
+        plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("owns".to_string()),
+            relationship_type: "OWNS".to_string(),
+            left: "person".to_string(),
+            direction: Direction::Outgoing,
+            right: "service".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn compiles_leading_unlabeled_node_only_optional_match_from_single_label_graph() {
     let graph = single_label_person_knows_test_graph();
     let plan =
@@ -19057,6 +19086,58 @@ fn compiles_leading_unlabeled_node_only_optional_match_from_multi_label_graph_as
             vec![OptionalMatchScope {
                 node_indices: vec![0],
                 relationship_indices: Vec::new(),
+                predicate: None,
+            }]
+        );
+    }
+}
+
+#[test]
+fn compiles_leading_untyped_relationship_optional_match_as_null_preserving_union() {
+    let graph = star_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "OPTIONAL MATCH (owner)-[owns]->(service) RETURN owns.source AS source",
+    )
+    .expect("leading untyped relationship OPTIONAL MATCH should compile as mapping alternatives");
+
+    let GraphQuery::Union(union) = query else {
+        panic!("expected untyped relationship optional match to expand into a union query");
+    };
+    assert!(union.preserve_empty_result_with_null_row);
+    assert_eq!(union.branches.len(), 1);
+
+    let plans = std::iter::once(&union.first)
+        .chain(union.branches.iter().map(|branch| &branch.plan))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        plans
+            .iter()
+            .map(|plan| {
+                (
+                    plan.nodes
+                        .iter()
+                        .map(|node| node.label.as_str())
+                        .collect::<Vec<_>>(),
+                    plan.relationships
+                        .iter()
+                        .map(|relationship| relationship.relationship_type.as_str())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (vec!["Person", "Service"], vec!["OWNS"]),
+            (vec!["Team", "Service"], vec!["OWNS"]),
+        ]
+    );
+    for plan in plans {
+        assert_eq!(plan.optional_relationships, vec![0]);
+        assert_eq!(
+            plan.optional_matches,
+            vec![OptionalMatchScope {
+                node_indices: vec![0, 1],
+                relationship_indices: vec![0],
                 predicate: None,
             }]
         );
@@ -19358,6 +19439,9 @@ fn compiles_relationship_endpoint_properties_on_optional_relationships() {
 #[test]
 fn rejects_unsupported_optional_match_shapes() {
     assert_unsupported("OPTIONAL MATCH (service:Service), (person:Person) RETURN service.name");
+    assert_unsupported(
+        "OPTIONAL MATCH (person:Person)-[:OWNS]->(service:Service)-[:DEPENDS_ON]->(target:Service) RETURN target.name",
+    );
 }
 
 #[test]

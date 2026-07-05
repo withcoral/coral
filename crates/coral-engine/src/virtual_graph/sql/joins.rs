@@ -24,6 +24,13 @@ pub(super) struct FromClauseBuilder<'a, 'r> {
 
 const OPTIONAL_DRIVER_ALIAS: &str = "__coral_optional_driver";
 
+#[derive(Clone, Copy)]
+enum LeadingOptionalRelationshipEndpoint {
+    Left,
+    Right,
+    SelfLoop,
+}
+
 impl<'a> SqlRenderer<'a> {
     fn render_optional_join_predicate(
         &self,
@@ -382,6 +389,7 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         self.lowerer
             .node_only_optional_scope_variables()
             .contains(first_node.variable.as_str())
+            || self.lowerer.leading_relationship_optional_scope().is_some()
     }
 
     fn start_from_optional_driver(&mut self) {
@@ -786,6 +794,45 @@ impl<'a> SqlRenderer<'a> {
             .map(|node| node.variable.as_str())
             .collect()
     }
+
+    fn leading_relationship_optional_scope(&self) -> Option<&OptionalMatchScope> {
+        self.validated
+            .plan()
+            .optional_matches
+            .iter()
+            .find(|optional_match| {
+                self.optional_match_scope_is_leading_relationship_scope(optional_match)
+                    .unwrap_or(false)
+            })
+    }
+
+    fn optional_match_scope_is_leading_relationship_scope(
+        &self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<bool, CoreError> {
+        let [relationship_index] = optional_match.relationship_indices.as_slice() else {
+            return Ok(false);
+        };
+        if self
+            .validated
+            .plan()
+            .optional_relationships
+            .binary_search(relationship_index)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        let relationship = self
+            .validated
+            .plan()
+            .relationships
+            .get(*relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let left_position = self.node_position(relationship.left.as_str())?;
+        let right_position = self.node_position(relationship.right.as_str())?;
+        Ok(optional_match.node_indices.contains(&left_position)
+            && optional_match.node_indices.contains(&right_position))
+    }
 }
 
 impl FromClauseBuilder<'_, '_> {
@@ -877,6 +924,17 @@ impl FromClauseBuilder<'_, '_> {
         let left_joined = self.joined_nodes.contains(pattern.left.as_str());
         let right_joined = self.joined_nodes.contains(pattern.right.as_str());
         if !left_joined && !right_joined {
+            if self.joined_nodes.is_empty()
+                && self
+                    .lowerer
+                    .optional_match_scope_is_leading_relationship_scope(optional_match)?
+            {
+                self.join_leading_optional_relationship_match_scope(
+                    optional_match,
+                    *relationship_index,
+                )?;
+                return Ok(true);
+            }
             return Ok(false);
         }
 
@@ -945,6 +1003,131 @@ impl FromClauseBuilder<'_, '_> {
         )
         .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         self.joined_nodes.insert(node.variable.as_str());
+        Ok(())
+    }
+
+    fn join_leading_optional_relationship_match_scope(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+        relationship_index: usize,
+    ) -> Result<(), CoreError> {
+        let pattern = self
+            .lowerer
+            .validated
+            .plan()
+            .relationships
+            .get(relationship_index)
+            .ok_or_else(|| CoreError::internal("validated relationship index was out of bounds"))?;
+        let relationship = self
+            .lowerer
+            .validated
+            .relationship_mapping(relationship_index)?;
+        let relationship_alias = self
+            .lowerer
+            .validated
+            .relationship_alias(relationship_index, pattern);
+        let mut join_group = format!(
+            "{} AS {}",
+            render_table_ref(&relationship.table),
+            quote_ident(&relationship_alias)
+        );
+
+        if pattern.left == pattern.right {
+            self.render_leading_optional_relationship_node_join(
+                &mut join_group,
+                relationship,
+                pattern,
+                &relationship_alias,
+                LeadingOptionalRelationshipEndpoint::SelfLoop,
+            )?;
+        } else {
+            self.render_leading_optional_relationship_node_join(
+                &mut join_group,
+                relationship,
+                pattern,
+                &relationship_alias,
+                LeadingOptionalRelationshipEndpoint::Left,
+            )?;
+            self.render_leading_optional_relationship_node_join(
+                &mut join_group,
+                relationship,
+                pattern,
+                &relationship_alias,
+                LeadingOptionalRelationshipEndpoint::Right,
+            )?;
+        }
+
+        let optional_predicate = self
+            .lowerer
+            .render_optional_match_predicate(optional_match)?;
+        let outer_condition = SqlRenderer::join_condition_with_predicate(
+            "true".to_string(),
+            optional_predicate.as_deref(),
+        );
+        write!(
+            self.from_clause,
+            " LEFT JOIN ({join_group}) ON {outer_condition}"
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        self.joined_nodes.insert(pattern.left.as_str());
+        self.joined_nodes.insert(pattern.right.as_str());
+        self.joined_relationship_indices.insert(relationship_index);
+        Ok(())
+    }
+
+    fn render_leading_optional_relationship_node_join(
+        &self,
+        join_group: &mut String,
+        relationship: &Relationship,
+        pattern: &RelationshipPattern,
+        relationship_alias: &str,
+        endpoint: LeadingOptionalRelationshipEndpoint,
+    ) -> Result<(), CoreError> {
+        let node_variable = match endpoint {
+            LeadingOptionalRelationshipEndpoint::Left
+            | LeadingOptionalRelationshipEndpoint::SelfLoop => pattern.left.as_str(),
+            LeadingOptionalRelationshipEndpoint::Right => pattern.right.as_str(),
+        };
+        let node = self.lowerer.validated.node_binding(node_variable)?;
+        let node_alias = self.lowerer.validated.binding(node_variable)?.alias();
+        let condition = match endpoint {
+            LeadingOptionalRelationshipEndpoint::SelfLoop => {
+                SqlRenderer::relationship_pair_condition(
+                    &self.lowerer.validated,
+                    relationship,
+                    relationship_alias,
+                    pattern,
+                )?
+            }
+            LeadingOptionalRelationshipEndpoint::Right => {
+                SqlRenderer::relationship_inner_unknown_condition_for_known_node(
+                    &self.lowerer.validated,
+                    relationship,
+                    pattern,
+                    relationship_alias,
+                    node_variable,
+                    false,
+                )?
+            }
+            LeadingOptionalRelationshipEndpoint::Left => {
+                SqlRenderer::relationship_known_node_condition(
+                    &self.lowerer.validated,
+                    relationship,
+                    pattern,
+                    relationship_alias,
+                    node_variable,
+                    true,
+                )?
+            }
+        };
+        write!(
+            join_group,
+            " JOIN {} AS {} ON {}",
+            render_table_ref(&node.table),
+            quote_ident(node_alias),
+            condition
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
         Ok(())
     }
 }

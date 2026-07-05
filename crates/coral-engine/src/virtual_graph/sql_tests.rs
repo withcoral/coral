@@ -1801,6 +1801,63 @@ fn lower_graph_plan_renders_node_only_optional_scope_with_single_row_driver() {
 }
 
 #[test]
+fn lower_graph_plan_renders_leading_optional_relationship_scope_with_single_row_driver() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let plan = GraphPlan {
+        nodes: vec![
+            NodePattern {
+                variable: "person".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            },
+        ],
+        relationships: vec![RelationshipPattern {
+            variable: Some("owns".to_string()),
+            relationship_type: "OWNS".to_string(),
+            left: "person".to_string(),
+            direction: Direction::Outgoing,
+            right: "service".to_string(),
+        }],
+        optional_relationships: vec![0],
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: vec![0, 1],
+            relationship_indices: vec![0],
+            predicate: None,
+        }],
+        distinct: false,
+        projections: vec![Projection::Property {
+            property: PropertyRef {
+                variable: "owns".to_string(),
+                property: "since".to_string(),
+            },
+            alias: Some("since".to_string()),
+        }],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    };
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("leading optional relationship scope should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT \"r0\".\"since\" AS \"since\" \
+             FROM (VALUES (1)) AS \"__coral_optional_driver\" \
+             LEFT JOIN (\"ops\".\"ownerships\" AS \"r0\" \
+             JOIN \"ops\".\"people\" AS \"n0\" ON \"r0\".\"person_id\" = \"n0\".\"id\" \
+             JOIN \"ops\".\"services\" AS \"n1\" ON \"r0\".\"service_id\" = \"n1\".\"id\") ON true"
+    );
+}
+
+#[test]
 fn lower_graph_union_preserves_empty_node_only_optional_alternatives_once() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let person_plan = GraphPlan {

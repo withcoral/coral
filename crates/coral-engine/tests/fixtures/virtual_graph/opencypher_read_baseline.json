@@ -13,7 +13,7 @@
     "Match": 27,
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
-    "OptionalMatch": 24,
+    "OptionalMatch": 27,
     "Parameters": 14,
     "PathMetadata": 1,
     "PathValues": 19,
@@ -27,7 +27,7 @@
     "Temporal": 103,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 37,
+    "Unwind": 38,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 51
@@ -1533,6 +1533,61 @@
           {
             "rows": 1,
             "names": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-relationship-missing-properties",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH ()-[r]->() RETURN r.missing AS missing, r.missingToo AS missingToo, r.since AS existing ORDER BY existing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing": null,
+            "missingToo": null,
+            "existing": 2020
+          },
+          {
+            "missing": null,
+            "missingToo": null,
+            "existing": 2021
+          },
+          {
+            "missing": null,
+            "missingToo": null,
+            "existing": 2022
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-empty-relationship-null-row",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH ()-[r]->() WHERE r.since = 999 RETURN r.missing AS missing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "missing": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-empty-multi-type-relationship-null-row",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH ()-[r]->() WHERE r.since = 999 RETURN count(*) AS rows, count(r.since) AS existing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 1,
+            "existing": 0
           }
         ]
       }
@@ -6321,6 +6376,23 @@
           },
           {
             "property_key": "strength"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-leading-optional-relationship-keys",
+      "feature": "Unwind",
+      "query": "OPTIONAL MATCH ()-[r:KNOWS]-() UNWIND keys(r) AS x RETURN DISTINCT x AS theProps ORDER BY theProps",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "theProps": "since"
+          },
+          {
+            "theProps": "strength"
           }
         ]
       }

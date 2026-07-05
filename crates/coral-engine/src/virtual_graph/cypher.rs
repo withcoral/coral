@@ -40,7 +40,7 @@ use decypher::ast::expr::{
 use decypher::ast::names::{SymbolicName, Variable};
 use decypher::ast::pattern::{
     LabelExpression, NodePattern as CypherNodePattern, PatternElement, PatternElementChain,
-    PatternPart, Properties, Quantifier, RangeLiteral,
+    PatternPart, Properties, Quantifier, RangeLiteral, RelationshipDetail,
     RelationshipDirection as CypherRelationshipDirection,
     RelationshipPattern as CypherRelationshipPattern,
 };
@@ -173,12 +173,18 @@ enum PatternAlternativeTarget {
     StartNode,
     ChainNode(usize),
     Relationship(usize),
+    RelationshipMapping(usize),
 }
 
 #[derive(Debug, Clone)]
 enum LabelTypeAlternative {
     NodeLabels(Vec<LabelExpression>),
     RelationshipType(LabelExpression),
+    RelationshipMapping {
+        left_label: LabelExpression,
+        relationship_type: LabelExpression,
+        right_label: LabelExpression,
+    },
 }
 
 type ReadingClauseLabelTypeAlternativeSite = (
@@ -2935,7 +2941,7 @@ fn graph_query_from_alternative_plans(
     }
     let preserve_empty_result_with_null_row = std::iter::once(&first)
         .chain(plans.iter())
-        .all(is_pure_node_only_optional_plan);
+        .all(is_pure_leading_optional_plan);
     Ok(GraphQuery::Union(GraphUnion {
         first,
         branches: plans
@@ -2951,15 +2957,47 @@ fn graph_query_from_alternative_plans(
     }))
 }
 
-fn is_pure_node_only_optional_plan(plan: &GraphPlan) -> bool {
+fn is_pure_leading_optional_plan(plan: &GraphPlan) -> bool {
     let [optional_match] = plan.optional_matches.as_slice() else {
         return false;
     };
+    is_pure_node_only_optional_plan(plan, optional_match)
+        || is_pure_single_relationship_optional_plan(plan, optional_match)
+}
+
+fn is_pure_node_only_optional_plan(plan: &GraphPlan, optional_match: &OptionalMatchScope) -> bool {
     plan.nodes.len() == 1
         && plan.relationships.is_empty()
         && plan.optional_relationships.is_empty()
         && optional_match.node_indices.as_slice() == [0]
         && optional_match.relationship_indices.is_empty()
+}
+
+fn is_pure_single_relationship_optional_plan(
+    plan: &GraphPlan,
+    optional_match: &OptionalMatchScope,
+) -> bool {
+    let [relationship_index] = optional_match.relationship_indices.as_slice() else {
+        return false;
+    };
+    if plan.relationships.len() != 1
+        || *relationship_index != 0
+        || plan.optional_relationships.as_slice() != [0]
+    {
+        return false;
+    }
+    let Some(relationship) = plan.relationships.first() else {
+        return false;
+    };
+    let scoped_nodes = optional_match
+        .node_indices
+        .iter()
+        .filter_map(|node_index| plan.nodes.get(*node_index))
+        .map(|node| node.variable.as_str())
+        .collect::<BTreeSet<_>>();
+    plan.nodes.len() == scoped_nodes.len()
+        && scoped_nodes.contains(relationship.left.as_str())
+        && scoped_nodes.contains(relationship.right.as_str())
 }
 
 fn rewrite_missing_branch_properties_as_null(
@@ -5298,6 +5336,7 @@ fn first_single_part_static_label_type_alternative_site(
     Ok(first_reading_clause_static_label_type_alternative_site(
         &single_part.reading_clauses,
         context,
+        true,
     )?
     .map(
         |(reading_clause_index, pattern_part_index, target, alternatives)| {
@@ -5317,7 +5356,11 @@ fn first_multi_part_static_label_type_alternative_site(
 ) -> Result<Option<StaticLabelTypeAlternativeSite>, CoreError> {
     for (part_index, part) in multi_part.parts.iter().enumerate() {
         if let Some((reading_clause_index, pattern_part_index, target, alternatives)) =
-            first_reading_clause_static_label_type_alternative_site(&part.reading_clauses, context)?
+            first_reading_clause_static_label_type_alternative_site(
+                &part.reading_clauses,
+                context,
+                false,
+            )?
         {
             return Ok(Some(StaticLabelTypeAlternativeSite::MultiPart {
                 query_part: MultiPartAlternativePart::Part(part_index),
@@ -5331,6 +5374,7 @@ fn first_multi_part_static_label_type_alternative_site(
     Ok(first_reading_clause_static_label_type_alternative_site(
         &multi_part.final_part.reading_clauses,
         context,
+        false,
     )?
     .map(
         |(reading_clause_index, pattern_part_index, target, alternatives)| {
@@ -5348,13 +5392,20 @@ fn first_multi_part_static_label_type_alternative_site(
 fn first_reading_clause_static_label_type_alternative_site(
     reading_clauses: &[ReadingClause],
     context: &CypherCompileContext,
+    allow_relationship_mapping_alternatives: bool,
 ) -> Result<Option<ReadingClauseLabelTypeAlternativeSite>, CoreError> {
     for (reading_clause_index, clause) in reading_clauses.iter().enumerate() {
         let ReadingClause::Match(match_clause) = clause else {
             continue;
         };
+        let allow_relationship_mapping_alternatives =
+            allow_relationship_mapping_alternatives && reading_clause_index == 0;
         if let Some((pattern_part_index, target, alternatives)) =
-            first_match_static_label_type_alternative_site(match_clause, context)?
+            first_match_static_label_type_alternative_site(
+                match_clause,
+                context,
+                allow_relationship_mapping_alternatives,
+            )?
         {
             return Ok(Some((
                 reading_clause_index,
@@ -5370,6 +5421,7 @@ fn first_reading_clause_static_label_type_alternative_site(
 fn first_match_static_label_type_alternative_site(
     match_clause: &Match,
     context: &CypherCompileContext,
+    allow_relationship_mapping_alternatives: bool,
 ) -> Result<Option<MatchLabelTypeAlternativeSite>, CoreError> {
     for (part_index, pattern_part) in match_clause.pattern.parts.iter().enumerate() {
         let Some((start, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
@@ -5440,6 +5492,23 @@ fn first_match_static_label_type_alternative_site(
                         .collect(),
                 )));
             }
+            if allow_relationship_mapping_alternatives
+                && match_clause.optional
+                && match_clause.pattern.parts.len() == 1
+                && pattern_part_is_single_fixed_relationship(pattern_part)
+                && let Some(alternatives) = graph_declared_relationship_mapping_alternatives(
+                    start,
+                    chains,
+                    chain_index,
+                    context,
+                )?
+            {
+                return Ok(Some((
+                    part_index,
+                    PatternAlternativeTarget::RelationshipMapping(chain_index),
+                    alternatives,
+                )));
+            }
         }
     }
     Ok(None)
@@ -5469,6 +5538,112 @@ fn graph_declared_standalone_node_label_alternatives(
             })
             .collect(),
     )
+}
+
+fn graph_declared_relationship_mapping_alternatives(
+    start: &CypherNodePattern,
+    chains: &[PatternElementChain],
+    chain_index: usize,
+    context: &CypherCompileContext,
+) -> Result<Option<Vec<LabelTypeAlternative>>, CoreError> {
+    let Some(graph) = context.graph.as_ref() else {
+        return Ok(None);
+    };
+    let Some(chain) = chains.get(chain_index) else {
+        return Ok(None);
+    };
+    let relationship_path = format!("query.pattern.relationships[{chain_index}]");
+    if relationship_fixed_length(&chain.relationship, &relationship_path).unwrap_or(0) != 1 {
+        return Ok(None);
+    }
+
+    let left_node = if chain_index == 0 {
+        start
+    } else {
+        &chains
+            .get(chain_index - 1)
+            .ok_or_else(|| CoreError::internal("relationship alternative left node missing"))?
+            .node
+    };
+    let left_label = optional_single_compile_time_label(
+        &left_node.labels,
+        format!("query.pattern.nodes[{chain_index}].labels"),
+        context,
+    )?;
+    let right_label = optional_single_compile_time_label(
+        &chain.node.labels,
+        format!("query.pattern.nodes[{}].labels", chain_index + 1),
+        context,
+    )?;
+    let relationship_type = chain
+        .relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.types.as_ref())
+        .map(|types| {
+            single_compile_time_label(
+                std::slice::from_ref(types),
+                format!("{relationship_path}.types"),
+                context,
+            )
+        })
+        .transpose()?;
+
+    let direction = cypher_relationship_direction(chain.relationship.direction);
+    let mut seen = BTreeSet::new();
+    let mut alternatives = Vec::new();
+    for relationship in &graph.relationships {
+        if relationship_type
+            .as_ref()
+            .is_some_and(|expected| expected != &relationship.relationship_type)
+        {
+            continue;
+        }
+        for (candidate_left, candidate_right) in
+            relationship_label_pairs_for_direction(relationship, direction)
+        {
+            if left_label
+                .as_ref()
+                .is_some_and(|expected| expected != &candidate_left)
+                || right_label
+                    .as_ref()
+                    .is_some_and(|expected| expected != &candidate_right)
+            {
+                continue;
+            }
+            if !seen.insert((
+                candidate_left.clone(),
+                relationship.relationship_type.clone(),
+                candidate_right.clone(),
+            )) {
+                continue;
+            }
+            alternatives.push(LabelTypeAlternative::RelationshipMapping {
+                left_label: static_label_expression(candidate_left, left_node.span),
+                relationship_type: static_label_expression(
+                    relationship.relationship_type.clone(),
+                    chain.relationship.span,
+                ),
+                right_label: static_label_expression(candidate_right, chain.node.span),
+            });
+        }
+    }
+
+    Ok((alternatives.len() > 1).then_some(alternatives))
+}
+
+fn cypher_relationship_direction(direction: CypherRelationshipDirection) -> Direction {
+    match direction {
+        CypherRelationshipDirection::Right => Direction::Outgoing,
+        CypherRelationshipDirection::Left => Direction::Incoming,
+        CypherRelationshipDirection::Both | CypherRelationshipDirection::Undirected => {
+            Direction::Undirected
+        }
+    }
+}
+
+fn static_label_expression(name: String, span: decypher::error::Span) -> LabelExpression {
+    LabelExpression::Static(SymbolicName { name, span })
 }
 
 fn deduplicate_node_label_alternatives(
@@ -5739,10 +5914,51 @@ fn apply_reading_clause_static_label_type_alternative(
             detail.types = Some(relationship_type);
             Ok(())
         }
+        (
+            PatternAlternativeTarget::RelationshipMapping(index),
+            LabelTypeAlternative::RelationshipMapping {
+                left_label,
+                relationship_type,
+                right_label,
+            },
+        ) => {
+            apply_path_node_label_alternative(start, chains, index, left_label)?;
+            apply_path_node_label_alternative(start, chains, index + 1, right_label)?;
+            let chain = chains.get_mut(index).ok_or_else(|| {
+                CoreError::internal("relationship mapping alternative chain is out of bounds")
+            })?;
+            let span = chain.relationship.span;
+            let detail = chain.relationship.detail.get_or_insert(RelationshipDetail {
+                variable: None,
+                types: None,
+                range: None,
+                properties: None,
+                span,
+            });
+            detail.types = Some(relationship_type);
+            Ok(())
+        }
         _ => Err(CoreError::internal(
             "label/type alternative site and replacement kind did not match",
         )),
     }
+}
+
+fn apply_path_node_label_alternative(
+    start: &mut CypherNodePattern,
+    chains: &mut [PatternElementChain],
+    position: usize,
+    label: LabelExpression,
+) -> Result<(), CoreError> {
+    if position == 0 {
+        start.labels = vec![label];
+        return Ok(());
+    }
+    let chain = chains.get_mut(position - 1).ok_or_else(|| {
+        CoreError::internal("relationship mapping node position is out of bounds")
+    })?;
+    chain.node.labels = vec![label];
+    Ok(())
 }
 
 fn first_bounded_relationship_range_site(
@@ -10972,7 +11188,7 @@ fn compile_match_into(
                 .pattern
                 .parts
                 .first()
-                .is_some_and(pattern_part_is_single_node))
+                .is_some_and(pattern_part_can_start_leading_optional_match))
     {
         return Err(unsupported(
             "match.pattern",
@@ -11503,6 +11719,26 @@ fn path_node_label_hint<'a>(
 fn pattern_part_is_single_node(pattern_part: &PatternPart) -> bool {
     pattern_element_path(&pattern_part.anonymous.element)
         .is_some_and(|(_, chains)| chains.is_empty())
+}
+
+fn pattern_part_can_start_leading_optional_match(pattern_part: &PatternPart) -> bool {
+    pattern_part_is_single_node(pattern_part)
+        || pattern_part_is_single_fixed_relationship(pattern_part)
+}
+
+fn pattern_part_is_single_fixed_relationship(pattern_part: &PatternPart) -> bool {
+    pattern_element_path(&pattern_part.anonymous.element).is_some_and(|(_, chains)| {
+        let [chain] = chains else {
+            return false;
+        };
+        chain.relationship.quantifier.is_none()
+            && chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.range.as_ref())
+                .is_none()
+    })
 }
 
 fn compile_path_chain_into(

@@ -11749,6 +11749,155 @@ async fn cypher_leading_unlabeled_optional_match_multi_label_counts_all_matches(
 }
 
 #[tokio::test]
+async fn cypher_leading_optional_relationship_match_returns_relationship_null_properties() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH ()-[r]->() \
+         RETURN r.missing AS missing, r.source AS source",
+    )
+    .await
+    .expect("leading OPTIONAL relationship query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("FROM (VALUES (1)) AS \"__coral_optional_driver\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(execution.execution().row_count(), 10);
+    assert!(
+        execution
+            .execution()
+            .schema()
+            .iter()
+            .any(|column| column.name == "missing"),
+        "missing property projection should be present"
+    );
+    let rows = execution_to_rows(execution.execution());
+    assert!(
+        rows.iter().all(|row| row.get("missing").is_none()),
+        "missing relationship property should be NULL for every row; rows: {rows:?}; SQL: {}",
+        execution.translated_sql()
+    );
+    let source_column = execution
+        .execution()
+        .batches()
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .and_then(|batch| batch.column_by_name("source"))
+        .expect("source property projection should be present");
+    assert!(
+        !source_column.is_empty(),
+        "source property projection should have rows"
+    );
+
+    let sql_execution = CoralQuery::execute_sql(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        "SELECT count(*) AS rows, count(source) AS sources FROM ( \
+             SELECT source FROM ops.ownerships \
+             UNION ALL SELECT source FROM ops.team_ownerships \
+             UNION ALL SELECT source FROM ops.service_dependencies \
+         )",
+    )
+    .await
+    .expect("equivalent relationship source SQL should execute");
+    assert_eq!(
+        execution_to_rows(&sql_execution),
+        vec![json!({"rows": 10, "sources": 9})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_optional_relationship_empty_multi_type_returns_one_null_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH ()-[r]->() \
+         WHERE r.source = 'never' \
+         RETURN r.missing AS missing",
+    )
+    .await
+    .expect("empty leading OPTIONAL relationship query should execute");
+
+    assert_eq!(
+        execution
+            .translated_sql()
+            .matches("__coral_optional_driver")
+            .count(),
+        1,
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("__coral_optional_union"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(execution.execution().row_count(), 1);
+    let batch = execution
+        .execution()
+        .batches()
+        .iter()
+        .find(|batch| batch.num_rows() > 0)
+        .expect("empty optional relationship query should return one row");
+    assert!(
+        batch.column_by_name("missing").is_some(),
+        "missing property projection should be present"
+    );
+    let rows = execution_to_rows(execution.execution());
+    assert!(
+        rows.iter().all(|row| row.get("missing").is_none()),
+        "empty optional relationship should be NULL; rows: {rows:?}; SQL: {}",
+        execution.translated_sql()
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_optional_relationship_unwind_keys_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH ()-[r:DEPENDS_ON]-() \
+         UNWIND keys(r) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .await
+    .expect("leading OPTIONAL relationship keys() UNWIND query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"property_key": "criticality"}),
+            json!({"property_key": "source"}),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn cypher_match_after_leading_optional_match_filters_null_bound_rows() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_fixture(temp.path());
