@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     path::Path,
 };
 
@@ -39,6 +40,7 @@ enum TckFixture {
     Baseline,
     ConsecutiveOptional,
     Rich,
+    WideProperties,
     Match6SingleNode,
     Match7OptionalPath,
     PathThroughWith,
@@ -130,6 +132,7 @@ struct TckGraphs {
     match7_optional_path: GraphDeclaration,
     path_through_with: GraphDeclaration,
     rich: GraphDeclaration,
+    wide_properties: GraphDeclaration,
 }
 
 impl TckGraphs {
@@ -146,6 +149,7 @@ impl TckGraphs {
                 .expect("path carry graph should parse"),
             rich: GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
                 .expect("rich fixture graph should parse"),
+            wide_properties: wide_property_test_graph(65),
         }
     }
 
@@ -157,6 +161,7 @@ impl TckGraphs {
             TckFixture::Match7OptionalPath => &self.match7_optional_path,
             TckFixture::PathThroughWith => &self.path_through_with,
             TckFixture::Rich => &self.rich,
+            TckFixture::WideProperties => &self.wide_properties,
         }
     }
 }
@@ -167,6 +172,7 @@ fn write_all_tck_fixtures(dir: &Path) {
     write_match6_single_node_fixture(dir);
     write_match7_optional_path_fixture(dir);
     write_path_through_with_fixture(dir);
+    write_wide_property_fixture(dir);
     crate::harness::write_rich_fixture(dir);
 }
 
@@ -178,6 +184,7 @@ fn tck_source(fixture: TckFixture, dir: &Path) -> QuerySource {
         TckFixture::Match7OptionalPath => build_source(match7_optional_path_manifest(dir)),
         TckFixture::PathThroughWith => build_source(path_through_with_manifest(dir)),
         TckFixture::Rich => build_source(crate::harness::rich_manifest(dir)),
+        TckFixture::WideProperties => build_source(wide_property_manifest(dir)),
     }
 }
 
@@ -409,6 +416,15 @@ fn write_path_through_with_fixture(dir: &Path) {
     );
 }
 
+fn write_wide_property_fixture(dir: &Path) {
+    let mut row = serde_json::Map::new();
+    row.insert("id".to_string(), json!(1));
+    for index in 0..65 {
+        row.insert(format!("p{index:02}"), json!(format!("v{index:02}")));
+    }
+    write_jsonl_file(dir, "wide_nodes.jsonl", &[Value::Object(row)]);
+}
+
 fn tck_manifest(dir: &Path) -> Value {
     json!({
         "name": "tck",
@@ -452,6 +468,32 @@ fn tck_manifest(dir: &Path) -> Value {
                     { "name": "person_id", "type": "Int64" },
                     { "name": "liked_person_id", "type": "Int64" }
                 ]
+            }
+        ]
+    })
+}
+
+fn wide_property_manifest(dir: &Path) -> Value {
+    let columns = std::iter::once(json!({ "name": "id", "type": "Int64" }))
+        .chain((0..65).map(|index| {
+            json!({
+                "name": format!("p{index:02}"),
+                "type": "Utf8"
+            })
+        }))
+        .collect::<Vec<_>>();
+    json!({
+        "name": "wide",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "wide_nodes",
+                "description": "Synthetic wide property fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "wide_nodes.jsonl" },
+                "columns": columns
             }
         ]
     })
@@ -692,6 +734,27 @@ fn path_through_with_manifest(dir: &Path) -> Value {
             }
         ]
     })
+}
+
+fn wide_property_test_graph(property_count: usize) -> GraphDeclaration {
+    let mut properties = String::new();
+    for index in 0..property_count {
+        writeln!(&mut properties, "      p{index:02}: p{index:02}")
+            .expect("writing property YAML should not fail");
+    }
+    GraphDeclaration::from_yaml(&format!(
+        r"
+version: 1
+name: wide-property-tck
+nodes:
+  - label: Wide
+    table: {{ schema: wide, name: wide_nodes }}
+    key: id
+    properties:
+{properties}
+"
+    ))
+    .expect("wide property TCK graph should parse")
 }
 
 const TCK_GRAPH: &str = r"

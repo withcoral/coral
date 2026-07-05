@@ -27,7 +27,7 @@
     "Temporal": 103,
     "TypeConversion": 17,
     "Union": 17,
-    "Unwind": 38,
+    "Unwind": 39,
     "VariableLengthPaths": 16,
     "Where": 30,
     "With": 51
@@ -6541,6 +6541,213 @@
           },
           {
             "theProps": "strength"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unwind-wide-node-keys-dynamic-boundary",
+      "feature": "Unwind",
+      "fixture": "wide_properties",
+      "query": "OPTIONAL MATCH (n:Wide) UNWIND keys(n) AS x RETURN DISTINCT x AS theProps ORDER BY theProps",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "theProps": "p00"
+          },
+          {
+            "theProps": "p01"
+          },
+          {
+            "theProps": "p02"
+          },
+          {
+            "theProps": "p03"
+          },
+          {
+            "theProps": "p04"
+          },
+          {
+            "theProps": "p05"
+          },
+          {
+            "theProps": "p06"
+          },
+          {
+            "theProps": "p07"
+          },
+          {
+            "theProps": "p08"
+          },
+          {
+            "theProps": "p09"
+          },
+          {
+            "theProps": "p10"
+          },
+          {
+            "theProps": "p11"
+          },
+          {
+            "theProps": "p12"
+          },
+          {
+            "theProps": "p13"
+          },
+          {
+            "theProps": "p14"
+          },
+          {
+            "theProps": "p15"
+          },
+          {
+            "theProps": "p16"
+          },
+          {
+            "theProps": "p17"
+          },
+          {
+            "theProps": "p18"
+          },
+          {
+            "theProps": "p19"
+          },
+          {
+            "theProps": "p20"
+          },
+          {
+            "theProps": "p21"
+          },
+          {
+            "theProps": "p22"
+          },
+          {
+            "theProps": "p23"
+          },
+          {
+            "theProps": "p24"
+          },
+          {
+            "theProps": "p25"
+          },
+          {
+            "theProps": "p26"
+          },
+          {
+            "theProps": "p27"
+          },
+          {
+            "theProps": "p28"
+          },
+          {
+            "theProps": "p29"
+          },
+          {
+            "theProps": "p30"
+          },
+          {
+            "theProps": "p31"
+          },
+          {
+            "theProps": "p32"
+          },
+          {
+            "theProps": "p33"
+          },
+          {
+            "theProps": "p34"
+          },
+          {
+            "theProps": "p35"
+          },
+          {
+            "theProps": "p36"
+          },
+          {
+            "theProps": "p37"
+          },
+          {
+            "theProps": "p38"
+          },
+          {
+            "theProps": "p39"
+          },
+          {
+            "theProps": "p40"
+          },
+          {
+            "theProps": "p41"
+          },
+          {
+            "theProps": "p42"
+          },
+          {
+            "theProps": "p43"
+          },
+          {
+            "theProps": "p44"
+          },
+          {
+            "theProps": "p45"
+          },
+          {
+            "theProps": "p46"
+          },
+          {
+            "theProps": "p47"
+          },
+          {
+            "theProps": "p48"
+          },
+          {
+            "theProps": "p49"
+          },
+          {
+            "theProps": "p50"
+          },
+          {
+            "theProps": "p51"
+          },
+          {
+            "theProps": "p52"
+          },
+          {
+            "theProps": "p53"
+          },
+          {
+            "theProps": "p54"
+          },
+          {
+            "theProps": "p55"
+          },
+          {
+            "theProps": "p56"
+          },
+          {
+            "theProps": "p57"
+          },
+          {
+            "theProps": "p58"
+          },
+          {
+            "theProps": "p59"
+          },
+          {
+            "theProps": "p60"
+          },
+          {
+            "theProps": "p61"
+          },
+          {
+            "theProps": "p62"
+          },
+          {
+            "theProps": "p63"
+          },
+          {
+            "theProps": "p64"
           }
         ]
       }

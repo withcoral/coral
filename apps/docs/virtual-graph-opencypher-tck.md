@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-723 scenarios, which is 44.71% of the full upstream scenario-definition inventory
-and 55.80% of the read-candidate inventory.
+724 scenarios, which is 44.83% of the full upstream scenario-definition inventory
+and 55.95% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 723 representative read-only scenarios:
+The baseline currently contains 724 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -276,17 +276,18 @@ The baseline currently contains 723 representative read-only scenarios:
 - `Parameters`: 14 scenarios for scalar/list/limit parameter binding,
   compile-time dynamic label-list parameters, and missing parameter rejection
   through the public parameterized Cypher execution API.
-- `Unwind`: 38 scenarios for `UNWIND` list expansion, including graph-free
+- `Unwind`: 39 scenarios for `UNWIND` list expansion, including graph-free
   literal-list row sources, large literal row-source fallback to dynamic
-  `UNNEST`, `WITH` alias-bound list row sources, alias-bound list
-  concatenation, homogeneous nested literal-list row sources with list indexing
-  and list aggregate rows, heterogeneous nested-list rejection, graph-free
-  aggregate / ordered / distinct / expression / multi-column terminal
-  projections, terminal `WITH` over graph-free row sources, range, split,
-  list-parameter, concatenated-list, duplicate, distinct, empty-list,
-  chained-unwind, filtered, matched, aggregated, collect-backed
-  `WITH ... UNWIND` sources, nested collect-list rejection, sliced static
-  `CASE`, and static expansion after transparent `WITH` sources.
+  `UNNEST`, large metadata key-list fallback to dynamic `UNNEST`, `WITH`
+  alias-bound list row sources, alias-bound list concatenation, homogeneous
+  nested literal-list row sources with list indexing and list aggregate rows,
+  heterogeneous nested-list rejection, graph-free aggregate / ordered /
+  distinct / expression / multi-column terminal projections, terminal `WITH`
+  over graph-free row sources, range, split, list-parameter, concatenated-list,
+  duplicate, distinct, empty-list, chained-unwind, filtered, matched,
+  aggregated, collect-backed `WITH ... UNWIND` sources, nested collect-list
+  rejection, sliced static `CASE`, and static expansion after transparent
+  `WITH` sources.
 - `ReturnDistinct`: 3 scenarios for `RETURN DISTINCT`, including computed
   expressions and grouped aggregate projections.
 - `ReturnProjection`: 12 scenarios for `RETURN *`, aliased projections,

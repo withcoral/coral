@@ -1151,6 +1151,11 @@ fn compile_direct_unwind_row_source(
     {
         return Ok(Some(query));
     }
+    if let Some(query) =
+        compile_large_static_metadata_unwind_row_source(single_query, context, path)?
+    {
+        return Ok(Some(query));
+    }
     compile_dynamic_unwind_row_source(single_query, context, path)
 }
 
@@ -1267,6 +1272,113 @@ fn compile_dynamic_unwind_row_source(
         },
         final_plan,
     })))
+}
+
+fn compile_large_static_metadata_unwind_row_source(
+    single_query: &SingleQuery,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<Option<GraphQuery>, CoreError> {
+    let Some(site) = first_static_unwind_site(single_query) else {
+        return Ok(None);
+    };
+    let StaticUnwindSite::SinglePart {
+        reading_clause_index,
+    } = site
+    else {
+        return Ok(None);
+    };
+    if reading_clause_index == 0 {
+        return Ok(None);
+    }
+    let SingleQueryKind::SinglePart(single_part) = &single_query.kind else {
+        return Ok(None);
+    };
+    let unwind = static_unwind_at_site(single_query, site)?;
+    if !static_unwind_expression_uses_graph_metadata(unwind, context)?
+        || first_static_label_type_alternative_site(single_query, context)?.is_some()
+    {
+        return Ok(None);
+    }
+
+    let variable = dynamic_unwind_variable_name(unwind, context);
+    validate_static_unwind_scope(single_query, site, &variable, path)?;
+    let reading_clause_path = static_unwind_reading_clause_path(path, site);
+    let metadata_plan = compile_static_unwind_metadata_plan(single_query, site, context, path)?;
+    let value = compile_static_unwind_values(
+        unwind,
+        &reading_clause_path,
+        metadata_plan.as_ref(),
+        context,
+    )?;
+    if value.literals.len() <= MAX_STATIC_UNWIND_BRANCHES {
+        return Ok(None);
+    }
+
+    let expression_path = format!("{reading_clause_path}.unwind.expression");
+    let element_type = literal_unwind_row_source_element_type(&value.literals, &expression_path)?;
+    let final_plan = compile_large_static_metadata_unwind_final_plan(
+        single_part,
+        reading_clause_index,
+        &variable,
+        value.presence_variable,
+        context,
+        path,
+    )?;
+
+    Ok(Some(GraphQuery::UnwindPipeline(GraphUnwindPipeline {
+        unwind: GraphUnwind {
+            input: None,
+            list: ScalarExpression::TypedLiteralList {
+                literals: value.literals,
+                element_type,
+            },
+            element_type,
+            variable: variable.clone(),
+            projections: vec![GraphUnwindProjection::Variable { alias: variable }],
+        },
+        final_plan,
+    })))
+}
+
+fn compile_large_static_metadata_unwind_final_plan(
+    single_part: &SinglePartQuery,
+    reading_clause_index: usize,
+    variable: &str,
+    presence_variable: Option<String>,
+    context: &CypherCompileContext,
+    path: &str,
+) -> Result<GraphPlan, CoreError> {
+    let mut plan = GraphPlan::default();
+    let mut state = compile_state_for_single_part(single_part, context);
+    let prefix = single_part
+        .reading_clauses
+        .get(..reading_clause_index)
+        .ok_or_else(|| CoreError::internal("metadata UNWIND prefix was out of bounds"))?;
+    compile_reading_clauses_into(prefix, "match", &mut plan, &mut state, context)?;
+
+    state.scalar_aliases.push(Projection::Expression {
+        expression: ScalarExpression::StageValue {
+            alias: variable.to_string(),
+        },
+        alias: variable.to_string(),
+    });
+
+    let suffix_start = reading_clause_index.saturating_add(1);
+    let suffix = single_part
+        .reading_clauses
+        .get(suffix_start..)
+        .ok_or_else(|| CoreError::internal("metadata UNWIND suffix was out of bounds"))?;
+    if !suffix.is_empty() {
+        compile_reading_clauses_into(suffix, "match", &mut plan, &mut state, context)?;
+    }
+    let return_clause = return_clause_from_single_part(single_part, path)?;
+    compile_return(return_clause, &mut plan, &state, context)?;
+    reject_ignored_path_variable_references(&plan, &state, "return")?;
+    if let Some(presence_variable) = presence_variable {
+        apply_required_presence_predicates(&mut plan, &BTreeSet::from([presence_variable]));
+    }
+    Ok(plan)
 }
 
 fn compile_literal_unwind_terminal_with_row_source(
@@ -28262,6 +28374,15 @@ fn optional_graph_variable_presence_variable(
     }
     if !plan.nodes.iter().any(|node| node.variable == variable) {
         return Ok(None);
+    }
+    if plan.nodes.iter().enumerate().any(|(node_index, node)| {
+        node.variable == variable
+            && plan
+                .optional_matches
+                .iter()
+                .any(|optional_match| optional_match.node_indices.contains(&node_index))
+    }) {
+        return Ok(Some(variable.to_string()));
     }
     let mandatory_nodes = mandatory_node_variables(plan)?;
     Ok((!mandatory_nodes.contains(variable)).then(|| variable.to_string()))

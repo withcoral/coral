@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::*;
 use crate::virtual_graph::ir::ZonedDateTimeAccessor;
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
@@ -43,6 +45,27 @@ relationships:
 ",
     )
     .expect("star test graph should parse")
+}
+
+fn wide_property_test_graph(property_count: usize) -> Declaration {
+    let mut properties = String::new();
+    for index in 0..property_count {
+        writeln!(&mut properties, "      p{index:02}: p{index:02}")
+            .expect("writing property YAML should not fail");
+    }
+    Declaration::from_yaml(&format!(
+        r"
+version: 1
+name: wide_property_test
+nodes:
+  - label: Wide
+    table: {{ schema: ops, name: wide_nodes }}
+    key: id
+    properties:
+{properties}
+"
+    ))
+    .expect("wide property test graph should parse")
 }
 
 fn staged_planning_test_graph() -> Declaration {
@@ -1062,6 +1085,63 @@ fn compiles_optional_property_key_unwind_with_presence_filters() {
             ComparisonOperator::NotEqual,
         )
     }));
+}
+
+#[test]
+fn compiles_wide_property_key_unwind_as_dynamic_pipeline() {
+    let graph = wide_property_test_graph(MAX_STATIC_UNWIND_BRANCHES + 1);
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (n:Wide) \
+         UNWIND keys(n) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .expect("wide node keys() UNWIND should compile through dynamic UNNEST");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected wide keys() UNWIND to fall through to a dynamic pipeline");
+    };
+    assert!(pipeline.unwind.input.is_none());
+    assert_eq!(pipeline.unwind.variable, "key");
+    assert_eq!(pipeline.unwind.element_type, LiteralListElementType::String);
+    let ScalarExpression::TypedLiteralList {
+        literals,
+        element_type,
+    } = &pipeline.unwind.list
+    else {
+        panic!("expected wide keys() UNWIND list to be a typed literal list");
+    };
+    assert_eq!(*element_type, LiteralListElementType::String);
+    assert_eq!(literals.len(), MAX_STATIC_UNWIND_BRANCHES + 1);
+    assert_eq!(literals.first(), Some(&Literal::String("p00".to_string())));
+    assert_eq!(literals.last(), Some(&Literal::String("p64".to_string())));
+    assert_eq!(
+        projection_names(&pipeline.final_plan),
+        vec!["property_key".to_string()]
+    );
+}
+
+#[test]
+fn compiles_wide_optional_property_key_unwind_with_dynamic_presence_filter() {
+    let graph = wide_property_test_graph(MAX_STATIC_UNWIND_BRANCHES + 1);
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "OPTIONAL MATCH (n:Wide) \
+         UNWIND keys(n) AS key \
+         RETURN DISTINCT key AS property_key \
+         ORDER BY property_key",
+    )
+    .expect("wide optional keys() UNWIND should compile through dynamic UNNEST");
+
+    let GraphQuery::UnwindPipeline(pipeline) = query else {
+        panic!("expected wide optional keys() UNWIND to fall through to a dynamic pipeline");
+    };
+    assert!(predicate_contains_presence(
+        pipeline.final_plan.predicate.as_ref(),
+        "n",
+        ComparisonOperator::NotEqual,
+    ));
 }
 
 #[test]

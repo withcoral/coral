@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::Path;
 
 use arrow::array::Array;
@@ -20131,6 +20132,36 @@ async fn cypher_node_property_key_unwind_sources_execute_against_synthetic_sourc
 }
 
 #[tokio::test]
+async fn cypher_wide_property_key_unwind_falls_through_to_dynamic_unnest() {
+    let temp = TempDir::new().expect("temp dir");
+    write_wide_property_fixture(temp.path());
+    let source = build_source(wide_property_manifest(temp.path()));
+    let graph = wide_property_test_graph(65);
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (n:Wide) \
+         UNWIND keys(n) AS x \
+         RETURN DISTINCT x AS theProps \
+         ORDER BY theProps",
+    )
+    .await
+    .expect("wide keys() UNWIND should execute through dynamic UNNEST");
+
+    assert!(
+        execution.translated_sql().contains("UNNEST"),
+        "{}",
+        execution.translated_sql()
+    );
+    let expected = (0..65)
+        .map(|index| json!({ "theProps": format!("p{index:02}") }))
+        .collect::<Vec<_>>();
+    assert_eq!(execution_to_rows(execution.execution()), expected);
+}
+
+#[tokio::test]
 async fn cypher_relationship_property_key_unwind_sources_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -21703,6 +21734,27 @@ fn staged_planning_keyed_test_graph() -> GraphDeclaration {
         .expect("keyed staged graph should parse")
 }
 
+fn wide_property_test_graph(property_count: usize) -> GraphDeclaration {
+    let mut properties = String::new();
+    for index in 0..property_count {
+        writeln!(&mut properties, "      p{index:02}: p{index:02}")
+            .expect("writing property YAML should not fail");
+    }
+    GraphDeclaration::from_yaml(&format!(
+        r"
+version: 1
+name: wide_property_test
+nodes:
+  - label: Wide
+    table: {{ schema: wide, name: wide_nodes }}
+    key: id
+    properties:
+{properties}
+"
+    ))
+    .expect("wide property graph should parse")
+}
+
 fn write_ops_fixture(dir: &Path) {
     write_jsonl_file(
         dir,
@@ -21785,6 +21837,15 @@ fn write_projection_name_fixture(dir: &Path) {
     write_jsonl_file(dir, "projection_name_empty.jsonl", &[]);
 }
 
+fn write_wide_property_fixture(dir: &Path) {
+    let mut row = serde_json::Map::new();
+    row.insert("id".to_string(), json!(1));
+    for index in 0..65 {
+        row.insert(format!("p{index:02}"), json!(format!("v{index:02}")));
+    }
+    write_jsonl_file(dir, "wide_nodes.jsonl", &[Value::Object(row)]);
+}
+
 fn ops_manifest(dir: &Path) -> Value {
     json!({
         "name": "ops",
@@ -21863,6 +21924,32 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "criticality", "type": "Utf8" },
                     { "name": "source", "type": "Utf8" }
                 ]
+            }
+        ]
+    })
+}
+
+fn wide_property_manifest(dir: &Path) -> Value {
+    let columns = std::iter::once(json!({ "name": "id", "type": "Int64" }))
+        .chain((0..65).map(|index| {
+            json!({
+                "name": format!("p{index:02}"),
+                "type": "Utf8"
+            })
+        }))
+        .collect::<Vec<_>>();
+    json!({
+        "name": "wide",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "wide_nodes",
+                "description": "Synthetic wide property fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "wide_nodes.jsonl" },
+                "columns": columns
             }
         ]
     })
