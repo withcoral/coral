@@ -12130,7 +12130,7 @@
       }
     },
     {
-      "id": "temporal-duration-string-constructor-rejected",
+      "id": "temporal-duration-string-constructor",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration('P1Y2M3DT4H') AS dur",
       "expected": {
@@ -12791,7 +12791,7 @@
       }
     },
     {
-      "id": "temporal-date-duration-arithmetic-rejected",
+      "id": "temporal-date-duration-arithmetic",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN date('2020-01-01') + duration('P1D') AS shifted",
       "expected": {
@@ -12888,7 +12888,7 @@
       }
     },
     {
-      "id": "temporal-duration-between-rejected",
+      "id": "temporal-duration-between",
       "feature": "Temporal",
       "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN duration.between(date('1984-10-11'), date('2015-06-24')) AS d",
       "expected": {
@@ -13708,7 +13708,7 @@
       }
     },
     {
-      "id": "temporal-stored-component-access-rejected",
+      "id": "temporal-stored-component-access",
       "feature": "Temporal",
       "fixture": "rich",
       "query": "MATCH (p:Person) WHERE p.name = 'Ada' WITH p.joined AS t RETURN t.year AS y",
