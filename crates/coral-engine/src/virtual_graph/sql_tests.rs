@@ -2222,6 +2222,35 @@ fn lower_graph_plan_renders_identity_and_static_function_projections() {
 }
 
 #[test]
+fn lower_graph_plan_renders_path_value_projection_as_struct() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.relationships
+        .get_mut(0)
+        .expect("ownership plan should include one relationship")
+        .variable = Some("owns".to_string());
+    plan.projections = vec![Projection::Expression {
+        expression: ScalarExpression::PathValue {
+            node_variables: vec!["person".to_string(), "service".to_string()],
+            relationship_variables: vec!["owns".to_string()],
+        },
+        alias: "path".to_string(),
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("path value projection should lower");
+
+    assert!(
+        translation.sql().contains(
+            "named_struct('node_ids', make_array(\"n0\".\"id\", \"n1\".\"id\"), 'relationship_ids', make_array(\"r0\".\"ownership_id\")) AS \"path\""
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_property_keys_ordering() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);

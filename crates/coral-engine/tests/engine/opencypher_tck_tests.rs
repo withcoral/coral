@@ -37,6 +37,8 @@ enum TckFixture {
     #[default]
     Baseline,
     Rich,
+    Match6SingleNode,
+    Match7OptionalPath,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,14 +63,28 @@ async fn opencypher_tck_read_baseline_gate() {
 
     let temp = TempDir::new().expect("temp dir");
     write_tck_fixture(temp.path());
+    write_match6_single_node_fixture(temp.path());
+    write_match7_optional_path_fixture(temp.path());
     crate::harness::write_rich_fixture(temp.path());
     let graph = GraphDeclaration::from_yaml(TCK_GRAPH).expect("TCK graph should parse");
+    let match6_single_node_graph =
+        GraphDeclaration::from_yaml(MATCH6_SINGLE_NODE_GRAPH).expect("Match6 graph should parse");
+    let match7_optional_path_graph =
+        GraphDeclaration::from_yaml(MATCH7_OPTIONAL_PATH_GRAPH).expect("Match7 graph should parse");
     let rich_graph = GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
         .expect("rich fixture graph should parse");
 
     for scenario in suite.scenarios {
         let (source, graph) = match scenario.fixture {
             TckFixture::Baseline => (build_source(tck_manifest(temp.path())), &graph),
+            TckFixture::Match6SingleNode => (
+                build_source(match6_single_node_manifest(temp.path())),
+                &match6_single_node_graph,
+            ),
+            TckFixture::Match7OptionalPath => (
+                build_source(match7_optional_path_manifest(temp.path())),
+                &match7_optional_path_graph,
+            ),
             TckFixture::Rich => (
                 build_source(crate::harness::rich_manifest(temp.path())),
                 &rich_graph,
@@ -128,6 +144,9 @@ async fn opencypher_tck_read_baseline_gate() {
 
 fn execution_to_tck_rows(execution: &QueryExecution, expected_rows: &[Value]) -> Vec<Value> {
     let mut actual_rows = execution_to_rows(execution);
+    for row in &mut actual_rows {
+        normalize_tck_path_values(row);
+    }
     let projected_columns = execution
         .schema()
         .iter()
@@ -149,6 +168,43 @@ fn execution_to_tck_rows(execution: &QueryExecution, expected_rows: &[Value]) ->
     }
 
     actual_rows
+}
+
+fn normalize_tck_path_values(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(path_value) = path_value_from_struct_object(object) {
+                *value = path_value;
+                return;
+            }
+            for child in object.values_mut() {
+                normalize_tck_path_values(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                normalize_tck_path_values(child);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn path_value_from_struct_object(object: &serde_json::Map<String, Value>) -> Option<Value> {
+    let node_ids = object.get("node_ids")?.as_array()?;
+    let relationship_ids = object.get("relationship_ids")?.as_array()?;
+    if node_ids.len() != relationship_ids.len().saturating_add(1) {
+        return None;
+    }
+
+    let mut elements = Vec::with_capacity(node_ids.len() + relationship_ids.len());
+    for (index, node_id) in node_ids.iter().enumerate() {
+        elements.push(json!({ "node_id": node_id.clone() }));
+        if let Some(relationship_id) = relationship_ids.get(index) {
+            elements.push(json!({ "relationship_id": relationship_id.clone() }));
+        }
+    }
+    Some(Value::Array(elements))
 }
 
 fn assert_tck_coverage_contract(suite: &TckSuite) {
@@ -257,6 +313,16 @@ fn write_tck_fixture(dir: &Path) {
     write_jsonl_file(dir, "likes.jsonl", &[]);
 }
 
+fn write_match6_single_node_fixture(dir: &Path) {
+    write_jsonl_file(dir, "match6_nodes.jsonl", &[json!({"id": 1})]);
+}
+
+fn write_match7_optional_path_fixture(dir: &Path) {
+    write_jsonl_file(dir, "match7_a.jsonl", &[json!({"id": 1, "num": 42})]);
+    write_jsonl_file(dir, "match7_b.jsonl", &[json!({"id": 2, "num": 46})]);
+    write_jsonl_file(dir, "match7_x.jsonl", &[]);
+}
+
 fn tck_manifest(dir: &Path) -> Value {
     json!({
         "name": "tck",
@@ -305,6 +371,68 @@ fn tck_manifest(dir: &Path) -> Value {
     })
 }
 
+fn match6_single_node_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "match6",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "nodes",
+                "description": "Single-node Match6 path-value fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "match6_nodes.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
+fn match7_optional_path_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "match7",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "a_nodes",
+                "description": "Match7 A nodes",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "match7_a.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "num", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "b_nodes",
+                "description": "Match7 B nodes",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "match7_b.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "num", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "x_edges",
+                "description": "Empty Match7 X relationship table",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "match7_x.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "a_id", "type": "Int64" },
+                    { "name": "b_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
 const TCK_GRAPH: &str = r"
 version: 1
 name: opencypher-read-baseline
@@ -332,4 +460,35 @@ relationships:
     key: id
     from: { label: Person, key: person_id }
     to: { label: Person, key: liked_person_id }
+";
+
+const MATCH6_SINGLE_NODE_GRAPH: &str = r"
+version: 1
+name: match6-single-node
+nodes:
+  - label: Node
+    table: { schema: match6, name: nodes }
+    key: id
+";
+
+const MATCH7_OPTIONAL_PATH_GRAPH: &str = r"
+version: 1
+name: match7-optional-path
+nodes:
+  - label: A
+    table: { schema: match7, name: a_nodes }
+    key: id
+    properties:
+      num: num
+  - label: B
+    table: { schema: match7, name: b_nodes }
+    key: id
+    properties:
+      num: num
+relationships:
+  - type: X
+    table: { schema: match7, name: x_edges }
+    key: id
+    from: { label: A, key: a_id }
+    to: { label: B, key: b_id }
 ";

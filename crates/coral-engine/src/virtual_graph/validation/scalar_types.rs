@@ -99,6 +99,10 @@ impl<'a> GraphPlanValidator<'a> {
                 self.infer_scalar_expression_type(list, format!("{path}.list"))?;
                 Ok(scalar_type_for_literal_list_element(*element_type))
             }
+            ScalarExpression::PathValue {
+                node_variables,
+                relationship_variables,
+            } => self.infer_path_value_scalar_type(node_variables, relationship_variables, &path),
             _ => self.infer_scalar_function_type(expression, &path),
         }
     }
@@ -222,6 +226,18 @@ impl<'a> GraphPlanValidator<'a> {
         path: &str,
     ) -> Result<ScalarType, CoreError> {
         for variable in variables {
+            self.validate_key_projection(variable, path)?;
+        }
+        Ok(ScalarType::Other)
+    }
+
+    fn infer_path_value_scalar_type(
+        &self,
+        node_variables: &[String],
+        relationship_variables: &[String],
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        for variable in node_variables.iter().chain(relationship_variables) {
             self.validate_key_projection(variable, path)?;
         }
         Ok(ScalarType::Other)

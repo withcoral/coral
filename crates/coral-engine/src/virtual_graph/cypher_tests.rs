@@ -3937,6 +3937,80 @@ fn compiles_path_element_id_lists() {
 }
 
 #[test]
+fn compiles_zero_hop_path_value_returns() {
+    let plan = compile_cypher(
+        "MATCH path = (person:Person) \
+             RETURN path",
+    )
+    .expect("zero-hop path values should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::PathValue {
+                node_variables: vec!["person".to_string()],
+                relationship_variables: Vec::new(),
+            },
+            alias: "path".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_fixed_hop_path_value_returns() {
+    let plan = compile_cypher(
+        "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
+             RETURN path AS p",
+    )
+    .expect("fixed-hop path values should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::PathValue {
+                node_variables: vec!["person".to_string(), "service".to_string()],
+                relationship_variables: vec!["owns".to_string()],
+            },
+            alias: "p".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_optional_fixed_hop_path_value_returns_with_presence_gate() {
+    let plan = compile_cypher(
+        "MATCH (person:Person), (service:Service) \
+             OPTIONAL MATCH path = (person)-[:OWNS]->(service) \
+             RETURN path",
+    )
+    .expect("optional fixed-hop path values should compile");
+
+    let Projection::Expression { expression, alias } = plan
+        .projections
+        .first()
+        .expect("path return should produce one projection")
+    else {
+        panic!("path return should compile as an expression projection");
+    };
+    assert_eq!(alias, "path");
+    let ScalarExpression::PresenceGated {
+        presence_variable,
+        expression,
+    } = expression
+    else {
+        panic!("optional path value should be presence gated");
+    };
+    assert!(presence_variable.starts_with("__coral_rel_"));
+    assert_eq!(
+        expression.as_ref(),
+        &ScalarExpression::PathValue {
+            node_variables: vec!["person".to_string(), "service".to_string()],
+            relationship_variables: vec![presence_variable.clone()],
+        }
+    );
+}
+
+#[test]
 fn compiles_path_element_list_indexes_and_endpoints_as_keys() {
     let plan = compile_cypher(
         "MATCH path = (person:Person)-[owns:OWNS]->(service:Service) \
@@ -18159,18 +18233,16 @@ fn rejects_return_graph_variable_without_graph_declaration() {
 }
 
 #[test]
-fn rejects_return_path_variable_as_graph_variable() {
-    let graph = star_test_graph();
+fn rejects_variable_length_path_value_returns() {
+    let graph = single_label_person_knows_test_graph();
     let error = compile_cypher_for_graph(
         &graph,
-        "MATCH path = (person:Person)-[ownership:OWNS]->(service:Service) RETURN path",
+        "MATCH path = (person:Person)-[:KNOWS*1..2]->(friend:Person) RETURN path",
     )
-    .expect_err("path graph variable returns should be rejected");
+    .expect_err("variable-length path graph value returns should remain rejected");
 
     assert!(
-        error
-            .to_string()
-            .contains("path variable 'path' cannot be used as a graph value"),
+        error.to_string().contains("variable-length path values"),
         "{error}"
     );
 }

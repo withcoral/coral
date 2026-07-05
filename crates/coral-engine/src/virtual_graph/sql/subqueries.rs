@@ -144,6 +144,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::GraphIdentity { .. }
             | ScalarExpression::GraphPresence { .. }
             | ScalarExpression::GraphKeyList { .. }
+            | ScalarExpression::PathValue { .. }
             | ScalarExpression::NodeLabels { .. }
             | ScalarExpression::PropertyKeys { .. }
             | ScalarExpression::RelationshipType { .. } => {}

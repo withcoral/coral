@@ -315,6 +315,14 @@ pub enum ScalarExpression {
         /// Graph variables in path order.
         variables: Vec<String>,
     },
+    /// Returnable fixed-hop path value represented by ordered mapped node and
+    /// relationship keys.
+    PathValue {
+        /// Node graph variables in path order.
+        node_variables: Vec<String>,
+        /// Relationship graph variables in path order.
+        relationship_variables: Vec<String>,
+    },
     /// A boolean predicate used as a scalar value.
     Predicate(Box<PredicateExpression>),
     /// Temporal value expression.
@@ -1552,6 +1560,7 @@ fn scalar_expression_references_outside_scope(
         | ScalarExpression::UndirectedEndpointLabels { .. }
         | ScalarExpression::UndirectedEndpointPropertyKeys { .. }
         | ScalarExpression::GraphKeyList { .. }
+        | ScalarExpression::PathValue { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -1607,6 +1616,18 @@ fn direct_scalar_expression_references_outside_scope(
         return Some(
             variables
                 .iter()
+                .any(|variable| variable_references_outside_scope(variable, scope)),
+        );
+    }
+    if let ScalarExpression::PathValue {
+        node_variables,
+        relationship_variables,
+    } = expression
+    {
+        return Some(
+            node_variables
+                .iter()
+                .chain(relationship_variables)
                 .any(|variable| variable_references_outside_scope(variable, scope)),
         );
     }

@@ -254,6 +254,7 @@ impl<'a> SqlRenderer<'a> {
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
             | ScalarExpression::GraphKeyList { .. }
+            | ScalarExpression::PathValue { .. }
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
             | ScalarExpression::GraphIdentity { .. }

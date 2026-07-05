@@ -469,6 +469,8 @@ struct PathBinding {
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
     zero_hop_endpoint_introduced: bool,
+    value_projection_scope: PathValueProjectionScope,
+    uses_relationship_range_syntax: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -477,10 +479,17 @@ enum PathPresenceGate {
     Predicate(PredicateExpression),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathValueProjectionScope {
+    SameQueryPart,
+    AfterWithBoundary,
+}
+
 #[derive(Debug, Clone)]
 struct PendingPathBinding {
     name: String,
     length: usize,
+    uses_relationship_range_syntax: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -6507,14 +6516,35 @@ fn collect_relationship_element_path_variables_in_single_part(
     context: &CypherCompileContext,
     variables: &mut BTreeSet<String>,
 ) {
+    let declared_path_variables =
+        declared_path_variables_in_reading_clauses(&query.reading_clauses);
     collect_relationship_element_path_variables_in_reading_clauses(
         &query.reading_clauses,
         context,
         variables,
     );
     if let SinglePartBody::Return(return_clause) = &query.body {
-        collect_relationship_element_path_variables_in_return(return_clause, context, variables);
+        collect_relationship_element_path_variables_in_return(
+            return_clause,
+            context,
+            variables,
+            &declared_path_variables,
+        );
     }
+}
+
+fn declared_path_variables_in_reading_clauses(clauses: &[ReadingClause]) -> BTreeSet<String> {
+    let mut variables = BTreeSet::new();
+    for clause in clauses {
+        if let ReadingClause::Match(match_clause) = clause {
+            for part in &match_clause.pattern.parts {
+                if let Some(variable) = part.variable.as_ref() {
+                    variables.insert(variable_name(variable));
+                }
+            }
+        }
+    }
+    variables
 }
 
 fn collect_relationship_element_path_variables_in_reading_clauses(
@@ -6567,8 +6597,15 @@ fn collect_relationship_element_path_variables_in_return(
     return_clause: &Return,
     context: &CypherCompileContext,
     variables: &mut BTreeSet<String>,
+    declared_path_variables: &BTreeSet<String>,
 ) {
     for item in &return_clause.items {
+        if let Expression::Variable(variable) = &item.expression {
+            let name = variable_name(variable);
+            if declared_path_variables.contains(&name) {
+                variables.insert(name);
+            }
+        }
         collect_relationship_element_path_variables_in_expression(
             &item.expression,
             context,
@@ -9980,7 +10017,11 @@ fn apply_transparent_with_star_scope(
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let aliases = compile_transparent_with_star_scalar_aliases(with, plan, state, &path, context)?;
     state.scalar_aliases.extend(aliases);
-    compile_transparent_with_where(with, plan, Some(state), path, context)
+    let predicate = compile_transparent_with_where(with, plan, Some(state), path, context)?;
+    for binding in state.path_variables.values_mut() {
+        binding.value_projection_scope = PathValueProjectionScope::AfterWithBoundary;
+    }
+    Ok(predicate)
 }
 
 #[derive(Default)]
@@ -10029,13 +10070,19 @@ fn compile_transparent_with_star_scalar_aliases(
     let mut aliases = Vec::new();
 
     for (index, item) in with.items.iter().enumerate() {
-        if let Some(variable) = expression_variable_name(&item.expression)
-            && visible.contains(&variable)
-        {
-            return Err(unsupported(
-                format!("{path}.items[{index}].expression"),
-                "WITH * plus explicit graph-variable aliases requires graph-value aliasing and is not supported yet",
-            ));
+        if let Some(variable) = expression_variable_name(&item.expression) {
+            if visible.contains(&variable) {
+                return Err(unsupported(
+                    format!("{path}.items[{index}].expression"),
+                    "WITH * plus explicit graph-variable aliases requires graph-value aliasing and is not supported yet",
+                ));
+            }
+            if state.path_variables.contains_key(&variable) {
+                return Err(unsupported(
+                    format!("{path}.items[{index}].expression"),
+                    "WITH * plus explicit path-variable aliases requires path-value materialization across query parts and is not supported yet",
+                ));
+            }
         }
         let projection = compile_transparent_with_star_scalar_alias(
             item,
@@ -10231,6 +10278,12 @@ fn compile_transparent_with_variable_item(
     if visible.contains(&input) {
         push_transparent_with_graph_variable(item, index, path, input, scope)?;
         return Ok(true);
+    }
+    if state.path_variables.contains_key(&input) {
+        return Err(unsupported(
+            format!("{path}.items[{index}].expression"),
+            "WITH cannot carry path variables because Coral does not materialize path values across query parts yet",
+        ));
     }
     if let Some(projection) = scalar_alias_projection(state, &input) {
         let output = item
@@ -11908,7 +11961,13 @@ fn validate_path_variable_binding(
         ));
     }
     let length = path_pattern_length(pattern_part, &path)?;
-    Ok(Some(PendingPathBinding { name, length }))
+    let uses_relationship_range_syntax =
+        path_pattern_uses_relationship_range_syntax(pattern_part, &path)?;
+    Ok(Some(PendingPathBinding {
+        name,
+        length,
+        uses_relationship_range_syntax,
+    }))
 }
 
 fn bind_path_variable(
@@ -11929,6 +11988,8 @@ fn bind_path_variable(
             optional,
             presence_gate,
             zero_hop_endpoint_introduced,
+            value_projection_scope: PathValueProjectionScope::SameQueryPart,
+            uses_relationship_range_syntax: pending.uses_relationship_range_syntax,
         },
     );
 }
@@ -12128,6 +12189,27 @@ fn path_pattern_length(pattern_part: &PatternPart, path: &str) -> Result<usize, 
         )?;
     }
     Ok(length)
+}
+
+fn path_pattern_uses_relationship_range_syntax(
+    pattern_part: &PatternPart,
+    path: &str,
+) -> Result<bool, CoreError> {
+    let Some((_, chains)) = pattern_element_path(&pattern_part.anonymous.element) else {
+        return Err(unsupported(
+            format!("{path}.anonymous"),
+            "path variables require a path pattern",
+        ));
+    };
+    Ok(chains.iter().any(|chain| {
+        chain.relationship.quantifier.is_some()
+            || chain
+                .relationship
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.range.as_ref())
+                .is_some()
+    }))
 }
 
 fn anonymous_pattern_variables(pattern_part: &PatternPart) -> BTreeSet<String> {
@@ -12679,7 +12761,7 @@ fn compile_return_star(
     if !state.path_variables.is_empty() {
         return Err(unsupported(
             path,
-            "RETURN * cannot carry path variables because Coral does not materialize path values yet; explicitly project graph variables or length(path)",
+            "RETURN * cannot carry path variables because star expansion only materializes node and relationship graph variables; explicitly project fixed-hop path variables or supported path metadata",
         ));
     }
     let graph = context.graph_declaration(path.clone())?;
@@ -12950,6 +13032,9 @@ fn compile_graph_variable_return_item(
         return Ok(None);
     };
     let name = variable_name(variable);
+    if state.path_variables.contains_key(&name) {
+        return Ok(None);
+    }
     reject_ignored_path_variable(&name, state, format!("{path}.expression"))?;
     let visible = visible_graph_variables(plan, state);
     if !is_visible_star_variable(&name, &visible) {
@@ -13625,6 +13710,7 @@ fn hidden_subquery_order_leaf_can_be_precomputed(expression: &ScalarExpression) 
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
         | ScalarExpression::GraphKeyList { .. }
+        | ScalarExpression::PathValue { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -14139,6 +14225,7 @@ fn scalar_expression_leaf_correlated_subquery_count(expression: &ScalarExpressio
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
         | ScalarExpression::GraphKeyList { .. }
+        | ScalarExpression::PathValue { .. }
         | ScalarExpression::Key { .. }
         | ScalarExpression::ElementId { .. }
         | ScalarExpression::GraphIdentity { .. }
@@ -19442,6 +19529,9 @@ fn compile_optional_graph_scalar_projection(
             alias: item.alias.as_ref().map_or(output_name, variable_name),
         }));
     }
+    if let Some(projection) = compile_optional_path_value_projection(item, path.clone(), state)? {
+        return Ok(Some(projection));
+    }
     if let Some(expression) = compile_optional_temporal_component_scalar_expression(
         &item.expression,
         format!("{path}.expression"),
@@ -19481,6 +19571,47 @@ fn compile_optional_graph_scalar_projection(
         return Ok(Some(projection));
     }
     Ok(None)
+}
+
+fn compile_optional_path_value_projection(
+    item: &ProjectionItem,
+    path: impl Into<String>,
+    state: &CypherCompileState,
+) -> Result<Option<Projection>, CoreError> {
+    let path = path.into();
+    let Expression::Variable(variable) = &item.expression else {
+        return Ok(None);
+    };
+    let name = variable_name(variable);
+    let Some(binding) = state.path_variables.get(&name) else {
+        return Ok(None);
+    };
+    if binding.value_projection_scope == PathValueProjectionScope::AfterWithBoundary {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            format!(
+                "path variable '{name}' cannot be used as a graph value after WITH because Coral does not materialize path values across query parts yet"
+            ),
+        ));
+    }
+    if binding.uses_relationship_range_syntax {
+        return Err(unsupported(
+            format!("{path}.expression"),
+            format!(
+                "path variable '{name}' cannot be used as a graph value because Coral does not materialize variable-length path values yet"
+            ),
+        ));
+    }
+    let expression = ScalarExpression::PathValue {
+        node_variables: binding.node_variables.clone(),
+        relationship_variables: binding.relationship_variables.clone(),
+    };
+    let expression =
+        path_binding_presence_gated_scalar_expression(binding, expression, path, "path value")?;
+    Ok(Some(Projection::Expression {
+        expression,
+        alias: item.alias.as_ref().map_or(name, variable_name),
+    }))
 }
 
 fn compile_optional_graph_list_scalar_projection(

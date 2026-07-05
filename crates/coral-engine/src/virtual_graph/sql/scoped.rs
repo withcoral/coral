@@ -193,6 +193,15 @@ impl<'a> SqlRenderer<'a> {
             ScalarExpression::GraphKeyList { variables } => variables.iter().all(|variable| {
                 Self::scoped_variable_is_inner(variable, relationship_bindings, local_nodes)
             }),
+            ScalarExpression::PathValue {
+                node_variables,
+                relationship_variables,
+            } => node_variables
+                .iter()
+                .chain(relationship_variables)
+                .all(|variable| {
+                    Self::scoped_variable_is_inner(variable, relationship_bindings, local_nodes)
+                }),
             ScalarExpression::PresenceGated { .. }
             | ScalarExpression::Coalesce { .. }
             | ScalarExpression::NullIf { .. }

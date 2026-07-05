@@ -500,6 +500,7 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::LiteralList { .. }
             | ScalarExpression::TypedLiteralList { .. }
             | ScalarExpression::GraphKeyList { .. }
+            | ScalarExpression::PathValue { .. }
             | ScalarExpression::Predicate(_)
             | ScalarExpression::Key { .. }
             | ScalarExpression::ElementId { .. }
@@ -664,6 +665,15 @@ impl<'a> GraphPlanValidator<'a> {
             }
             ScalarExpression::GraphKeyList { variables } => {
                 for variable in variables {
+                    self.validate_exists_key_ref(variable, relationships, local_nodes, path)?;
+                }
+                Ok(ScalarType::Other)
+            }
+            ScalarExpression::PathValue {
+                node_variables,
+                relationship_variables,
+            } => {
+                for variable in node_variables.iter().chain(relationship_variables) {
                     self.validate_exists_key_ref(variable, relationships, local_nodes, path)?;
                 }
                 Ok(ScalarType::Other)

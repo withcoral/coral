@@ -16,7 +16,7 @@
     "OptionalMatch": 15,
     "Parameters": 14,
     "PathMetadata": 1,
-    "PathValues": 16,
+    "PathValues": 19,
     "PatternComprehension": 15,
     "Quantifiers": 12,
     "RelationshipProperties": 1,
@@ -9121,6 +9121,40 @@
       }
     },
     {
+      "id": "match6-zero-length-named-path-return",
+      "feature": "PathValues",
+      "fixture": "match6_single_node",
+      "query": "MATCH p = (a) RETURN p",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "p": [
+              {
+                "node_id": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "match7-optional-named-path-return-null",
+      "feature": "PathValues",
+      "fixture": "match7_optional_path",
+      "query": "MATCH (a:A), (b:B) OPTIONAL MATCH p = (a)-[:X]->(b) RETURN p",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "p": null
+          }
+        ]
+      }
+    },
+    {
       "id": "path-element-list-indexes-and-endpoints",
       "feature": "PathValues",
       "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) WHERE nodes(path)[0] = id(a) RETURN a.name AS source, b.name AS target, nodes(path)[0] AS source_id, nodes(path)[-1] AS target_id, relationships(path)[0] AS relationship_id, head(nodes(path)) AS head_node, last(relationships(path)) AS last_relationship ORDER BY source, target",
@@ -9555,12 +9589,62 @@
       }
     },
     {
-      "id": "materialized-path-return-rejected",
+      "id": "fixed-hop-materialized-path-return",
       "feature": "PathValues",
-      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path",
+      "query": "MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path ORDER BY id(a), id(b)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "path": [
+              {
+                "node_id": 1
+              },
+              {
+                "relationship_id": 100
+              },
+              {
+                "node_id": 2
+              }
+            ]
+          },
+          {
+            "path": [
+              {
+                "node_id": 1
+              },
+              {
+                "relationship_id": 102
+              },
+              {
+                "node_id": 3
+              }
+            ]
+          },
+          {
+            "path": [
+              {
+                "node_id": 2
+              },
+              {
+                "relationship_id": 101
+              },
+              {
+                "node_id": 3
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "variable-length-materialized-path-return-rejected",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN path",
       "expected": {
         "kind": "error",
-        "contains": "path values"
+        "contains": "variable-length path values"
       }
     },
     {

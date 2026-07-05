@@ -270,6 +270,15 @@ impl<'a> GraphPlanValidator<'a> {
             variables.extend(path_variables.iter().map(String::as_str));
             return;
         }
+        if let ScalarExpression::PathValue {
+            node_variables,
+            relationship_variables,
+        } = expression
+        {
+            variables.extend(node_variables.iter().map(String::as_str));
+            variables.extend(relationship_variables.iter().map(String::as_str));
+            return;
+        }
         if let Some(expression) = Self::unary_scalar_expression_operand(expression) {
             Self::collect_scalar_expression_variables(expression, variables);
             return;

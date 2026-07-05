@@ -487,6 +487,18 @@ impl<'a> SqlRenderer<'a> {
         Ok(render_sql_array(&values))
     }
 
+    pub(super) fn render_path_value_ref(
+        &self,
+        node_variables: &[String],
+        relationship_variables: &[String],
+    ) -> Result<String, CoreError> {
+        Ok(format!(
+            "named_struct('node_ids', {}, 'relationship_ids', {})",
+            self.render_graph_key_list_ref(node_variables)?,
+            self.render_graph_key_list_ref(relationship_variables)?
+        ))
+    }
+
     pub(super) fn render_binding_element_id_ref(
         &self,
         variable: &str,

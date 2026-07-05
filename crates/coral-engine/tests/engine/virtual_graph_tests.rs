@@ -4452,6 +4452,81 @@ async fn cypher_path_element_id_lists_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_fixed_hop_path_values_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH zero = (person:Person) \
+         MATCH path = (person)-[owns:OWNS]->(service:Service) \
+         WHERE person.name = 'Ada Lovelace' AND service.name = 'billing-api' \
+         RETURN zero, path",
+    )
+    .await
+    .expect("fixed-hop path values should execute");
+
+    assert!(
+        execution.translated_sql().contains("named_struct("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "zero": {
+                "node_ids": [1],
+                "relationship_ids": [],
+            },
+            "path": {
+                "node_ids": [1, 10],
+                "relationship_ids": [100],
+            },
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_optional_fixed_hop_path_values_preserve_nulls() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person), (service:Service) \
+         WHERE person.name = 'Grace Hopper' AND service.name = 'billing-api' \
+         OPTIONAL MATCH path = (person)-[:OWNS]->(service) \
+         RETURN path",
+    )
+    .await
+    .expect("optional fixed-hop path values should execute");
+
+    assert!(
+        execution.translated_sql().contains("CASE WHEN"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution
+            .execution()
+            .schema()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["path"]
+    );
+    assert_eq!(execution_to_rows(execution.execution()), vec![json!({})]);
+}
+
+#[tokio::test]
 async fn cypher_path_element_list_indexes_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
