@@ -18,7 +18,7 @@ pub(crate) struct Args {
     coral_bin: PathBuf,
 
     /// Fail when hyperfine reports a mean above this many seconds.
-    #[arg(long, default_value_t = 0.75)]
+    #[arg(long, default_value_t = 0.45)]
     max_mean_seconds: f64,
 
     /// Number of measured hyperfine runs.

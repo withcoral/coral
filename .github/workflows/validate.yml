@@ -734,7 +734,7 @@ jobs:
         run: |
           cargo run --locked -p xtask --release -- perf-check \
             --coral-bin target/release/coral \
-            --max-mean-seconds 0.75
+            --max-mean-seconds 0.45
 
   validate:
     runs-on: ubuntu-latest
