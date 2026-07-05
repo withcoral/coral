@@ -1,0 +1,844 @@
+---
+title: "openCypher reference"
+description: "The supported openCypher read surface: pattern matching, projection, aggregation, subqueries, and their honest boundaries."
+---
+
+Coral's virtual graph supports a typed, read-only openCypher subset over mapped warehouse tables. You declare labels, relationship types, keys, and properties once; Coral validates each query against that declaration and compiles supported reads to SQL.
+
+This reference uses the same `TCK_GRAPH` fixture as the compatibility baseline: `Person` nodes with `name`, `age`, `city`, and `active`, plus directed `KNOWS` and `LIKES` relationships between people. The openCypher baseline currently tracks 726 scenarios: 646 supported read behaviors and 80 documented limits.
+
+<Note>
+For the conceptual model behind this page, start with the [Virtual graph overview](/virtual-graph/overview). This page is a language reference for the read surface.
+</Note>
+
+## Reading Data
+
+Use `MATCH` for labeled node patterns, directed or undirected relationship patterns, and relationship property access. Use `WHERE` for boolean predicates over node and relationship properties.
+
+Scenario `where-relationship-property-conjunction`:
+
+```cypher
+MATCH (a:Person)-[k:KNOWS]->(b:Person) WHERE k.since >= 2021 AND k.strength < 0.8 RETURN a.name AS source, b.name AS target, k.since AS since ORDER BY since, source
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "source": "Bob",
+    "target": "Carol",
+    "since": 2021
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "since": 2022
+  }
+]
+```
+
+`OPTIONAL MATCH` preserves rows when the optional pattern does not match. Leading, unanchored optional matches are also supported, so an optional pattern can be the first clause rather than depending on a prior bound variable.
+
+Scenario `optional-match-leading-node-only`:
+
+```cypher
+OPTIONAL MATCH (p:Person) RETURN p.name AS name ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Bob"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+Honest boundary, from `optional-match-leading-multipart-rejected`: a leading optional currently accepts one connected pattern part.
+
+```cypher
+OPTIONAL MATCH (p:Person), (q:Person) RETURN p.name AS p, q.name AS q
+```
+
+```json
+{
+  "error_contains": "OPTIONAL MATCH currently supports one connected pattern part"
+}
+```
+
+## Projection & Row Modifiers
+
+Use `RETURN` for aliased projections, graph-variable expansion, scalar expressions, and `RETURN DISTINCT`. Use `ORDER BY`, `SKIP`, and `LIMIT` to shape result rows.
+
+Scenario `distinct-projection`:
+
+```cypher
+MATCH (p:Person) RETURN DISTINCT p.city AS city ORDER BY city
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "city": ""
+  },
+  {
+    "city": "London"
+  },
+  {
+    "city": "Paris"
+  }
+]
+```
+
+Scenario `order-skip-limit`:
+
+```cypher
+MATCH (p:Person) RETURN p.name AS name ORDER BY p.age DESC SKIP 1 LIMIT 1
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  }
+]
+```
+
+Honest boundary, from `return-star-path-variable-rejected`: `RETURN *` cannot expand a path variable.
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN *
+```
+
+```json
+{
+  "error_contains": "RETURN * cannot carry path variables"
+}
+```
+
+## Multi-Stage WITH
+
+Use `WITH` to project, rename, filter, aggregate, order, skip, and limit before continuing with another `MATCH`. Staged planning supports aggregate aliases and selected ordered graph-variable carries before later pattern matching.
+
+Scenario `with-aggregate-stage-before-match`:
+
+```cypher
+MATCH (a:Person)-[:KNOWS]->(b:Person) WITH a, count(b) AS deg MATCH (a)-[:KNOWS]->(c:Person) RETURN a.name AS name, deg
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice",
+    "deg": 2
+  },
+  {
+    "name": "Alice",
+    "deg": 2
+  },
+  {
+    "name": "Bob",
+    "deg": 1
+  }
+]
+```
+
+Scenario `with-order-limit-graph-variable-before-match`:
+
+```cypher
+MATCH (a:Person) WITH a ORDER BY a.age LIMIT 2 MATCH (a)-[:KNOWS]->(b:Person) RETURN a.name AS a, b.name AS b
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "a": "Alice",
+    "b": "Bob"
+  },
+  {
+    "a": "Alice",
+    "b": "Carol"
+  },
+  {
+    "a": "Bob",
+    "b": "Carol"
+  }
+]
+```
+
+Honest boundary, from `with-distinct-relationship-carry-optional-final-rejected`: not every distinct relationship carry can be staged before a later optional match.
+
+```cypher
+MATCH (a:Person)-[r:KNOWS]->(b:Person) WITH DISTINCT r LIMIT 1 OPTIONAL MATCH (a2:Person)-[r:KNOWS]->(b2:Person) RETURN a2.name AS a, id(r) AS r, b2.name AS b
+```
+
+```json
+{
+  "error_contains": "WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning"
+}
+```
+
+## UNWIND
+
+Use `UNWIND` to expand list values into rows. The baseline covers literal lists, `WITH` aliases, `range(...)`, `split(...)`, parameters, collected scalar values, and metadata lists such as `keys(...)`.
+
+Scenario `unwind-with-alias-matches-static-unwind-route`:
+
+```cypher
+WITH [29, 34, 41] AS ages UNWIND ages AS age MATCH (p:Person) WHERE p.age = age RETURN age AS age, p.name AS name ORDER BY age
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "age": 29,
+    "name": "Bob"
+  },
+  {
+    "age": 34,
+    "name": "Alice"
+  },
+  {
+    "age": 41,
+    "name": "Carol"
+  }
+]
+```
+
+Scenario `unwind-list-parameter`, with the baseline parameter map:
+
+```json
+{
+  "names": [
+    "Alice",
+    "Carol"
+  ]
+}
+```
+
+```cypher
+UNWIND $names AS name MATCH (p:Person) WHERE p.name = name RETURN name AS name, p.city AS city ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "city": "London",
+    "name": "Alice"
+  },
+  {
+    "city": "Paris",
+    "name": "Carol"
+  }
+]
+```
+
+Honest boundaries:
+
+- `unwind-heterogeneous-nested-list-rejected`: `nested lists require each non-empty nested list`
+- `unwind-collect-nested-list-elements-rejected`: `UNWIND collect(...) currently requires scalar`
+
+## Aggregation
+
+Use aggregation for grouped counts, numeric summaries, string min/max, relationship property summaries, `collect(...)`, distinct aggregates, and empty-input defaults.
+
+Scenario `aggregate-relationship-property-functions`:
+
+```cypher
+MATCH (:Person)-[r:KNOWS]->(:Person) RETURN count(r) AS relationships, sum(r.since) AS since_sum, avg(r.strength) AS avg_strength, min(r.strength) AS weakest, max(r.strength) AS strongest
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "relationships": 3,
+    "since_sum": 6063,
+    "avg_strength": 0.6333333333333333,
+    "weakest": 0.3,
+    "strongest": 0.9
+  }
+]
+```
+
+Scenario `aggregate-collect-optional-property-values`:
+
+```cypher
+MATCH (p:Person) WHERE p.name <> 'Alice' OPTIONAL MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, collect(friend.name) AS friends ORDER BY person
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "person": "Bob",
+    "friends": [
+      "Carol"
+    ]
+  },
+  {
+    "person": "Carol",
+    "friends": []
+  }
+]
+```
+
+Honest boundary, from `aggregate-percentile-cont-distinct-rejected`:
+
+```cypher
+MATCH (p:Person) RETURN percentileCont(DISTINCT p.age, 0.5) AS median_age
+```
+
+```json
+{
+  "error_contains": "percentileCont(DISTINCT ...) is not supported"
+}
+```
+
+## Subqueries
+
+Use expression subqueries when the outer row needs a correlated existence check, count, or collected list.
+
+Scenario `exists-subquery-predicate`:
+
+```cypher
+MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(:Person) } RETURN p.name AS person ORDER BY person
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "person": "Alice"
+  },
+  {
+    "person": "Bob"
+  }
+]
+```
+
+Scenario `count-subquery-projection`:
+
+```cypher
+MATCH (p:Person) RETURN p.name AS person, COUNT { MATCH (p)-[:KNOWS]->(:Person) } AS friend_count ORDER BY friend_count DESC, person
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "person": "Alice",
+    "friend_count": 2
+  },
+  {
+    "person": "Bob",
+    "friend_count": 1
+  },
+  {
+    "person": "Carol",
+    "friend_count": 0
+  }
+]
+```
+
+Scenario `collect-subquery-projection`:
+
+```cypher
+MATCH (p:Person) WHERE p.name IN ['Bob', 'Carol'] RETURN p.name AS person, COLLECT { MATCH (p)-[:KNOWS]->(friend:Person) RETURN friend.name } AS friend_names ORDER BY person
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "person": "Bob",
+    "friend_names": [
+      "Carol"
+    ]
+  },
+  {
+    "person": "Carol",
+    "friend_names": []
+  }
+]
+```
+
+The baseline has supported `rows` scenarios for the documented `EXISTS`, `COUNT`, and `COLLECT` expression-subquery groups. Treat shapes outside those examples as outside the documented surface until a compatibility scenario covers them.
+
+## Expressions & Functions
+
+Scalar expressions cover boolean logic, comparisons, string functions, `CASE`, list and map expressions, mathematical functions, type conversion, and null handling.
+
+Scenario `searched-case-expression`:
+
+```cypher
+MATCH (p:Person) RETURN p.name AS name, CASE WHEN p.active THEN 'active' ELSE 'inactive' END AS status ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice",
+    "status": "active"
+  },
+  {
+    "name": "Bob",
+    "status": "inactive"
+  },
+  {
+    "name": "Carol",
+    "status": "active"
+  }
+]
+```
+
+Scenario `list-index-slice-and-endpoint-functions`:
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN ['a', 'b', 'c'][1] AS second, ['a', 'b', 'c'][0..2] AS first_two, head(['a', 'b']) AS first, last(['a', 'b']) AS last_value, tail(['a', 'b', 'c']) AS tail_values
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "second": "b",
+    "first_two": [
+      "a",
+      "b"
+    ],
+    "first": "a",
+    "last_value": "b",
+    "tail_values": [
+      "b",
+      "c"
+    ]
+  }
+]
+```
+
+Scenario `properties-function-property-lookup`:
+
+```cypher
+MATCH (p:Person) WHERE properties(p).active = true RETURN properties(p).name AS name, properties(p).city AS city ORDER BY properties(p).age DESC
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Carol",
+    "city": "Paris"
+  },
+  {
+    "name": "Alice",
+    "city": "London"
+  }
+]
+```
+
+Scenario `relationship-strength-percentage`:
+
+```cypher
+MATCH (p:Person)-[r:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend, toInteger(round(r.strength * 100.0, 0)) AS strength_percent ORDER BY strength_percent DESC, person, friend
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "person": "Alice",
+    "friend": "Bob",
+    "strength_percent": 90
+  },
+  {
+    "person": "Bob",
+    "friend": "Carol",
+    "strength_percent": 70
+  },
+  {
+    "person": "Alice",
+    "friend": "Carol",
+    "strength_percent": 30
+  }
+]
+```
+
+Scenario `strict-type-conversion-predicate-and-projection`:
+
+```cypher
+MATCH (p:Person) WHERE toFloat(p.age) >= 30.0 AND toInteger(toString(p.age)) >= 30 AND toBoolean(toString(p.active)) = true RETURN p.name AS name, toString(p.age) AS age_text, toBoolean(toString(p.active)) AS active_bool ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice",
+    "age_text": "34",
+    "active_bool": true
+  },
+  {
+    "name": "Carol",
+    "age_text": "41",
+    "active_bool": true
+  }
+]
+```
+
+Scenario `coalesce-multiple-null-fallbacks`:
+
+```cypher
+MATCH (p:Person) RETURN p.name AS name, coalesce(null, nullIf(p.city, ''), nullIf(p.name, p.name), 'missing') AS city_or_missing ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice",
+    "city_or_missing": "London"
+  },
+  {
+    "name": "Bob",
+    "city_or_missing": "missing"
+  },
+  {
+    "name": "Carol",
+    "city_or_missing": "Paris"
+  }
+]
+```
+
+Honest boundaries:
+
+- `literal-mixed-list-projection-rejected`: `literal list projections require all non-null elements to have the same type`
+- `ordered-null-comparison-rejected`: `null can only be compared with equality or inequality`
+- `rand-function-rejected`: `RETURN function 'rand' is not supported yet`
+- `nullable-type-conversion-wrong-arity-rejected`: `toIntegerOrNull() requires exactly one argument`
+
+## Paths
+
+Fixed-hop path values are supported. You can materialize `RETURN p`, inspect `nodes(p)`, `relationships(p)`, and `length(p)`, and carry fixed-hop path values through `WITH`.
+
+Scenario `fixed-hop-materialized-path-return`:
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN path ORDER BY id(a), id(b)
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "path": [
+      {
+        "node_id": 1
+      },
+      {
+        "relationship_id": 100
+      },
+      {
+        "node_id": 2
+      }
+    ]
+  },
+  {
+    "path": [
+      {
+        "node_id": 1
+      },
+      {
+        "relationship_id": 102
+      },
+      {
+        "node_id": 3
+      }
+    ]
+  },
+  {
+    "path": [
+      {
+        "node_id": 2
+      },
+      {
+        "relationship_id": 101
+      },
+      {
+        "node_id": 3
+      }
+    ]
+  }
+]
+```
+
+Scenario `path-element-id-lists`:
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, nodes(path) AS nodes, relationships(path) AS relationships ORDER BY source, target
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "source": "Alice",
+    "target": "Bob",
+    "nodes": [
+      1,
+      2
+    ],
+    "relationships": [
+      100
+    ]
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "nodes": [
+      1,
+      3
+    ],
+    "relationships": [
+      102
+    ]
+  },
+  {
+    "source": "Bob",
+    "target": "Carol",
+    "nodes": [
+      2,
+      3
+    ],
+    "relationships": [
+      101
+    ]
+  }
+]
+```
+
+Scenario `path-length-metadata`:
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS]->(b:Person) RETURN a.name AS source, b.name AS target, length(path) AS hops ORDER BY source, target
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "source": "Alice",
+    "target": "Bob",
+    "hops": 1
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "hops": 1
+  },
+  {
+    "source": "Bob",
+    "target": "Carol",
+    "hops": 1
+  }
+]
+```
+
+### Variable-length paths
+
+Bounded variable-length patterns are supported. Give a finite range such as `[:KNOWS*1..2]` and Coral expands the traversal into the query plan.
+
+Scenario `bounded-variable-length-relationship-range`:
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops ORDER BY source, target, hops
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "source": "Alice",
+    "target": "Bob",
+    "hops": 1
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "hops": 1
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "hops": 2
+  },
+  {
+    "source": "Bob",
+    "target": "Carol",
+    "hops": 1
+  }
+]
+```
+
+Three variable-length cases are deferred and covered by the **Limits & design decisions** page: unbounded traversal (`[:KNOWS*]`), open-lower ranges (`[:KNOWS*..2]`), and returning a variable-length `path` as a value — the last rejects with `variable-length path values` even though the bounded traversal itself works.
+
+## UNION
+
+Use `UNION` to combine branch result sets with duplicate removal. Use `UNION ALL` when duplicates should be preserved.
+
+Scenario `top-level-union-distinct-removes-duplicates`:
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  }
+]
+```
+
+Scenario `top-level-union-all-preserves-duplicates`:
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name UNION ALL MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Alice"
+  }
+]
+```
+
+Honest boundary, from `union-rejects-mismatched-column-names`:
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.name AS left_value UNION MATCH (p:Person) WHERE p.name = 'Bob' RETURN p.name AS right_value
+```
+
+```json
+{
+  "error_contains": "UNION branch projections must match the first branch"
+}
+```
+
+## Parameters
+
+Parameters can bind scalar values, lists, dynamic label lists, projections, row modifiers, and relationship-property comparisons.
+
+Scenario `parameterized-scalar-list-and-limit`, with the baseline parameter map:
+
+```json
+{
+  "city": "London",
+  "ages": [
+    34,
+    41
+  ],
+  "limit": 2
+}
+```
+
+```cypher
+MATCH (p:Person {city: $city}) WHERE p.age IN $ages RETURN p.name AS name ORDER BY name LIMIT $limit
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  }
+]
+```
+
+Scenario `parameterized-dynamic-label-lists`, with the baseline parameter map:
+
+```json
+{
+  "pattern_labels": [
+    "Person"
+  ],
+  "predicate_labels": [
+    "Employee",
+    "Person"
+  ]
+}
+```
+
+```cypher
+MATCH (p:$($pattern_labels)) WHERE p:$($predicate_labels) RETURN p.name AS name ORDER BY name
+```
+
+Expected rows:
+
+```json
+[
+  {
+    "name": "Alice"
+  },
+  {
+    "name": "Bob"
+  },
+  {
+    "name": "Carol"
+  }
+]
+```
+
+Honest boundaries:
+
+- `missing-parameter-rejected`: `MISSING_PARAMETER`
+- `parameterized-limit-string-rejected`: `LIMIT`
+
+## Temporal
+
+Temporal values are a large supported surface in the baseline: dates, local datetimes, zoned datetimes, local times, durations, component access, comparison, and temporal arithmetic all have dedicated coverage. Use the **Temporal** page for the complete temporal reference once it is available in this docs suite.

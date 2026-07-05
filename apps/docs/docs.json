@@ -88,6 +88,7 @@
           "virtual-graph/overview",
           "virtual-graph/mapping",
           "virtual-graph/graphql",
+          "virtual-graph/opencypher",
           "virtual-graph/limits",
           "virtual-graph/troubleshooting"
         ]
