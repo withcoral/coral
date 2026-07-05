@@ -13,7 +13,7 @@
     "Match": 27,
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
-    "OptionalMatch": 27,
+    "OptionalMatch": 34,
     "Parameters": 14,
     "PathMetadata": 1,
     "PathValues": 19,
@@ -1625,6 +1625,138 @@
         "rows": [
           {
             "rows": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-node-one-match-one-empty",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (f:DoesExist) OPTIONAL MATCH (n:DoesNotExist) RETURN f.num AS matched, n.num AS missing",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "matched": 7,
+            "missing": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-node-both-empty",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (a:DoesNotExist) OPTIONAL MATCH (b:NotThere) RETURN count(*) AS rows, count(a.num) AS a, count(b.num) AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 1,
+            "a": 0,
+            "b": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-empty-multi-label-collapse",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (l:EmptyA|EmptyB) OPTIONAL MATCH (r:EmptyA|EmptyB) RETURN count(*) AS rows, count(l.num) AS left_nums, count(r.num) AS right_nums",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 1,
+            "left_nums": 0,
+            "right_nums": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-keyed-relationship-multi-edge",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (owner:Owner|AltOwner)-[owns:OWNS]->(service:Service) OPTIONAL MATCH (source:NotThere)-[missing:NOR_THIS]->(target:NotThere) RETURN owner.name AS owner, service.name AS service ORDER BY owner, service",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "owner": "Ada Lovelace",
+            "service": "billing-api"
+          },
+          {
+            "owner": "Ada Lovelace",
+            "service": "billing-api"
+          },
+          {
+            "owner": "Bea Admin",
+            "service": "billing-api"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-collect-empty-and-matched",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (f:DoesExist) OPTIONAL MATCH (n:DoesNotExist) RETURN collect(DISTINCT n.num) AS a, collect(DISTINCT f.num) AS b",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a": [],
+            "b": [
+              7
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-unaliased-collect-expression-names",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (f:DoesExist) OPTIONAL MATCH (n:DoesNotExist) RETURN collect(DISTINCT n.num), collect(DISTINCT f.num)",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "collect(DISTINCT n.num)": [],
+            "collect(DISTINCT f.num)": [
+              7
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-consecutive-leading-feeds-anchored-optional",
+      "feature": "OptionalMatch",
+      "fixture": "consecutive_optional",
+      "query": "OPTIONAL MATCH (a:NotThere) OPTIONAL MATCH (b:NotThere) WITH a, b OPTIONAL MATCH (b)-[r:NOR_THIS]->(a) RETURN a, b, r",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "a.__id": null,
+            "a.__labels": null,
+            "a.num": null,
+            "b.__id": null,
+            "b.__labels": null,
+            "b.num": null,
+            "r.__id": null,
+            "r.__type": null
           }
         ]
       }

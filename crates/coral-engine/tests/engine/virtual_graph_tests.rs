@@ -11870,6 +11870,258 @@ async fn cypher_leading_optional_relationship_empty_multi_type_returns_one_null_
 }
 
 #[tokio::test]
+async fn cypher_consecutive_leading_optional_match_one_match_one_empty_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         RETURN count(*) AS rows, count(service.name) AS services, count(person.name) AS people",
+    )
+    .await
+    .expect("consecutive leading OPTIONAL MATCH query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("FROM (VALUES (1)) AS \"__coral_optional_driver\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 4, "services": 4, "people": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_consecutive_leading_optional_match_both_empty_returns_one_null_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (service:Service) \
+         WHERE service.name = 'missing' \
+         OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         RETURN count(*) AS rows, count(service.name) AS services, count(person.name) AS people",
+    )
+    .await
+    .expect("consecutive empty leading OPTIONAL MATCH query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 1, "services": 0, "people": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_consecutive_leading_optional_match_empty_multi_label_collapses_once() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (left) \
+         WHERE left.name = 'missing' \
+         OPTIONAL MATCH (right) \
+         WHERE right.name = 'missing' \
+         RETURN count(*) AS rows, count(left.name) AS left_names, count(right.name) AS right_names",
+    )
+    .await
+    .expect("consecutive empty multi-label leading OPTIONAL MATCH query should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 1, "left_names": 0, "right_names": 0})],
+        "multi-label empty optionals should collapse once per optional; SQL: {}",
+        execution.translated_sql()
+    );
+}
+
+#[tokio::test]
+async fn cypher_consecutive_leading_optional_match_collects_empty_and_matched_sides() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (service:Service) \
+         OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         RETURN collect(DISTINCT person.name) AS empty_people, \
+                collect(DISTINCT service.name) AS matched_services",
+    )
+    .await
+    .expect("consecutive leading OPTIONAL MATCH collect query should execute");
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .first_mut()
+        .expect("aggregate query should return one row");
+    sort_string_array_field(row, "empty_people");
+    sort_string_array_field(row, "matched_services");
+    assert_eq!(
+        rows,
+        vec![json!({
+            "empty_people": [],
+            "matched_services": ["billing-api", "deployments", "experiments", "legacy-sync"]
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_unaliased_consecutive_optional_collects_use_expression_column_names() {
+    let temp = TempDir::new().expect("temp dir");
+    write_projection_name_fixture(temp.path());
+    let source = build_source(projection_name_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(PROJECTION_NAME_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (f:DoesExist) \
+         OPTIONAL MATCH (n:DoesNotExist) \
+         RETURN collect(DISTINCT n.num), collect(DISTINCT f.num)",
+    )
+    .await
+    .expect("unaliased duplicate aggregate function names should execute");
+
+    let field_names = execution
+        .execution()
+        .schema()
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        field_names,
+        vec!["collect(DISTINCT n.num)", "collect(DISTINCT f.num)"]
+    );
+
+    let mut rows = execution_to_rows(execution.execution());
+    let row = rows
+        .first_mut()
+        .expect("aggregate query should return one row");
+    sort_i64_array_field(row, "collect(DISTINCT n.num)");
+    sort_i64_array_field(row, "collect(DISTINCT f.num)");
+    assert_eq!(
+        rows,
+        vec![json!({
+            "collect(DISTINCT n.num)": [],
+            "collect(DISTINCT f.num)": [7]
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_anchored_optional_composes_after_consecutive_leading_optionals() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         OPTIONAL MATCH (service:Service) \
+         WHERE service.name = 'missing' \
+         WITH person, service \
+         OPTIONAL MATCH (service)-[dependency:DEPENDS_ON]->(target:Service) \
+         RETURN count(*) AS rows, \
+                count(person.name) AS people, \
+                count(service.name) AS services, \
+                count(dependency.source) AS dependencies",
+    )
+    .await
+    .expect("anchored OPTIONAL MATCH after consecutive leading optionals should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 1, "people": 0, "services": 0, "dependencies": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_consecutive_leading_optional_match_preserves_distinct_keyed_relationships() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_keyed_multi_edge_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (owner:Person|Team)-[owns:OWNS]->(service:Service) \
+         OPTIONAL MATCH (source:Service)-[dependency:DEPENDS_ON]->(target:Service) \
+         WHERE source.name = 'missing' \
+         RETURN owner.name AS owner, service.name AS service \
+         ORDER BY owner, service",
+    )
+    .await
+    .expect("consecutive leading optional keyed relationship query should execute");
+
+    assert!(
+        execution.translated_sql().contains("relationship:OWNS:"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Ada Lovelace", "service": "billing-api"}),
+            json!({"owner": "Grace Hopper", "service": "deployments"}),
+            json!({"owner": "Katherine Johnson", "service": "experiments"}),
+            json!({"owner": "analytics", "service": "experiments"}),
+            json!({"owner": "infra", "service": "deployments"}),
+            json!({"owner": "platform", "service": "billing-api"}),
+            json!({"owner": "platform", "service": "legacy-sync"}),
+        ]
+    );
+
+    let keys = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (owner:Person)-[owns:OWNS]->(service:Service) \
+         WHERE owner.name = 'Ada Lovelace' AND service.name = 'billing-api' \
+         RETURN id(owns) AS ownership_id \
+         ORDER BY ownership_id",
+    )
+    .await
+    .expect("duplicate keyed relationships should expose distinct ids");
+    assert_eq!(
+        execution_to_rows(keys.execution()),
+        vec![json!({"ownership_id": 100}), json!({"ownership_id": 101}),]
+    );
+}
+
+#[tokio::test]
 async fn cypher_leading_optional_relationship_unwind_keys_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -21441,6 +21693,29 @@ fn write_ops_fixture(dir: &Path) {
     );
 }
 
+fn write_ops_keyed_multi_edge_fixture(dir: &Path) {
+    write_ops_fixture(dir);
+    write_jsonl_file(
+        dir,
+        "ownerships.jsonl",
+        &[
+            json!({"ownership_id": 100, "person_id": 1, "service_id": 10, "since": "2024-01-10"}),
+            json!({"ownership_id": 101, "person_id": 1, "service_id": 10, "since": "2024-04-10", "source": "probe"}),
+            json!({"ownership_id": 200, "person_id": 2, "service_id": 20, "since": "2024-02-20", "source": "pagerduty"}),
+            json!({"ownership_id": 300, "person_id": 3, "service_id": 30, "since": "2024-03-15", "source": "catalog"}),
+        ],
+    );
+}
+
+fn write_projection_name_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "projection_name_exists.jsonl",
+        &[json!({"id": 1, "num": 7})],
+    );
+    write_jsonl_file(dir, "projection_name_empty.jsonl", &[]);
+}
+
 fn ops_manifest(dir: &Path) -> Value {
     json!({
         "name": "ops",
@@ -21518,6 +21793,37 @@ fn ops_manifest(dir: &Path) -> Value {
                     { "name": "to_service_id", "type": "Int64" },
                     { "name": "criticality", "type": "Utf8" },
                     { "name": "source", "type": "Utf8" }
+                ]
+            }
+        ]
+    })
+}
+
+fn projection_name_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "projection_names",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "does_exist",
+                "description": "Matched side for unaliased projection-name repros",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "projection_name_exists.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "num", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "does_not_exist",
+                "description": "Empty side for unaliased projection-name repros",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "projection_name_empty.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "num", "type": "Int64" }
                 ]
             }
         ]
@@ -21677,6 +21983,23 @@ relationships:
     properties:
       criticality: criticality
       source: source
+";
+
+const PROJECTION_NAME_GRAPH: &str = r"
+version: 1
+name: projection_names
+description: Synthetic graph for unaliased projection-name repros
+nodes:
+  - label: DoesExist
+    table: { schema: projection_names, name: does_exist }
+    key: id
+    properties:
+      num: num
+  - label: DoesNotExist
+    table: { schema: projection_names, name: does_not_exist }
+    key: id
+    properties:
+      num: num
 ";
 
 const STAGED_PLANNING_GRAPH: &str = r"

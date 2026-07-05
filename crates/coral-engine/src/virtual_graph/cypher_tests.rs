@@ -19145,6 +19145,130 @@ fn compiles_leading_untyped_relationship_optional_match_as_null_preserving_union
 }
 
 #[test]
+fn compiles_consecutive_leading_node_only_optional_matches() {
+    let plan = compile_cypher(
+        "OPTIONAL MATCH (person:Person) \
+             OPTIONAL MATCH (service:Service) \
+             RETURN person.name AS person, service.name AS service",
+    )
+    .expect("consecutive leading node-only OPTIONAL MATCH clauses should compile");
+
+    assert_eq!(plan.optional_relationships, Vec::<usize>::new());
+    assert_eq!(
+        plan.optional_matches,
+        vec![
+            OptionalMatchScope {
+                node_indices: vec![0],
+                relationship_indices: Vec::new(),
+                predicate: None,
+            },
+            OptionalMatchScope {
+                node_indices: vec![1],
+                relationship_indices: Vec::new(),
+                predicate: None,
+            },
+        ]
+    );
+    assert_eq!(
+        plan.nodes,
+        vec![
+            NodePattern {
+                variable: "person".to_string(),
+                label: "Person".to_string(),
+            },
+            NodePattern {
+                variable: "service".to_string(),
+                label: "Service".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_consecutive_leading_static_label_optional_matches_with_hidden_identity_dedupe() {
+    let query = compile_cypher_query(
+        "OPTIONAL MATCH (left:Person|Team) \
+             OPTIONAL MATCH (right:Person|Team) \
+             RETURN left.name AS l, right.name AS r",
+    )
+    .expect("consecutive leading static label OPTIONAL MATCH clauses should compile");
+
+    let GraphQuery::Union(union) = query else {
+        panic!("expected consecutive static label optionals to expand into a union query");
+    };
+
+    assert!(!union.preserve_empty_result_with_null_row);
+    assert!(union.branches.iter().all(|branch| !branch.all));
+    assert_eq!(
+        union
+            .outer_projection
+            .as_ref()
+            .expect("hidden identity columns should be stripped by an outer projection")
+            .output_names(),
+        vec!["l".to_string(), "r".to_string()]
+    );
+    let projection_names = union.first.projection_output_names();
+    assert_eq!(projection_names.len(), 4);
+    assert_eq!(
+        projection_names.get(..2),
+        Some(&["l".to_string(), "r".to_string()][..])
+    );
+    assert!(
+        projection_names
+            .get(2..)
+            .expect("hidden identity projection suffix")
+            .iter()
+            .all(|name| name.starts_with("__coral_static_optional_identity_"))
+    );
+}
+
+#[test]
+fn compiles_consecutive_leading_relationship_optional_matches() {
+    let plan = compile_cypher(
+        "OPTIONAL MATCH (person:Person)-[owns:OWNS]->(service:Service) \
+             OPTIONAL MATCH (source:Service)-[depends:DEPENDS_ON]->(target:Service) \
+             RETURN owns.since AS since, depends.source AS source",
+    )
+    .expect("consecutive leading relationship OPTIONAL MATCH clauses should compile");
+
+    assert_eq!(plan.optional_relationships, vec![0, 1]);
+    assert_eq!(
+        plan.optional_matches,
+        vec![
+            OptionalMatchScope {
+                node_indices: vec![0, 1],
+                relationship_indices: vec![0],
+                predicate: None,
+            },
+            OptionalMatchScope {
+                node_indices: vec![2, 3],
+                relationship_indices: vec![1],
+                predicate: None,
+            },
+        ]
+    );
+    assert_eq!(
+        plan.relationships,
+        vec![
+            RelationshipPattern {
+                variable: Some("owns".to_string()),
+                relationship_type: "OWNS".to_string(),
+                left: "person".to_string(),
+                direction: Direction::Outgoing,
+                right: "service".to_string(),
+            },
+            RelationshipPattern {
+                variable: Some("depends".to_string()),
+                relationship_type: "DEPENDS_ON".to_string(),
+                left: "source".to_string(),
+                direction: Direction::Outgoing,
+                right: "target".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn compiles_match_after_leading_optional_when_it_uses_optional_binding() {
     let plan = compile_cypher(
         "OPTIONAL MATCH (person:Person) \
@@ -21013,6 +21137,37 @@ fn compiles_collect_property_projection() {
             nulls: None,
         }]
     );
+}
+
+#[test]
+fn compiles_unaliased_same_function_aggregates_with_expression_names() {
+    let plan = compile_cypher(
+        "MATCH (service:Service) \
+             RETURN count(service), count(service.name)",
+    )
+    .expect("unaliased same-function aggregates should compile");
+
+    assert!(matches!(
+        plan.projections.as_slice(),
+        [
+            Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::VariableKey { variable },
+                distinct: false,
+                alias,
+            },
+            Projection::Aggregate {
+                function: AggregateFunction::Count,
+                target: AggregateTarget::Property(PropertyRef { variable: property_variable, property }),
+                distinct: false,
+                alias: property_alias,
+            },
+        ] if variable == "service"
+            && alias == "count(service)"
+            && property_variable == "service"
+            && property == "name"
+            && property_alias == "count(service.name)"
+    ));
 }
 
 #[test]

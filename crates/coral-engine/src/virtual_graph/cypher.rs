@@ -523,6 +523,7 @@ struct CypherCompileState {
 
 #[derive(Debug, Default)]
 struct CypherCompileContext {
+    source: String,
     variable_function_arguments: BTreeMap<(usize, usize), VariableFunctionArgument>,
     function_argument_sources: BTreeMap<(usize, usize), FunctionArgumentSources>,
     collection_filter_calls: BTreeMap<(usize, usize), CollectionFilterCall>,
@@ -549,6 +550,7 @@ impl CypherCompileContext {
         order_null_placements: BTreeMap<(usize, usize), NullOrder>,
     ) -> Self {
         Self {
+            source: cypher.to_string(),
             variable_function_arguments: collect_variable_function_arguments(cypher),
             function_argument_sources: collect_function_argument_sources(cypher),
             collection_filter_calls: collect_collection_filter_calls(cypher),
@@ -565,6 +567,14 @@ impl CypherCompileContext {
             graph,
             catalog: catalog.cloned(),
         }
+    }
+
+    fn function_source_text(&self, function: &FunctionInvocation) -> Option<String> {
+        self.source
+            .get(function.span.start..function.span.end)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string)
     }
 
     fn variable_function_argument(&self, function: &FunctionInvocation) -> Option<&str> {
@@ -1040,6 +1050,7 @@ fn compile_single_query_as_graph_query(
     let hidden_order_plan = analyze_static_alternative_hidden_order(
         single_query,
         outer_projection_plan.as_ref(),
+        context,
         &path,
     )?;
     let hidden_order_plans = compile_static_branch_hidden_order_plans(
@@ -1047,6 +1058,7 @@ fn compile_single_query_as_graph_query(
         hidden_order_plan.as_ref(),
         outer_projection_plan.as_ref(),
         contains_static_unwind,
+        context,
         &path,
     )?;
     for (variant, hidden_order_plan) in variants.iter_mut().zip(hidden_order_plans.iter()) {
@@ -1095,7 +1107,15 @@ fn compile_single_query_as_graph_query(
     )?;
     let (skip, limit) = compile_static_alternative_outer_skip_limit(single_query, context, &path)?;
     let distinct = final_return_clause(single_query, &path)?.distinct;
-    graph_query_from_alternative_plans(plans, outer_projection, distinct, order_by, skip, limit)
+    graph_query_from_alternative_plans(
+        plans,
+        outer_projection,
+        distinct,
+        order_by,
+        skip,
+        limit,
+        context,
+    )
 }
 
 fn compile_expanded_single_query_plan(
@@ -1748,6 +1768,7 @@ fn compile_static_branch_hidden_order_plans(
     hidden_order_plan: Option<&StaticAlternativeHiddenOrderPlan>,
     outer_projection_plan: Option<&StaticAlternativeOuterProjectionPlan>,
     contains_static_unwind: bool,
+    context: &CypherCompileContext,
     path: &str,
 ) -> Result<Vec<Option<StaticAlternativeHiddenOrderPlan>>, CoreError> {
     if hidden_order_plan.is_none() {
@@ -1766,6 +1787,7 @@ fn compile_static_branch_hidden_order_plans(
             analyze_static_alternative_hidden_order(
                 &variant.query,
                 outer_projection_plan,
+                context,
                 branch_path.as_str(),
             )
         })
@@ -2924,21 +2946,39 @@ fn apply_required_presence_predicates(plan: &mut GraphPlan, variables: &BTreeSet
 
 fn graph_query_from_alternative_plans(
     mut plans: Vec<GraphPlan>,
-    outer_projection: Option<GraphUnionOuterProjection>,
+    mut outer_projection: Option<GraphUnionOuterProjection>,
     distinct: bool,
     order_by: Vec<OrderKey>,
     skip: Option<u64>,
     limit: Option<u64>,
+    context: &CypherCompileContext,
 ) -> Result<GraphQuery, CoreError> {
     if plans.is_empty() {
         return Err(CoreError::internal(
             "Cypher query expansion produced no graph plans",
         ));
     }
-    let first = plans.remove(0);
-    if plans.is_empty() {
+    if plans.len() == 1 {
+        let first = plans.remove(0);
         return Ok(GraphQuery::Plan(first));
     }
+    let visible_projection_names = plans
+        .first()
+        .ok_or_else(|| CoreError::internal("Cypher query expansion produced no graph plans"))?
+        .projection_output_names();
+    let collapse_static_optional_product_rows =
+        plans.iter().all(is_pure_independent_optional_product_plan)
+            && append_static_optional_product_identity_projections(&mut plans, context)?;
+    if collapse_static_optional_product_rows && outer_projection.is_none() {
+        outer_projection = Some(GraphUnionOuterProjection {
+            items: visible_projection_names
+                .into_iter()
+                .map(|name| GraphUnionOuterProjectionItem::Column { name })
+                .collect(),
+            group_by: Vec::new(),
+        });
+    }
+    let first = plans.remove(0);
     let preserve_empty_result_with_null_row = std::iter::once(&first)
         .chain(plans.iter())
         .all(is_pure_leading_optional_plan);
@@ -2946,7 +2986,10 @@ fn graph_query_from_alternative_plans(
         first,
         branches: plans
             .into_iter()
-            .map(|plan| GraphUnionBranch { all: true, plan })
+            .map(|plan| GraphUnionBranch {
+                all: !collapse_static_optional_product_rows,
+                plan,
+            })
             .collect(),
         preserve_empty_result_with_null_row,
         outer_projection,
@@ -2955,6 +2998,183 @@ fn graph_query_from_alternative_plans(
         skip,
         limit,
     }))
+}
+
+fn append_static_optional_product_identity_projections(
+    plans: &mut [GraphPlan],
+    context: &CypherCompileContext,
+) -> Result<bool, CoreError> {
+    let Some(first) = plans.first() else {
+        return Ok(false);
+    };
+    let graph = context.graph.as_ref();
+    let identity_expressions = static_optional_product_identity_expressions(first, graph)?;
+    if identity_expressions.is_empty() {
+        return Ok(false);
+    }
+    let aliases = static_optional_product_identity_aliases(
+        &first.projection_output_names(),
+        identity_expressions.len(),
+    );
+    for plan in plans {
+        let identity_expressions = static_optional_product_identity_expressions(plan, graph)?;
+        if identity_expressions.len() != aliases.len() {
+            return Err(CoreError::internal(
+                "static optional identity projections were not aligned",
+            ));
+        }
+        plan.projections
+            .extend(identity_expressions.into_iter().zip(aliases.iter()).map(
+                |(expression, alias)| Projection::Expression {
+                    expression,
+                    alias: alias.clone(),
+                },
+            ));
+    }
+    Ok(true)
+}
+
+fn static_optional_product_identity_aliases(existing: &[String], count: usize) -> Vec<String> {
+    let mut used = existing.iter().cloned().collect::<BTreeSet<_>>();
+    let mut aliases = Vec::with_capacity(count);
+    let mut index = 0;
+    while aliases.len() < count {
+        let candidate = format!("__coral_static_optional_identity_{index}");
+        if used.insert(candidate.clone()) {
+            aliases.push(candidate);
+        }
+        index += 1;
+    }
+    aliases
+}
+
+fn static_optional_product_identity_expressions(
+    plan: &GraphPlan,
+    graph: Option<&Declaration>,
+) -> Result<Vec<ScalarExpression>, CoreError> {
+    let mut expressions = Vec::new();
+    let node_labels = plan
+        .nodes
+        .iter()
+        .map(|node| (node.variable.clone(), node.label.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen_nodes = BTreeSet::new();
+    let mut seen_relationships = BTreeSet::new();
+    for optional_match in &plan.optional_matches {
+        for node_index in &optional_match.node_indices {
+            let Some(node) = plan.nodes.get(*node_index) else {
+                return Err(CoreError::internal(
+                    "static optional identity node index was out of bounds",
+                ));
+            };
+            if seen_nodes.insert(*node_index) {
+                expressions.push(ScalarExpression::GraphIdentity {
+                    variable: node.variable.clone(),
+                });
+            }
+        }
+        for relationship_index in &optional_match.relationship_indices {
+            let Some(relationship) = plan.relationships.get(*relationship_index) else {
+                return Err(CoreError::internal(
+                    "static optional identity relationship index was out of bounds",
+                ));
+            };
+            if seen_relationships.insert(*relationship_index)
+                && let Some(variable) = &relationship.variable
+            {
+                expressions.push(static_optional_product_relationship_identity_expression(
+                    relationship,
+                    variable,
+                    &node_labels,
+                    graph,
+                )?);
+            }
+        }
+    }
+    Ok(expressions)
+}
+
+fn static_optional_product_relationship_identity_expression(
+    relationship: &RelationshipPattern,
+    variable: &str,
+    node_labels: &BTreeMap<String, String>,
+    graph: Option<&Declaration>,
+) -> Result<ScalarExpression, CoreError> {
+    if let Some(graph) = graph {
+        let left_label = node_labels.get(&relationship.left).ok_or_else(|| {
+            CoreError::internal("static optional identity relationship left node was not bound")
+        })?;
+        let right_label = node_labels.get(&relationship.right).ok_or_else(|| {
+            CoreError::internal("static optional identity relationship right node was not bound")
+        })?;
+        let declared_relationship =
+            branch_relationship_declaration(graph, relationship, left_label, right_label)
+                .ok_or_else(|| {
+                    CoreError::internal(
+                        "static optional identity relationship mapping was not resolvable",
+                    )
+                })?;
+        if declared_relationship.key.is_some() {
+            return Ok(ScalarExpression::GraphIdentity {
+                variable: variable.to_string(),
+            });
+        }
+    }
+    Ok(ScalarExpression::RelationshipType {
+        variable: variable.to_string(),
+        relationship_type: relationship.relationship_type.clone(),
+    })
+}
+
+fn is_pure_independent_optional_product_plan(plan: &GraphPlan) -> bool {
+    if plan.optional_matches.len() <= 1 {
+        return false;
+    }
+    let optional_relationships = plan
+        .optional_relationships
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut scoped_nodes = BTreeSet::new();
+    let mut scoped_relationships = BTreeSet::new();
+    for optional_match in &plan.optional_matches {
+        if optional_match.node_indices.is_empty() {
+            return false;
+        }
+        if optional_match.relationship_indices.is_empty() && optional_match.node_indices.len() != 1
+        {
+            return false;
+        }
+        let scope_node_variables = optional_match
+            .node_indices
+            .iter()
+            .filter_map(|node_index| plan.nodes.get(*node_index))
+            .map(|node| node.variable.as_str())
+            .collect::<BTreeSet<_>>();
+        if scope_node_variables.len() != optional_match.node_indices.len() {
+            return false;
+        }
+        for node_index in &optional_match.node_indices {
+            if *node_index >= plan.nodes.len() || !scoped_nodes.insert(*node_index) {
+                return false;
+            }
+        }
+        for relationship_index in &optional_match.relationship_indices {
+            let Some(relationship) = plan.relationships.get(*relationship_index) else {
+                return false;
+            };
+            if !optional_relationships.contains(relationship_index)
+                || !scoped_relationships.insert(*relationship_index)
+                || !scope_node_variables.contains(relationship.left.as_str())
+                || !scope_node_variables.contains(relationship.right.as_str())
+            {
+                return false;
+            }
+        }
+    }
+    scoped_nodes.len() == plan.nodes.len()
+        && scoped_relationships.len() == plan.relationships.len()
+        && scoped_relationships == optional_relationships
 }
 
 fn is_pure_leading_optional_plan(plan: &GraphPlan) -> bool {
@@ -4653,6 +4873,7 @@ impl StaticAlternativeHiddenOrderPlan {
 fn analyze_static_alternative_hidden_order(
     single_query: &SingleQuery,
     outer_projection: Option<&StaticAlternativeOuterProjectionPlan>,
+    context: &CypherCompileContext,
     path: &str,
 ) -> Result<Option<StaticAlternativeHiddenOrderPlan>, CoreError> {
     let return_clause = final_return_clause(single_query, path)?;
@@ -4663,7 +4884,7 @@ fn analyze_static_alternative_hidden_order(
     let projection_names = return_clause
         .items
         .iter()
-        .map(return_item_projection_name)
+        .map(|item| return_item_projection_name_with_context(item, Some(context)))
         .collect::<Vec<_>>();
     for (index, item) in order.items.iter().enumerate() {
         if resolve_projected_static_alternative_outer_order_alias(
@@ -4704,6 +4925,13 @@ fn analyze_static_alternative_hidden_order(
 }
 
 fn return_item_projection_name(item: &ProjectionItem) -> String {
+    return_item_projection_name_with_context(item, None)
+}
+
+fn return_item_projection_name_with_context(
+    item: &ProjectionItem,
+    context: Option<&CypherCompileContext>,
+) -> String {
     item.alias.as_ref().map_or_else(
         || match &item.expression {
             Expression::PropertyLookup { base, property, .. } => match base.as_ref() {
@@ -4715,7 +4943,12 @@ fn return_item_projection_name(item: &ProjectionItem) -> String {
             Expression::Variable(variable) => variable_name(variable),
             Expression::CountStar { .. } => "count".to_string(),
             Expression::FunctionCall(function) => {
-                if let Some(alias) = aggregate_function_default_alias(function) {
+                if is_aggregate_function_call(function)
+                    && let Some(name) =
+                        context.and_then(|context| context.function_source_text(function))
+                {
+                    name
+                } else if let Some(alias) = aggregate_function_default_alias(function) {
                     alias.to_string()
                 } else {
                     default_scalar_function_alias(function)
@@ -11181,15 +11414,13 @@ fn compile_match_into(
         .parts
         .iter()
         .any(|part| pattern_part_uses_bound_node(part, &initially_bound_nodes));
-    if match_clause.optional
-        && !uses_bound_node
-        && !(initially_bound_nodes.is_empty()
-            && match_clause
-                .pattern
-                .parts
-                .first()
-                .is_some_and(pattern_part_can_start_leading_optional_match))
-    {
+    let can_start_independent_optional = match_clause
+        .pattern
+        .parts
+        .first()
+        .is_some_and(pattern_part_can_start_leading_optional_match)
+        && existing_nodes_are_all_optional(plan);
+    if match_clause.optional && !uses_bound_node && !can_start_independent_optional {
         return Err(unsupported(
             "match.pattern",
             "OPTIONAL MATCH must be anchored to a previously bound node variable",
@@ -11724,6 +11955,18 @@ fn pattern_part_is_single_node(pattern_part: &PatternPart) -> bool {
 fn pattern_part_can_start_leading_optional_match(pattern_part: &PatternPart) -> bool {
     pattern_part_is_single_node(pattern_part)
         || pattern_part_is_single_fixed_relationship(pattern_part)
+}
+
+fn existing_nodes_are_all_optional(plan: &GraphPlan) -> bool {
+    if plan.nodes.is_empty() {
+        return true;
+    }
+    let optional_nodes = plan
+        .optional_matches
+        .iter()
+        .flat_map(|optional_match| optional_match.node_indices.iter().copied())
+        .collect::<BTreeSet<_>>();
+    (0..plan.nodes.len()).all(|index| optional_nodes.contains(&index))
 }
 
 fn pattern_part_is_single_fixed_relationship(pattern_part: &PatternPart) -> bool {
@@ -26188,7 +26431,11 @@ fn compile_aggregate_projection(
         target,
         distinct: function.distinct,
         alias: item.alias.as_ref().map_or_else(
-            || aggregate_function_name(function_kind).to_string(),
+            || {
+                context
+                    .function_source_text(function)
+                    .unwrap_or_else(|| aggregate_function_name(function_kind).to_string())
+            },
             variable_name,
         ),
     })

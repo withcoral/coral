@@ -924,10 +924,9 @@ impl FromClauseBuilder<'_, '_> {
         let left_joined = self.joined_nodes.contains(pattern.left.as_str());
         let right_joined = self.joined_nodes.contains(pattern.right.as_str());
         if !left_joined && !right_joined {
-            if self.joined_nodes.is_empty()
-                && self
-                    .lowerer
-                    .optional_match_scope_is_leading_relationship_scope(optional_match)?
+            if self
+                .lowerer
+                .optional_match_scope_is_leading_relationship_scope(optional_match)?
             {
                 self.join_leading_optional_relationship_match_scope(
                     optional_match,

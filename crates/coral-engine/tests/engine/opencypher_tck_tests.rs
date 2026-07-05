@@ -36,6 +36,7 @@ struct TckScenario {
 enum TckFixture {
     #[default]
     Baseline,
+    ConsecutiveOptional,
     Rich,
     Match6SingleNode,
     Match7OptionalPath,
@@ -63,10 +64,13 @@ async fn opencypher_tck_read_baseline_gate() {
 
     let temp = TempDir::new().expect("temp dir");
     write_tck_fixture(temp.path());
+    write_consecutive_optional_fixture(temp.path());
     write_match6_single_node_fixture(temp.path());
     write_match7_optional_path_fixture(temp.path());
     crate::harness::write_rich_fixture(temp.path());
     let graph = GraphDeclaration::from_yaml(TCK_GRAPH).expect("TCK graph should parse");
+    let consecutive_optional_graph = GraphDeclaration::from_yaml(CONSECUTIVE_OPTIONAL_GRAPH)
+        .expect("consecutive optional graph should parse");
     let match6_single_node_graph =
         GraphDeclaration::from_yaml(MATCH6_SINGLE_NODE_GRAPH).expect("Match6 graph should parse");
     let match7_optional_path_graph =
@@ -77,6 +81,10 @@ async fn opencypher_tck_read_baseline_gate() {
     for scenario in suite.scenarios {
         let (source, graph) = match scenario.fixture {
             TckFixture::Baseline => (build_source(tck_manifest(temp.path())), &graph),
+            TckFixture::ConsecutiveOptional => (
+                build_source(consecutive_optional_manifest(temp.path())),
+                &consecutive_optional_graph,
+            ),
             TckFixture::Match6SingleNode => (
                 build_source(match6_single_node_manifest(temp.path())),
                 &match6_single_node_graph,
@@ -313,6 +321,43 @@ fn write_tck_fixture(dir: &Path) {
     write_jsonl_file(dir, "likes.jsonl", &[]);
 }
 
+fn write_consecutive_optional_fixture(dir: &Path) {
+    write_jsonl_file(dir, "multiopt_exists.jsonl", &[json!({"id": 1, "num": 7})]);
+    write_jsonl_file(dir, "multiopt_does_not_exist.jsonl", &[]);
+    write_jsonl_file(dir, "multiopt_not_there.jsonl", &[]);
+    write_jsonl_file(dir, "multiopt_empty_a.jsonl", &[]);
+    write_jsonl_file(dir, "multiopt_empty_b.jsonl", &[]);
+    write_jsonl_file(dir, "multiopt_nor_this.jsonl", &[]);
+    write_jsonl_file(
+        dir,
+        "multiopt_owners.jsonl",
+        &[json!({"id": 1, "name": "Ada Lovelace"})],
+    );
+    write_jsonl_file(
+        dir,
+        "multiopt_alt_owners.jsonl",
+        &[json!({"id": 2, "name": "Bea Admin"})],
+    );
+    write_jsonl_file(
+        dir,
+        "multiopt_services.jsonl",
+        &[json!({"id": 10, "name": "billing-api"})],
+    );
+    write_jsonl_file(
+        dir,
+        "multiopt_ownerships.jsonl",
+        &[
+            json!({"id": 100, "owner_id": 1, "service_id": 10}),
+            json!({"id": 101, "owner_id": 1, "service_id": 10}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "multiopt_alt_ownerships.jsonl",
+        &[json!({"id": 200, "owner_id": 2, "service_id": 10})],
+    );
+}
+
 fn write_match6_single_node_fixture(dir: &Path) {
     write_jsonl_file(dir, "match6_nodes.jsonl", &[json!({"id": 1})]);
 }
@@ -369,6 +414,141 @@ fn tck_manifest(dir: &Path) -> Value {
             }
         ]
     })
+}
+
+fn consecutive_optional_manifest(dir: &Path) -> Value {
+    let mut tables = consecutive_optional_base_tables(dir);
+    tables.extend(consecutive_optional_keyed_relationship_tables(dir));
+    json!({
+        "name": "multiopt",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": tables
+    })
+}
+
+fn consecutive_optional_base_tables(dir: &Path) -> Vec<Value> {
+    vec![
+        json!({
+            "name": "does_exist",
+            "description": "Matched side for consecutive leading OPTIONAL MATCH TCK scenarios",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_exists.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "num", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "does_not_exist",
+            "description": "Empty side for consecutive leading OPTIONAL MATCH TCK scenarios",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_does_not_exist.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "num", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "not_there",
+            "description": "Empty NotThere node table for consecutive OPTIONAL repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_not_there.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "num", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "empty_a",
+            "description": "First empty label-alternative table",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_empty_a.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "num", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "empty_b",
+            "description": "Second empty label-alternative table",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_empty_b.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "num", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "nor_this",
+            "description": "Empty NOR_THIS relationship table",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_nor_this.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "source_id", "type": "Int64" },
+                { "name": "target_id", "type": "Int64" }
+            ]
+        }),
+    ]
+}
+
+fn consecutive_optional_keyed_relationship_tables(dir: &Path) -> Vec<Value> {
+    vec![
+        json!({
+            "name": "owners",
+            "description": "Owner node table for consecutive OPTIONAL keyed relationship repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_owners.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }),
+        json!({
+            "name": "alt_owners",
+            "description": "Alternate owner node table for consecutive OPTIONAL keyed relationship repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_alt_owners.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }),
+        json!({
+            "name": "services",
+            "description": "Service node table for consecutive OPTIONAL keyed relationship repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_services.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "name", "type": "Utf8" }
+            ]
+        }),
+        json!({
+            "name": "ownerships",
+            "description": "Keyed OWNS relationship table for consecutive OPTIONAL repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_ownerships.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "owner_id", "type": "Int64" },
+                { "name": "service_id", "type": "Int64" }
+            ]
+        }),
+        json!({
+            "name": "alt_ownerships",
+            "description": "Alternate keyed OWNS relationship table for consecutive OPTIONAL repros",
+            "format": "jsonl",
+            "source": { "location": dir_url(dir), "glob": "multiopt_alt_ownerships.jsonl" },
+            "columns": [
+                { "name": "id", "type": "Int64" },
+                { "name": "owner_id", "type": "Int64" },
+                { "name": "service_id", "type": "Int64" }
+            ]
+        }),
+    ]
 }
 
 fn match6_single_node_manifest(dir: &Path) -> Value {
@@ -460,6 +640,69 @@ relationships:
     key: id
     from: { label: Person, key: person_id }
     to: { label: Person, key: liked_person_id }
+";
+
+const CONSECUTIVE_OPTIONAL_GRAPH: &str = r"
+version: 1
+name: consecutive-optional
+description: Synthetic graph for consecutive leading OPTIONAL MATCH TCK scenarios
+nodes:
+  - label: DoesExist
+    table: { schema: multiopt, name: does_exist }
+    key: id
+    properties:
+      num: num
+  - label: DoesNotExist
+    table: { schema: multiopt, name: does_not_exist }
+    key: id
+    properties:
+      num: num
+  - label: NotThere
+    table: { schema: multiopt, name: not_there }
+    key: id
+    properties:
+      num: num
+  - label: EmptyA
+    table: { schema: multiopt, name: empty_a }
+    key: id
+    properties:
+      num: num
+  - label: EmptyB
+    table: { schema: multiopt, name: empty_b }
+    key: id
+    properties:
+      num: num
+  - label: Owner
+    table: { schema: multiopt, name: owners }
+    key: id
+    properties:
+      name: name
+  - label: AltOwner
+    table: { schema: multiopt, name: alt_owners }
+    key: id
+    properties:
+      name: name
+  - label: Service
+    table: { schema: multiopt, name: services }
+    key: id
+    properties:
+      name: name
+relationships:
+  - type: NOR_THIS
+    table: { schema: multiopt, name: nor_this }
+    key: id
+    from: { label: NotThere, key: source_id }
+    to: { label: NotThere, key: target_id }
+  - type: OWNS
+    table: { schema: multiopt, name: ownerships }
+    key: id
+    from: { label: Owner, key: owner_id }
+    to: { label: Service, key: service_id }
+  - type: OWNS
+    table: { schema: multiopt, name: alt_ownerships }
+    key: id
+    from: { label: AltOwner, key: owner_id }
+    to: { label: Service, key: service_id }
 ";
 
 const MATCH6_SINGLE_NODE_GRAPH: &str = r"

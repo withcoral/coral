@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-711 scenarios, which is 44.02% of the full upstream scenario-definition inventory
-and 54.95% of the read-candidate inventory.
+718 scenarios, which is 44.46% of the full upstream scenario-definition inventory
+and 55.49% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 711 representative read-only scenarios:
+The baseline currently contains 718 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -172,12 +172,14 @@ The baseline currently contains 711 representative read-only scenarios:
   membership, string predicates, regex predicates, optional null filtering, and
   `exists(property)`.
 - `RelationshipProperties`: 1 scenario for relationship property filtering.
-- `OptionalMatch`: 27 scenarios for null-preserving rows, null filtering,
+- `OptionalMatch`: 34 scenarios for null-preserving rows, null filtering,
   `coalesce(...)`, optional-local predicates, relationship-property
   projections, zero-count aggregation for unmatched rows, reverse traversal,
   bound-endpoint optional joins, multiple optional clauses, mandatory matches
   after optional scopes, inline relationship property maps, named-path metadata,
-  and connected multi-hop optional chains.
+  connected multi-hop optional chains, consecutive leading unanchored optional
+  clauses, branch-expanded empty-side collapse, and duplicate keyed
+  relationship preservation in branch-expanded consecutive optionals.
 - `Aggregation`: 29 scenarios for grouped counts, `count(*)`, numeric
   aggregates, empty-input/null-injected aggregate targets, optional null
   grouping, statistical aggregates, distinct statistical aggregates,
