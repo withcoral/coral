@@ -1,0 +1,95 @@
+---
+title: "Mapping declaration"
+description: "Declare a typed property graph over your warehouse tables - nodes, relationships, keys, and properties."
+---
+
+The virtual graph declaration is the schema contract between your warehouse tables and the graph you query. You declare node labels, relationship types, stable keys, endpoints, and exposed properties. Coral uses that typed mapping to validate graph queries and compile them to predictable SQL.
+
+For the broader feature model, start with the [virtual graph overview](/virtual-graph/overview).
+
+<Note>
+The declaration is read-only metadata. It describes how graph reads map onto existing tables; it does not copy data into a graph store.
+</Note>
+
+## Anatomy of a declaration
+
+This is the real declaration used by Coral's openCypher read baseline:
+
+```yaml
+version: 1
+name: opencypher-read-baseline
+description: Synthetic graph used by the openCypher TCK-style read baseline gate
+nodes:
+  - label: Person
+    table: { schema: tck, name: people }
+    key: id
+    properties:
+      name: name
+      age: age
+      city: city
+      active: active
+relationships:
+  - type: KNOWS
+    table: { schema: tck, name: knows }
+    key: id
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: friend_id }
+    properties:
+      since: since
+      strength: strength
+  - type: LIKES
+    table: { schema: tck, name: likes }
+    key: id
+    from: { label: Person, key: person_id }
+    to: { label: Person, key: liked_person_id }
+```
+
+The top-level fields identify the declaration and collect its graph mappings:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | Declaration schema version. `1` is the supported version. |
+| `name` | Stable graph name. |
+| `description` | Optional human-facing description. |
+| `nodes` | Node label mappings. Each label resolves to one backing table. |
+| `relationships` | Relationship type mappings. Each type resolves to one backing table and declared endpoints. |
+
+Each `table` has a warehouse `schema` and table `name`. Each `properties` map uses graph property names on the left and source column names on the right.
+
+## Nodes
+
+A node mapping turns one source table into one graph label.
+
+In the example, `Person` nodes come from `tck.people`. The node `key` is `id`, so each row's `id` column is the stable graph identity for that `Person`. The `properties` map exposes graph properties such as `name`, `age`, `city`, and `active` from columns with the same names.
+
+Property names do not need to match column names. The mapping is explicit: the graph property is the YAML key, and the source column is the YAML value.
+
+## Relationships
+
+A relationship mapping turns one source table into one directed graph relationship type.
+
+In the example, `KNOWS` relationships come from `tck.knows`. The optional relationship `key` is `id`, which gives each relationship row a stable identity. The `from` endpoint says `person_id` joins to the `Person` node key, and the `to` endpoint says `friend_id` joins to the `Person` node key.
+
+Direction is part of the declaration. `from` -> `to` is the graph direction Coral uses for directed relationship patterns. `LIKES` follows the same model, but its destination column is `liked_person_id`.
+
+Relationship properties work like node properties. `KNOWS.since` maps to the `since` column, and `KNOWS.strength` maps to the `strength` column.
+
+## The typed contract
+
+Every node label and relationship type resolves to a specific table. That is the virtual graph contract: Coral knows exactly which SQL table, key column, endpoint column, and property column a graph query means.
+
+This typing is what makes graph reads predictable. Coral can validate labels, relationship types, and properties before lowering to SQL, and it can return honest errors when a query asks for something outside the declaration.
+
+There is no schemaless mode. Add labels, relationship types, and properties explicitly when you want graph queries to see them.
+
+## Temporal columns
+
+The declaration maps property names to columns; it does not annotate property types inline. Coral reads column types from the table catalog. When a mapped column is a warehouse date or timestamp type, the graph property is queryable as a temporal value in openCypher.
+
+Keep the mapping literal: expose the property name you want graph users to query, and point it at the date or timestamp column that already exists in the table.
+
+## Usage notes
+
+Use the declaration for structural mapping only: graph name, nodes, relationships, endpoints, keys, and properties. The current production schema rejects unknown fields, so keep author guidance outside the YAML declaration unless the schema adds an explicit guidance field.
+
+That separation keeps the declaration machine-checkable. Coral can treat it as a typed contract for SQL planning instead of a mixed configuration and documentation file.

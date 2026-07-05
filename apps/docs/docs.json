@@ -85,7 +85,8 @@
       {
         "group": "Virtual graph",
         "pages": [
-          "virtual-graph/overview"
+          "virtual-graph/overview",
+          "virtual-graph/mapping"
         ]
       },
       {
