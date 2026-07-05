@@ -86,11 +86,8 @@
         "group": "Virtual graph",
         "pages": [
           "virtual-graph/overview",
-<<<<<<< HEAD
+          "virtual-graph/mapping",
           "virtual-graph/graphql"
-=======
-          "virtual-graph/mapping"
->>>>>>> origin/prod
         ]
       },
       {
