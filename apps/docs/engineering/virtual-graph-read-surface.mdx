@@ -1,0 +1,107 @@
+---
+title: "Virtual graph read surface"
+description: "Internal engineering record for the completed openCypher and GraphQL virtual graph read surface."
+---
+
+# Virtual Graph - openCypher Read Surface: Engineering Record
+
+**Status: COMPLETE to its honest boundary: 726 openCypher read scenarios, with
+646 supported row-result scenarios and 80 documented-limit error scenarios.**
+GraphQL coverage is 164 scenarios, with 145 supported row-result scenarios and
+19 validation or error scenarios. Backend: DataFusion 53.
+
+This record consolidates the shipped surface, the deferred boundaries with
+their evidence, the ratified design decisions, and the durable gate rules. It
+is an internal engineering ledger for future maintainers and agents, not a
+user-facing product overview.
+
+## 1. Shipped Surface
+
+- **Staged planning** shipped 8 structural classes: foundation, aggregation,
+  direction, scalar alias, multi-hop, optional match, aggregate carry into
+  `MATCH`, bare relationship carry into `OPTIONAL MATCH`, plus
+  declaration-inferred anonymous endpoints.
+- **Temporal support** is product-story complete for naive `date`,
+  `localdatetime`, and `localtime`, including flagship warehouse `DATE` stored
+  columns; durations, including arithmetic, ISO rendering, `between`,
+  components, and unit totals; temporal filters, including GraphQL date ranges
+  plus `IN` and `NOT IN`; and zoned datetime Z1-Z3, including full IANA and DST
+  support through Arrow `Timestamp(ns, Some(zone))`.
+- **UNWIND row sources** shipped 6 dynamic classes alongside static expansion:
+  literal no-`MATCH`, variable or alias, non-bare `RETURN`, `collect()`,
+  `keys()` and metadata, nested-list typing, plus static-to-dynamic fallthrough
+  above the static branch cap.
+- **OPTIONAL unanchored support** shipped 3 classes: leading node-only, leading
+  relationship pattern, and consecutive multi-optional, using a single-row
+  driver `LEFT JOIN` plus multi-branch collapse.
+- **Bounded variable-length path expansion** shipped for finite mandatory
+  ranges and fixed alternatives, including zero-hop and positive bounded
+  ranges. Unbounded recursive traversal remains outside the completed surface.
+- **Additional completed features** include `percentileDisc` window emulation,
+  BENCH-727 `to*()` `NULL` semantics, fixed-hop path-value materialization for
+  `RETURN p` and through-`WITH` carry, and `labels(null)`.
+
+## 2. Ratified Design Decisions
+
+These decisions are James's final position for the completed read surface; they
+are not pending design questions.
+
+1. **The typed invariant is the contract.** Labels and relationship types must
+   be resolvable. The #545 work extended resolution to unlabeled endpoints that
+   are inferable from a unique relationship declaration. That is the boundary's
+   final position. There is no anonymous-resolution or schemaless mode unless a
+   future explicit opt-in design adds declared union relationships or query
+   hints as an additive model. The reasoning is SQL predictability, where a
+   query maps to a determinate relational plan, plus the fan-out and ambiguity
+   cost of multi-type-union semantics. Ambiguous-inference queries such as
+   `(a)-->(b)` across multiple relationship types, unlabeled-first-bound
+   queries, and anonymous endpoints that cannot infer a unique label are
+   permanently out of scope.
+2. **Unbounded variable-length traversal is demand-gated.** Finite bounded
+   mandatory ranges are shipped, but recursive `[*]` traversal is the next
+   flagship only if product usage shows traversal demand. Recursive expansion
+   is a major epic, and the demand-evidence standard gates it.
+3. **Small deferrals and TCK negatives are closed permanently.** Path-valued
+   pattern comprehension, leading-`WITH`-null row sources, and the TCK negative
+   scenarios are closed unless reopened by a product pull.
+4. **The headline is that the openCypher read surface is done.** It is complete
+   to its honest boundary. Further TCK read yield requires a model opt-in
+   design under decision 1 or product-pulled demand under decisions 2 and 3.
+
+## 3. Deferred Boundaries With Evidence
+
+- **Ambiguous typed-model inference** is design-closed by decision 1. The
+  shipped model supports declaration-aware inference only when the declaration
+  produces one unique endpoint label or relationship type.
+- **Unbounded variable-length traversal and variable-length path values** are
+  demand-gated by decision 2. The shipped surface includes finite bounded
+  mandatory ranges, but unbounded recursive ranges and variable-length graph
+  value materialization remain rejected.
+- **Path-valued pattern comprehension and leading-`WITH`-null row sources** are
+  closed by decision 3.
+- **ZonedTime** remains deferred because DataFusion has no timezone-aware
+  `TIME` type. Zoned `datetime(...)` is shipped through Arrow
+  `Timestamp(ns, Some(zone))`; zoned `time(...)` is not.
+- **DST gap and overlap local-time resolution** remains guarded by rejection
+  because there is no TCK authority for the intended behavior. The guard is
+  revisable only on product demand or new conformance evidence.
+
+## 4. Durable Gate Rules
+
+- **Measure before commit:** count by first blocker on raw reject strings, and
+  remeasure before every dispatch. Stale numbers mis-scope work.
+- **Probe first:** every DataFusion assumption must be verified before building.
+  Scope probes answer actionable versus boundary before anyone writes a fix.
+- **Pre-review gate:** the manager runs set-diff, rebase, and additive checks at
+  worker completion before reviewer dispatch.
+- **Adversarial review:** independent reviewers use multi-label, multi-type,
+  and verbatim-repro probes. This caught 3 real correctness bugs before prod on
+  the OPTIONAL epic alone.
+- **Guard, do not guess:** behavior that cannot be pinned gets a documented
+  guard, not a guessed implementation.
+- **Multi-branch collapse:** unlabeled and multi-type patterns need multi-label
+  or multi-type fixtures. Single-branch coverage hides fan-out bugs.
+- **Quality baseline:** determinism is clean at 0 flakies across 22,435
+  executions; `perf-check` is tightened to 0.45s, leaving roughly 2.3x
+  headroom; `sql_tests` owns SQL-lowering coverage, with e2e deduplicated only
+  where TCK coverage supersedes it.
