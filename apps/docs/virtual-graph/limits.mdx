@@ -1,0 +1,172 @@
+---
+title: "Limits & design decisions"
+description: "The virtual graph's deliberate boundaries: a typed, read-only contract and the reasoning behind them."
+---
+
+Coral virtual graph is intentionally bounded. You declare a typed property graph over tables you already own, then read it with openCypher or GraphQL. The boundaries below are part of that contract: Coral documents what it does not do so query plans stay predictable and errors stay honest.
+
+For the feature shape, start with the [virtual graph overview](/virtual-graph/overview).
+
+<Note>
+The virtual graph is a read surface over relational data. It is not a graph store, and it does not infer a schemaless graph from your warehouse.
+</Note>
+
+## Read-only by design
+
+The virtual graph compiles graph queries to SQL that reads existing tables. Write-back is a deliberate non-goal, not a missing feature. `CREATE`, `MERGE`, `SET`, and `DELETE` do not modify your tables through the virtual graph, and GraphQL mutations are outside the supported surface.
+
+```graphql
+mutation { Person { name } }
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "mutations and subscriptions are not supported"
+}
+```
+
+## Typed, not schemaless
+
+Every node label and relationship type maps to declared tables, keys, and properties. That typing lets Coral build a determinate SQL plan instead of guessing which tables a pattern might mean.
+
+An anonymous or untyped pattern is supported only when the declaration makes it inferable. If several relationship types or endpoint labels could match, Coral rejects the query instead of choosing a plan on your behalf. Add explicit labels or relationship types when the graph is genuinely ambiguous.
+
+The same typed contract applies to the GraphQL read API: root fields must resolve to declared graph labels.
+
+```graphql
+query { People { name } }
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "unknown GraphQL root node field"
+}
+```
+
+## Variable-length paths
+
+Exact-hop and finite bounded path patterns are covered by the conformance suite. Coral can lower them because the traversal bound is part of the plan.
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN a.name AS source, c.name AS target, length(path) AS hops ORDER BY source, target, hops
+```
+
+Returns:
+
+```json
+[
+  {
+    "source": "Alice",
+    "target": "Bob",
+    "hops": 1
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "hops": 1
+  },
+  {
+    "source": "Alice",
+    "target": "Carol",
+    "hops": 2
+  },
+  {
+    "source": "Bob",
+    "target": "Carol",
+    "hops": 1
+  }
+]
+```
+
+Open-ended traversal is different. Unbounded ranges require recursive traversal planning and are deferred until there is clear product demand for that cost and complexity.
+
+```cypher
+MATCH (a:Person)-[:KNOWS*]->(c:Person) RETURN a.name AS source, c.name AS target
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "unbounded ranges are not supported yet"
+}
+```
+
+Open-lower ranges are also rejected because the planner requires finite, non-negative bounds.
+
+```cypher
+MATCH (a:Person) WHERE a.name = 'Alice' MATCH (a)-[:KNOWS*..2]->(c:Person) RETURN c.name AS target
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "variable-length relationship ranges require finite non-negative bounds"
+}
+```
+
+Returning the matched path itself is a separate limit. Bounded traversal works, but materializing a variable-length path as a value — `RETURN path` where `path` spans a variable-length pattern — is not supported.
+
+```cypher
+MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN path
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "variable-length path values"
+}
+```
+
+## Zoned time
+
+Naive temporal values are supported for dates, local datetimes, and local times. Zoned `datetime()` values are supported where the warehouse engine can represent them with timezone-aware timestamps.
+
+Zoned `time` is not the same thing. It is a time of day with a timezone, and DataFusion does not provide a timezone-aware `TIME` type. Supporting it would require a custom lift, so Coral rejects zoned `localtime()` inputs and keeps the current temporal contract explicit.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localtime('12:34:56Z') AS t
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "localtime() does not accept a timezone; use a naive time string"
+}
+```
+
+`localdatetime()` is also deliberately naive. Use a naive date-time string there, or use `datetime()` when you need a timezone-aware instant.
+
+```cypher
+MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56Z') AS d
+```
+
+Rejected with:
+
+```json
+{
+  "contains": "localdatetime() does not accept a timezone; use a naive date-time string"
+}
+```
+
+## Coverage & conformance
+
+Coral tracks the virtual graph with executable compatibility scenarios. That is how the surface stays broad without becoming vague.
+
+<CardGroup cols={2}>
+  <Card title="openCypher">
+    726 scenarios: 646 supported read behaviors and 80 documented limits.
+  </Card>
+  <Card title="GraphQL">
+    164 scenarios: 145 supported read behaviors and 19 validation or error checks.
+  </Card>
+</CardGroup>
+
+Those numbers are not marketing claims. They are the compatibility contract Coral uses to keep supported behavior reproducible and unsupported behavior visible.
