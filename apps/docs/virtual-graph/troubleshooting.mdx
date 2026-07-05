@@ -1,0 +1,102 @@
+---
+title: "Troubleshooting & FAQ"
+description: "Decode common virtual-graph error messages and answers to frequent questions."
+---
+
+Virtual graph errors are part of the contract. Coral rejects query shapes that it cannot map honestly onto the typed, read-only graph declared over your tables.
+
+Use this page when a query is rejected and you need to know whether to rewrite it, add type information, or stay inside a documented boundary. For the core model, start with the [virtual graph overview](/virtual-graph/overview).
+
+<Note>
+The decoder below covers representative high-frequency messages from the conformance baselines. It does not enumerate every edge-case validation string.
+</Note>
+
+## Reject-message decoder
+
+### openCypher
+
+| Message | What it means | What to do |
+| --- | --- | --- |
+| `variable 'r' is bound more than once` | A relationship variable was introduced in more than one relationship pattern. Coral needs each graph binding to map to one typed table row. | Use a different variable name for each relationship pattern, or reuse the first relationship by carrying it through a supported scope. |
+| `OPTIONAL MATCH currently supports one connected pattern part` | The optional clause has multiple disconnected pattern parts. Coral only preserves null rows when it can lower the optional scope as one connected shape. | Split the optional work into separate clauses, or make the optional pattern connected through already-bound variables. |
+| `WITH DISTINCT, ORDER BY, SKIP, and LIMIT before another MATCH require staged query planning` | A row-modifying `WITH` sits before another graph match. That needs a broader staged planner than this boundary supports. | Move row modifiers to the terminal return when possible, or keep the following match in a supported fixed-shape stage. |
+| `aggregate WITH aliases require staged query planning` | A non-terminal aggregate alias is used before more graph pattern work. | Return the aggregate directly, or rewrite the query so later graph matching does not depend on that aggregate stage. |
+| `WITH WHERE comparisons must include at least one projected alias operand` | A `WITH ... WHERE` predicate refers only to data that was not projected through the `WITH`. | Project the value you filter on, then filter by the projected alias. |
+| `variable-length relationship ranges require finite non-negative bounds` | The range syntax is open-ended or cannot be reduced to a bounded set of fixed-hop alternatives. | Use explicit finite bounds such as a fixed hop count or a closed range when the graph topology can resolve it. |
+| `unbounded ranges are not supported yet` | The query asks for recursive expansion with no upper bound. Coral does not run recursive variable-length traversal yet. | Add a finite upper bound, or model the traversal as separate fixed-hop patterns. |
+| `variable-length path values` | The traversal itself may be bounded, but returning the variable-length path object is outside the current graph-value representation. | Return scalar columns such as endpoint properties or hop counts instead of the path value. |
+| `localdatetime() does not accept a timezone; use a naive date-time string` | `localdatetime` is intentionally timezone-free. A string with `Z`, an offset, or a named zone is a zoned value. | Use a naive local date-time string, or use `datetime` when you need a zoned instant. |
+| `localtime() does not accept a timezone; use a naive time string` | `localtime` is timezone-free. Zoned time construction is not part of the current virtual graph surface. | Use a naive local time string. If the source property is an instant, compare it through supported date-time forms. |
+| `RETURN function 'time' is not supported yet` | Zoned time values are not exposed through the openCypher read surface yet. | Use supported local temporal values or date-time values instead. |
+| `got datetime and localdatetime` | The query compares a zoned date-time with a naive local date-time. Coral rejects mixed temporal kinds instead of guessing a timezone. | Normalize both sides to the same temporal kind before comparing. |
+| `daylight-saving gap` | A named-zone date-time falls inside a local clock gap during daylight-saving transition. | Use an unambiguous instant or a local time that exists in that zone. |
+| `daylight-saving overlap` | A named-zone date-time falls inside a repeated local clock interval during daylight-saving transition. | Use an offset-qualified instant or another unambiguous value. |
+| `only string, numeric, boolean, and null literals are supported` | A literal expression uses a map, list, computed expression, or other value class where Coral only supports scalar literals. | Keep literal predicates and projections scalar, or express the value through supported property and scalar forms. |
+| `literal list projections require at least one element` | The projected list is empty after static evaluation. Coral needs a concrete element type for list projection. | Project a non-empty list, or remove the list projection. |
+| `literal list projections require all non-null elements to have the same type` | A static list mixes incompatible scalar element types. | Keep the list homogeneous, ignoring `null` members. |
+| `null can only be compared with equality or inequality` | Ordered comparison against `null` has no stable boolean meaning. | Use equality, inequality, `IS NULL`, or `IS NOT NULL` semantics instead of ordered comparison. |
+| `literal IN predicates with a null left-hand side` | A literal `null IN [...]` predicate is not lowered because it would depend on three-valued null behavior. | Put a real scalar expression on the left, or rewrite with explicit null checks. |
+| `INVALID_SCALAR_TYPE` | A boolean, arithmetic, or scalar expression received a value of the wrong kind. | Check property types in the graph declaration and use operators that match those scalar types. |
+| `arithmetic requires a numeric scalar expression` | Arithmetic was applied to a non-numeric value such as a string property. | Use numeric properties or numeric conversions that the read surface supports. |
+| `toUpper() requires exactly one argument` | The function is supported only with its documented arity. Similar function messages mean the argument count is wrong. | Check the function signature and pass the required number of arguments. |
+| `RETURN function 'properties' is not supported yet` | Returning a full dynamic property map is outside the typed projection model. | Project the declared properties you need, or use supported metadata helpers such as `keys(variable)` where applicable. |
+| `MISSING_PARAMETER` | The query references a parameter value that was not provided. | Bind every parameter used by the query. |
+| `CYPHER_PARSE_ERROR` | The query does not parse as accepted openCypher syntax in Coral's parser. | Check literal syntax and clause structure before looking for graph-declaration issues. |
+
+### GraphQL
+
+| Message | What it means | What to do |
+| --- | --- | --- |
+| `GraphQL virtual graph queries must select exactly one included root node field` | The request selected multiple included root node fields. Coral lowers one root graph read at a time. | Select one root node field per query operation, or issue separate operations. |
+| `mutations and subscriptions are not supported` | The virtual graph is read-only. GraphQL write and subscription operations are rejected by design. | Use query operations only. |
+| `unknown GraphQL root node field` | The root field does not match a generated node field from the graph declaration. | Use a declared node label or generated root alias. |
+| `UNKNOWN_PROPERTY` | The selection asks for a property that is not declared on that node or relationship type. | Select a declared property, or update the graph declaration before relying on it. |
+| `GraphQL _id filters do not support string predicates` | `_id` is backed by the mapped key type, not by string matching operators. | Use equality, range, list, or null filters that match the key type. Use `_elementId` when you need string identity filters. |
+| `cannot coerce string` | A string literal or variable could not be coerced into the target property type, commonly a temporal property. | Pass a value formatted for the declared property kind. |
+| `require at least one object` | A boolean array such as `and` or `or` was empty. | Provide at least one filter object, or remove the empty boolean wrapper. |
+| `requires exactly two objects` | `xor` is binary in the GraphQL filter surface. | Pass exactly two filter objects. |
+| `orderBy direction must be` | The `direction` enum was not one of the accepted order directions. | Use a supported ascending or descending enum value. |
+| `orderBy nulls must be` | The `nulls` enum was not one of the accepted null-placement values. | Use a supported null-placement enum value, or omit it. |
+| `do not support row modifiers` | A nested relationship selection used per-parent row modifiers. Those require collection semantics beyond the current lowering. | Apply row modifiers at the root where supported, or remove them from nested relationship fields. |
+| `unsupported GraphQL directive '@uppercase'` | Custom directives are rejected before SQL lowering. | Use supported standard directives only. |
+| `directive '@skip' is repeated` | The same directive appears more than once at the same location. | Keep one instance of each directive at a selection location. |
+| `requires exactly one 'field' argument` | An aggregate field was called without the required property field argument. | Pass the property to aggregate over. |
+| `requires exactly 'field' and 'percentile' arguments` | A percentile aggregate is missing one of its required arguments. | Provide both the property field and percentile. |
+| `percentile aggregate argument must be between 0.0 and 1.0 inclusive` | The percentile value is outside the accepted range. | Use a percentile from `0.0` through `1.0`. |
+| `requires a numeric property` | A numeric aggregate was requested for a non-numeric property. | Aggregate over a numeric declared property. |
+
+## FAQ
+
+### Why did my unlabeled directed relationship query get rejected?
+
+The virtual graph is typed. Coral can only lower a pattern when labels, relationship types, and endpoints resolve to declared tables without ambiguity. Add the node labels or relationship type needed to make the pattern deterministic.
+
+### Can I write or update data through the graph?
+
+No. The virtual graph is read-only by design. It compiles graph reads to SQL over existing tables and never writes back through openCypher or GraphQL.
+
+### Why can't I use a timezone with `localtime` or `localdatetime`?
+
+Those constructors represent naive local values. A value with `Z`, an offset, or a named zone is not local. Use naive strings with `localtime` and `localdatetime`; use supported `datetime` forms when you need a zoned instant. Zoned time values are not supported yet.
+
+### Does unbounded variable-length traversal work?
+
+No. Fixed-hop and finite bounded ranges are supported where the declaration can resolve them, but unbounded recursive traversal is deferred.
+
+### Can I return a path from a variable-length traversal?
+
+Not yet. Coral can return fixed-hop path values in supported cases, but variable-length path values remain outside the current graph-value representation. Return endpoint properties, keys, or scalar metadata instead.
+
+### Why did GraphQL reject my nested `limit` or `orderBy`?
+
+Nested relationship row modifiers need per-parent collection semantics. Coral currently supports row modifiers at the root query level, not inside nested relationship selections.
+
+### Where are the docs for the query languages?
+
+The openCypher and GraphQL references describe the language surfaces when those pages are present in this section. Until then, use the overview for the model and this page for common rejection boundaries.
+
+## Conventions
+
+Examples in the virtual graph docs use the shared example graph from the conformance suite: `Person` nodes with properties such as `name`, `age`, `city`, and `active`, plus `KNOWS` and `LIKES` relationships between people. GraphQL examples use the richer conformance graph with additional properties such as temporal fields.
+
+Every documented behavior is backed by an executable conformance scenario. The current baselines cover 726 openCypher read scenarios, including 646 supported behaviors and 80 documented limits, plus 164 GraphQL scenarios, including 145 supported behaviors and 19 validation or error checks.

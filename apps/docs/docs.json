@@ -88,7 +88,8 @@
           "virtual-graph/overview",
           "virtual-graph/mapping",
           "virtual-graph/graphql",
-          "virtual-graph/limits"
+          "virtual-graph/limits",
+          "virtual-graph/troubleshooting"
         ]
       },
       {
