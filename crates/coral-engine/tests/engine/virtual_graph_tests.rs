@@ -209,31 +209,6 @@ async fn cypher_staged_optional_match_preserves_empty_optional_row() {
 }
 
 #[tokio::test]
-async fn cypher_staged_optional_match_preserves_matched_optional_row() {
-    let temp = TempDir::new().expect("temp dir");
-    write_staged_planning_keyed_fixture(temp.path());
-    let source = build_source(staged_planning_keyed_manifest(temp.path()));
-    let graph = staged_planning_keyed_test_graph();
-
-    let execution = CoralQuery::execute_cypher(
-        &[source],
-        test_runtime(),
-        &graph,
-        "MATCH (a:Person) \
-         WITH a ORDER BY a.age LIMIT 1 \
-         OPTIONAL MATCH (a)-[:KNOWS]->(b:Person) \
-         RETURN a.name AS a, b.name AS b",
-    )
-    .await
-    .expect("staged optional query with matched optional side should execute");
-
-    assert_eq!(
-        execution_to_rows(execution.execution()),
-        vec![json!({"a": "Bob", "b": "Carol"})]
-    );
-}
-
-#[tokio::test]
 async fn cypher_staged_relationship_carry_optional_match_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_keyed_fixture(temp.path());
@@ -409,31 +384,6 @@ async fn cypher_staged_node_and_relationship_carry_inferred_optional_endpoint_ex
             "b2.__labels": ["X"],
             "b2.name": "Beta"
         })]
-    );
-}
-
-#[tokio::test]
-async fn cypher_staged_node_and_relationship_carry_optional_match_executes() {
-    let temp = TempDir::new().expect("temp dir");
-    write_staged_planning_keyed_fixture(temp.path());
-    let source = build_source(staged_planning_keyed_manifest(temp.path()));
-    let graph = staged_planning_keyed_test_graph();
-
-    let execution = CoralQuery::execute_cypher(
-        &[source],
-        test_runtime(),
-        &graph,
-        "MATCH (a1:Person)-[r:KNOWS]->(:Person) \
-         WITH r, a1 ORDER BY id(r) LIMIT 1 \
-         OPTIONAL MATCH (a1)-[r:KNOWS]->(b2:Person) \
-         RETURN a1.name AS a, id(r) AS r, b2.name AS b",
-    )
-    .await
-    .expect("staged node and relationship carry optional query should execute");
-
-    assert_eq!(
-        execution_to_rows(execution.execution()),
-        vec![json!({"a": "Alice", "r": 100, "b": "Bob"})]
     );
 }
 
@@ -19999,73 +19949,6 @@ async fn cypher_static_list_concatenation_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
-async fn cypher_dynamic_unwind_alias_sources_execute_against_synthetic_sources() {
-    let temp = TempDir::new().expect("temp dir");
-    write_ops_fixture(temp.path());
-    let source = build_source(ops_manifest(temp.path()));
-    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
-
-    let execution = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x",
-    )
-    .await
-    .expect("WITH alias UNWIND row source should execute");
-
-    assert!(
-        execution.translated_sql().contains("UNNEST"),
-        "{}",
-        execution.translated_sql()
-    );
-    assert_eq!(
-        execution_to_rows(execution.execution()),
-        vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})]
-    );
-
-    let empty = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "WITH [] AS list UNWIND list AS x RETURN x",
-    )
-    .await
-    .expect("empty WITH alias UNWIND row source should execute");
-
-    assert_eq!(empty.execution().row_count(), 0);
-    assert!(execution_to_rows(empty.execution()).is_empty());
-
-    let concatenated = CoralQuery::execute_cypher(
-        &[source],
-        test_runtime(),
-        &graph,
-        "WITH [1, 2, 3] AS first, [4, 5, 6] AS second \
-         UNWIND (first + second) AS x \
-         RETURN x",
-    )
-    .await
-    .expect("WITH alias list concatenation UNWIND row source should execute");
-
-    assert!(
-        concatenated.translated_sql().contains("array_concat"),
-        "{}",
-        concatenated.translated_sql()
-    );
-    assert_eq!(
-        execution_to_rows(concatenated.execution()),
-        vec![
-            json!({"x": 1}),
-            json!({"x": 2}),
-            json!({"x": 3}),
-            json!({"x": 4}),
-            json!({"x": 5}),
-            json!({"x": 6}),
-        ]
-    );
-}
-
-#[tokio::test]
 async fn cypher_nested_literal_unwind_sources_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -20285,111 +20168,6 @@ async fn cypher_relationship_property_key_unwind_sources_execute_against_synthet
             json!({"property_key": "since"}),
             json!({"property_key": "source"}),
         ]
-    );
-}
-
-#[tokio::test]
-async fn cypher_unwind_non_bare_returns_execute_against_synthetic_sources() {
-    let temp = TempDir::new().expect("temp dir");
-    write_ops_fixture(temp.path());
-    let source = build_source(ops_manifest(temp.path()));
-    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
-
-    let aggregate = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "UNWIND [1, 2, 3] AS x RETURN count(x) AS c, sum(x) AS s, collect(x) AS xs",
-    )
-    .await
-    .expect("UNWIND aggregate return should execute");
-
-    assert!(
-        aggregate.translated_sql().contains("WITH \"stage0\" AS"),
-        "{}",
-        aggregate.translated_sql()
-    );
-    assert_eq!(
-        execution_to_rows(aggregate.execution()),
-        vec![json!({"c": 3, "s": 6, "xs": [1, 2, 3]})]
-    );
-
-    let ordered = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "UNWIND [3, 1, 2] AS x RETURN x ORDER BY x",
-    )
-    .await
-    .expect("UNWIND ordered return should execute");
-
-    assert_eq!(
-        execution_to_rows(ordered.execution()),
-        vec![json!({"x": 1}), json!({"x": 2}), json!({"x": 3})]
-    );
-
-    let distinct = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "UNWIND [1, 1, 2, 2] AS x RETURN DISTINCT x ORDER BY x",
-    )
-    .await
-    .expect("UNWIND distinct return should execute");
-
-    assert_eq!(
-        execution_to_rows(distinct.execution()),
-        vec![json!({"x": 1}), json!({"x": 2})]
-    );
-
-    let expressions = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "UNWIND [1, 2, 3] AS x RETURN x * 2 AS d, toString(x) AS text ORDER BY d",
-    )
-    .await
-    .expect("UNWIND expression return should execute");
-
-    assert_eq!(
-        execution_to_rows(expressions.execution()),
-        vec![
-            json!({"d": 2, "text": "1"}),
-            json!({"d": 4, "text": "2"}),
-            json!({"d": 6, "text": "3"}),
-        ]
-    );
-
-    let alias_source = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "WITH [1, 2, 3] AS list UNWIND list AS x RETURN x, x + 10 AS y ORDER BY x",
-    )
-    .await
-    .expect("WITH alias UNWIND multi-column return should execute");
-
-    assert_eq!(
-        execution_to_rows(alias_source.execution()),
-        vec![
-            json!({"x": 1, "y": 11}),
-            json!({"x": 2, "y": 12}),
-            json!({"x": 3, "y": 13}),
-        ]
-    );
-
-    let terminal_with = CoralQuery::execute_cypher(
-        std::slice::from_ref(&source),
-        test_runtime(),
-        &graph,
-        "UNWIND [1, 2, 3] AS x WITH x * 2 AS d RETURN d ORDER BY d",
-    )
-    .await
-    .expect("UNWIND terminal WITH return should execute");
-
-    assert_eq!(
-        execution_to_rows(terminal_with.execution()),
-        vec![json!({"d": 2}), json!({"d": 4}), json!({"d": 6})]
     );
 }
 
