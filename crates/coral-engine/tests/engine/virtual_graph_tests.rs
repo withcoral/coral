@@ -335,6 +335,84 @@ async fn cypher_staged_bare_relationship_carry_optional_match_executes() {
 }
 
 #[tokio::test]
+async fn cypher_staged_relationship_carry_inferred_optional_endpoints_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_unique_relationship_fixture(temp.path());
+    let source = build_source(staged_unique_relationship_manifest(temp.path()));
+    let graph = staged_unique_relationship_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH ()-[r]->() \
+         WITH r LIMIT 1 \
+         OPTIONAL MATCH (a2)-[r]->(b2) \
+         RETURN a2, r, b2",
+    )
+    .await
+    .expect("staged inferred relationship carry optional query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"r_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "a2.__id": 1,
+            "a2.__labels": ["X"],
+            "a2.name": "Alpha",
+            "r.__id": 10,
+            "r.__type": "REL",
+            "b2.__id": 2,
+            "b2.__labels": ["X"],
+            "b2.name": "Beta"
+        })]
+    );
+}
+
+#[tokio::test]
+async fn cypher_staged_node_and_relationship_carry_inferred_optional_endpoint_executes() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_unique_relationship_fixture(temp.path());
+    let source = build_source(staged_unique_relationship_manifest(temp.path()));
+    let graph = staged_unique_relationship_test_graph();
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "MATCH (a1)-[r]->() \
+         WITH r, a1 LIMIT 1 \
+         OPTIONAL MATCH (a1)-[r]->(b2) \
+         RETURN a1, r, b2",
+    )
+    .await
+    .expect("staged inferred node and relationship carry optional query should execute");
+
+    assert!(
+        execution.translated_sql().contains("\"stage0\".\"r_id\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({
+            "a1.__id": 1,
+            "a1.__labels": ["X"],
+            "a1.name": "Alpha",
+            "r.__id": 10,
+            "r.__type": "REL",
+            "b2.__id": 2,
+            "b2.__labels": ["X"],
+            "b2.name": "Beta"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_staged_node_and_relationship_carry_optional_match_executes() {
     let temp = TempDir::new().expect("temp dir");
     write_staged_planning_keyed_fixture(temp.path());
@@ -21734,6 +21812,59 @@ fn staged_planning_keyed_test_graph() -> GraphDeclaration {
         .expect("keyed staged graph should parse")
 }
 
+fn write_staged_unique_relationship_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "staged_unique_nodes.jsonl",
+        &[
+            json!({"id": 1, "name": "Alpha"}),
+            json!({"id": 2, "name": "Beta"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_unique_rels.jsonl",
+        &[json!({"id": 10, "from_id": 1, "to_id": 2})],
+    );
+}
+
+fn staged_unique_relationship_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "staged_unique",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "nodes",
+                "description": "Unique relationship staged node fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_unique_nodes.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "name", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "rels",
+                "description": "Unique relationship staged edge fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_unique_rels.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "from_id", "type": "Int64" },
+                    { "name": "to_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
+fn staged_unique_relationship_test_graph() -> GraphDeclaration {
+    GraphDeclaration::from_yaml(STAGED_UNIQUE_RELATIONSHIP_GRAPH)
+        .expect("unique staged relationship graph should parse")
+}
+
 fn wide_property_test_graph(property_count: usize) -> GraphDeclaration {
     let mut properties = String::new();
     for index in 0..property_count {
@@ -22221,6 +22352,24 @@ relationships:
     key: id
     from: { label: Person, key: person_id }
     to: { label: Service, key: service_id }
+";
+
+const STAGED_UNIQUE_RELATIONSHIP_GRAPH: &str = r"
+version: 1
+name: staged_unique_relationship
+description: Synthetic keyed graph with one relationship declaration
+nodes:
+  - label: X
+    table: { schema: staged_unique, name: nodes }
+    key: id
+    properties:
+      name: name
+relationships:
+  - type: REL
+    table: { schema: staged_unique, name: rels }
+    key: id
+    from: { label: X, key: from_id }
+    to: { label: X, key: to_id }
 ";
 
 const ROUTE_GRAPH: &str = r"

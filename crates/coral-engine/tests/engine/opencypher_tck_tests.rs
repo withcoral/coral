@@ -44,6 +44,7 @@ enum TckFixture {
     Match6SingleNode,
     Match7OptionalPath,
     PathThroughWith,
+    StagedRelationshipCarry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +132,7 @@ struct TckGraphs {
     match6_single_node: GraphDeclaration,
     match7_optional_path: GraphDeclaration,
     path_through_with: GraphDeclaration,
+    staged_relationship_carry: GraphDeclaration,
     rich: GraphDeclaration,
     wide_properties: GraphDeclaration,
 }
@@ -147,6 +149,8 @@ impl TckGraphs {
                 .expect("Match7 graph should parse"),
             path_through_with: GraphDeclaration::from_yaml(PATH_THROUGH_WITH_GRAPH)
                 .expect("path carry graph should parse"),
+            staged_relationship_carry: GraphDeclaration::from_yaml(STAGED_RELATIONSHIP_CARRY_GRAPH)
+                .expect("staged relationship carry graph should parse"),
             rich: GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
                 .expect("rich fixture graph should parse"),
             wide_properties: wide_property_test_graph(65),
@@ -160,6 +164,7 @@ impl TckGraphs {
             TckFixture::Match6SingleNode => &self.match6_single_node,
             TckFixture::Match7OptionalPath => &self.match7_optional_path,
             TckFixture::PathThroughWith => &self.path_through_with,
+            TckFixture::StagedRelationshipCarry => &self.staged_relationship_carry,
             TckFixture::Rich => &self.rich,
             TckFixture::WideProperties => &self.wide_properties,
         }
@@ -172,6 +177,7 @@ fn write_all_tck_fixtures(dir: &Path) {
     write_match6_single_node_fixture(dir);
     write_match7_optional_path_fixture(dir);
     write_path_through_with_fixture(dir);
+    write_staged_relationship_carry_fixture(dir);
     write_wide_property_fixture(dir);
     crate::harness::write_rich_fixture(dir);
 }
@@ -183,6 +189,9 @@ fn tck_source(fixture: TckFixture, dir: &Path) -> QuerySource {
         TckFixture::Match6SingleNode => build_source(match6_single_node_manifest(dir)),
         TckFixture::Match7OptionalPath => build_source(match7_optional_path_manifest(dir)),
         TckFixture::PathThroughWith => build_source(path_through_with_manifest(dir)),
+        TckFixture::StagedRelationshipCarry => {
+            build_source(staged_relationship_carry_manifest(dir))
+        }
         TckFixture::Rich => build_source(crate::harness::rich_manifest(dir)),
         TckFixture::WideProperties => build_source(wide_property_manifest(dir)),
     }
@@ -413,6 +422,22 @@ fn write_path_through_with_fixture(dir: &Path) {
         dir,
         "path_with_x.jsonl",
         &[json!({"id": 100, "a_id": 1, "b_id": 2})],
+    );
+}
+
+fn write_staged_relationship_carry_fixture(dir: &Path) {
+    write_jsonl_file(
+        dir,
+        "staged_relcarry_nodes.jsonl",
+        &[
+            json!({"id": 1, "name": "Alpha"}),
+            json!({"id": 2, "name": "Beta"}),
+        ],
+    );
+    write_jsonl_file(
+        dir,
+        "staged_relcarry_edges.jsonl",
+        &[json!({"id": 10, "from_id": 1, "to_id": 2})],
     );
 }
 
@@ -736,6 +761,38 @@ fn path_through_with_manifest(dir: &Path) -> Value {
     })
 }
 
+fn staged_relationship_carry_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "staged_relcarry",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "nodes",
+                "description": "Staged relationship carry node fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_relcarry_nodes.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "name", "type": "Utf8" }
+                ]
+            },
+            {
+                "name": "edges",
+                "description": "Staged relationship carry keyed edge fixture",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "staged_relcarry_edges.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "from_id", "type": "Int64" },
+                    { "name": "to_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
 fn wide_property_test_graph(property_count: usize) -> GraphDeclaration {
     let mut properties = String::new();
     for index in 0..property_count {
@@ -896,4 +953,21 @@ relationships:
     key: id
     from: { label: A, key: a_id }
     to: { label: B, key: b_id }
+";
+
+const STAGED_RELATIONSHIP_CARRY_GRAPH: &str = r"
+version: 1
+name: staged-relationship-carry
+nodes:
+  - label: X
+    table: { schema: staged_relcarry, name: nodes }
+    key: id
+    properties:
+      name: name
+relationships:
+  - type: REL
+    table: { schema: staged_relcarry, name: edges }
+    key: id
+    from: { label: X, key: from_id }
+    to: { label: X, key: to_id }
 ";

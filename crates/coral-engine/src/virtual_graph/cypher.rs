@@ -7740,6 +7740,8 @@ struct StagedRelationshipCarryShape<'a> {
 struct StagedRelationshipCarryInitialMatch {
     relationship_variable: String,
     relationship_type: String,
+    left_label: String,
+    right_label: String,
     endpoint_variables: BTreeSet<String>,
     endpoint_labels: BTreeMap<String, String>,
 }
@@ -7791,7 +7793,7 @@ fn staged_relationship_carry_multi_part_shape<'a>(
     {
         return Ok(None);
     }
-    let Some(initial_match) = staged_relationship_carry_initial_match_shape(part) else {
+    let Some(initial_match) = staged_relationship_carry_initial_match_shape(part, context) else {
         return Ok(None);
     };
     let Some(with_variables) = staged_relationship_carry_with_variables(&part.with) else {
@@ -7822,6 +7824,8 @@ fn staged_relationship_carry_multi_part_shape<'a>(
         match_clause,
         &initial_match.relationship_variable,
         &initial_match.relationship_type,
+        &initial_match.left_label,
+        &initial_match.right_label,
         &carried_nodes.iter().cloned().collect(),
         &initial_match.endpoint_labels,
     ) else {
@@ -7869,6 +7873,7 @@ fn staged_relationship_carry_with_variables(with: &With) -> Option<Vec<String>> 
 
 fn staged_relationship_carry_initial_match_shape(
     part: &MultiPartQueryPart,
+    context: &CypherCompileContext,
 ) -> Option<StagedRelationshipCarryInitialMatch> {
     let [ReadingClause::Match(match_clause)] = part.reading_clauses.as_slice() else {
         return None;
@@ -7896,20 +7901,12 @@ fn staged_relationship_carry_initial_match_shape(
             .as_ref()
             .and_then(|detail| detail.range.as_ref())
             .is_some()
-        || !chain
-            .relationship
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.types.as_ref())
-            .is_some_and(staged_static_label)
         || chain
             .relationship
             .detail
             .as_ref()
             .and_then(|detail| detail.properties.as_ref())
             .is_some()
-        || !staged_single_static_label(&start.labels)
-        || !staged_single_static_label(&chain.node.labels)
     {
         return None;
     }
@@ -7919,25 +7916,40 @@ fn staged_relationship_carry_initial_match_shape(
         .as_ref()
         .and_then(|detail| detail.variable.as_ref())
         .map(variable_name)?;
-    let relationship_type = chain
-        .relationship
-        .detail
-        .as_ref()
-        .and_then(|detail| detail.types.as_ref())
-        .and_then(staged_static_label_expression_name)?;
+    let relationship_type_hint = staged_optional_static_relationship_type(&chain.relationship)?;
+    let left_label_hint = staged_optional_static_label_name(&start.labels)?;
+    let right_label_hint = staged_optional_static_label_name(&chain.node.labels)?;
+    let (relationship_type, left_label, right_label) =
+        if let (Some(relationship_type), Some(left_label), Some(right_label)) = (
+            relationship_type_hint.as_deref(),
+            left_label_hint.as_deref(),
+            right_label_hint.as_deref(),
+        ) {
+            (
+                relationship_type.to_string(),
+                left_label.to_string(),
+                right_label.to_string(),
+            )
+        } else {
+            let relationship = staged_relationship_carry_unique_declaration(
+                context.graph.as_ref()?,
+                relationship_type_hint.as_deref(),
+                left_label_hint.as_deref(),
+                right_label_hint.as_deref(),
+            )?;
+            (
+                relationship.relationship_type.clone(),
+                relationship.from.label.clone(),
+                relationship.to.label.clone(),
+            )
+        };
     let endpoint_variables = [path_node_variable(start), path_node_variable(&chain.node)]
         .into_iter()
         .flatten()
         .collect::<BTreeSet<_>>();
     let endpoint_labels = [
-        (
-            path_node_variable(start),
-            staged_static_label_name(&start.labels),
-        ),
-        (
-            path_node_variable(&chain.node),
-            staged_static_label_name(&chain.node.labels),
-        ),
+        (path_node_variable(start), Some(left_label.clone())),
+        (path_node_variable(&chain.node), Some(right_label.clone())),
     ]
     .into_iter()
     .filter_map(|(variable, label)| Some((variable?, label?)))
@@ -7946,9 +7958,74 @@ fn staged_relationship_carry_initial_match_shape(
     Some(StagedRelationshipCarryInitialMatch {
         relationship_variable,
         relationship_type,
+        left_label,
+        right_label,
         endpoint_variables,
         endpoint_labels,
     })
+}
+
+#[derive(Clone)]
+enum StagedOptionalStaticName {
+    Omitted,
+    Static(String),
+}
+
+impl StagedOptionalStaticName {
+    fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Omitted => None,
+            Self::Static(name) => Some(name.as_str()),
+        }
+    }
+
+    fn cloned_name(&self) -> Option<String> {
+        match self {
+            Self::Omitted => None,
+            Self::Static(name) => Some(name.clone()),
+        }
+    }
+}
+
+fn staged_optional_static_relationship_type(
+    relationship: &CypherRelationshipPattern,
+) -> Option<StagedOptionalStaticName> {
+    let Some(types) = relationship
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.types.as_ref())
+    else {
+        return Some(StagedOptionalStaticName::Omitted);
+    };
+    staged_static_label_expression_name(types).map(StagedOptionalStaticName::Static)
+}
+
+fn staged_optional_static_label_name(
+    labels: &[LabelExpression],
+) -> Option<StagedOptionalStaticName> {
+    match labels {
+        [] => Some(StagedOptionalStaticName::Omitted),
+        [label] => staged_static_label_expression_name(label).map(StagedOptionalStaticName::Static),
+        _ => None,
+    }
+}
+
+fn staged_relationship_carry_unique_declaration<'a>(
+    graph: &'a Declaration,
+    relationship_type: Option<&str>,
+    left_label: Option<&str>,
+    right_label: Option<&str>,
+) -> Option<&'a DeclaredRelationship> {
+    let mut matches = graph.relationships.iter().filter(|relationship| {
+        relationship_type.is_none_or(|expected| relationship.relationship_type == expected)
+            && left_label.is_none_or(|expected| relationship.from.label == expected)
+            && right_label.is_none_or(|expected| relationship.to.label == expected)
+    });
+    let relationship = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(relationship)
 }
 
 fn staged_relationship_carry_with_order_shape(
@@ -7972,6 +8049,8 @@ fn staged_relationship_carry_final_match_shape(
     match_clause: &Match,
     carried_relationship: &str,
     carried_relationship_type: &str,
+    carried_left_label: &str,
+    carried_right_label: &str,
     carried_nodes: &BTreeSet<String>,
     carried_node_labels: &BTreeMap<String, String>,
 ) -> Option<StagedRelationshipCarryFinalMatch> {
@@ -8026,27 +8105,58 @@ fn staged_relationship_carry_final_match_shape(
     } else {
         carried_relationship_type.to_string()
     };
+    if relationship_type != carried_relationship_type {
+        return None;
+    }
     let start_variable = path_node_variable(start)?;
     let end_variable = path_node_variable(&chain.node)?;
-    if start.properties.is_some()
-        || chain.node.properties.is_some()
-        || !staged_final_node_label_shape(&start.labels, &start_variable, Some(carried_nodes))
-        || !staged_final_node_label_shape(&chain.node.labels, &end_variable, Some(carried_nodes))
-    {
+    let start_label_hint = staged_optional_static_label_name(&start.labels)?;
+    let end_label_hint = staged_optional_static_label_name(&chain.node.labels)?;
+    if start.properties.is_some() || chain.node.properties.is_some() {
         return None;
     }
 
+    let (nodes, optional_node_indices, graph_variables) = staged_relationship_carry_final_nodes(
+        [
+            (start_variable.clone(), start_label_hint, carried_left_label),
+            (end_variable.clone(), end_label_hint, carried_right_label),
+        ],
+        carried_nodes,
+        carried_node_labels,
+    )?;
+
+    Some(StagedRelationshipCarryFinalMatch {
+        nodes,
+        relationship: RelationshipPattern {
+            variable: Some(relationship_variable),
+            relationship_type,
+            left: start_variable,
+            direction: Direction::Outgoing,
+            right: end_variable,
+        },
+        optional_node_indices,
+        graph_variables,
+    })
+}
+
+fn staged_relationship_carry_final_nodes(
+    nodes: [(String, StagedOptionalStaticName, &str); 2],
+    carried_nodes: &BTreeSet<String>,
+    carried_node_labels: &BTreeMap<String, String>,
+) -> Option<(Vec<NodePattern>, Vec<usize>, BTreeSet<String>)> {
     let mut graph_variables = BTreeSet::new();
     let mut node_specs = Vec::with_capacity(2);
-    for (variable, labels) in [
-        (start_variable.clone(), start.labels.as_slice()),
-        (end_variable.clone(), chain.node.labels.as_slice()),
-    ] {
+    for (variable, label_hint, inferred_label) in nodes {
         if !graph_variables.insert(variable.clone()) {
             return None;
         }
-        let label = staged_static_label_name(labels)
-            .or_else(|| carried_node_labels.get(&variable).cloned())?;
+        let label = label_hint
+            .cloned_name()
+            .or_else(|| carried_node_labels.get(&variable).cloned())
+            .unwrap_or_else(|| inferred_label.to_string());
+        if label != inferred_label {
+            return None;
+        }
         let optional = !carried_nodes.contains(&variable);
         node_specs.push((NodePattern { variable, label }, optional));
     }
@@ -8061,18 +8171,7 @@ fn staged_relationship_carry_final_match_shape(
         .filter_map(|(index, (_, optional))| optional.then_some(index))
         .collect::<Vec<_>>();
 
-    Some(StagedRelationshipCarryFinalMatch {
-        nodes,
-        relationship: RelationshipPattern {
-            variable: Some(relationship_variable),
-            relationship_type,
-            left: start_variable,
-            direction: Direction::Outgoing,
-            right: end_variable,
-        },
-        optional_node_indices,
-        graph_variables,
-    })
+    Some((nodes, optional_node_indices, graph_variables))
 }
 
 fn staged_relationship_carry_return_shape(
@@ -9720,13 +9819,6 @@ fn staged_id_lookup(expression: &Expression, context: &CypherCompileContext) -> 
         }
         _ => None,
     }
-}
-
-fn staged_static_label_name(labels: &[LabelExpression]) -> Option<String> {
-    let [LabelExpression::Static(label)] = labels else {
-        return None;
-    };
-    Some(label.name.clone())
 }
 
 fn staged_static_label_expression_name(label: &LabelExpression) -> Option<String> {

@@ -6688,6 +6688,128 @@ fn compiles_staged_bare_relationship_carry_optional_match() {
 }
 
 #[test]
+fn compiles_staged_relationship_carry_with_declaration_inferred_optional_endpoints() {
+    let graph = staged_aggregate_relationship_carry_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH ()-[r]->() \
+             WITH r LIMIT 1 \
+             OPTIONAL MATCH (a2)-[r]->(b2) \
+             RETURN a2, r, b2",
+    )
+    .expect("staged route should infer carried relationship endpoints from declaration");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("inferred relationship carry should compile to a staged graph query");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![GraphStageExport::RelationshipKey {
+            variable: "r".to_string(),
+            column: "r_id".to_string(),
+        }]
+    );
+    assert_eq!(
+        staged.final_plan.nodes,
+        vec![
+            NodePattern {
+                variable: "a2".to_string(),
+                label: "X".to_string(),
+            },
+            NodePattern {
+                variable: "b2".to_string(),
+                label: "X".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "REL".to_string(),
+            left: "a2".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+    let optional_scope = staged
+        .final_plan
+        .optional_matches
+        .first()
+        .expect("final plan should have one optional scope");
+    assert_eq!(optional_scope.node_indices, vec![0, 1]);
+}
+
+#[test]
+fn compiles_staged_node_and_relationship_carry_with_declaration_inferred_optional_target() {
+    let graph = staged_aggregate_relationship_carry_test_graph();
+    let query = compile_cypher_query_for_graph(
+        &graph,
+        "MATCH (a1)-[r]->() \
+             WITH r, a1 LIMIT 1 \
+             OPTIONAL MATCH (a1)-[r]->(b2) \
+             RETURN a1, r, b2",
+    )
+    .expect("staged route should infer carried node and optional target labels");
+
+    let GraphQuery::Staged(staged) = query else {
+        panic!("node plus inferred relationship carry should compile to staged");
+    };
+    let stage = staged
+        .stages
+        .first()
+        .expect("staged query should have stage 0");
+    assert_eq!(
+        stage.exports,
+        vec![
+            GraphStageExport::RelationshipKey {
+                variable: "r".to_string(),
+                column: "r_id".to_string(),
+            },
+            GraphStageExport::NodeKey {
+                variable: "a1".to_string(),
+                column: "a1_id".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.nodes,
+        vec![
+            NodePattern {
+                variable: "a1".to_string(),
+                label: "X".to_string(),
+            },
+            NodePattern {
+                variable: "b2".to_string(),
+                label: "X".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        staged.final_plan.relationships,
+        vec![RelationshipPattern {
+            variable: Some("r".to_string()),
+            relationship_type: "REL".to_string(),
+            left: "a1".to_string(),
+            direction: Direction::Outgoing,
+            right: "b2".to_string(),
+        }]
+    );
+    assert_eq!(staged.final_plan.optional_relationships, vec![0]);
+    let optional_scope = staged
+        .final_plan
+        .optional_matches
+        .first()
+        .expect("final plan should have one optional scope");
+    assert_eq!(optional_scope.node_indices, vec![1]);
+}
+
+#[test]
 fn compiles_staged_node_and_relationship_carry_optional_match() {
     let graph = staged_planning_test_graph();
     let query = compile_cypher_query_for_graph(
@@ -7589,10 +7711,10 @@ fn rejects_staged_with_untyped_final_relationship() {
 }
 
 #[test]
-fn rejects_staged_bare_relationship_carry_unlabeled_optional_targets() {
+fn rejects_staged_bare_relationship_carry_ambiguous_unlabeled_optional_targets() {
     assert_staged_planning_reject(
-        "bare relationship carry unlabeled optional targets",
-        "MATCH (:Person)-[r:KNOWS]->(:Person) \
+        "ambiguous bare relationship carry unlabeled optional targets",
+        "MATCH ()-[r]->() \
          WITH r LIMIT 1 \
          OPTIONAL MATCH (a2)-[r]->(b2) \
          RETURN id(r) AS r",

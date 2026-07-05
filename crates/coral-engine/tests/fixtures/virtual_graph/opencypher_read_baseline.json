@@ -30,7 +30,7 @@
     "Unwind": 39,
     "VariableLengthPaths": 16,
     "Where": 30,
-    "With": 51
+    "With": 53
   },
   "scenarios": [
     {
@@ -13425,6 +13425,58 @@
             "b2.age": 29,
             "b2.city": "",
             "b2.active": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-limit-inferred-bare-relationship-carry-optional-final",
+      "feature": "With",
+      "fixture": "staged_relationship_carry",
+      "query": "MATCH ()-[r]->() WITH r LIMIT 1 OPTIONAL MATCH (a2)-[r]->(b2) RETURN a2, r, b2",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a2.__id": 1,
+            "a2.__labels": [
+              "X"
+            ],
+            "a2.name": "Alpha",
+            "r.__id": 10,
+            "r.__type": "REL",
+            "b2.__id": 2,
+            "b2.__labels": [
+              "X"
+            ],
+            "b2.name": "Beta"
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-limit-inferred-node-bare-relationship-carry-optional-final",
+      "feature": "With",
+      "fixture": "staged_relationship_carry",
+      "query": "MATCH (a1)-[r]->() WITH r, a1 LIMIT 1 OPTIONAL MATCH (a1)-[r]->(b2) RETURN a1, r, b2",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "a1.__id": 1,
+            "a1.__labels": [
+              "X"
+            ],
+            "a1.name": "Alpha",
+            "r.__id": 10,
+            "r.__type": "REL",
+            "b2.__id": 2,
+            "b2.__labels": [
+              "X"
+            ],
+            "b2.name": "Beta"
           }
         ]
       }
