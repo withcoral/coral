@@ -803,7 +803,7 @@ impl<'a> SqlRenderer<'a> {
             Some(TemporalKind::Date) => format!("CAST({literal} AS DATE)"),
             Some(TemporalKind::LocalDateTime) => format!("CAST({literal} AS TIMESTAMP)"),
             Some(TemporalKind::LocalTime) => format!("CAST({literal} AS TIME)"),
-            Some(TemporalKind::Duration) | None => literal,
+            Some(TemporalKind::ZonedDateTime | TemporalKind::Duration) | None => literal,
         }
     }
 

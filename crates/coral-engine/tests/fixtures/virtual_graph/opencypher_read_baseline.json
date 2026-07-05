@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 90,
+    "Temporal": 96,
     "TypeConversion": 17,
     "Union": 17,
     "Unwind": 37,
@@ -11212,12 +11212,91 @@
       }
     },
     {
-      "id": "temporal-datetime-string-constructor-rejected",
+      "id": "temporal-datetime-offset-string-constructor",
       "feature": "Temporal",
-      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-01-01T12:34:56Z') AS dt",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T09:00:00+01:00') AS dt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "dt": "2020-06-01T09:00:00+01:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-datetime-bracketed-zone-string-tck",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2015-07-21T21:40:32.142[Europe/London]') AS dt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "dt": "2015-07-21T21:40:32.142+01:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-datetime-map-timezone-tck",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123, timezone: 'Europe/Stockholm'}) AS dt",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "dt": "1984-10-11T12:31:14.645876123+01:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-datetime-instant-compare-and-order",
+      "feature": "Temporal",
+      "query": "UNWIND [1, 2] AS choice MATCH (p:Person) WHERE p.name = 'Alice' RETURN CASE WHEN choice = 1 THEN datetime('2020-06-01T09:00:00+01:00') ELSE datetime('2020-06-01T08:30:00Z') END AS dt, datetime('2020-06-01T09:00:00+01:00') < datetime('2020-06-01T08:30:00Z') AS lt ORDER BY dt",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "dt": "2020-06-01T09:00:00+01:00",
+            "lt": true
+          },
+          {
+            "dt": "2020-06-01T09:30:00+01:00",
+            "lt": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-datetime-named-zone-gap-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2021-03-28T01:30:00[Europe/London]') AS dt",
       "expected": {
         "kind": "error",
-        "contains": "RETURN function 'datetime' is not supported yet"
+        "contains": "daylight-saving gap"
+      }
+    },
+    {
+      "id": "temporal-datetime-named-zone-overlap-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2021-10-31T01:30:00[Europe/London]') AS dt",
+      "expected": {
+        "kind": "error",
+        "contains": "daylight-saving overlap"
+      }
+    },
+    {
+      "id": "temporal-datetime-localdatetime-comparison-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T09:00:00+01:00') < localdatetime('2020-06-01T09:00:00') AS mixed",
+      "expected": {
+        "kind": "error",
+        "contains": "got datetime and localdatetime"
       }
     },
     {

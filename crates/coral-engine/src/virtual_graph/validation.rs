@@ -400,7 +400,7 @@ impl<'a> ValidatedGraphPlan<'a> {
             | ScalarType::Integer
             | ScalarType::Float
             | ScalarType::Boolean
-            | ScalarType::Temporal(TemporalKind::Duration)
+            | ScalarType::Temporal(TemporalKind::ZonedDateTime | TemporalKind::Duration)
             | ScalarType::Other => None,
         }
     }
@@ -1709,6 +1709,7 @@ impl ScalarType {
             Self::Boolean => "boolean",
             Self::Temporal(TemporalKind::Date) => "date",
             Self::Temporal(TemporalKind::LocalDateTime) => "localdatetime",
+            Self::Temporal(TemporalKind::ZonedDateTime) => "datetime",
             Self::Temporal(TemporalKind::LocalTime) => "localtime",
             Self::Temporal(TemporalKind::Duration) => "duration",
             Self::Other => "non-scalar",

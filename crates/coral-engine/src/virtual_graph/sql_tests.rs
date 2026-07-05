@@ -99,6 +99,36 @@ fn localdatetime_expression(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test helper mirrors openCypher datetime fields."
+)]
+fn zoneddatetime_expression(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+    timezone: &str,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+        timezone: timezone.to_string(),
+    })
+}
+
 fn localtime_expression(
     hour: i64,
     minute: i64,
@@ -3403,6 +3433,87 @@ fn lower_graph_plan_renders_temporal_localdatetime_expressions() {
 }
 
 #[test]
+fn lower_graph_plan_renders_temporal_zoneddatetime_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: zoneddatetime_from_string_expression("2020-06-01T09:00:00+01:00", "+01:00"),
+            alias: "offset_datetime".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_expression(
+                1984,
+                10,
+                11,
+                12,
+                31,
+                14,
+                0,
+                0,
+                645_876_123,
+                "Europe/Stockholm",
+            ),
+            alias: "named_datetime".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(zoneddatetime_from_string_expression(
+                    "2020-06-01T09:00:00+01:00",
+                    "+01:00",
+                )),
+            },
+            alias: "text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: zoneddatetime_from_string_expression("2020-06-01T09:00:00+01:00", "+01:00"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(zoneddatetime_from_string_expression(
+            "2020-06-01T08:30:00Z",
+            "+00:00",
+        )),
+    }));
+    plan.order_by = vec![OrderKey {
+        expression: OrderExpression::Scalar(zoneddatetime_from_string_expression(
+            "2020-06-01T09:00:00",
+            "Europe/London",
+        )),
+        direction: OrderDirection::Ascending,
+        nulls: None,
+    }];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("zoneddatetime scalar expressions should lower");
+
+    assert!(
+        translation.sql().contains(
+            "SELECT arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS \"offset_datetime\", \
+             arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS \"named_datetime\", \
+             TRY_CAST(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS VARCHAR) AS \"text\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "WHERE arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') < arrow_cast('2020-06-01T08:30:00Z', 'Timestamp(ns, Some(\"+00:00\"))')"
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "ORDER BY arrow_cast('2020-06-01T09:00:00', 'Timestamp(ns, Some(\"Europe/London\"))') ASC"
+        ),
+        "{}",
+        translation.sql()
+    );
+}
+
+#[test]
 fn lower_graph_plan_renders_temporal_localtime_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);
@@ -6064,6 +6175,13 @@ fn date_from_string_expression(text: &str) -> ScalarExpression {
 fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::LocalDateTimeFromString {
         text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+    })
+}
+
+fn zoneddatetime_from_string_expression(text: &str, timezone: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+        timezone: timezone.to_string(),
     })
 }
 

@@ -349,17 +349,31 @@ impl<'a> GraphPlanValidator<'a> {
                     Self::collect_scalar_expression_variables(length, variables);
                 }
             }
-            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-                millisecond,
-                microsecond,
-                nanosecond,
-            }) => {
+            ScalarExpression::Temporal(
+                TemporalExpr::MakeLocalDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                }
+                | TemporalExpr::MakeZonedDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                    ..
+                },
+            ) => {
                 for expression in [
                     year,
                     month,
@@ -516,6 +530,9 @@ impl<'a> GraphPlanValidator<'a> {
             | ScalarExpression::Temporal(
                 TemporalExpr::DateFromString { text: expression }
                 | TemporalExpr::LocalDateTimeFromString { text: expression }
+                | TemporalExpr::ZonedDateTimeFromString {
+                    text: expression, ..
+                }
                 | TemporalExpr::LocalTimeFromString { text: expression }
                 | TemporalExpr::Component { expression, .. },
             )

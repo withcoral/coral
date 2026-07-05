@@ -1342,6 +1342,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "chrono-tz",
  "coral-spec",
  "coral-telemetry",
  "datafusion",

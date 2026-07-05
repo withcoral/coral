@@ -474,6 +474,33 @@ impl<'a> SqlRenderer<'a> {
             TemporalExpr::LocalDateTimeFromString { text } => {
                 self.render_localdatetime_from_string_expression(text, scope)
             }
+            TemporalExpr::MakeZonedDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                timezone,
+            } => self.render_make_zoneddatetime_expression(
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                timezone,
+                scope,
+            ),
+            TemporalExpr::ZonedDateTimeFromString { text, timezone } => {
+                self.render_zoneddatetime_from_string_expression(text, timezone, scope)
+            }
             TemporalExpr::MakeLocalTime {
                 hour,
                 minute,
@@ -596,6 +623,71 @@ impl<'a> SqlRenderer<'a> {
         Ok(format!(
             "CAST({} AS TIMESTAMP)",
             self.render_scalar_in_scope(text, scope)?
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Temporal constructor components mirror openCypher datetime fields."
+    )]
+    pub(super) fn render_make_zoneddatetime_expression<'b, 'c>(
+        &self,
+        year: &ScalarExpression,
+        month: &ScalarExpression,
+        day: &ScalarExpression,
+        hour: &ScalarExpression,
+        minute: &ScalarExpression,
+        second: &ScalarExpression,
+        millisecond: &ScalarExpression,
+        microsecond: &ScalarExpression,
+        nanosecond: &ScalarExpression,
+        timezone: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        if let Some(timestamp) = literal_localdatetime(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ) {
+            return Ok(render_zoneddatetime_cast_expression(
+                &quote_string_literal(&timestamp),
+                timezone,
+            ));
+        }
+
+        let total_nanoseconds = format!(
+            "(({} * 1000000) + ({} * 1000) + {})",
+            self.render_scalar_in_scope(millisecond, scope)?,
+            self.render_scalar_in_scope(microsecond, scope)?,
+            self.render_scalar_in_scope(nanosecond, scope)?
+        );
+        let timestamp = format!(
+            "concat({}, '-', {}, '-', {}, 'T', {}, ':', {}, ':', {}, '.', lpad(CAST({total_nanoseconds} AS VARCHAR), 9, '0'))",
+            self.render_zero_padded_component(year, 4, scope)?,
+            self.render_zero_padded_component(month, 2, scope)?,
+            self.render_zero_padded_component(day, 2, scope)?,
+            self.render_zero_padded_component(hour, 2, scope)?,
+            self.render_zero_padded_component(minute, 2, scope)?,
+            self.render_zero_padded_component(second, 2, scope)?,
+        );
+        Ok(render_zoneddatetime_cast_expression(&timestamp, timezone))
+    }
+
+    pub(super) fn render_zoneddatetime_from_string_expression<'b, 'c>(
+        &self,
+        text: &ScalarExpression,
+        timezone: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        Ok(render_zoneddatetime_cast_expression(
+            &self.render_scalar_in_scope(text, scope)?,
+            timezone,
         ))
     }
 
@@ -730,7 +822,7 @@ impl<'a> SqlRenderer<'a> {
             Some(TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime) => {
                 Ok(expression_sql)
             }
-            Some(TemporalKind::Duration) | None => {
+            Some(TemporalKind::ZonedDateTime | TemporalKind::Duration) | None => {
                 Ok(format!("CAST({expression_sql} AS TIMESTAMP)"))
             }
         }
@@ -752,7 +844,7 @@ impl<'a> SqlRenderer<'a> {
                     "CAST(concat(CAST({anchor} AS VARCHAR), 'T', CAST({expression_sql} AS VARCHAR)) AS TIMESTAMP)"
                 ))
             }
-            Some(TemporalKind::Duration) | None => {
+            Some(TemporalKind::ZonedDateTime | TemporalKind::Duration) | None => {
                 Ok(format!("CAST({expression_sql} AS TIMESTAMP)"))
             }
         }
@@ -767,9 +859,9 @@ impl<'a> SqlRenderer<'a> {
         match temporal_scalar_kind(peer) {
             Some(TemporalKind::Date) => Ok(peer_sql),
             Some(TemporalKind::LocalDateTime) | None => Ok(format!("CAST({peer_sql} AS DATE)")),
-            Some(TemporalKind::LocalTime | TemporalKind::Duration) => {
-                Ok("CAST('1970-01-01' AS DATE)".to_string())
-            }
+            Some(
+                TemporalKind::ZonedDateTime | TemporalKind::LocalTime | TemporalKind::Duration,
+            ) => Ok("CAST('1970-01-01' AS DATE)".to_string()),
         }
     }
 
@@ -999,6 +1091,14 @@ fn render_make_duration_expression(months: i64, days: i64, seconds: i64, nanos: 
     format!("CAST({} AS INTERVAL)", quote_string_literal(&interval))
 }
 
+fn render_zoneddatetime_cast_expression(timestamp: &str, timezone: &str) -> String {
+    let data_type = format!("Timestamp(ns, Some(\"{timezone}\"))");
+    format!(
+        "arrow_cast({timestamp}, {})",
+        quote_string_literal(&data_type)
+    )
+}
+
 fn dynamic_seconds_interval(total_seconds: &str) -> String {
     format!(
         "CAST(concat('0 months 0 days ', coalesce(CAST({total_seconds} AS VARCHAR), '0'), ' seconds') AS INTERVAL)"
@@ -1169,6 +1269,9 @@ fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
         ScalarExpression::Temporal(
             TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. },
         ) => Some(TemporalKind::LocalDateTime),
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. },
+        ) => Some(TemporalKind::ZonedDateTime),
         ScalarExpression::Temporal(
             TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. },
         ) => Some(TemporalKind::LocalTime),

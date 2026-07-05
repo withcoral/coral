@@ -802,6 +802,36 @@ pub enum TemporalExpr {
         /// ISO local date-time string expression.
         text: Box<ScalarExpression>,
     },
+    /// Construct a native zoned date-time value from date/time components and a timezone.
+    MakeZonedDateTime {
+        /// Year component.
+        year: Box<ScalarExpression>,
+        /// Month component.
+        month: Box<ScalarExpression>,
+        /// Day component.
+        day: Box<ScalarExpression>,
+        /// Hour component.
+        hour: Box<ScalarExpression>,
+        /// Minute component.
+        minute: Box<ScalarExpression>,
+        /// Second component.
+        second: Box<ScalarExpression>,
+        /// Millisecond component.
+        millisecond: Box<ScalarExpression>,
+        /// Microsecond component.
+        microsecond: Box<ScalarExpression>,
+        /// Nanosecond component.
+        nanosecond: Box<ScalarExpression>,
+        /// Arrow/DataFusion timezone identifier, either a fixed offset or IANA name.
+        timezone: String,
+    },
+    /// Construct a native zoned date-time value from an ISO date-time string and timezone.
+    ZonedDateTimeFromString {
+        /// ISO date-time string expression, with any Cypher bracketed zone suffix removed.
+        text: Box<ScalarExpression>,
+        /// Arrow/DataFusion timezone identifier, either a fixed offset or IANA name.
+        timezone: String,
+    },
     /// Construct a native local time value from time components.
     MakeLocalTime {
         /// Hour component.
@@ -858,6 +888,8 @@ pub(super) enum TemporalKind {
     Date,
     /// Native local date-time value.
     LocalDateTime,
+    /// Native zoned date-time value.
+    ZonedDateTime,
     /// Native local time value.
     LocalTime,
     /// Native duration value.
@@ -869,6 +901,7 @@ impl TemporalKind {
         match self {
             Self::Date => "date",
             Self::LocalDateTime => "localdatetime",
+            Self::ZonedDateTime => "datetime",
             Self::LocalTime => "localtime",
             Self::Duration => "duration",
         }
@@ -1786,6 +1819,7 @@ fn temporal_expression_references_outside_scope(
         }
         TemporalExpr::DateFromString { text }
         | TemporalExpr::LocalDateTimeFromString { text }
+        | TemporalExpr::ZonedDateTimeFromString { text, .. }
         | TemporalExpr::LocalTimeFromString { text } => {
             scalar_expression_references_outside_scope(text, scope)
         }
@@ -1799,6 +1833,30 @@ fn temporal_expression_references_outside_scope(
             millisecond,
             microsecond,
             nanosecond,
+        } => [
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ]
+        .iter()
+        .any(|expression| scalar_expression_references_outside_scope(expression, scope)),
+        TemporalExpr::MakeZonedDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+            ..
         } => [
             year,
             month,

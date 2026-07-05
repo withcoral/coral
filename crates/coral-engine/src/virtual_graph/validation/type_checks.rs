@@ -164,11 +164,13 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_temporal_coercion_source(source, kind, format!("{path}.rhs"))?;
                 Self::validate_scalar_predicate_operand_types(operator, lhs_type, lhs_type, path)
             }
-            ScalarType::Temporal(TemporalKind::Duration) => Err(Self::temporal_coercion_error(
-                source,
-                TemporalKind::Duration,
-                format!("{path}.rhs"),
-            )),
+            ScalarType::Temporal(kind @ (TemporalKind::ZonedDateTime | TemporalKind::Duration)) => {
+                Err(Self::temporal_coercion_error(
+                    source,
+                    kind,
+                    format!("{path}.rhs"),
+                ))
+            }
             ScalarType::Unknown
             | ScalarType::Null
             | ScalarType::String
@@ -208,11 +210,13 @@ impl<'a> GraphPlanValidator<'a> {
                 }
                 Self::validate_scalar_predicate_operand_types(operator, lhs_type, lhs_type, path)
             }
-            ScalarType::Temporal(TemporalKind::Duration) => Err(Self::temporal_coercion_error(
-                sources.first().map_or("", String::as_str),
-                TemporalKind::Duration,
-                format!("{path}.rhs"),
-            )),
+            ScalarType::Temporal(kind @ (TemporalKind::ZonedDateTime | TemporalKind::Duration)) => {
+                Err(Self::temporal_coercion_error(
+                    sources.first().map_or("", String::as_str),
+                    kind,
+                    format!("{path}.rhs"),
+                ))
+            }
             ScalarType::Unknown
             | ScalarType::Null
             | ScalarType::String
@@ -243,7 +247,7 @@ impl<'a> GraphPlanValidator<'a> {
                     || NaiveDateTime::parse_from_str(source, "%Y-%m-%d %H:%M:%S%.f").is_ok()
             }
             TemporalKind::LocalTime => NaiveTime::parse_from_str(source, "%H:%M:%S%.f").is_ok(),
-            TemporalKind::Duration => false,
+            TemporalKind::ZonedDateTime | TemporalKind::Duration => false,
         };
         if valid {
             Ok(())

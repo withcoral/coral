@@ -324,17 +324,31 @@ impl<'a> SqlRenderer<'a> {
                     );
                 }
             }
-            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-                millisecond,
-                microsecond,
-                nanosecond,
-            }) => {
+            ScalarExpression::Temporal(
+                TemporalExpr::MakeLocalDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                }
+                | TemporalExpr::MakeZonedDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                    ..
+                },
+            ) => {
                 for expression in [
                     year,
                     month,

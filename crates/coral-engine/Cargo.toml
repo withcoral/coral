@@ -15,6 +15,7 @@ arrow.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 datafusion.workspace = true
 datafusion-datasource.workspace = true
 datafusion-datasource-json.workspace = true

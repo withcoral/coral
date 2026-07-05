@@ -53,6 +53,9 @@ pub(super) fn scalar_expression_unary_operand(
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
             | TemporalExpr::LocalDateTimeFromString { text: expression }
+            | TemporalExpr::ZonedDateTimeFromString {
+                text: expression, ..
+            }
             | TemporalExpr::LocalTimeFromString { text: expression }
             | TemporalExpr::Component { expression, .. },
         )

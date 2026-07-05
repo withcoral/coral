@@ -423,33 +423,11 @@ fn reject_ignored_path_variable_references_in_structural_scalar_expression(
             format!("{path}.{name}"),
         );
     }
+    if let Some(fields) = datetime_temporal_scalar_fields(expression) {
+        return reject_path_variables_in_temporal_fields(fields, state, &path);
+    }
 
     match expression {
-        ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            millisecond,
-            microsecond,
-            nanosecond,
-        }) => reject_path_variables_in_temporal_fields(
-            [
-                ("year", year),
-                ("month", month),
-                ("day", day),
-                ("hour", hour),
-                ("minute", minute),
-                ("second", second),
-                ("millisecond", millisecond),
-                ("microsecond", microsecond),
-                ("nanosecond", nanosecond),
-            ],
-            state,
-            &path,
-        ),
         ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
             hour,
             minute,
@@ -518,6 +496,7 @@ fn temporal_scalar_single_operand(
         ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text }
             | TemporalExpr::LocalDateTimeFromString { text }
+            | TemporalExpr::ZonedDateTimeFromString { text, .. }
             | TemporalExpr::LocalTimeFromString { text },
         ) => Some(("text", text)),
         ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
@@ -540,6 +519,77 @@ fn reject_path_variables_in_temporal_fields<const N: usize>(
         )?;
     }
     Ok(())
+}
+
+fn datetime_temporal_scalar_fields(
+    expression: &ScalarExpression,
+) -> Option<[(&'static str, &ScalarExpression); 9]> {
+    match expression {
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeLocalDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            }
+            | TemporalExpr::MakeZonedDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                ..
+            },
+        ) => Some(datetime_temporal_fields(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        )),
+        _ => None,
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporal constructor components mirror openCypher datetime fields."
+)]
+fn datetime_temporal_fields<'a>(
+    year: &'a ScalarExpression,
+    month: &'a ScalarExpression,
+    day: &'a ScalarExpression,
+    hour: &'a ScalarExpression,
+    minute: &'a ScalarExpression,
+    second: &'a ScalarExpression,
+    millisecond: &'a ScalarExpression,
+    microsecond: &'a ScalarExpression,
+    nanosecond: &'a ScalarExpression,
+) -> [(&'static str, &'a ScalarExpression); 9] {
+    [
+        ("year", year),
+        ("month", month),
+        ("day", day),
+        ("hour", hour),
+        ("minute", minute),
+        ("second", second),
+        ("millisecond", millisecond),
+        ("microsecond", microsecond),
+        ("nanosecond", nanosecond),
+    ]
 }
 
 fn reject_ignored_path_variable_references_in_non_structural_scalar_expression(

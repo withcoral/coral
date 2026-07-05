@@ -25,6 +25,8 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
+use chrono::{LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone};
+use chrono_tz::Tz;
 use decypher::ast::clause::{
     Match, Order, ProjectionItem, Return, SortDirection, SortItem, Unwind, With,
 };
@@ -4299,6 +4301,7 @@ fn is_static_alternative_aggregate_scalar_function(function: &FunctionInvocation
         || is_coalesce_function(function)
         || is_null_if_function(function)
         || is_date_function(function)
+        || is_datetime_function(function)
         || is_localdatetime_function(function)
         || is_localtime_function(function)
         || is_to_string_function(function)
@@ -10451,6 +10454,9 @@ fn unary_scalar_expression_operand_mut(
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
             | TemporalExpr::LocalDateTimeFromString { text: expression }
+            | TemporalExpr::ZonedDateTimeFromString {
+                text: expression, ..
+            }
             | TemporalExpr::LocalTimeFromString { text: expression }
             | TemporalExpr::Component { expression, .. },
         )
@@ -10572,6 +10578,9 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
         | ScalarExpression::Temporal(
             TemporalExpr::DateFromString { text: expression }
             | TemporalExpr::LocalDateTimeFromString { text: expression }
+            | TemporalExpr::ZonedDateTimeFromString {
+                text: expression, ..
+            }
             | TemporalExpr::LocalTimeFromString { text: expression }
             | TemporalExpr::Component { expression, .. },
         )
@@ -13800,6 +13809,30 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
         ]
         .iter()
         .all(|expression| hidden_subquery_order_expression_can_be_precomputed(expression)),
+        ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+            ..
+        }) => [
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        ]
+        .iter()
+        .all(|expression| hidden_subquery_order_expression_can_be_precomputed(expression)),
         ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
             hour,
             minute,
@@ -14007,6 +14040,33 @@ fn compound_scalar_expression_correlated_subquery_count(
             millisecond,
             microsecond,
             nanosecond,
+        }) => Some(
+            [
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            ]
+            .iter()
+            .map(|expression| scalar_expression_correlated_subquery_count(expression))
+            .sum(),
+        ),
+        ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+            ..
         }) => Some(
             [
                 year,
@@ -21810,6 +21870,8 @@ fn compile_temporal_scalar_function_expression(
 ) -> Result<Option<ScalarExpression>, CoreError> {
     if is_date_function(function) {
         compile_date_scalar_expression(function, path).map(Some)
+    } else if is_datetime_function(function) {
+        compile_zoneddatetime_scalar_expression(function, path).map(Some)
     } else if is_localdatetime_function(function) {
         compile_localdatetime_scalar_expression(function, path).map(Some)
     } else if is_localtime_function(function) {
@@ -22085,6 +22147,446 @@ fn has_offset_suffix(text: &str) -> bool {
 fn make_localdatetime_from_string_scalar_expression(text: String) -> ScalarExpression {
     ScalarExpression::Temporal(TemporalExpr::LocalDateTimeFromString {
         text: Box::new(ScalarExpression::Literal(Literal::String(text))),
+    })
+}
+
+fn compile_zoneddatetime_scalar_expression(
+    function: &FunctionInvocation,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let [argument] = function.arguments.as_slice() else {
+        return Err(unsupported(
+            format!("{path}.arguments"),
+            "datetime() requires exactly one argument",
+        ));
+    };
+    compile_zoneddatetime_argument_scalar_expression(argument, format!("{path}.arguments[0]"))
+}
+
+fn compile_zoneddatetime_argument_scalar_expression(
+    argument: &Expression,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    match argument {
+        Expression::Parenthesized(inner) => {
+            compile_zoneddatetime_argument_scalar_expression(inner, path)
+        }
+        Expression::Literal(CypherLiteral::Map(map)) => {
+            compile_zoneddatetime_map_scalar_expression(map, path)
+        }
+        Expression::Literal(CypherLiteral::String(value)) => {
+            let literal = parse_zoneddatetime_string_literal(&value.value, &path)?;
+            Ok(make_zoneddatetime_from_string_scalar_expression(
+                literal.text,
+                literal.timezone,
+            ))
+        }
+        Expression::Literal(_) => Err(unsupported(
+            path,
+            "datetime() requires a literal map or string argument",
+        )),
+        _ => Err(unsupported(
+            path,
+            "dynamic datetime() string argument not supported yet",
+        )),
+    }
+}
+
+fn compile_zoneddatetime_map_scalar_expression(
+    map: &MapLiteral,
+    path: impl Into<String>,
+) -> Result<ScalarExpression, CoreError> {
+    let path = path.into();
+    let mut year = None;
+    let mut month = None;
+    let mut day = None;
+    let mut hour = None;
+    let mut minute = None;
+    let mut second = None;
+    let mut millisecond = None;
+    let mut microsecond = None;
+    let mut nanosecond = None;
+    let mut timezone = None;
+    for (key, value) in &map.entries {
+        let field = key.name.name.as_str();
+        let field_path = format!("{path}.{field}");
+        match field {
+            "year" => {
+                year = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "month" => {
+                month = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "day" => {
+                day = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "hour" => {
+                hour = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "minute" => {
+                minute = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "second" => {
+                second = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "millisecond" => {
+                millisecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "microsecond" => {
+                microsecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "nanosecond" => {
+                nanosecond = Some(compile_date_integer_field(value, field_path)?);
+            }
+            "timezone" => {
+                timezone = Some(compile_zoneddatetime_timezone_field(value, field_path)?);
+            }
+            _ => {
+                return Err(unsupported(
+                    field_path,
+                    format!("datetime() temporal field '{field}' is not supported yet"),
+                ));
+            }
+        }
+    }
+    let Some(year) = year else {
+        return Err(unsupported(
+            format!("{path}.year"),
+            "datetime() map constructor requires a literal integer year",
+        ));
+    };
+    let Some(timezone) = timezone else {
+        return Err(unsupported(
+            format!("{path}.timezone"),
+            "datetime() map constructor requires a literal string timezone",
+        ));
+    };
+    let timezone = normalize_zoneddatetime_timezone(&timezone, format!("{path}.timezone"))?;
+    let month = month.unwrap_or_else(default_date_component);
+    let day = day.unwrap_or_else(default_date_component);
+    let hour = hour.unwrap_or_else(default_time_component);
+    let minute = minute.unwrap_or_else(default_time_component);
+    let second = second.unwrap_or_else(default_time_component);
+    let millisecond = millisecond.unwrap_or_else(default_time_component);
+    let microsecond = microsecond.unwrap_or_else(default_time_component);
+    let nanosecond = nanosecond.unwrap_or_else(default_time_component);
+
+    if let Some(local_text) = literal_zoneddatetime_local_text(
+        &year,
+        &month,
+        &day,
+        &hour,
+        &minute,
+        &second,
+        &millisecond,
+        &microsecond,
+        &nanosecond,
+    ) {
+        validate_named_zoneddatetime_resolution(&local_text, &timezone, None, &path)?;
+    }
+
+    Ok(make_zoneddatetime_scalar_expression(
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond,
+        microsecond,
+        nanosecond,
+        timezone,
+    ))
+}
+
+fn compile_zoneddatetime_timezone_field(
+    value: &Expression,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    let path = path.into();
+    match value {
+        Expression::Parenthesized(inner) => compile_zoneddatetime_timezone_field(inner, path),
+        Expression::Literal(CypherLiteral::String(value)) => Ok(value.value.clone()),
+        _ => Err(unsupported(
+            path,
+            "datetime() map constructor requires a literal string timezone",
+        )),
+    }
+}
+
+struct ParsedZonedDateTimeLiteral {
+    text: String,
+    timezone: String,
+}
+
+fn parse_zoneddatetime_string_literal(
+    text: &str,
+    path: &str,
+) -> Result<ParsedZonedDateTimeLiteral, CoreError> {
+    let (body, bracket_timezone) = split_bracket_timezone(text, path)?;
+    let offset = datetime_offset_suffix(body);
+    let timezone = if let Some(timezone) = bracket_timezone {
+        let timezone = normalize_zoneddatetime_timezone(timezone, path)?;
+        validate_named_zoneddatetime_resolution(
+            offset.as_ref().map_or(body, |offset| offset.local_text),
+            &timezone,
+            offset.as_ref().map(|offset| offset.seconds),
+            path,
+        )?;
+        timezone
+    } else if let Some(offset) = offset {
+        offset.normalized
+    } else if body.ends_with('Z') || body.ends_with('z') {
+        "+00:00".to_string()
+    } else {
+        return Err(unsupported(
+            path,
+            "datetime() requires a timezone offset or bracketed timezone",
+        ));
+    };
+    Ok(ParsedZonedDateTimeLiteral {
+        text: body.to_string(),
+        timezone,
+    })
+}
+
+fn split_bracket_timezone<'a>(
+    text: &'a str,
+    path: &str,
+) -> Result<(&'a str, Option<&'a str>), CoreError> {
+    if !text.contains(['[', ']']) {
+        return Ok((text, None));
+    }
+    let Some(prefix) = text.strip_suffix(']') else {
+        return Err(unsupported(
+            path,
+            "datetime() bracketed timezone suffix must end with ']'",
+        ));
+    };
+    let Some(start) = prefix.rfind('[') else {
+        return Err(unsupported(
+            path,
+            "datetime() bracketed timezone suffix must include '['",
+        ));
+    };
+    let body = prefix.get(..start).ok_or_else(|| {
+        unsupported(
+            path,
+            "datetime() bracketed timezone suffix must be a non-empty trailing [timezone]",
+        )
+    })?;
+    let timezone = prefix.get(start + '['.len_utf8()..).ok_or_else(|| {
+        unsupported(
+            path,
+            "datetime() bracketed timezone suffix must be a non-empty trailing [timezone]",
+        )
+    })?;
+    if body.is_empty() || timezone.is_empty() || body.contains('[') || timezone.contains('[') {
+        return Err(unsupported(
+            path,
+            "datetime() bracketed timezone suffix must be a non-empty trailing [timezone]",
+        ));
+    }
+    Ok((body, Some(timezone)))
+}
+
+#[derive(Clone)]
+struct DateTimeOffsetSuffix<'a> {
+    local_text: &'a str,
+    normalized: String,
+    seconds: i32,
+}
+
+fn datetime_offset_suffix(text: &str) -> Option<DateTimeOffsetSuffix<'_>> {
+    let separator = text.find(['T', 't', ' '])?;
+    let after_separator = text.get(separator + 1..)?;
+    let suffix_start = after_separator
+        .rfind(['+', '-'])
+        .map(|index| separator + 1 + index)?;
+    let suffix = text.get(suffix_start..)?;
+    let (normalized, seconds) = normalize_offset_timezone(suffix)?;
+    Some(DateTimeOffsetSuffix {
+        local_text: text.get(..suffix_start)?,
+        normalized,
+        seconds,
+    })
+}
+
+fn normalize_zoneddatetime_timezone(
+    timezone: &str,
+    path: impl Into<String>,
+) -> Result<String, CoreError> {
+    if let Some((normalized, _)) = normalize_offset_timezone(timezone) {
+        return Ok(normalized);
+    }
+    if timezone.eq_ignore_ascii_case("z") {
+        return Ok("+00:00".to_string());
+    }
+    if timezone.parse::<Tz>().is_ok() {
+        return Ok(timezone.to_string());
+    }
+    Err(unsupported(
+        path,
+        "datetime() timezone must be a fixed offset or IANA timezone",
+    ))
+}
+
+fn normalize_offset_timezone(timezone: &str) -> Option<(String, i32)> {
+    if timezone.eq_ignore_ascii_case("z") {
+        return Some(("+00:00".to_string(), 0));
+    }
+    let mut chars = timezone.chars();
+    let sign = chars.next()?;
+    if !matches!(sign, '+' | '-') {
+        return None;
+    }
+    let rest = chars.as_str().as_bytes();
+    let (hour, minute) = match rest {
+        [hour_tens, hour_ones] => (parse_two_digits(*hour_tens, *hour_ones)?, 0),
+        [hour_tens, hour_ones, minute_tens, minute_ones]
+        | [hour_tens, hour_ones, b':', minute_tens, minute_ones] => (
+            parse_two_digits(*hour_tens, *hour_ones)?,
+            parse_two_digits(*minute_tens, *minute_ones)?,
+        ),
+        _ => return None,
+    };
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    let unsigned_seconds = hour
+        .checked_mul(3600)?
+        .checked_add(minute.checked_mul(60)?)?;
+    let seconds = if sign == '-' {
+        -unsigned_seconds
+    } else {
+        unsigned_seconds
+    };
+    let normalized_sign = if seconds < 0 { '-' } else { '+' };
+    Some((format!("{normalized_sign}{hour:02}:{minute:02}"), seconds))
+}
+
+fn parse_two_digits(tens: u8, ones: u8) -> Option<i32> {
+    if !tens.is_ascii_digit() || !ones.is_ascii_digit() {
+        return None;
+    }
+    Some(i32::from(tens - b'0') * 10 + i32::from(ones - b'0'))
+}
+
+fn validate_named_zoneddatetime_resolution(
+    local_text: &str,
+    timezone: &str,
+    explicit_offset_seconds: Option<i32>,
+    path: &str,
+) -> Result<(), CoreError> {
+    let Ok(timezone) = timezone.parse::<Tz>() else {
+        return Ok(());
+    };
+    let Some(local_datetime) = parse_zoneddatetime_local_text(local_text) else {
+        return Ok(());
+    };
+    match timezone.offset_from_local_datetime(&local_datetime) {
+        LocalResult::None => Err(unsupported(
+            path,
+            "datetime() named timezone local time falls in a daylight-saving gap; specify an explicit offset or valid local time",
+        )),
+        LocalResult::Ambiguous(first, second) => {
+            if let Some(explicit_offset_seconds) = explicit_offset_seconds
+                && [first, second]
+                    .iter()
+                    .any(|offset| offset.fix().local_minus_utc() == explicit_offset_seconds)
+            {
+                return Ok(());
+            }
+            Err(unsupported(
+                path,
+                "datetime() named timezone local time is ambiguous at a daylight-saving overlap; specify an explicit offset",
+            ))
+        }
+        LocalResult::Single(offset) => {
+            if let Some(explicit_offset_seconds) = explicit_offset_seconds
+                && offset.fix().local_minus_utc() != explicit_offset_seconds
+            {
+                return Err(unsupported(
+                    path,
+                    "datetime() explicit offset does not match the bracketed timezone at that local time",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn parse_zoneddatetime_local_text(text: &str) -> Option<NaiveDateTime> {
+    [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M",
+    ]
+    .into_iter()
+    .find_map(|format| NaiveDateTime::parse_from_str(text, format).ok())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Literal datetime validation mirrors openCypher datetime fields."
+)]
+fn literal_zoneddatetime_local_text(
+    year: &ScalarExpression,
+    month: &ScalarExpression,
+    day: &ScalarExpression,
+    hour: &ScalarExpression,
+    minute: &ScalarExpression,
+    second: &ScalarExpression,
+    millisecond: &ScalarExpression,
+    microsecond: &ScalarExpression,
+    nanosecond: &ScalarExpression,
+) -> Option<String> {
+    let year = i32::try_from(literal_integer_value(year)?).ok()?;
+    let month = u32::try_from(literal_integer_value(month)?).ok()?;
+    let day = u32::try_from(literal_integer_value(day)?).ok()?;
+    let hour = u32::try_from(literal_integer_value(hour)?).ok()?;
+    let minute = u32::try_from(literal_integer_value(minute)?).ok()?;
+    let second = u32::try_from(literal_integer_value(second)?).ok()?;
+    let millisecond = u32::try_from(literal_integer_value(millisecond)?).ok()?;
+    let microsecond = u32::try_from(literal_integer_value(microsecond)?).ok()?;
+    let nanosecond = u32::try_from(literal_integer_value(nanosecond)?).ok()?;
+    let nanos = millisecond
+        .checked_mul(1_000_000)?
+        .checked_add(microsecond.checked_mul(1_000)?)?
+        .checked_add(nanosecond)?;
+    NaiveDate::from_ymd_opt(year, month, day)?;
+    NaiveTime::from_hms_nano_opt(hour, minute, second, nanos)?;
+    let mut fractional = format!("{nanos:09}");
+    while fractional.ends_with('0') {
+        fractional.pop();
+    }
+    let suffix = if fractional.is_empty() {
+        String::new()
+    } else {
+        format!(".{fractional}")
+    };
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}{suffix}"
+    ))
+}
+
+fn literal_integer_value(expression: &ScalarExpression) -> Option<i64> {
+    match expression {
+        ScalarExpression::Literal(Literal::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn make_zoneddatetime_from_string_scalar_expression(
+    text: String,
+    timezone: String,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text))),
+        timezone,
     })
 }
 
@@ -23596,7 +24098,7 @@ fn temporal_kind_for_data_type(data_type: &str) -> Option<TemporalKind> {
         return Some(TemporalKind::LocalTime);
     }
     if data_type.starts_with("Timestamp") {
-        return Some(TemporalKind::LocalDateTime);
+        return Some(timestamp_data_type_temporal_kind(data_type));
     }
     if data_type.starts_with("Interval") {
         return Some(TemporalKind::Duration);
@@ -23613,11 +24115,19 @@ fn temporal_kind_for_dictionary_data_type(data_type: &str) -> Option<TemporalKin
     } else if data_type.contains("Time") && !data_type.contains("Timestamp") {
         Some(TemporalKind::LocalTime)
     } else if data_type.contains("Timestamp") {
-        Some(TemporalKind::LocalDateTime)
+        Some(timestamp_data_type_temporal_kind(data_type))
     } else if data_type.contains("Interval") {
         Some(TemporalKind::Duration)
     } else {
         None
+    }
+}
+
+fn timestamp_data_type_temporal_kind(data_type: &str) -> TemporalKind {
+    if data_type.contains("Some(") {
+        TemporalKind::ZonedDateTime
+    } else {
+        TemporalKind::LocalDateTime
     }
 }
 
@@ -23629,6 +24139,7 @@ fn is_potential_temporal_component_base(
         Expression::Parenthesized(inner) => is_potential_temporal_component_base(inner, mode),
         Expression::FunctionCall(function) => {
             is_date_function(function)
+                || is_datetime_function(function)
                 || is_localdatetime_function(function)
                 || is_localtime_function(function)
                 || is_duration_function(function)
@@ -23735,6 +24246,9 @@ fn temporal_expression_value_kind(expression: &TemporalExpr) -> Option<TemporalK
         }
         TemporalExpr::MakeLocalDateTime { .. } | TemporalExpr::LocalDateTimeFromString { .. } => {
             Some(TemporalKind::LocalDateTime)
+        }
+        TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. } => {
+            Some(TemporalKind::ZonedDateTime)
         }
         TemporalExpr::MakeLocalTime { .. } | TemporalExpr::LocalTimeFromString { .. } => {
             Some(TemporalKind::LocalTime)

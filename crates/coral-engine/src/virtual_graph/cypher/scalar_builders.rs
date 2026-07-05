@@ -150,6 +150,36 @@ pub(super) fn make_localdatetime_scalar_expression(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Temporal constructor components mirror openCypher datetime fields."
+)]
+pub(super) fn make_zoneddatetime_scalar_expression(
+    year: ScalarExpression,
+    month: ScalarExpression,
+    day: ScalarExpression,
+    hour: ScalarExpression,
+    minute: ScalarExpression,
+    second: ScalarExpression,
+    millisecond: ScalarExpression,
+    microsecond: ScalarExpression,
+    nanosecond: ScalarExpression,
+    timezone: String,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+        year: Box::new(year),
+        month: Box::new(month),
+        day: Box::new(day),
+        hour: Box::new(hour),
+        minute: Box::new(minute),
+        second: Box::new(second),
+        millisecond: Box::new(millisecond),
+        microsecond: Box::new(microsecond),
+        nanosecond: Box::new(nanosecond),
+        timezone,
+    })
+}
+
 pub(super) fn make_localtime_scalar_expression(
     hour: ScalarExpression,
     minute: ScalarExpression,

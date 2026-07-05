@@ -1119,6 +1119,67 @@ async fn cypher_localdatetime_constructors_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_zoneddatetime_constructors_execute_against_synthetic_sources() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN datetime('2020-06-01T09:00:00+01:00') AS offset_datetime, \
+                datetime('2015-07-21T21:40:32.142+02:00[Europe/Stockholm]') AS named_offset_datetime, \
+                datetime('2015-07-21T21:40:32.142[Europe/London]') AS named_datetime, \
+                datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123, timezone: 'Europe/Stockholm'}) AS from_map, \
+                datetime('2020-06-01T09:00:00+01:00') < datetime('2020-06-01T08:30:00Z') AS ordered, \
+                toString(datetime('2020-06-01T09:00:00+01:00')) AS text",
+    )
+    .await
+    .expect("Cypher DATETIME constructors should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(
+            &[source],
+            test_runtime(),
+            "SELECT arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS offset_datetime, \
+                    arrow_cast('2015-07-21T21:40:32.142+02:00', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS named_offset_datetime, \
+                    arrow_cast('2015-07-21T21:40:32.142', 'Timestamp(ns, Some(\"Europe/London\"))') AS named_datetime, \
+                    arrow_cast('1984-10-11T12:31:14.645876123', 'Timestamp(ns, Some(\"Europe/Stockholm\"))') AS from_map, \
+                    arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') < arrow_cast('2020-06-01T08:30:00Z', 'Timestamp(ns, Some(\"+00:00\"))') AS ordered, \
+                    CAST(arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))') AS VARCHAR) AS text \
+             FROM ops.people \
+             WHERE people.full_name = 'Ada Lovelace'",
+        )
+        .await
+        .expect("equivalent DATETIME SQL should execute"),
+    );
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("arrow_cast('2020-06-01T09:00:00+01:00', 'Timestamp(ns, Some(\"+01:00\"))')"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "offset_datetime": "2020-06-01T09:00:00+01:00",
+            "named_offset_datetime": "2015-07-21T21:40:32.142+02:00",
+            "named_datetime": "2015-07-21T21:40:32.142+01:00",
+            "from_map": "1984-10-11T12:31:14.645876123+01:00",
+            "ordered": true,
+            "text": "2020-06-01T09:00:00+01:00"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_localtime_constructors_execute_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

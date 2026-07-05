@@ -316,6 +316,10 @@ impl<'a> SqlRenderer<'a> {
             self.reject_unprecomputed_projection_scalar_subqueries(third)?;
             return Ok(());
         }
+        if let Some(fields) = Self::datetime_temporal_fields(expression) {
+            self.reject_unprecomputed_projection_temporal_fields(fields)?;
+            return Ok(());
+        }
 
         match expression {
             ScalarExpression::PresenceGated { expression, .. } => {
@@ -341,31 +345,6 @@ impl<'a> SqlRenderer<'a> {
                 self.reject_unprecomputed_projection_scalar_subqueries(start)?;
                 if let Some(length) = length {
                     self.reject_unprecomputed_projection_scalar_subqueries(length)?;
-                }
-            }
-            ScalarExpression::Temporal(TemporalExpr::MakeLocalDateTime {
-                year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-                millisecond,
-                microsecond,
-                nanosecond,
-            }) => {
-                for expression in [
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    millisecond,
-                    microsecond,
-                    nanosecond,
-                ] {
-                    self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
                 }
             }
             ScalarExpression::Temporal(TemporalExpr::MakeLocalTime {
@@ -405,6 +384,57 @@ impl<'a> SqlRenderer<'a> {
             }
         }
         Ok(())
+    }
+
+    fn reject_unprecomputed_projection_temporal_fields(
+        &self,
+        fields: [&ScalarExpression; 9],
+    ) -> Result<(), CoreError> {
+        for expression in fields {
+            self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
+        }
+        Ok(())
+    }
+
+    fn datetime_temporal_fields(expression: &ScalarExpression) -> Option<[&ScalarExpression; 9]> {
+        match expression {
+            ScalarExpression::Temporal(
+                TemporalExpr::MakeLocalDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                }
+                | TemporalExpr::MakeZonedDateTime {
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    millisecond,
+                    microsecond,
+                    nanosecond,
+                    ..
+                },
+            ) => Some([
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+            ]),
+            _ => None,
+        }
     }
 
     fn reject_unprecomputed_projection_collect_subquery(

@@ -80,6 +80,43 @@ fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test helper mirrors openCypher datetime fields."
+)]
+fn zoneddatetime_expression(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+    timezone: &str,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+        timezone: timezone.to_string(),
+    })
+}
+
+fn zoneddatetime_from_string_expression(text: &str, timezone: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+        timezone: timezone.to_string(),
+    })
+}
+
 fn localtime_expression(
     hour: i64,
     minute: i64,
@@ -1573,6 +1610,70 @@ fn validate_graph_plan_rejects_temporal_date_localdatetime_comparison() {
     assert!(
         error.to_string().contains(
             "scalar predicate operands require compatible scalar types, got localdatetime and date"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn validate_graph_plan_accepts_temporal_zoneddatetime_scalar_expressions() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.projections = vec![
+        Projection::Expression {
+            expression: zoneddatetime_expression(2020, 6, 1, 9, 0, 0, 0, 0, 0, "+01:00"),
+            alias: "datetime_value".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_from_string_expression(
+                "2020-06-01T09:00:00",
+                "Europe/London",
+            ),
+            alias: "datetime_string_value".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::ToString {
+                expression: Box::new(zoneddatetime_from_string_expression(
+                    "2020-06-01T09:00:00+01:00",
+                    "+01:00",
+                )),
+            },
+            alias: "datetime_text".to_string(),
+        },
+    ];
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: zoneddatetime_from_string_expression("2020-06-01T09:00:00+01:00", "+01:00"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(zoneddatetime_from_string_expression(
+            "2020-06-01T08:30:00Z",
+            "+00:00",
+        )),
+    }));
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("zoneddatetime scalar expressions should validate");
+}
+
+#[test]
+fn validate_graph_plan_rejects_temporal_zoneddatetime_localdatetime_comparison() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan();
+    plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
+        lhs: zoneddatetime_from_string_expression("2020-06-01T09:00:00+01:00", "+01:00"),
+        operator: ComparisonOperator::LessThan,
+        rhs: ScalarPredicateRhs::Expression(localdatetime_from_string_expression(
+            "2020-06-01T09:00:00",
+        )),
+    }));
+
+    let error = graph
+        .validate_graph_plan(&plan)
+        .expect_err("datetime/localdatetime comparison should fail validation");
+
+    assert!(
+        error.to_string().contains(
+            "scalar predicate operands require compatible scalar types, got datetime and localdatetime"
         ),
         "{error}"
     );

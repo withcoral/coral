@@ -236,6 +236,43 @@ fn localdatetime_from_string_expression(text: &str) -> ScalarExpression {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Test helper mirrors openCypher datetime fields."
+)]
+fn zoneddatetime_expression(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    millisecond: i64,
+    microsecond: i64,
+    nanosecond: i64,
+    timezone: &str,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::MakeZonedDateTime {
+        year: Box::new(ScalarExpression::Literal(Literal::Integer(year))),
+        month: Box::new(ScalarExpression::Literal(Literal::Integer(month))),
+        day: Box::new(ScalarExpression::Literal(Literal::Integer(day))),
+        hour: Box::new(ScalarExpression::Literal(Literal::Integer(hour))),
+        minute: Box::new(ScalarExpression::Literal(Literal::Integer(minute))),
+        second: Box::new(ScalarExpression::Literal(Literal::Integer(second))),
+        millisecond: Box::new(ScalarExpression::Literal(Literal::Integer(millisecond))),
+        microsecond: Box::new(ScalarExpression::Literal(Literal::Integer(microsecond))),
+        nanosecond: Box::new(ScalarExpression::Literal(Literal::Integer(nanosecond))),
+        timezone: timezone.to_string(),
+    })
+}
+
+fn zoneddatetime_from_string_expression(text: &str, timezone: &str) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeFromString {
+        text: Box::new(ScalarExpression::Literal(Literal::String(text.to_string()))),
+        timezone: timezone.to_string(),
+    })
+}
+
 fn localtime_expression(
     hour: i64,
     minute: i64,
@@ -2986,6 +3023,138 @@ fn rejects_unsupported_localdatetime_constructor_forms() {
     ] {
         let error =
             compile_cypher(cypher).expect_err("unsupported localdatetime form should be rejected");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn compiles_zoneddatetime_string_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN datetime('2020-06-01T09:00:00+01:00') AS offset_datetime, \
+                datetime('2015-07-21T21:40:32.142+02:00[Europe/Stockholm]') AS named_offset_datetime, \
+                datetime('2015-07-21T21:40:32.142[Europe/London]') AS named_datetime, \
+                toString(datetime('2020-06-01T09:00:00+01:00')) AS text",
+    )
+    .expect("literal datetime string constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: zoneddatetime_from_string_expression(
+                    "2020-06-01T09:00:00+01:00",
+                    "+01:00",
+                ),
+                alias: "offset_datetime".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_from_string_expression(
+                    "2015-07-21T21:40:32.142+02:00",
+                    "Europe/Stockholm",
+                ),
+                alias: "named_offset_datetime".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_from_string_expression(
+                    "2015-07-21T21:40:32.142",
+                    "Europe/London",
+                ),
+                alias: "named_datetime".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::ToString {
+                    expression: Box::new(zoneddatetime_from_string_expression(
+                        "2020-06-01T09:00:00+01:00",
+                        "+01:00",
+                    )),
+                },
+                alias: "text".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_zoneddatetime_map_constructor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN datetime({year: 1984, month: 10, day: 11, hour: 12, minute: 31, second: 14, nanosecond: 645876123, timezone: 'Europe/Stockholm'}) AS named_datetime, \
+                datetime({year: 1984, timezone: '+01:00'}) AS default_fields",
+    )
+    .expect("literal datetime map constructors should compile");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: zoneddatetime_expression(
+                    1984,
+                    10,
+                    11,
+                    12,
+                    31,
+                    14,
+                    0,
+                    0,
+                    645_876_123,
+                    "Europe/Stockholm",
+                ),
+                alias: "named_datetime".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_expression(1984, 1, 1, 0, 0, 0, 0, 0, 0, "+01:00"),
+                alias: "default_fields".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn rejects_unsupported_zoneddatetime_constructor_forms() {
+    for (cypher, expected) in [
+        (
+            "MATCH (person:Person) RETURN datetime(person.name) AS d",
+            "dynamic datetime() string argument not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime('2020-06-01T09:00:00') AS d",
+            "datetime() requires a timezone offset or bracketed timezone",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime({year: person.age, timezone: 'UTC'}) AS d",
+            "dynamic temporal fields not supported yet",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime({month: 1, day: 15, timezone: 'UTC'}) AS d",
+            "datetime() map constructor requires a literal integer year",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime({year: 2020}) AS d",
+            "datetime() map constructor requires a literal string timezone",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime({year: 2020, timezone: person.name}) AS d",
+            "datetime() map constructor requires a literal string timezone",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime({year: 2020, timezone: 'Mars/Olympus'}) AS d",
+            "datetime() timezone must be a fixed offset or IANA timezone",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime('2021-03-28T01:30:00[Europe/London]') AS d",
+            "daylight-saving gap",
+        ),
+        (
+            "MATCH (person:Person) RETURN datetime('2021-10-31T01:30:00[Europe/London]') AS d",
+            "daylight-saving overlap",
+        ),
+    ] {
+        let error =
+            compile_cypher(cypher).expect_err("unsupported datetime form should be rejected");
         assert!(
             error.to_string().contains(expected),
             "expected {expected:?}, got {error}"

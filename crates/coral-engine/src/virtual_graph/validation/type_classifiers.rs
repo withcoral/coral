@@ -175,7 +175,7 @@ pub(super) fn scalar_type_for_data_type(data_type: &str) -> ScalarType {
         return ScalarType::Temporal(TemporalKind::LocalTime);
     }
     if data_type.starts_with("Timestamp") {
-        return ScalarType::Temporal(TemporalKind::LocalDateTime);
+        return ScalarType::Temporal(timestamp_data_type_kind(data_type));
     }
     if data_type.starts_with("Dictionary") {
         return scalar_type_for_dictionary_data_type(data_type);
@@ -200,9 +200,17 @@ fn scalar_type_for_dictionary_data_type(data_type: &str) -> ScalarType {
     } else if data_type.contains("Time") && !data_type.contains("Timestamp") {
         ScalarType::Temporal(TemporalKind::LocalTime)
     } else if data_type.contains("Timestamp") {
-        ScalarType::Temporal(TemporalKind::LocalDateTime)
+        ScalarType::Temporal(timestamp_data_type_kind(data_type))
     } else {
         ScalarType::Other
+    }
+}
+
+fn timestamp_data_type_kind(data_type: &str) -> TemporalKind {
+    if data_type.contains("Some(") {
+        TemporalKind::ZonedDateTime
+    } else {
+        TemporalKind::LocalDateTime
     }
 }
 

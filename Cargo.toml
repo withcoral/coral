@@ -52,6 +52,7 @@ axum = { version = "0.8", default-features = false }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chrono-tz = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }

@@ -993,6 +993,46 @@ impl<'a> GraphPlanValidator<'a> {
                 )?;
                 Ok(ScalarType::Temporal(TemporalKind::LocalDateTime))
             }
+            TemporalExpr::MakeZonedDateTime {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+                millisecond,
+                microsecond,
+                nanosecond,
+                ..
+            } => {
+                self.require_scoped_temporal_integer_fields(
+                    [
+                        ("year", year),
+                        ("month", month),
+                        ("day", day),
+                        ("hour", hour),
+                        ("minute", minute),
+                        ("second", second),
+                        ("millisecond", millisecond),
+                        ("microsecond", microsecond),
+                        ("nanosecond", nanosecond),
+                    ],
+                    scope,
+                    path,
+                    "datetime constructor field",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::ZonedDateTime))
+            }
+            TemporalExpr::ZonedDateTimeFromString { text, .. } => {
+                let text_type =
+                    self.infer_scoped_scalar_expression_type(text, scope, format!("{path}.text"))?;
+                Self::require_string_compatible_type(
+                    text_type,
+                    format!("{path}.text"),
+                    "datetime string constructor",
+                )?;
+                Ok(ScalarType::Temporal(TemporalKind::ZonedDateTime))
+            }
             TemporalExpr::MakeLocalTime {
                 hour,
                 minute,
