@@ -100,7 +100,8 @@ use self::functions::*;
 )]
 use self::scalar_builders::*;
 use self::variable_rename::{
-    rename_graph_plan_variables, rename_hidden_graph_variables, rename_projection_variables,
+    rename_graph_plan_variables, rename_hidden_graph_variables, rename_path_binding_variables,
+    rename_projection_variables,
 };
 
 #[allow(
@@ -475,7 +476,6 @@ struct PathBinding {
     optional: bool,
     presence_gate: Option<PathPresenceGate>,
     zero_hop_endpoint_introduced: bool,
-    value_projection_scope: PathValueProjectionScope,
     uses_relationship_range_syntax: bool,
 }
 
@@ -483,12 +483,6 @@ struct PathBinding {
 enum PathPresenceGate {
     Variable(String),
     Predicate(PredicateExpression),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathValueProjectionScope {
-    SameQueryPart,
-    AfterWithBoundary,
 }
 
 #[derive(Debug, Clone)]
@@ -6956,7 +6950,14 @@ fn compile_state_for_multi_part(
     context: &CypherCompileContext,
 ) -> CypherCompileState {
     let mut state = CypherCompileState::default();
+    let mut path_variables_in_scope = BTreeSet::new();
     for part in &query.parts {
+        let declared_path_variables =
+            declared_path_variables_in_reading_clauses(&part.reading_clauses);
+        let available_path_variables = path_variables_in_scope
+            .union(&declared_path_variables)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         collect_relationship_element_path_variables_in_reading_clauses(
             &part.reading_clauses,
             context,
@@ -6966,12 +6967,16 @@ fn compile_state_for_multi_part(
             &part.with,
             context,
             &mut state.relationship_element_path_variables,
+            &available_path_variables,
         );
+        path_variables_in_scope =
+            carried_path_variables_after_with(&part.with, &available_path_variables);
     }
-    collect_relationship_element_path_variables_in_single_part(
+    collect_relationship_element_path_variables_in_single_part_with_scope(
         &query.final_part,
         context,
         &mut state.relationship_element_path_variables,
+        &path_variables_in_scope,
     );
     state
 }
@@ -6981,8 +6986,26 @@ fn collect_relationship_element_path_variables_in_single_part(
     context: &CypherCompileContext,
     variables: &mut BTreeSet<String>,
 ) {
+    collect_relationship_element_path_variables_in_single_part_with_scope(
+        query,
+        context,
+        variables,
+        &BTreeSet::new(),
+    );
+}
+
+fn collect_relationship_element_path_variables_in_single_part_with_scope(
+    query: &SinglePartQuery,
+    context: &CypherCompileContext,
+    variables: &mut BTreeSet<String>,
+    path_variables_in_scope: &BTreeSet<String>,
+) {
     let declared_path_variables =
         declared_path_variables_in_reading_clauses(&query.reading_clauses);
+    let available_path_variables = path_variables_in_scope
+        .union(&declared_path_variables)
+        .cloned()
+        .collect::<BTreeSet<_>>();
     collect_relationship_element_path_variables_in_reading_clauses(
         &query.reading_clauses,
         context,
@@ -6993,7 +7016,7 @@ fn collect_relationship_element_path_variables_in_single_part(
             return_clause,
             context,
             variables,
-            &declared_path_variables,
+            &available_path_variables,
         );
     }
 }
@@ -7034,8 +7057,14 @@ fn collect_relationship_element_path_variables_in_with(
     with: &With,
     context: &CypherCompileContext,
     variables: &mut BTreeSet<String>,
+    available_path_variables: &BTreeSet<String>,
 ) {
     for item in &with.items {
+        if let Some(variable) = expression_variable_name(&item.expression)
+            && available_path_variables.contains(&variable)
+        {
+            variables.insert(variable);
+        }
         collect_relationship_element_path_variables_in_expression(
             &item.expression,
             context,
@@ -7062,14 +7091,13 @@ fn collect_relationship_element_path_variables_in_return(
     return_clause: &Return,
     context: &CypherCompileContext,
     variables: &mut BTreeSet<String>,
-    declared_path_variables: &BTreeSet<String>,
+    available_path_variables: &BTreeSet<String>,
 ) {
     for item in &return_clause.items {
-        if let Expression::Variable(variable) = &item.expression {
-            let name = variable_name(variable);
-            if declared_path_variables.contains(&name) {
-                variables.insert(name);
-            }
+        if let Some(variable) = expression_variable_name(&item.expression)
+            && available_path_variables.contains(&variable)
+        {
+            variables.insert(variable);
         }
         collect_relationship_element_path_variables_in_expression(
             &item.expression,
@@ -7088,6 +7116,30 @@ fn collect_relationship_element_path_variables_in_return(
     if let Some(limit) = &return_clause.limit {
         collect_relationship_element_path_variables_in_expression(limit, context, variables);
     }
+}
+
+fn carried_path_variables_after_with(
+    with: &With,
+    available_path_variables: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    if with.star {
+        return available_path_variables.clone();
+    }
+    let mut carried = BTreeSet::new();
+    for item in &with.items {
+        let Some(input) = expression_variable_name(&item.expression) else {
+            continue;
+        };
+        if !available_path_variables.contains(&input) {
+            continue;
+        }
+        let output = item
+            .alias
+            .as_ref()
+            .map_or_else(|| input.clone(), variable_name);
+        carried.insert(output);
+    }
+    carried
 }
 
 fn collect_relationship_element_path_variables_in_order_by(
@@ -10476,6 +10528,7 @@ fn apply_transparent_with_scope(
         .difference(&scope.carried_inputs)
         .cloned()
         .collect::<Vec<_>>();
+    let mut next_path_variables = carried_transparent_with_path_variables(state, &scope)?;
     let mut hidden_renames = BTreeMap::new();
     let mut renames = scope.renames;
     for variable in &dropped_variables {
@@ -10490,6 +10543,9 @@ fn apply_transparent_with_scope(
         for projection in &mut next_scalar_aliases {
             rename_projection_variables(projection, &renames);
         }
+        for binding in next_path_variables.values_mut() {
+            rename_path_binding_variables(binding, &renames);
+        }
     }
     state
         .hidden_graph_variables
@@ -10499,11 +10555,9 @@ fn apply_transparent_with_scope(
         state.out_of_scope_graph_names.remove(&variable);
     }
     state.scalar_aliases = next_scalar_aliases;
+    state.path_variables = next_path_variables;
 
-    let mut predicate_state = state.clone();
-    predicate_state.path_variables.clear();
-    let predicate =
-        compile_transparent_with_where(with, plan, Some(&predicate_state), path.clone(), context)?;
+    let predicate = compile_transparent_with_where(with, plan, Some(state), path.clone(), context)?;
     reject_ignored_path_variable_references(plan, state, &path)?;
     if let Some(predicate) = predicate.as_ref() {
         reject_ignored_path_variable_references_in_predicate(
@@ -10512,7 +10566,6 @@ fn apply_transparent_with_scope(
             format!("{path}.where"),
         )?;
     }
-    state.path_variables.clear();
     Ok(predicate)
 }
 
@@ -10525,11 +10578,7 @@ fn apply_transparent_with_star_scope(
 ) -> Result<Option<PredicateExpression>, CoreError> {
     let aliases = compile_transparent_with_star_scalar_aliases(with, plan, state, &path, context)?;
     state.scalar_aliases.extend(aliases);
-    let predicate = compile_transparent_with_where(with, plan, Some(state), path, context)?;
-    for binding in state.path_variables.values_mut() {
-        binding.value_projection_scope = PathValueProjectionScope::AfterWithBoundary;
-    }
-    Ok(predicate)
+    compile_transparent_with_where(with, plan, Some(state), path, context)
 }
 
 #[derive(Default)]
@@ -10537,7 +10586,9 @@ struct TransparentWithScopePlan {
     carried_inputs: BTreeSet<String>,
     carried_outputs: BTreeSet<String>,
     carried_graph_outputs: BTreeSet<String>,
+    carried_path_inputs: BTreeSet<String>,
     scalar_aliases: Vec<Projection>,
+    path_renames: BTreeMap<String, String>,
     renames: BTreeMap<String, String>,
 }
 
@@ -10788,10 +10839,8 @@ fn compile_transparent_with_variable_item(
         return Ok(true);
     }
     if state.path_variables.contains_key(&input) {
-        return Err(unsupported(
-            format!("{path}.items[{index}].expression"),
-            "WITH cannot carry path variables because Coral does not materialize path values across query parts yet",
-        ));
+        push_transparent_with_path_variable(item, index, path, input, scope)?;
+        return Ok(true);
     }
     if let Some(projection) = scalar_alias_projection(state, &input) {
         let output = item
@@ -10837,6 +10886,44 @@ fn push_transparent_with_graph_variable(
     scope.carried_graph_outputs.insert(output.clone());
     scope.renames.insert(input, output);
     Ok(())
+}
+
+fn push_transparent_with_path_variable(
+    item: &ProjectionItem,
+    index: usize,
+    path: &str,
+    input: String,
+    scope: &mut TransparentWithScopePlan,
+) -> Result<(), CoreError> {
+    let output = item
+        .alias
+        .as_ref()
+        .map(validate_variable)
+        .transpose()?
+        .unwrap_or_else(|| input.clone());
+    if !scope.carried_path_inputs.insert(input.clone()) {
+        return Err(unsupported(
+            format!("{path}.items[{index}].expression"),
+            format!("WITH carries path variable '{input}' more than once"),
+        ));
+    }
+    push_transparent_with_output_name(scope, &output, path, index)?;
+    scope.path_renames.insert(input, output);
+    Ok(())
+}
+
+fn carried_transparent_with_path_variables(
+    state: &CypherCompileState,
+    scope: &TransparentWithScopePlan,
+) -> Result<BTreeMap<String, PathBinding>, CoreError> {
+    let mut path_variables = BTreeMap::new();
+    for (input, output) in &scope.path_renames {
+        let binding = state.path_variables.get(input).ok_or_else(|| {
+            CoreError::internal("transparent WITH path variable was not in source scope")
+        })?;
+        path_variables.insert(output.clone(), binding.clone());
+    }
+    Ok(path_variables)
 }
 
 fn push_transparent_with_scalar_alias(
@@ -12555,7 +12642,6 @@ fn bind_path_variable(
             optional,
             presence_gate,
             zero_hop_endpoint_introduced,
-            value_projection_scope: PathValueProjectionScope::SameQueryPart,
             uses_relationship_range_syntax: pending.uses_relationship_range_syntax,
         },
     );
@@ -20155,14 +20241,6 @@ fn compile_optional_path_value_projection(
     let Some(binding) = state.path_variables.get(&name) else {
         return Ok(None);
     };
-    if binding.value_projection_scope == PathValueProjectionScope::AfterWithBoundary {
-        return Err(unsupported(
-            format!("{path}.expression"),
-            format!(
-                "path variable '{name}' cannot be used as a graph value after WITH because Coral does not materialize path values across query parts yet"
-            ),
-        ));
-    }
     if binding.uses_relationship_range_syntax {
         return Err(unsupported(
             format!("{path}.expression"),

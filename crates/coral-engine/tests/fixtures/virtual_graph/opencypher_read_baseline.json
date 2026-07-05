@@ -16,7 +16,7 @@
     "OptionalMatch": 34,
     "Parameters": 14,
     "PathMetadata": 1,
-    "PathValues": 19,
+    "PathValues": 23,
     "PatternComprehension": 15,
     "Quantifiers": 12,
     "RelationshipProperties": 1,
@@ -10001,9 +10001,76 @@
       }
     },
     {
+      "id": "with-carries-fixed-hop-path-nodes",
+      "feature": "PathValues",
+      "fixture": "path_through_with",
+      "query": "MATCH p = (a:A)-[:X]->(b:B) WITH p RETURN nodes(p) AS nodes",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "nodes": [
+              1,
+              2
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-carries-fixed-hop-path-length",
+      "feature": "PathValues",
+      "fixture": "path_through_with",
+      "query": "MATCH p = (a:A)-[:X]->(b:B) WITH p RETURN length(p) AS length",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "length": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "with-carries-fixed-hop-materialized-path",
+      "feature": "PathValues",
+      "fixture": "path_through_with",
+      "query": "MATCH p = (a:A)-[:X]->(b:B) WITH p RETURN p",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "p": [
+              {
+                "node_id": 1
+              },
+              {
+                "relationship_id": 100
+              },
+              {
+                "node_id": 2
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "variable-length-materialized-path-return-rejected",
       "feature": "PathValues",
       "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) RETURN path",
+      "expected": {
+        "kind": "error",
+        "contains": "variable-length path values"
+      }
+    },
+    {
+      "id": "with-variable-length-materialized-path-return-rejected",
+      "feature": "PathValues",
+      "query": "MATCH path = (a:Person)-[:KNOWS*1..2]->(c:Person) WITH path RETURN path",
       "expected": {
         "kind": "error",
         "contains": "variable-length path values"

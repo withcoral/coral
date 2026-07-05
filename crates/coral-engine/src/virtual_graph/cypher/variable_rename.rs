@@ -74,6 +74,29 @@ pub(super) fn rename_projection_variables(
     }
 }
 
+pub(super) fn rename_path_binding_variables(
+    binding: &mut PathBinding,
+    renames: &BTreeMap<String, String>,
+) {
+    rename_string_list(&mut binding.node_variables, renames);
+    rename_string_list(&mut binding.relationship_variables, renames);
+    if let Some(presence_gate) = &mut binding.presence_gate {
+        rename_path_presence_gate_variables(presence_gate, renames);
+    }
+}
+
+fn rename_path_presence_gate_variables(
+    presence_gate: &mut PathPresenceGate,
+    renames: &BTreeMap<String, String>,
+) {
+    match presence_gate {
+        PathPresenceGate::Variable(variable) => rename_string(variable, renames),
+        PathPresenceGate::Predicate(predicate) => {
+            rename_predicate_expression_variables(predicate, renames);
+        }
+    }
+}
+
 fn rename_aggregate_target_variables(
     target: &mut AggregateTarget,
     renames: &BTreeMap<String, String>,
@@ -260,6 +283,16 @@ fn rename_non_unary_scalar_expression_variables(
         | ScalarExpression::NodeLabels { variable, .. } => {
             rename_string(variable, renames);
         }
+        ScalarExpression::GraphKeyList { variables } => {
+            rename_string_list(variables, renames);
+        }
+        ScalarExpression::PathValue {
+            node_variables,
+            relationship_variables,
+        } => {
+            rename_string_list(node_variables, renames);
+            rename_string_list(relationship_variables, renames);
+        }
         ScalarExpression::PresenceGated {
             presence_variable,
             expression,
@@ -358,6 +391,12 @@ fn rename_case_expression_variables(
 
 fn rename_property_ref_variables(property: &mut PropertyRef, renames: &BTreeMap<String, String>) {
     rename_string(&mut property.variable, renames);
+}
+
+fn rename_string_list(values: &mut [String], renames: &BTreeMap<String, String>) {
+    for value in values {
+        rename_string(value, renames);
+    }
 }
 
 fn rename_string(value: &mut String, renames: &BTreeMap<String, String>) {

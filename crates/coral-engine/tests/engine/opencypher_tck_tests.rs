@@ -5,6 +5,7 @@ use std::{
 
 use coral_engine::{
     CoralQuery, GraphCypherParameterValue, GraphDeclaration, GraphLiteral, QueryExecution,
+    QuerySource,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -31,7 +32,7 @@ struct TckScenario {
     expected: TckExpectation,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TckFixture {
     #[default]
@@ -40,6 +41,7 @@ enum TckFixture {
     Rich,
     Match6SingleNode,
     Match7OptionalPath,
+    PathThroughWith,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,41 +65,12 @@ async fn opencypher_tck_read_baseline_gate() {
     assert_tck_coverage_contract(&suite);
 
     let temp = TempDir::new().expect("temp dir");
-    write_tck_fixture(temp.path());
-    write_consecutive_optional_fixture(temp.path());
-    write_match6_single_node_fixture(temp.path());
-    write_match7_optional_path_fixture(temp.path());
-    crate::harness::write_rich_fixture(temp.path());
-    let graph = GraphDeclaration::from_yaml(TCK_GRAPH).expect("TCK graph should parse");
-    let consecutive_optional_graph = GraphDeclaration::from_yaml(CONSECUTIVE_OPTIONAL_GRAPH)
-        .expect("consecutive optional graph should parse");
-    let match6_single_node_graph =
-        GraphDeclaration::from_yaml(MATCH6_SINGLE_NODE_GRAPH).expect("Match6 graph should parse");
-    let match7_optional_path_graph =
-        GraphDeclaration::from_yaml(MATCH7_OPTIONAL_PATH_GRAPH).expect("Match7 graph should parse");
-    let rich_graph = GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
-        .expect("rich fixture graph should parse");
+    write_all_tck_fixtures(temp.path());
+    let graphs = TckGraphs::load();
 
     for scenario in suite.scenarios {
-        let (source, graph) = match scenario.fixture {
-            TckFixture::Baseline => (build_source(tck_manifest(temp.path())), &graph),
-            TckFixture::ConsecutiveOptional => (
-                build_source(consecutive_optional_manifest(temp.path())),
-                &consecutive_optional_graph,
-            ),
-            TckFixture::Match6SingleNode => (
-                build_source(match6_single_node_manifest(temp.path())),
-                &match6_single_node_graph,
-            ),
-            TckFixture::Match7OptionalPath => (
-                build_source(match7_optional_path_manifest(temp.path())),
-                &match7_optional_path_graph,
-            ),
-            TckFixture::Rich => (
-                build_source(crate::harness::rich_manifest(temp.path())),
-                &rich_graph,
-            ),
-        };
+        let source = tck_source(scenario.fixture, temp.path());
+        let graph = graphs.graph(scenario.fixture);
         let result = if scenario.parameters.is_empty() {
             CoralQuery::execute_cypher(&[source], test_runtime(), graph, &scenario.query).await
         } else {
@@ -147,6 +120,64 @@ async fn opencypher_tck_read_baseline_gate() {
                 );
             }
         }
+    }
+}
+
+struct TckGraphs {
+    baseline: GraphDeclaration,
+    consecutive_optional: GraphDeclaration,
+    match6_single_node: GraphDeclaration,
+    match7_optional_path: GraphDeclaration,
+    path_through_with: GraphDeclaration,
+    rich: GraphDeclaration,
+}
+
+impl TckGraphs {
+    fn load() -> Self {
+        Self {
+            baseline: GraphDeclaration::from_yaml(TCK_GRAPH).expect("TCK graph should parse"),
+            consecutive_optional: GraphDeclaration::from_yaml(CONSECUTIVE_OPTIONAL_GRAPH)
+                .expect("consecutive optional graph should parse"),
+            match6_single_node: GraphDeclaration::from_yaml(MATCH6_SINGLE_NODE_GRAPH)
+                .expect("Match6 graph should parse"),
+            match7_optional_path: GraphDeclaration::from_yaml(MATCH7_OPTIONAL_PATH_GRAPH)
+                .expect("Match7 graph should parse"),
+            path_through_with: GraphDeclaration::from_yaml(PATH_THROUGH_WITH_GRAPH)
+                .expect("path carry graph should parse"),
+            rich: GraphDeclaration::from_yaml(crate::harness::RICH_GRAPH)
+                .expect("rich fixture graph should parse"),
+        }
+    }
+
+    fn graph(&self, fixture: TckFixture) -> &GraphDeclaration {
+        match fixture {
+            TckFixture::Baseline => &self.baseline,
+            TckFixture::ConsecutiveOptional => &self.consecutive_optional,
+            TckFixture::Match6SingleNode => &self.match6_single_node,
+            TckFixture::Match7OptionalPath => &self.match7_optional_path,
+            TckFixture::PathThroughWith => &self.path_through_with,
+            TckFixture::Rich => &self.rich,
+        }
+    }
+}
+
+fn write_all_tck_fixtures(dir: &Path) {
+    write_tck_fixture(dir);
+    write_consecutive_optional_fixture(dir);
+    write_match6_single_node_fixture(dir);
+    write_match7_optional_path_fixture(dir);
+    write_path_through_with_fixture(dir);
+    crate::harness::write_rich_fixture(dir);
+}
+
+fn tck_source(fixture: TckFixture, dir: &Path) -> QuerySource {
+    match fixture {
+        TckFixture::Baseline => build_source(tck_manifest(dir)),
+        TckFixture::ConsecutiveOptional => build_source(consecutive_optional_manifest(dir)),
+        TckFixture::Match6SingleNode => build_source(match6_single_node_manifest(dir)),
+        TckFixture::Match7OptionalPath => build_source(match7_optional_path_manifest(dir)),
+        TckFixture::PathThroughWith => build_source(path_through_with_manifest(dir)),
+        TckFixture::Rich => build_source(crate::harness::rich_manifest(dir)),
     }
 }
 
@@ -366,6 +397,16 @@ fn write_match7_optional_path_fixture(dir: &Path) {
     write_jsonl_file(dir, "match7_a.jsonl", &[json!({"id": 1, "num": 42})]);
     write_jsonl_file(dir, "match7_b.jsonl", &[json!({"id": 2, "num": 46})]);
     write_jsonl_file(dir, "match7_x.jsonl", &[]);
+}
+
+fn write_path_through_with_fixture(dir: &Path) {
+    write_jsonl_file(dir, "path_with_a.jsonl", &[json!({"id": 1})]);
+    write_jsonl_file(dir, "path_with_b.jsonl", &[json!({"id": 2})]);
+    write_jsonl_file(
+        dir,
+        "path_with_x.jsonl",
+        &[json!({"id": 100, "a_id": 1, "b_id": 2})],
+    );
 }
 
 fn tck_manifest(dir: &Path) -> Value {
@@ -613,6 +654,46 @@ fn match7_optional_path_manifest(dir: &Path) -> Value {
     })
 }
 
+fn path_through_with_manifest(dir: &Path) -> Value {
+    json!({
+        "name": "pathwith",
+        "version": "0.1.0",
+        "dsl_version": 3,
+        "backend": "file",
+        "tables": [
+            {
+                "name": "a_nodes",
+                "description": "Path-through-WITH A nodes",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "path_with_a.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "b_nodes",
+                "description": "Path-through-WITH B nodes",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "path_with_b.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" }
+                ]
+            },
+            {
+                "name": "x_edges",
+                "description": "Path-through-WITH X relationship table",
+                "format": "jsonl",
+                "source": { "location": dir_url(dir), "glob": "path_with_x.jsonl" },
+                "columns": [
+                    { "name": "id", "type": "Int64" },
+                    { "name": "a_id", "type": "Int64" },
+                    { "name": "b_id", "type": "Int64" }
+                ]
+            }
+        ]
+    })
+}
+
 const TCK_GRAPH: &str = r"
 version: 1
 name: opencypher-read-baseline
@@ -731,6 +812,24 @@ nodes:
 relationships:
   - type: X
     table: { schema: match7, name: x_edges }
+    key: id
+    from: { label: A, key: a_id }
+    to: { label: B, key: b_id }
+";
+
+const PATH_THROUGH_WITH_GRAPH: &str = r"
+version: 1
+name: path-through-with
+nodes:
+  - label: A
+    table: { schema: pathwith, name: a_nodes }
+    key: id
+  - label: B
+    table: { schema: pathwith, name: b_nodes }
+    key: id
+relationships:
+  - type: X
+    table: { schema: pathwith, name: x_edges }
     key: id
     from: { label: A, key: a_id }
     to: { label: B, key: b_id }

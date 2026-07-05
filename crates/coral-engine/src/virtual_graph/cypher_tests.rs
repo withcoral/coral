@@ -4835,6 +4835,101 @@ fn compiles_with_star_where_over_path_metadata() {
 }
 
 #[test]
+fn compiles_explicit_with_over_path_variable_accessors() {
+    let plan = compile_cypher(
+        "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH path \
+             RETURN nodes(path) AS nodes, relationships(path) AS relationships, length(path) AS hops",
+    )
+    .expect("explicit WITH should carry fixed-hop path variables");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: ScalarExpression::GraphKeyList {
+                    variables: vec![
+                        "__coral_hidden_person".to_string(),
+                        "__coral_hidden_service".to_string(),
+                    ],
+                },
+                alias: "nodes".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::GraphKeyList {
+                    variables: vec!["__coral_rel_0".to_string()],
+                },
+                alias: "relationships".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Literal(Literal::Integer(1)),
+                alias: "hops".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn compiles_explicit_with_over_path_value() {
+    let plan = compile_cypher(
+        "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH path \
+             RETURN path",
+    )
+    .expect("explicit WITH should carry fixed-hop path values");
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::PathValue {
+                node_variables: vec![
+                    "__coral_hidden_person".to_string(),
+                    "__coral_hidden_service".to_string(),
+                ],
+                relationship_variables: vec!["__coral_rel_0".to_string()],
+            },
+            alias: "path".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compiles_with_star_over_path_value() {
+    let plan = compile_cypher(
+        "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
+             WITH * \
+             RETURN path",
+    )
+    .expect("WITH * should carry fixed-hop path values for explicit projection");
+
+    assert_eq!(
+        plan.projections,
+        vec![Projection::Expression {
+            expression: ScalarExpression::PathValue {
+                node_variables: vec!["person".to_string(), "service".to_string()],
+                relationship_variables: vec!["__coral_rel_0".to_string()],
+            },
+            alias: "path".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn rejects_explicit_with_over_variable_length_path_value() {
+    let error = compile_cypher(
+        "MATCH path = (source:Service)-[:DEPENDS_ON*1..2]->(target:Service) \
+             WITH path \
+             RETURN path",
+    )
+    .expect_err("variable-length path values should remain unsupported after WITH");
+
+    assert!(
+        error.to_string().contains("variable-length path values"),
+        "{error}"
+    );
+}
+
+#[test]
 fn rejects_explicit_with_where_over_dropped_path_metadata() {
     let error = compile_cypher(
         "MATCH path = (person:Person)-[:OWNS]->(service:Service) \
