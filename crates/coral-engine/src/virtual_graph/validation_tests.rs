@@ -2401,6 +2401,49 @@ fn validate_graph_plan_accepts_optional_match_scoped_predicates() {
 }
 
 #[test]
+fn validate_graph_plan_accepts_node_only_optional_match_scope() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let plan = GraphPlan {
+        nodes: vec![NodePattern {
+            variable: "person".to_string(),
+            label: "Person".to_string(),
+        }],
+        relationships: Vec::new(),
+        optional_relationships: Vec::new(),
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: vec![0],
+            relationship_indices: Vec::new(),
+            predicate: Some(PredicateExpression::Comparison(PropertyPredicate {
+                property: PropertyRef {
+                    variable: "person".to_string(),
+                    property: "name".to_string(),
+                },
+                operator: ComparisonOperator::NotEqual,
+                rhs: PredicateRhs::Literal(Literal::Null),
+            })),
+        }],
+        distinct: false,
+        projections: vec![Projection::Property {
+            property: PropertyRef {
+                variable: "person".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("name".to_string()),
+        }],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    };
+
+    graph
+        .validate_graph_plan(&plan)
+        .expect("node-only optional scope should validate");
+}
+
+#[test]
 fn validate_graph_plan_accepts_multihop_optional_match_scope() {
     let graph = Declaration::from_yaml(
         r"

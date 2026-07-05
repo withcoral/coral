@@ -60,7 +60,7 @@ impl<'a> GraphPlanValidator<'a> {
     }
 
     pub(super) fn validate_optional_predicates(&self) -> Result<(), CoreError> {
-        if self.plan.optional_relationships.is_empty() {
+        if self.plan.optional_relationships.is_empty() && self.plan.optional_matches.is_empty() {
             return Ok(());
         }
         if self.plan.post_projection_predicate.is_some() {
@@ -119,6 +119,15 @@ impl<'a> GraphPlanValidator<'a> {
     ) -> Result<BTreeSet<&str>, CoreError> {
         self.validate_optional_match_relationship_indices(index, optional_match)?;
         let mut allowed_variables = BTreeSet::new();
+        if optional_match.relationship_indices.is_empty() {
+            for node_index in optional_match.node_indices.iter().copied() {
+                let node = self.plan.nodes.get(node_index).ok_or_else(|| {
+                    CoreError::internal("validated optional node index was invalid")
+                })?;
+                allowed_variables.insert(node.variable.as_str());
+            }
+            return Ok(allowed_variables);
+        }
         for relationship_index in optional_match.relationship_indices.iter().copied() {
             let relationship = self
                 .plan
@@ -151,13 +160,23 @@ impl<'a> GraphPlanValidator<'a> {
             )
             .into_core_error());
         }
-        let scoped_node_variables = optional_match
-            .relationship_indices
-            .iter()
-            .copied()
-            .filter_map(|relationship_index| self.plan.relationships.get(relationship_index))
-            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
-            .collect::<BTreeSet<_>>();
+        let scoped_node_variables = if optional_match.relationship_indices.is_empty() {
+            optional_match
+                .node_indices
+                .iter()
+                .copied()
+                .filter_map(|node_index| self.plan.nodes.get(node_index))
+                .map(|node| node.variable.as_str())
+                .collect::<BTreeSet<_>>()
+        } else {
+            optional_match
+                .relationship_indices
+                .iter()
+                .copied()
+                .filter_map(|relationship_index| self.plan.relationships.get(relationship_index))
+                .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+                .collect::<BTreeSet<_>>()
+        };
         for (position, node_index) in optional_match.node_indices.iter().copied().enumerate() {
             let Some(node) = self.plan.nodes.get(node_index) else {
                 return Err(Diagnostic::new(
@@ -191,12 +210,7 @@ impl<'a> GraphPlanValidator<'a> {
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
         if optional_match.relationship_indices.is_empty() {
-            return Err(Diagnostic::new(
-                diagnostic_codes::INVALID_OPTIONAL_MATCH_SCOPE,
-                format!("optional_matches[{index}].relationship_indices"),
-                "optional match scopes must contain at least one relationship index",
-            )
-            .into_core_error());
+            return Ok(());
         }
         if optional_match
             .relationship_indices
@@ -260,14 +274,12 @@ impl<'a> GraphPlanValidator<'a> {
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
         self.validate_optional_match_scope_shape(index, optional_match)?;
-        let relationship_index = *optional_match
-            .relationship_indices
-            .first()
-            .ok_or_else(|| CoreError::internal("validated optional match scope was empty"))?;
-        self.plan
-            .relationships
-            .get(relationship_index)
-            .ok_or_else(|| CoreError::internal("validated relationship index was invalid"))?;
+        if let Some(relationship_index) = optional_match.relationship_indices.first().copied() {
+            self.plan
+                .relationships
+                .get(relationship_index)
+                .ok_or_else(|| CoreError::internal("validated relationship index was invalid"))?;
+        }
         Ok(())
     }
 
@@ -276,6 +288,9 @@ impl<'a> GraphPlanValidator<'a> {
         index: usize,
         optional_match: &OptionalMatchScope,
     ) -> Result<(), CoreError> {
+        if Self::validate_node_only_optional_match_scope_shape(index, optional_match)? {
+            return Ok(());
+        }
         if optional_match.relationship_indices.len() == 1 {
             return Ok(());
         }
@@ -375,5 +390,23 @@ impl<'a> GraphPlanValidator<'a> {
         }
 
         Ok(())
+    }
+
+    fn validate_node_only_optional_match_scope_shape(
+        index: usize,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<bool, CoreError> {
+        if !optional_match.relationship_indices.is_empty() {
+            return Ok(false);
+        }
+        if optional_match.node_indices.len() == 1 {
+            return Ok(true);
+        }
+        Err(Diagnostic::new(
+            diagnostic_codes::UNSUPPORTED_OPTIONAL_MATCH_SCOPE,
+            format!("optional_matches[{index}].node_indices"),
+            "node-only optional match scopes must contain exactly one nullable node",
+        )
+        .into_core_error())
     }
 }

@@ -22,6 +22,8 @@ pub(super) struct FromClauseBuilder<'a, 'r> {
     from_clause: String,
 }
 
+const OPTIONAL_DRIVER_ALIAS: &str = "__coral_optional_driver";
+
 impl<'a> SqlRenderer<'a> {
     fn render_optional_join_predicate(
         &self,
@@ -356,7 +358,9 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
     pub(super) fn build(mut self) -> Result<String, CoreError> {
         let plan = self.lowerer.validated.plan();
         if !self.try_start_from_staged_relationship()? {
-            if let Some(first_node) = plan.nodes.first() {
+            if self.should_start_from_optional_driver() {
+                self.start_from_optional_driver();
+            } else if let Some(first_node) = plan.nodes.first() {
                 self.start_from_node(first_node.variable.as_str())?;
             } else {
                 self.start_from_scalar_stage()?;
@@ -369,6 +373,22 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
         self.cross_join_scalar_stages()?;
 
         Ok(self.from_clause)
+    }
+
+    fn should_start_from_optional_driver(&self) -> bool {
+        let Some(first_node) = self.lowerer.validated.plan().nodes.first() else {
+            return false;
+        };
+        self.lowerer
+            .node_only_optional_scope_variables()
+            .contains(first_node.variable.as_str())
+    }
+
+    fn start_from_optional_driver(&mut self) {
+        self.from_clause = format!(
+            "FROM (VALUES (1)) AS {}",
+            quote_ident(OPTIONAL_DRIVER_ALIAS)
+        );
     }
 
     fn start_from_scalar_stage(&mut self) -> Result<(), CoreError> {
@@ -679,12 +699,15 @@ impl<'a, 'r> FromClauseBuilder<'a, 'r> {
 
 impl<'a> SqlRenderer<'a> {
     fn optional_relationship_node_variables(&self) -> BTreeSet<&'a str> {
-        self.validated
+        let optional_relationship_nodes = self
+            .validated
             .plan()
             .optional_relationships
             .iter()
             .filter_map(|index| self.validated.plan().relationships.get(*index))
-            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()])
+            .flat_map(|relationship| [relationship.left.as_str(), relationship.right.as_str()]);
+        optional_relationship_nodes
+            .chain(self.node_only_optional_scope_variables())
             .collect()
     }
 }
@@ -742,13 +765,25 @@ impl FromClauseBuilder<'_, '_> {
     }
 }
 
-impl SqlRenderer<'_> {
+impl<'a> SqlRenderer<'a> {
     fn optional_match_scope_relationships(&self) -> BTreeSet<usize> {
         self.validated
             .plan()
             .optional_matches
             .iter()
             .flat_map(|optional_match| optional_match.relationship_indices.iter().copied())
+            .collect()
+    }
+
+    fn node_only_optional_scope_variables(&self) -> BTreeSet<&'a str> {
+        self.validated
+            .plan()
+            .optional_matches
+            .iter()
+            .filter(|optional_match| optional_match.relationship_indices.is_empty())
+            .flat_map(|optional_match| optional_match.node_indices.iter().copied())
+            .filter_map(|node_index| self.validated.plan().nodes.get(node_index))
+            .map(|node| node.variable.as_str())
             .collect()
     }
 }
@@ -764,6 +799,13 @@ impl FromClauseBuilder<'_, '_> {
                 .optional_matches
                 .get(*scope_index)
                 .is_none_or(|optional_match| {
+                    if optional_match.relationship_indices.is_empty() {
+                        return !optional_match
+                            .node_indices
+                            .iter()
+                            .filter_map(|index| self.lowerer.validated.plan().nodes.get(*index))
+                            .all(|node| self.joined_nodes.contains(node.variable.as_str()));
+                    }
                     !optional_match
                         .relationship_indices
                         .iter()
@@ -813,6 +855,10 @@ impl FromClauseBuilder<'_, '_> {
         optional_match: &OptionalMatchScope,
     ) -> Result<bool, CoreError> {
         let relationship_indices = optional_match.relationship_indices.as_slice();
+        if relationship_indices.is_empty() {
+            self.join_node_only_optional_match_scope(optional_match)?;
+            return Ok(true);
+        }
         let [relationship_index] = relationship_indices else {
             let Some(anchor) = self.optional_match_scope_join_anchor(optional_match)? else {
                 return Ok(false);
@@ -854,6 +900,52 @@ impl FromClauseBuilder<'_, '_> {
             },
         )?;
         Ok(true)
+    }
+
+    fn join_node_only_optional_match_scope(
+        &mut self,
+        optional_match: &OptionalMatchScope,
+    ) -> Result<(), CoreError> {
+        let [node_index] = optional_match.node_indices.as_slice() else {
+            return Err(CoreError::internal(
+                "node-only optional match scope did not contain exactly one node",
+            ));
+        };
+        let node = self
+            .lowerer
+            .validated
+            .plan()
+            .nodes
+            .get(*node_index)
+            .ok_or_else(|| {
+                CoreError::internal("validated optional node index was out of bounds")
+            })?;
+        if self.joined_nodes.contains(node.variable.as_str()) {
+            return Ok(());
+        }
+        let binding = self.lowerer.validated.binding(node.variable.as_str())?;
+        let ValidatedBindingKind::Node(node_mapping) = binding.kind() else {
+            return Err(CoreError::internal(
+                "node-only optional match scope expected a node binding",
+            ));
+        };
+        let optional_predicate = self
+            .lowerer
+            .render_optional_match_predicate(optional_match)?;
+        let condition = SqlRenderer::join_condition_with_predicate(
+            "true".to_string(),
+            optional_predicate.as_deref(),
+        );
+        write!(
+            self.from_clause,
+            " LEFT JOIN {} AS {} ON {}",
+            render_table_ref(&node_mapping.table),
+            quote_ident(binding.alias()),
+            condition
+        )
+        .map_err(|_| CoreError::internal("failed to render graph SQL"))?;
+        self.joined_nodes.insert(node.variable.as_str());
+        Ok(())
     }
 }
 

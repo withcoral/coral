@@ -11583,6 +11583,215 @@ async fn cypher_optional_match_executes_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_leading_optional_match_executes_with_single_row_driver() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person:Person) \
+         RETURN person.name AS name \
+         ORDER BY name",
+    )
+    .await
+    .expect("leading OPTIONAL MATCH Cypher query should execute");
+
+    assert!(
+        execution
+            .translated_sql()
+            .contains("FROM (VALUES (1)) AS \"__coral_optional_driver\""),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"name": "Ada Lovelace"}),
+            json!({"name": "Grace Hopper"}),
+            json!({"name": "Katherine Johnson"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_optional_match_empty_result_returns_single_null_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         RETURN count(*) AS rows, count(person.name) AS names",
+    )
+    .await
+    .expect("empty leading OPTIONAL MATCH should execute");
+
+    assert!(
+        execution.translated_sql().contains(" LEFT JOIN "),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 1, "names": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_unlabeled_optional_match_executes_for_single_label_graph() {
+    let temp = TempDir::new().expect("temp dir");
+    write_rich_fixture(temp.path());
+    let source = build_source(rich_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(RICH_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person) \
+         RETURN person.name AS name \
+         ORDER BY name",
+    )
+    .await
+    .expect("leading unlabeled OPTIONAL MATCH should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![
+            json!({"name": "Ada"}),
+            json!({"name": "Bea"}),
+            json!({"name": "Cee"}),
+            json!({"name": "Dot"}),
+            json!({"name": "Eve"}),
+            json!({"name": "Fay"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_unlabeled_optional_match_empty_multi_label_returns_one_null_row() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (entity) \
+         WHERE entity.name = 'Nobody' \
+         RETURN count(*) AS rows, count(entity.name) AS names",
+    )
+    .await
+    .expect("empty multi-label unlabeled leading OPTIONAL MATCH should execute");
+
+    assert_eq!(
+        execution
+            .translated_sql()
+            .matches("__coral_optional_driver")
+            .count(),
+        1,
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("__coral_optional_union"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 1, "names": 0})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_leading_unlabeled_optional_match_multi_label_counts_all_matches() {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (entity) \
+         RETURN count(*) AS rows, count(entity.name) AS names",
+    )
+    .await
+    .expect("matched multi-label unlabeled leading OPTIONAL MATCH should execute");
+
+    assert_eq!(
+        execution_to_rows(execution.execution()),
+        vec![json!({"rows": 10, "names": 10})]
+    );
+}
+
+#[tokio::test]
+async fn cypher_match_after_leading_optional_match_filters_null_bound_rows() {
+    let temp = TempDir::new().expect("temp dir");
+    write_staged_planning_fixture(temp.path());
+    let source = build_source(staged_planning_manifest(temp.path()));
+    let graph = staged_planning_test_graph();
+
+    let matched = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person:Person) \
+         WITH person \
+         MATCH (person)-[:KNOWS]->(friend:Person) \
+         RETURN person.name AS person, friend.name AS friend \
+         ORDER BY person, friend",
+    )
+    .await
+    .expect("MATCH after leading OPTIONAL MATCH should execute");
+    assert_eq!(
+        execution_to_rows(matched.execution()),
+        vec![
+            json!({"person": "Alice", "friend": "Bob"}),
+            json!({"person": "Alice", "friend": "Carol"}),
+            json!({"person": "Bob", "friend": "Carol"}),
+        ]
+    );
+
+    let empty = CoralQuery::execute_cypher(
+        &[source],
+        test_runtime(),
+        &graph,
+        "OPTIONAL MATCH (person:Person) \
+         WHERE person.name = 'Nobody' \
+         WITH person \
+         MATCH (person)-[:KNOWS]->(friend:Person) \
+         RETURN count(*) AS rows",
+    )
+    .await
+    .expect("MATCH after empty leading OPTIONAL MATCH should execute");
+    assert_eq!(
+        execution_to_rows(empty.execution()),
+        vec![json!({"rows": 0})]
+    );
+}
+
+#[tokio::test]
 async fn cypher_match_after_optional_match_executes_when_independent() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());
@@ -16370,6 +16579,56 @@ async fn datafusion_percentile_disc_probe_executes_with_windowed_position_sql() 
         execution_to_rows(&execution),
         vec![json!({"p75": 30, "p50": 20, "p0": 10, "p100": 40})]
     );
+}
+
+#[tokio::test]
+async fn datafusion_single_row_driver_left_join_probe_preserves_optional_rows() {
+    let matched = CoralQuery::execute_sql(
+        &[],
+        test_runtime(),
+        "SELECT count(*) AS rows, count(rhs.column1) AS matches \
+         FROM (VALUES (1)) AS driver \
+         LEFT JOIN (VALUES (10), (20)) AS rhs ON true",
+    )
+    .await
+    .expect("single-row driver should left join non-empty input");
+    assert_eq!(
+        execution_to_rows(&matched),
+        vec![json!({"rows": 2, "matches": 2})]
+    );
+
+    let empty = CoralQuery::execute_sql(
+        &[],
+        test_runtime(),
+        "SELECT count(*) AS rows, count(rhs.value) AS matches \
+         FROM (VALUES (1)) AS driver \
+         LEFT JOIN ( \
+             SELECT column1 AS value FROM (VALUES (1)) WHERE false \
+         ) AS rhs ON true",
+    )
+    .await
+    .expect("single-row driver should preserve one row for empty input");
+    assert_eq!(
+        execution_to_rows(&empty),
+        vec![json!({"rows": 1, "matches": 0})]
+    );
+
+    let downstream = CoralQuery::execute_sql(
+        &[],
+        test_runtime(),
+        "WITH optional_a AS ( \
+             SELECT rhs.value AS a \
+             FROM (VALUES (1)) AS driver \
+             LEFT JOIN ( \
+                 SELECT column1 AS value FROM (VALUES (1)) WHERE false \
+             ) AS rhs ON true \
+         ) \
+         SELECT count(*) AS rows \
+         FROM optional_a JOIN (VALUES (1)) AS b ON optional_a.a = b.column1",
+    )
+    .await
+    .expect("downstream inner join should drop null optional binding rows");
+    assert_eq!(execution_to_rows(&downstream), vec![json!({"rows": 0})]);
 }
 
 #[tokio::test]

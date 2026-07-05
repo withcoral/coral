@@ -80,6 +80,14 @@ pub(super) fn render_union_branch_sql(sql: &str, index: usize) -> String {
     )
 }
 
+pub(super) fn render_null_preserving_union_sql(sql: &str) -> String {
+    let union_alias = quote_ident("__coral_optional_union");
+    format!(
+        "SELECT {union_alias}.* FROM (VALUES (1)) AS {} LEFT JOIN ({sql}) AS {union_alias} ON true",
+        quote_ident("__coral_optional_driver")
+    )
+}
+
 pub(super) fn render_union_outer_sql(sql: String, union: &GraphUnion) -> Result<String, CoreError> {
     if union.outer_projection.is_none()
         && !union.distinct

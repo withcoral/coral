@@ -13,7 +13,7 @@
     "Match": 27,
     "MathematicalFunctions": 30,
     "NullSemantics": 14,
-    "OptionalMatch": 15,
+    "OptionalMatch": 24,
     "Parameters": 14,
     "PathMetadata": 1,
     "PathValues": 19,
@@ -1448,6 +1448,148 @@
             "person": "Carol"
           }
         ]
+      }
+    },
+    {
+      "id": "optional-match-leading-node-only",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-unlabeled-node-only",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p) RETURN p.name AS name ORDER BY name",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "name": "Alice"
+          },
+          {
+            "name": "Bob"
+          },
+          {
+            "name": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-unlabeled-multi-label-node-only-counts-all-matches",
+      "feature": "OptionalMatch",
+      "fixture": "match7_optional_path",
+      "query": "OPTIONAL MATCH (n) RETURN count(*) AS rows, count(n.num) AS nums",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 2,
+            "nums": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-unlabeled-multi-label-empty-node-only-null-row",
+      "feature": "OptionalMatch",
+      "fixture": "match7_optional_path",
+      "query": "OPTIONAL MATCH (n) WHERE n.num = 999 RETURN count(*) AS rows, count(n.num) AS nums",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 1,
+            "nums": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-empty-node-only-null-row",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person) WHERE p.name = 'Nobody' RETURN count(*) AS rows, count(p.name) AS names",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 1,
+            "names": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-node-feeds-dependent-match",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person) WITH p MATCH (p)-[:KNOWS]->(friend:Person) RETURN p.name AS person, friend.name AS friend ORDER BY person, friend",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "person": "Alice",
+            "friend": "Bob"
+          },
+          {
+            "person": "Alice",
+            "friend": "Carol"
+          },
+          {
+            "person": "Bob",
+            "friend": "Carol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-empty-node-feeds-dependent-match",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person) WHERE p.name = 'Nobody' WITH p MATCH (p)-[:KNOWS]->(friend:Person) RETURN count(*) AS rows",
+      "expected": {
+        "kind": "rows",
+        "ordered": true,
+        "rows": [
+          {
+            "rows": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "optional-match-leading-multipart-rejected",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person), (q:Person) RETURN p.name AS p, q.name AS q",
+      "expected": {
+        "kind": "error",
+        "contains": "OPTIONAL MATCH currently supports one connected pattern part"
+      }
+    },
+    {
+      "id": "optional-match-leading-variable-length-rejected",
+      "feature": "OptionalMatch",
+      "query": "OPTIONAL MATCH (p:Person)-[:KNOWS*]->(friend:Person) RETURN p.name AS person",
+      "expected": {
+        "kind": "error",
+        "contains": "variable-length relationship ranges require finite non-negative bounds"
       }
     },
     {

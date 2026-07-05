@@ -2933,18 +2933,33 @@ fn graph_query_from_alternative_plans(
     if plans.is_empty() {
         return Ok(GraphQuery::Plan(first));
     }
+    let preserve_empty_result_with_null_row = std::iter::once(&first)
+        .chain(plans.iter())
+        .all(is_pure_node_only_optional_plan);
     Ok(GraphQuery::Union(GraphUnion {
         first,
         branches: plans
             .into_iter()
             .map(|plan| GraphUnionBranch { all: true, plan })
             .collect(),
+        preserve_empty_result_with_null_row,
         outer_projection,
         distinct,
         order_by,
         skip,
         limit,
     }))
+}
+
+fn is_pure_node_only_optional_plan(plan: &GraphPlan) -> bool {
+    let [optional_match] = plan.optional_matches.as_slice() else {
+        return false;
+    };
+    plan.nodes.len() == 1
+        && plan.relationships.is_empty()
+        && plan.optional_relationships.is_empty()
+        && optional_match.node_indices.as_slice() == [0]
+        && optional_match.relationship_indices.is_empty()
 }
 
 fn rewrite_missing_branch_properties_as_null(
@@ -5103,6 +5118,7 @@ fn compile_regular_query(
     Ok(GraphQuery::Union(GraphUnion {
         first,
         branches,
+        preserve_empty_result_with_null_row: false,
         outer_projection: None,
         distinct: use_outer_distinct,
         order_by: Vec::new(),
@@ -10749,6 +10765,11 @@ fn compile_reading_clauses_into(
                             node: node_start,
                             relationship: relationship_start,
                             predicate: predicate_start,
+                            node_only: match_clause
+                                .pattern
+                                .parts
+                                .first()
+                                .is_some_and(pattern_part_is_single_node),
                         },
                         predicate,
                         state,
@@ -10783,6 +10804,7 @@ struct OptionalMatchStart {
     node: usize,
     relationship: usize,
     predicate: usize,
+    node_only: bool,
 }
 
 fn attach_optional_match_scope(
@@ -10795,8 +10817,17 @@ fn attach_optional_match_scope(
 ) -> Result<(), CoreError> {
     let path = path.into();
     let relationship_indices = (start.relationship..plan.relationships.len()).collect::<Vec<_>>();
+    let node_indices = (start.node..plan.nodes.len()).collect::<Vec<_>>();
     let inline_predicates = plan.predicates.drain(start.predicate..).collect::<Vec<_>>();
     let predicate = combine_optional_predicates(inline_predicates, predicate);
+    if relationship_indices.is_empty() && start.node_only {
+        plan.optional_matches.push(OptionalMatchScope {
+            node_indices,
+            relationship_indices,
+            predicate,
+        });
+        return Ok(());
+    }
     if relationship_indices.is_empty()
         && let Some(predicate) = &predicate
     {
@@ -10814,7 +10845,7 @@ fn attach_optional_match_scope(
     }
 
     plan.optional_matches.push(OptionalMatchScope {
-        node_indices: (start.node..plan.nodes.len()).collect(),
+        node_indices,
         relationship_indices,
         predicate,
     });
@@ -10929,12 +10960,19 @@ fn compile_match_into(
         .iter()
         .map(|node| node.variable.as_str())
         .collect::<BTreeSet<_>>();
+    let uses_bound_node = match_clause
+        .pattern
+        .parts
+        .iter()
+        .any(|part| pattern_part_uses_bound_node(part, &initially_bound_nodes));
     if match_clause.optional
-        && !match_clause
-            .pattern
-            .parts
-            .iter()
-            .any(|part| pattern_part_uses_bound_node(part, &initially_bound_nodes))
+        && !uses_bound_node
+        && !(initially_bound_nodes.is_empty()
+            && match_clause
+                .pattern
+                .parts
+                .first()
+                .is_some_and(pattern_part_is_single_node))
     {
         return Err(unsupported(
             "match.pattern",
@@ -11460,6 +11498,11 @@ fn path_node_label_hint<'a>(
         .and_then(|variable| hints.variables.get(&variable))
         .or_else(|| hints.positions.get(&index))
         .map(String::as_str)
+}
+
+fn pattern_part_is_single_node(pattern_part: &PatternPart) -> bool {
+    pattern_element_path(&pattern_part.anonymous.element)
+        .is_some_and(|(_, chains)| chains.is_empty())
 }
 
 fn compile_path_chain_into(

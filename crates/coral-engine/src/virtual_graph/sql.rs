@@ -6,6 +6,7 @@
 //! `predicates`, `projection`, `render`, `scalar`, `scoped`, `subqueries`) and
 //! consumes the `ValidatedGraphPlan` produced by the `GraphPlanValidator`.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -336,17 +337,25 @@ impl Declaration {
 
         let expected_names = union.first.projection_output_names();
         let mut diagnostics = Vec::new();
-        let first = self.lower_graph_plan(&union.first)?;
+        let first_plan = graph_union_branch_plan_for_lowering(
+            &union.first,
+            union.preserve_empty_result_with_null_row,
+        )?;
+        let first = self.lower_graph_plan(&first_plan)?;
         diagnostics.extend(first.diagnostics().iter().cloned());
         let mut sql = render_union_branch_sql(first.sql(), 0);
 
         for (index, branch) in union.branches.iter().enumerate() {
+            let branch_plan = graph_union_branch_plan_for_lowering(
+                &branch.plan,
+                union.preserve_empty_result_with_null_row,
+            )?;
             validate_union_branch_output_names(
                 &expected_names,
-                &branch.plan.projection_output_names(),
+                &branch_plan.projection_output_names(),
                 index,
             )?;
-            let translation = self.lower_graph_plan(&branch.plan)?;
+            let translation = self.lower_graph_plan(&branch_plan)?;
             diagnostics.extend(translation.diagnostics().iter().cloned());
             write!(
                 sql,
@@ -357,6 +366,9 @@ impl Declaration {
             .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
         }
 
+        if union.preserve_empty_result_with_null_row {
+            sql = render_null_preserving_union_sql(&sql);
+        }
         let sql = render_union_outer_sql(sql, union)?;
         Ok(SqlTranslation::new(sql, diagnostics))
     }
@@ -372,17 +384,25 @@ impl Declaration {
 
         let expected_names = union.first.projection_output_names();
         let mut diagnostics = Vec::new();
-        let first = self.lower_graph_plan_against_catalog(&union.first, catalog)?;
+        let first_plan = graph_union_branch_plan_for_lowering(
+            &union.first,
+            union.preserve_empty_result_with_null_row,
+        )?;
+        let first = self.lower_graph_plan_against_catalog(&first_plan, catalog)?;
         diagnostics.extend(first.diagnostics().iter().cloned());
         let mut sql = render_union_branch_sql(first.sql(), 0);
 
         for (index, branch) in union.branches.iter().enumerate() {
+            let branch_plan = graph_union_branch_plan_for_lowering(
+                &branch.plan,
+                union.preserve_empty_result_with_null_row,
+            )?;
             validate_union_branch_output_names(
                 &expected_names,
-                &branch.plan.projection_output_names(),
+                &branch_plan.projection_output_names(),
                 index,
             )?;
-            let translation = self.lower_graph_plan_against_catalog(&branch.plan, catalog)?;
+            let translation = self.lower_graph_plan_against_catalog(&branch_plan, catalog)?;
             diagnostics.extend(translation.diagnostics().iter().cloned());
             write!(
                 sql,
@@ -393,9 +413,57 @@ impl Declaration {
             .map_err(|_| CoreError::internal("failed to render graph union SQL"))?;
         }
 
+        if union.preserve_empty_result_with_null_row {
+            sql = render_null_preserving_union_sql(&sql);
+        }
         let sql = render_union_outer_sql(sql, union)?;
         Ok(SqlTranslation::new(sql, diagnostics))
     }
+}
+
+fn graph_union_branch_plan_for_lowering(
+    plan: &GraphPlan,
+    preserve_empty_result_with_null_row: bool,
+) -> Result<Cow<'_, GraphPlan>, CoreError> {
+    if !preserve_empty_result_with_null_row {
+        return Ok(Cow::Borrowed(plan));
+    }
+    let [optional_match] = plan.optional_matches.as_slice() else {
+        return Err(CoreError::internal(
+            "null-preserving graph union expected one optional match scope per branch",
+        ));
+    };
+    if plan.nodes.len() != 1
+        || !plan.relationships.is_empty()
+        || !plan.optional_relationships.is_empty()
+        || optional_match.node_indices.as_slice() != [0]
+        || !optional_match.relationship_indices.is_empty()
+    {
+        return Err(CoreError::internal(
+            "null-preserving graph union expected pure node-only optional branches",
+        ));
+    }
+
+    let mut rewritten = plan.clone();
+    let predicate = rewritten
+        .optional_matches
+        .first_mut()
+        .and_then(|scope| scope.predicate.take());
+    rewritten.optional_matches.clear();
+    if let Some(predicate) = predicate {
+        append_union_branch_predicate(&mut rewritten, predicate);
+    }
+    Ok(Cow::Owned(rewritten))
+}
+
+fn append_union_branch_predicate(plan: &mut GraphPlan, predicate: PredicateExpression) {
+    plan.predicate = Some(match plan.predicate.take() {
+        Some(existing) => PredicateExpression::And {
+            left: Box::new(existing),
+            right: Box::new(predicate),
+        },
+        None => predicate,
+    });
 }
 
 fn render_unwind_input(

@@ -2391,6 +2391,8 @@ pub struct GraphUnion {
     pub first: GraphPlan,
     /// Subsequent branches and their leading union operator.
     pub branches: Vec<GraphUnionBranch>,
+    /// Whether an empty branch-union result should be preserved as one null row.
+    pub preserve_empty_result_with_null_row: bool,
     /// Optional outer projection applied after all union branches are combined.
     pub outer_projection: Option<GraphUnionOuterProjection>,
     /// Whether the union result should be deduplicated after all branches are combined.

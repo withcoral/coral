@@ -2,10 +2,11 @@ use super::*;
 use crate::virtual_graph::ir::{
     AggregateFunction, AggregateTarget, ComparisonOperator, CountSubqueryPattern, Direction,
     ExistsPatternPredicate, GraphPlan, GraphQuery, GraphStage, GraphStageExport, GraphStagedQuery,
-    GraphStagedUnwind, GraphStagedUnwindBinding, GraphStagedUnwindQuery, GraphUnwind,
-    GraphUnwindInput, GraphUnwindInputProjection, GraphUnwindPipeline, GraphUnwindProjection,
-    KeyPredicate, Literal, LiteralListElementType, NodePattern, OptionalMatchScope, OrderDirection,
-    OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
+    GraphStagedUnwind, GraphStagedUnwindBinding, GraphStagedUnwindQuery, GraphUnion,
+    GraphUnionBranch, GraphUnwind, GraphUnwindInput, GraphUnwindInputProjection,
+    GraphUnwindPipeline, GraphUnwindProjection, KeyPredicate, Literal, LiteralListElementType,
+    NodePattern, OptionalMatchScope, OrderDirection, OrderExpression, OrderKey,
+    PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, ZonedDateTimeAccessor,
@@ -1753,6 +1754,111 @@ fn lower_graph_plan_renders_optional_relationship_from_disconnected_component() 
              CROSS JOIN \"ops\".\"people\" AS \"n1\" \
              LEFT JOIN \"ops\".\"ownerships\" AS \"r0\" ON \"r0\".\"person_id\" = \"n1\".\"id\" \
              LEFT JOIN \"ops\".\"services\" AS \"n2\" ON \"r0\".\"service_id\" = \"n2\".\"id\""
+    );
+}
+
+#[test]
+fn lower_graph_plan_renders_node_only_optional_scope_with_single_row_driver() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let plan = GraphPlan {
+        nodes: vec![NodePattern {
+            variable: "person".to_string(),
+            label: "Person".to_string(),
+        }],
+        relationships: Vec::new(),
+        optional_relationships: Vec::new(),
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: vec![0],
+            relationship_indices: Vec::new(),
+            predicate: None,
+        }],
+        distinct: false,
+        projections: vec![Projection::Property {
+            property: PropertyRef {
+                variable: "person".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("name".to_string()),
+        }],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    };
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("node-only optional scope should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT \"n0\".\"full_name\" AS \"name\" \
+             FROM (VALUES (1)) AS \"__coral_optional_driver\" \
+             LEFT JOIN \"ops\".\"people\" AS \"n0\" ON true"
+    );
+}
+
+#[test]
+fn lower_graph_union_preserves_empty_node_only_optional_alternatives_once() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let person_plan = GraphPlan {
+        nodes: vec![NodePattern {
+            variable: "entity".to_string(),
+            label: "Person".to_string(),
+        }],
+        relationships: Vec::new(),
+        optional_relationships: Vec::new(),
+        optional_matches: vec![OptionalMatchScope {
+            node_indices: vec![0],
+            relationship_indices: Vec::new(),
+            predicate: None,
+        }],
+        distinct: false,
+        projections: vec![Projection::Property {
+            property: PropertyRef {
+                variable: "entity".to_string(),
+                property: "name".to_string(),
+            },
+            alias: Some("name".to_string()),
+        }],
+        predicates: Vec::new(),
+        predicate: None,
+        post_projection_predicate: None,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    };
+    let mut service_plan = person_plan.clone();
+    service_plan.nodes = vec![NodePattern {
+        variable: "entity".to_string(),
+        label: "Service".to_string(),
+    }];
+    let query = GraphQuery::Union(GraphUnion {
+        first: person_plan,
+        branches: vec![GraphUnionBranch {
+            all: true,
+            plan: service_plan,
+        }],
+        preserve_empty_result_with_null_row: true,
+        outer_projection: None,
+        distinct: false,
+        order_by: Vec::new(),
+        skip: None,
+        limit: None,
+    });
+
+    let translation = graph
+        .lower_graph_query(&query)
+        .expect("null-preserving node-only optional union should lower");
+
+    assert_eq!(
+        translation.sql(),
+        "SELECT \"__coral_optional_union\".* \
+             FROM (VALUES (1)) AS \"__coral_optional_driver\" \
+             LEFT JOIN (SELECT * FROM (SELECT \"n0\".\"full_name\" AS \"name\" FROM \"ops\".\"people\" AS \"n0\") AS \"__coral_union_b0\" \
+             UNION ALL SELECT * FROM (SELECT \"n0\".\"service_name\" AS \"name\" FROM \"ops\".\"services\" AS \"n0\") AS \"__coral_union_b1\") AS \"__coral_optional_union\" ON true"
     );
 }
 
