@@ -23,7 +23,7 @@ A graph declaration maps each node label and relationship type to a specific tab
 
 That typing is a contract. Coral can generate predictable SQL, validate graph queries against the mapped labels and properties, and return honest errors when a query asks for something outside the declaration.
 
-The mapping declaration guide covers the declaration model, and the limits page covers the boundaries Coral documents deliberately.
+The [mapping declaration guide](/virtual-graph/mapping) covers the declaration model, and the [limits page](/virtual-graph/limits) covers the boundaries Coral documents deliberately.
 
 ## Two query surfaces
 
@@ -86,13 +86,27 @@ Returns:
 
 Coral tracks virtual graph behavior with executable, synthetic compatibility scenarios. The openCypher read surface has 726 conformance scenarios: 646 supported read behaviors and 80 documented limits. The GraphQL surface has 164 scenarios: 145 supported behaviors and 19 validation or error checks.
 
-This makes the feature comprehensive and honestly bounded. Coral documents what it supports, what it rejects, and why the virtual graph stays read-only. The limits and design decisions page covers those boundaries in full.
+This makes the feature comprehensive and honestly bounded. Coral documents what it supports, what it rejects, and why the virtual graph stays read-only. The [limits and design decisions](/virtual-graph/limits) page covers those boundaries in full.
 
 ## Next steps
 
-Continue with the rest of this section:
-
-- **Mapping declaration guide** — model labels, relationship types, keys, and properties over your tables.
-- **openCypher reference** — read graph patterns, traversals, and aggregation, with each capability's honest boundaries.
-- **GraphQL reference** — query the generated schema with filters, ordering, and aggregates.
-- **Limits & design decisions** — the read-only contract and the supported-subset boundaries.
+<CardGroup cols={2}>
+  <Card title="Mapping declaration" href="/virtual-graph/mapping">
+    Model labels, relationship types, keys, and properties over your tables.
+  </Card>
+  <Card title="openCypher reference" href="/virtual-graph/opencypher">
+    Read graph patterns, traversals, and aggregation, with each capability's honest boundaries.
+  </Card>
+  <Card title="GraphQL reference" href="/virtual-graph/graphql">
+    Query the generated schema with filters, ordering, and aggregates.
+  </Card>
+  <Card title="Temporal" href="/virtual-graph/temporal">
+    Dates, date-times, durations, and zoned values, with honest boundaries.
+  </Card>
+  <Card title="Limits & design decisions" href="/virtual-graph/limits">
+    The read-only contract and the supported-subset boundaries.
+  </Card>
+  <Card title="Troubleshooting & FAQ" href="/virtual-graph/troubleshooting">
+    Decode error messages and answers to frequent questions.
+  </Card>
+</CardGroup>
