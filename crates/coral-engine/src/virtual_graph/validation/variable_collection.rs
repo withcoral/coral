@@ -543,7 +543,8 @@ impl<'a> GraphPlanValidator<'a> {
                     text: expression, ..
                 }
                 | TemporalExpr::LocalTimeFromString { text: expression }
-                | TemporalExpr::Component { expression, .. },
+                | TemporalExpr::Component { expression, .. }
+                | TemporalExpr::ZonedDateTimeAccessor { expression, .. },
             )
             | ScalarExpression::Negate { expression } => Some(expression),
             _ => None,

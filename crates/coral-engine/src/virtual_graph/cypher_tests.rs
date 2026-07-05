@@ -1,4 +1,5 @@
 use super::*;
+use crate::virtual_graph::ir::ZonedDateTimeAccessor;
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
 fn star_test_graph() -> Declaration {
@@ -139,6 +140,7 @@ nodes:
       name: name
       joined: joined
       birthday: birthday
+      zoned: zoned
 ",
     )
     .expect("temporal columns test graph should parse")
@@ -156,6 +158,7 @@ fn temporal_columns_catalog() -> CatalogInfo {
                 ("name", "Utf8"),
                 ("joined", "Timestamp"),
                 ("birthday", "Date"),
+                ("zoned", "Timestamp(ns, Some(\"Europe/London\"))"),
             ]
             .into_iter()
             .enumerate()
@@ -325,6 +328,18 @@ fn temporal_component_expression(
     ScalarExpression::Temporal(TemporalExpr::Component {
         expression: Box::new(expression),
         unit,
+    })
+}
+
+fn zoneddatetime_accessor_expression(
+    expression: ScalarExpression,
+    accessor: ZonedDateTimeAccessor,
+    timezone: Option<&str>,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor {
+        expression: Box::new(expression),
+        accessor,
+        timezone: timezone.map(str::to_string),
     })
 }
 
@@ -3369,7 +3384,9 @@ fn compiles_temporal_duration_arithmetic_scalar_expressions() {
                 date('2020-03-15') - duration({months: 1}) AS dateBack, \
                 localdatetime('2020-01-01T00:00:00') + duration('PT1H30M') AS datetimeShift, \
                 localtime('12:00:00') + duration('PT90M') AS timeShift, \
-                date('2020-01-01') + duration('P1D') * 2 AS scaled",
+                date('2020-01-01') + duration('P1D') * 2 AS scaled, \
+                datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H') AS zonedShift, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]') - datetime('2020-06-01T12:00:00Z') AS zonedDelta",
     )
     .expect("temporal duration arithmetic should compile");
 
@@ -3415,6 +3432,31 @@ fn compiles_temporal_duration_arithmetic_scalar_expressions() {
                     right: Box::new(duration_expression(0, 2, 0, 0)),
                 },
                 alias: "scaled".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(zoneddatetime_from_string_expression(
+                        "2020-03-29T00:30:00",
+                        "Europe/London",
+                    )),
+                    right: Box::new(duration_expression(0, 0, 3_600, 0)),
+                },
+                alias: "zonedShift".to_string(),
+            },
+            Projection::Expression {
+                expression: ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Subtract,
+                    left: Box::new(zoneddatetime_from_string_expression(
+                        "2020-06-01T13:00:00+01:00",
+                        "Europe/London",
+                    )),
+                    right: Box::new(zoneddatetime_from_string_expression(
+                        "2020-06-01T12:00:00Z",
+                        "+00:00",
+                    )),
+                },
+                alias: "zonedDelta".to_string(),
             },
         ]
     );
@@ -3559,6 +3601,108 @@ fn compiles_constructed_temporal_component_scalar_expressions() {
 }
 
 #[test]
+fn compiles_constructed_zoneddatetime_component_and_accessor_scalar_expressions() {
+    let plan = compile_cypher(
+        "MATCH (person:Person) \
+         RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').hour AS londonHour, \
+                datetime('2020-06-01T23:30:00-04:00[America/New_York]').day AS newYorkDay, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').timezone AS timezone, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offset AS offset, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetSeconds AS offsetSeconds, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetMinutes AS offsetMinutes, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochSeconds AS epochSeconds, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochMillis AS epochMillis, \
+                (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).hour AS dstHour",
+    )
+    .expect("constructed zoned datetime component and accessor access should compile");
+
+    let london =
+        || zoneddatetime_from_string_expression("2020-06-01T13:00:00+01:00", "Europe/London");
+
+    assert_eq!(
+        plan.projections,
+        vec![
+            Projection::Expression {
+                expression: temporal_component_expression(london(), TemporalComponentUnit::Hour),
+                alias: "londonHour".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    zoneddatetime_from_string_expression(
+                        "2020-06-01T23:30:00-04:00",
+                        "America/New_York",
+                    ),
+                    TemporalComponentUnit::Day,
+                ),
+                alias: "newYorkDay".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::Timezone,
+                    Some("Europe/London"),
+                ),
+                alias: "timezone".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::Offset,
+                    Some("Europe/London"),
+                ),
+                alias: "offset".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::OffsetSeconds,
+                    Some("Europe/London"),
+                ),
+                alias: "offsetSeconds".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::OffsetMinutes,
+                    Some("Europe/London"),
+                ),
+                alias: "offsetMinutes".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::EpochSeconds,
+                    Some("Europe/London"),
+                ),
+                alias: "epochSeconds".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    london(),
+                    ZonedDateTimeAccessor::EpochMillis,
+                    Some("Europe/London"),
+                ),
+                alias: "epochMillis".to_string(),
+            },
+            Projection::Expression {
+                expression: temporal_component_expression(
+                    ScalarExpression::Arithmetic {
+                        operator: ArithmeticOperator::Add,
+                        left: Box::new(zoneddatetime_from_string_expression(
+                            "2020-03-29T00:30:00",
+                            "Europe/London",
+                        )),
+                        right: Box::new(duration_expression(0, 0, 3_600, 0)),
+                    },
+                    TemporalComponentUnit::Hour,
+                ),
+                alias: "dstHour".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn compiles_constructed_duration_component_scalar_expressions() {
     let plan = compile_cypher(
         "MATCH (person:Person) \
@@ -3651,7 +3795,8 @@ fn compiles_stored_temporal_component_scalar_expressions_with_catalog() {
         &graph,
         "MATCH (person:Person) \
          RETURN person.joined.year AS joinedYear, \
-                person.birthday.month AS birthdayMonth",
+                person.birthday.month AS birthdayMonth, \
+                person.zoned.timezone AS timezone",
         &BTreeMap::new(),
         &catalog,
     )
@@ -3682,6 +3827,17 @@ fn compiles_stored_temporal_component_scalar_expressions_with_catalog() {
                     TemporalComponentUnit::Month,
                 ),
                 alias: "birthdayMonth".to_string(),
+            },
+            Projection::Expression {
+                expression: zoneddatetime_accessor_expression(
+                    ScalarExpression::Property(PropertyRef {
+                        variable: "person".to_string(),
+                        property: "zoned".to_string(),
+                    }),
+                    ZonedDateTimeAccessor::Timezone,
+                    Some("Europe/London"),
+                ),
+                alias: "timezone".to_string(),
             },
         ]
     );
@@ -3808,6 +3964,18 @@ fn rejects_unsupported_temporal_component_access() {
         (
             "MATCH (person:Person) RETURN date('2020-01-15').years AS years",
             "years is not supported for date values",
+        ),
+        (
+            "MATCH (person:Person) RETURN localdatetime('2020-01-15T12:34:56').timezone AS timezone",
+            "timezone is not supported for localdatetime values",
+        ),
+        (
+            "MATCH (person:Person) RETURN date('2020-01-15').epochSeconds AS epochSeconds",
+            "epochSeconds is not supported for date values",
+        ),
+        (
+            "MATCH (person:Person) RETURN duration('P1D').offset AS offset",
+            "offset is not supported for duration values",
         ),
         (
             "MATCH (person:Person) WITH person.name AS d RETURN d.year AS year",

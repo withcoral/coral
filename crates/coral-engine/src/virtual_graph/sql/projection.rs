@@ -323,7 +323,10 @@ impl<'a> SqlRenderer<'a> {
         }
 
         match expression {
-            ScalarExpression::PresenceGated { expression, .. } => {
+            ScalarExpression::PresenceGated { expression, .. }
+            | ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor {
+                expression, ..
+            }) => {
                 self.reject_unprecomputed_projection_scalar_subqueries(expression)?;
             }
             ScalarExpression::Coalesce { expressions } => {
@@ -875,6 +878,12 @@ fn arithmetic_expression_projects_duration(
     right: &ScalarExpression,
 ) -> bool {
     match operator {
+        ArithmeticOperator::Subtract
+            if scalar_expression_is_zoneddatetime(left)
+                && scalar_expression_is_zoneddatetime(right) =>
+        {
+            true
+        }
         ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
             scalar_expression_projects_duration(left) && scalar_expression_projects_duration(right)
         }
@@ -883,4 +892,13 @@ fn arithmetic_expression_projects_duration(
             false
         }
     }
+}
+
+fn scalar_expression_is_zoneddatetime(expression: &ScalarExpression) -> bool {
+    matches!(
+        expression,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. }
+        )
+    )
 }

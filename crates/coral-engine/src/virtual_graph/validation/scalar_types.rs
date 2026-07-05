@@ -483,6 +483,11 @@ impl<'a> GraphPlanValidator<'a> {
             TemporalExpr::Component { expression, unit } => {
                 self.validate_temporal_component_expression(expression, *unit, path)
             }
+            TemporalExpr::ZonedDateTimeAccessor {
+                expression,
+                accessor,
+                ..
+            } => self.validate_zoned_datetime_accessor_expression(expression, *accessor, path),
         }
     }
 
@@ -572,6 +577,44 @@ impl<'a> GraphPlanValidator<'a> {
             ),
         )
         .into_core_error())
+    }
+
+    fn validate_zoned_datetime_accessor_expression(
+        &self,
+        expression: &ScalarExpression,
+        accessor: ZonedDateTimeAccessor,
+        path: &str,
+    ) -> Result<ScalarType, CoreError> {
+        let expression_type =
+            self.infer_scalar_expression_type(expression, format!("{path}.expression"))?;
+        match expression_type {
+            ScalarType::Temporal(TemporalKind::ZonedDateTime) | ScalarType::Unknown => {
+                if accessor.is_string() {
+                    Ok(ScalarType::String)
+                } else {
+                    Ok(ScalarType::Integer)
+                }
+            }
+            ScalarType::Temporal(kind) => Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                format!("{path}.accessor"),
+                format!(
+                    "{} is not supported for {} values",
+                    accessor.accessor_name(),
+                    kind.name()
+                ),
+            )
+            .into_core_error()),
+            other => Err(Diagnostic::new(
+                diagnostic_codes::INVALID_SCALAR_TYPE,
+                format!("{path}.expression"),
+                format!(
+                    "zoned datetime accessor requires a datetime scalar expression, got {}",
+                    other.name()
+                ),
+            )
+            .into_core_error()),
+        }
     }
 
     fn infer_string_scalar_function_type(

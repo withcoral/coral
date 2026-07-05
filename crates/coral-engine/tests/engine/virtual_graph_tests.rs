@@ -1328,6 +1328,93 @@ async fn cypher_temporal_components_execute_against_synthetic_sources() {
 }
 
 #[tokio::test]
+async fn cypher_zoneddatetime_components_accessors_and_arithmetic_execute_against_synthetic_sources()
+ {
+    let temp = TempDir::new().expect("temp dir");
+    write_ops_fixture(temp.path());
+    let source = build_source(ops_manifest(temp.path()));
+    let graph = GraphDeclaration::from_yaml(OPS_GRAPH).expect("graph should parse");
+
+    let execution = CoralQuery::execute_cypher(
+        std::slice::from_ref(&source),
+        test_runtime(),
+        &graph,
+        "MATCH (person:Person) \
+         WHERE person.name = 'Ada Lovelace' \
+         RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').hour AS london_hour, \
+                datetime('2020-06-01T23:30:00-04:00[America/New_York]').day AS new_york_day, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').timezone AS timezone, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offset AS offset, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetSeconds AS offset_seconds, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetMinutes AS offset_minutes, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochSeconds AS epoch_seconds, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochMillis AS epoch_millis, \
+                (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).hour AS dst_hour, \
+                datetime('2020-06-01T13:00:00+01:00[Europe/London]') - datetime('2020-06-01T12:00:00Z') AS zero_delta",
+    )
+    .await
+    .expect("Cypher zoned datetime component and accessor access should execute");
+    let graph_rows = execution_to_rows(execution.execution());
+    let london_sql =
+        "arrow_cast('2020-06-01T13:00:00+01:00', 'Timestamp(ns, Some(\"Europe/London\"))')";
+    let london_offset = format!("right(TRY_CAST({london_sql} AS VARCHAR), 6)");
+    let zero_delta_left =
+        "arrow_cast('2020-06-01T13:00:00+01:00', 'Timestamp(ns, Some(\"Europe/London\"))')";
+    let zero_delta_right = "arrow_cast('2020-06-01T12:00:00Z', 'Timestamp(ns, Some(\"+00:00\"))')";
+    let zero_delta_sql = format!(
+        "coral_duration_to_iso(CASE WHEN {zero_delta_left} IS NULL OR {zero_delta_right} IS NULL THEN CAST(NULL AS INTERVAL) ELSE CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', ({zero_delta_left} - {zero_delta_right})) AS VARCHAR), '0'), ' seconds') AS INTERVAL) END)"
+    );
+    let sql = format!(
+        "SELECT CAST(date_part('hour', {london_sql}) AS BIGINT) AS london_hour, \
+                CAST(date_part('day', arrow_cast('2020-06-01T23:30:00-04:00', 'Timestamp(ns, Some(\"America/New_York\"))')) AS BIGINT) AS new_york_day, \
+                'Europe/London' AS timezone, \
+                {london_offset} AS offset, \
+                CASE WHEN {london_offset} IS NULL THEN CAST(NULL AS BIGINT) ELSE ((CASE WHEN left({london_offset}, 1) = '-' THEN -1 ELSE 1 END) * ((CAST(SUBSTRING({london_offset} FROM 2 FOR 2) AS BIGINT) * 3600) + (CAST(SUBSTRING({london_offset} FROM 5 FOR 2) AS BIGINT) * 60))) END AS offset_seconds, \
+                CASE WHEN {london_offset} IS NULL THEN CAST(NULL AS BIGINT) ELSE ((CASE WHEN left({london_offset}, 1) = '-' THEN -1 ELSE 1 END) * ((CAST(SUBSTRING({london_offset} FROM 2 FOR 2) AS BIGINT) * 60) + (CAST(SUBSTRING({london_offset} FROM 5 FOR 2) AS BIGINT) * 1))) END AS offset_minutes, \
+                CAST(trunc(date_part('epoch', {london_sql})) AS BIGINT) AS epoch_seconds, \
+                CAST(trunc(date_part('epoch', {london_sql}) * 1000) AS BIGINT) AS epoch_millis, \
+                CAST(date_part('hour', (arrow_cast('2020-03-29T00:30:00', 'Timestamp(ns, Some(\"Europe/London\"))') + CAST('0 months 0 days 3600 seconds' AS INTERVAL))) AS BIGINT) AS dst_hour, \
+                {zero_delta_sql} AS zero_delta \
+         FROM ops.people \
+         WHERE people.full_name = 'Ada Lovelace'"
+    );
+    let sql_rows = execution_to_rows(
+        &CoralQuery::execute_sql(&[source], test_runtime(), &sql)
+            .await
+            .expect("equivalent zoned datetime component SQL should execute"),
+    );
+
+    assert!(
+        execution.translated_sql().contains("date_part('hour'"),
+        "{}",
+        execution.translated_sql()
+    );
+    assert!(
+        execution
+            .translated_sql()
+            .contains("coral_duration_to_iso("),
+        "{}",
+        execution.translated_sql()
+    );
+    assert_eq!(graph_rows, sql_rows);
+    assert_eq!(
+        graph_rows,
+        vec![json!({
+            "london_hour": 13,
+            "new_york_day": 1,
+            "timezone": "Europe/London",
+            "offset": "+01:00",
+            "offset_seconds": 3600,
+            "offset_minutes": 60,
+            "epoch_seconds": 1_591_012_800,
+            "epoch_millis": 1_591_012_800_000_i64,
+            "dst_hour": 2,
+            "zero_delta": "PT0S"
+        })]
+    );
+}
+
+#[tokio::test]
 async fn cypher_temporal_duration_arithmetic_executes_against_synthetic_sources() {
     let temp = TempDir::new().expect("temp dir");
     write_ops_fixture(temp.path());

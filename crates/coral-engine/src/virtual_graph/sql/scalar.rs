@@ -441,6 +441,10 @@ impl<'a> SqlRenderer<'a> {
         ))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Temporal SQL rendering is intentionally exhaustive over constructor, component, duration, and accessor variants."
+    )]
     pub(super) fn render_temporal_expression<'b, 'c>(
         &self,
         temporal: &TemporalExpr,
@@ -538,6 +542,16 @@ impl<'a> SqlRenderer<'a> {
             TemporalExpr::Component { expression, unit } => {
                 self.render_temporal_component_expression(expression, *unit, scope)
             }
+            TemporalExpr::ZonedDateTimeAccessor {
+                expression,
+                accessor,
+                timezone,
+            } => self.render_zoneddatetime_accessor_expression(
+                expression,
+                *accessor,
+                timezone.as_deref(),
+                scope,
+            ),
         }
     }
 
@@ -766,6 +780,39 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
+    pub(super) fn render_zoneddatetime_accessor_expression<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        accessor: ZonedDateTimeAccessor,
+        timezone: Option<&str>,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let timestamp = self.render_scalar_in_scope(expression, scope)?;
+        match accessor {
+            ZonedDateTimeAccessor::Timezone => {
+                let timezone = timezone.ok_or_else(|| {
+                    CoreError::internal(
+                        "zoned datetime timezone accessor requires a compile-time timezone",
+                    )
+                })?;
+                Ok(quote_string_literal(timezone))
+            }
+            ZonedDateTimeAccessor::Offset => Ok(render_zoneddatetime_offset_expression(&timestamp)),
+            ZonedDateTimeAccessor::OffsetSeconds => Ok(
+                render_zoneddatetime_offset_units_expression(&timestamp, 3600, 60),
+            ),
+            ZonedDateTimeAccessor::OffsetMinutes => Ok(
+                render_zoneddatetime_offset_units_expression(&timestamp, 60, 1),
+            ),
+            ZonedDateTimeAccessor::EpochSeconds => Ok(format!(
+                "CAST(trunc(date_part('epoch', {timestamp})) AS BIGINT)"
+            )),
+            ZonedDateTimeAccessor::EpochMillis => Ok(format!(
+                "CAST(trunc(date_part('epoch', {timestamp}) * 1000) AS BIGINT)"
+            )),
+        }
+    }
+
     pub(super) fn render_duration_in_units_expression<'b, 'c>(
         &self,
         unit: TemporalDurationUnit,
@@ -922,6 +969,19 @@ impl<'a> SqlRenderer<'a> {
         if let Some(expression) = render_folded_duration_multiply_expression(operator, left, right)?
         {
             return Ok(expression);
+        }
+        if matches!(operator, ArithmeticOperator::Subtract)
+            && scalar_expression_is_zoneddatetime(left)
+            && scalar_expression_is_zoneddatetime(right)
+        {
+            let left_timestamp = self.render_scalar_in_scope(left, scope)?;
+            let right_timestamp = self.render_scalar_in_scope(right, scope)?;
+            let epoch_diff = format!("date_part('epoch', ({left_timestamp} - {right_timestamp}))");
+            return Ok(render_null_checked_interval(
+                &left_timestamp,
+                &right_timestamp,
+                &dynamic_seconds_interval(&epoch_diff),
+            ));
         }
         let casts_to_time = matches!(
             (
@@ -1103,6 +1163,21 @@ fn render_zoneddatetime_cast_expression(timestamp: &str, timezone: &str) -> Stri
     )
 }
 
+fn render_zoneddatetime_offset_expression(timestamp: &str) -> String {
+    format!("right(TRY_CAST({timestamp} AS VARCHAR), 6)")
+}
+
+fn render_zoneddatetime_offset_units_expression(
+    timestamp: &str,
+    hours_multiplier: i32,
+    minutes_multiplier: i32,
+) -> String {
+    let offset = render_zoneddatetime_offset_expression(timestamp);
+    format!(
+        "CASE WHEN {offset} IS NULL THEN CAST(NULL AS BIGINT) ELSE ((CASE WHEN left({offset}, 1) = '-' THEN -1 ELSE 1 END) * ((CAST(SUBSTRING({offset} FROM 2 FOR 2) AS BIGINT) * {hours_multiplier}) + (CAST(SUBSTRING({offset} FROM 5 FOR 2) AS BIGINT) * {minutes_multiplier}))) END"
+    )
+}
+
 fn dynamic_seconds_interval(total_seconds: &str) -> String {
     format!(
         "CAST(concat('0 months 0 days ', coalesce(CAST({total_seconds} AS VARCHAR), '0'), ' seconds') AS INTERVAL)"
@@ -1253,6 +1328,12 @@ fn scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
             left,
             right,
         } => match operator {
+            ArithmeticOperator::Subtract
+                if scalar_expression_is_zoneddatetime(left)
+                    && scalar_expression_is_zoneddatetime(right) =>
+            {
+                true
+            }
             ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
                 scalar_expression_is_duration(left) && scalar_expression_is_duration(right)
             }
@@ -1284,6 +1365,15 @@ fn temporal_scalar_kind(expression: &ScalarExpression) -> Option<TemporalKind> {
         ) => Some(TemporalKind::Duration),
         _ => None,
     }
+}
+
+fn scalar_expression_is_zoneddatetime(expression: &ScalarExpression) -> bool {
+    matches!(
+        expression,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. }
+        )
+    )
 }
 
 fn literal_integer(expression: &ScalarExpression) -> Option<i64> {

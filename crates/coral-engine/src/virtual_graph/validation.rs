@@ -23,7 +23,7 @@ use super::ir::{
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyKeyMembershipPredicate,
     PropertyPredicate, PropertyRef, RelationshipPattern, ScalarCaseAlternative, ScalarExpression,
     ScalarPredicate, ScalarPredicateRhs, TemporalComponentUnit, TemporalExpr, TemporalKind,
-    UndirectedRelationshipEndpoint,
+    UndirectedRelationshipEndpoint, ZonedDateTimeAccessor,
 };
 use crate::{CatalogInfo, CoreError};
 

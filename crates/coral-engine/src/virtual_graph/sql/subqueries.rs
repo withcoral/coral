@@ -257,7 +257,10 @@ impl<'a> SqlRenderer<'a> {
         }
 
         match expression {
-            ScalarExpression::PresenceGated { expression, .. } => {
+            ScalarExpression::PresenceGated { expression, .. }
+            | ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor {
+                expression, ..
+            }) => {
                 self.collect_scalar_expression_subquery_candidates(
                     expression, required, candidates,
                 );

@@ -500,9 +500,10 @@ fn temporal_scalar_single_operand(
             | TemporalExpr::ZonedDateTimeFromString { text, .. }
             | TemporalExpr::LocalTimeFromString { text },
         ) => Some(("text", text)),
-        ScalarExpression::Temporal(TemporalExpr::Component { expression, .. }) => {
-            Some(("expression", expression))
-        }
+        ScalarExpression::Temporal(
+            TemporalExpr::Component { expression, .. }
+            | TemporalExpr::ZonedDateTimeAccessor { expression, .. },
+        ) => Some(("expression", expression)),
         _ => None,
     }
 }

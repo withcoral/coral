@@ -754,6 +754,23 @@ pub enum TemporalComponentUnit {
     NanosecondsOfSecond,
 }
 
+/// Zoned datetime accessors supported by Cypher property access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZonedDateTimeAccessor {
+    /// Declared fixed-offset or IANA timezone identifier.
+    Timezone,
+    /// Effective offset at the instant, formatted as `+HH:MM`.
+    Offset,
+    /// Effective offset at the instant in total seconds.
+    OffsetSeconds,
+    /// Effective offset at the instant in total minutes.
+    OffsetMinutes,
+    /// Unix epoch seconds for the instant.
+    EpochSeconds,
+    /// Unix epoch milliseconds for the instant.
+    EpochMillis,
+}
+
 /// Duration decomposition and unit-total functions supported by the temporal IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalDurationUnit {
@@ -887,6 +904,15 @@ pub enum TemporalExpr {
         /// Component unit to extract.
         unit: TemporalComponentUnit,
     },
+    /// Access a zoned datetime's timezone, offset, or epoch instant component.
+    ZonedDateTimeAccessor {
+        /// Zoned datetime value expression.
+        expression: Box<ScalarExpression>,
+        /// Accessor kind.
+        accessor: ZonedDateTimeAccessor,
+        /// Compile-time timezone identifier for `timezone` access.
+        timezone: Option<String>,
+    },
 }
 
 /// Supported temporal scalar kinds.
@@ -959,10 +985,18 @@ impl TemporalComponentUnit {
     pub(super) fn supports_kind(self, kind: TemporalKind) -> bool {
         match self {
             Self::Year | Self::Quarter | Self::Month | Self::Week | Self::Day => {
-                matches!(kind, TemporalKind::Date | TemporalKind::LocalDateTime)
+                matches!(
+                    kind,
+                    TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::ZonedDateTime
+                )
             }
             Self::Hour | Self::Minute | Self::Second | Self::Millisecond | Self::Microsecond => {
-                matches!(kind, TemporalKind::LocalDateTime | TemporalKind::LocalTime)
+                matches!(
+                    kind,
+                    TemporalKind::LocalDateTime
+                        | TemporalKind::ZonedDateTime
+                        | TemporalKind::LocalTime
+                )
             }
             Self::Years
             | Self::Quarters
@@ -1011,6 +1045,23 @@ impl TemporalComponentUnit {
                 | Self::MicrosecondsOfSecond
                 | Self::NanosecondsOfSecond
         )
+    }
+}
+
+impl ZonedDateTimeAccessor {
+    pub(super) fn accessor_name(self) -> &'static str {
+        match self {
+            Self::Timezone => "timezone",
+            Self::Offset => "offset",
+            Self::OffsetSeconds => "offsetSeconds",
+            Self::OffsetMinutes => "offsetMinutes",
+            Self::EpochSeconds => "epochSeconds",
+            Self::EpochMillis => "epochMillis",
+        }
+    }
+
+    pub(super) fn is_string(self) -> bool {
+        matches!(self, Self::Timezone | Self::Offset)
     }
 }
 
@@ -1906,7 +1957,8 @@ fn temporal_expression_references_outside_scope(
             scalar_expression_references_outside_scope(start, scope)
                 || scalar_expression_references_outside_scope(end, scope)
         }
-        TemporalExpr::Component { expression, .. } => {
+        TemporalExpr::Component { expression, .. }
+        | TemporalExpr::ZonedDateTimeAccessor { expression, .. } => {
             scalar_expression_references_outside_scope(expression, scope)
         }
     }

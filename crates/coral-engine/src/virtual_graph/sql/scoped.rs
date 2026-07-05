@@ -440,6 +440,13 @@ impl<'a> SqlRenderer<'a> {
                     local_nodes,
                 )
             }
+            ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor {
+                expression, ..
+            }) => Self::scoped_scalar_expression_is_inner(
+                expression,
+                relationship_bindings,
+                local_nodes,
+            ),
             ScalarExpression::Case {
                 alternatives,
                 else_expression,
@@ -3278,6 +3285,12 @@ fn scoped_scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
             left,
             right,
         } => match operator {
+            ArithmeticOperator::Subtract
+                if scoped_scalar_expression_is_zoneddatetime(left)
+                    && scoped_scalar_expression_is_zoneddatetime(right) =>
+            {
+                true
+            }
             ArithmeticOperator::Add | ArithmeticOperator::Subtract => {
                 scoped_scalar_expression_is_duration(left)
                     && scoped_scalar_expression_is_duration(right)
@@ -3289,4 +3302,13 @@ fn scoped_scalar_expression_is_duration(expression: &ScalarExpression) -> bool {
         },
         _ => false,
     }
+}
+
+fn scoped_scalar_expression_is_zoneddatetime(expression: &ScalarExpression) -> bool {
+    matches!(
+        expression,
+        ScalarExpression::Temporal(
+            TemporalExpr::MakeZonedDateTime { .. } | TemporalExpr::ZonedDateTimeFromString { .. }
+        )
+    )
 }

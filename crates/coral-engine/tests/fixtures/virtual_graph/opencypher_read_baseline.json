@@ -24,7 +24,7 @@
     "ReturnProjection": 12,
     "RowModifiers": 24,
     "ScalarExpressions": 86,
-    "Temporal": 96,
+    "Temporal": 101,
     "TypeConversion": 17,
     "Union": 17,
     "Unwind": 37,
@@ -11354,6 +11354,79 @@
             "lt": true
           }
         ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-components-zone-visible",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').hour AS londonHour, datetime('2020-06-01T23:30:00-04:00[America/New_York]').day AS newYorkDay",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "londonHour": 13,
+            "newYorkDay": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-accessors",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]').timezone AS timezone, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offset AS offset, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetSeconds AS offsetSeconds, datetime('2020-06-01T13:00:00+01:00[Europe/London]').offsetMinutes AS offsetMinutes, datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochSeconds AS epochSeconds, datetime('2020-06-01T13:00:00+01:00[Europe/London]').epochMillis AS epochMillis",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "timezone": "Europe/London",
+            "offset": "+01:00",
+            "offsetSeconds": 3600,
+            "offsetMinutes": 60,
+            "epochSeconds": 1591012800,
+            "epochMillis": 1591012800000
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-duration-add-dst",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).hour AS shiftedHour, (datetime('2020-03-29T00:30:00[Europe/London]') + duration('PT1H')).offset AS shiftedOffset, datetime('2020-06-01T13:00:00+01:00[Europe/London]') - datetime('2020-06-01T12:00:00Z') AS delta",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "shiftedHour": 2,
+            "shiftedOffset": "+01:00",
+            "delta": "PT0S"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-duration-subtract",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN datetime('2020-06-01T13:00:00+01:00[Europe/London]') - duration('PT1H') AS shifted",
+      "expected": {
+        "kind": "rows",
+        "ordered": false,
+        "rows": [
+          {
+            "shifted": "2020-06-01T12:00:00+01:00"
+          }
+        ]
+      }
+    },
+    {
+      "id": "temporal-zoneddatetime-accessor-kind-mismatch-rejected",
+      "feature": "Temporal",
+      "query": "MATCH (p:Person) WHERE p.name = 'Alice' RETURN localdatetime('2020-01-15T12:34:56').timezone AS timezone",
+      "expected": {
+        "kind": "error",
+        "contains": "timezone is not supported for localdatetime values"
       }
     },
     {

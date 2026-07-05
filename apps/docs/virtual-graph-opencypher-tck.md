@@ -93,8 +93,8 @@ For the pinned upstream tree, the inventory currently reports 1,615 scenario
 definitions across 220 feature files. Of those, 1,294 are read-candidate
 scenario definitions after excluding mutation clauses and procedure calls that
 are outside Coral virtual graph's read-only scope. Coral's curated baseline has
-691 scenarios, which is 42.60% of the full upstream scenario-definition inventory
-and 53.17% of the read-candidate inventory.
+696 scenarios, which is 43.10% of the full upstream scenario-definition inventory
+and 53.79% of the read-candidate inventory.
 
 The inventory gate fails if:
 
@@ -159,7 +159,7 @@ crates/coral-engine/tests/engine/graphql_baseline_tests.rs
 
 ## Cypher Scope
 
-The baseline currently contains 691 representative read-only scenarios:
+The baseline currently contains 696 representative read-only scenarios:
 
 - `Match`: 27 scenarios for labeled node scans, forward/reverse relationship
   matches, anonymous endpoints, inline property maps, bound-node reuse, grouped
@@ -252,18 +252,20 @@ The baseline currently contains 691 representative read-only scenarios:
   `toStringOrNull(...)`, `toIntegerOrNull(...)`, `toFloatOrNull(...)`,
   `toBooleanOrNull(...)` composition, NULL-on-failure conversion behavior, and
   adjacent rejection coverage.
-- `Temporal`: 96 scenarios for DATE, LOCALDATETIME, DATETIME, and LOCALTIME map
+- `Temporal`: 101 scenarios for DATE, LOCALDATETIME, DATETIME, and LOCALTIME map
   and string constructor support, native temporal comparison operators,
   `toString(...)` over native temporal values, constructed temporal component
   access over native `date_part(...)` units, duration construction for temporal
   arithmetic, ISO-8601 duration rendering through bare duration returns and
-  `toString(duration)`, DATE / LOCALDATETIME / LOCALTIME `+` and `-` duration
-  arithmetic, calendar between/months and total day/second duration functions,
-  duration component totals and within-larger-unit accessors, and adjacent
-  temporal support boundaries, including `date(...)`, `localdatetime(...)`,
-  `localtime(...)`, zoned `datetime(...)` / `time(...)`, same-kind temporal
-  subtraction, non-literal duration multiplication, unsupported temporal map
-  forms, deferred component names, kind-mismatched components,
+  `toString(duration)`, DATE / LOCALDATETIME / DATETIME / LOCALTIME `+` and `-`
+  duration arithmetic, DATETIME instant subtraction, zone-visible DATETIME
+  components, DATETIME timezone/offset/epoch accessors, calendar between/months
+  and total day/second duration functions, duration component totals and
+  within-larger-unit accessors, and adjacent temporal support boundaries,
+  including `date(...)`, `localdatetime(...)`, `localtime(...)`, zoned
+  `datetime(...)` / `time(...)`, non-DATETIME same-kind temporal subtraction,
+  non-literal duration multiplication, unsupported temporal map forms, deferred
+  component names, kind-mismatched components,
   `duration.between(...)`, and `duration.inMonths(...)`.
 - `GraphMetadata`: 19 scenarios for `id(...)`, `elementId(...)`, `type(...)`,
   `startNode(...)`, `endNode(...)`, `labels(...)`, and `keys(...)`.

@@ -24,6 +24,7 @@ use super::ir::{
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     TemporalComponentUnit, TemporalExpr, TemporalKind, UndirectedRelationshipEndpoint,
+    ZonedDateTimeAccessor,
 };
 use super::validation::{
     ValidatedBindingKind, ValidatedGraphPlan, stage_column_bindings, staged_unwind_source_column,

@@ -1115,6 +1115,45 @@ impl<'a> GraphPlanValidator<'a> {
                 Self::validate_temporal_component_kind(*unit, kind, format!("{path}.unit"))?;
                 Ok(ScalarType::Integer)
             }
+            TemporalExpr::ZonedDateTimeAccessor {
+                expression,
+                accessor,
+                ..
+            } => {
+                let expression_type = self.infer_scoped_scalar_expression_type(
+                    expression,
+                    scope,
+                    format!("{path}.expression"),
+                )?;
+                match expression_type {
+                    ScalarType::Temporal(TemporalKind::ZonedDateTime) | ScalarType::Unknown => {
+                        if accessor.is_string() {
+                            Ok(ScalarType::String)
+                        } else {
+                            Ok(ScalarType::Integer)
+                        }
+                    }
+                    ScalarType::Temporal(kind) => Err(Diagnostic::new(
+                        diagnostic_codes::INVALID_SCALAR_TYPE,
+                        format!("{path}.accessor"),
+                        format!(
+                            "{} is not supported for {} values",
+                            accessor.accessor_name(),
+                            kind.name()
+                        ),
+                    )
+                    .into_core_error()),
+                    other => Err(Diagnostic::new(
+                        diagnostic_codes::INVALID_SCALAR_TYPE,
+                        format!("{path}.expression"),
+                        format!(
+                            "zoned datetime accessor requires a datetime scalar expression, got {}",
+                            other.name()
+                        ),
+                    )
+                    .into_core_error()),
+                }
+            }
         }
     }
 

@@ -8,7 +8,7 @@ use crate::virtual_graph::ir::{
     OrderExpression, OrderKey, PredicateExpression, PredicateRhs, Projection, ProjectionPredicate,
     ProjectionPredicateExpression, ProjectionPredicateRhs, PropertyPredicate, PropertyRef,
     RelationshipPattern, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
-    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr,
+    TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, ZonedDateTimeAccessor,
 };
 use crate::{CatalogInfo, ColumnInfo, TableInfo};
 
@@ -175,6 +175,18 @@ fn temporal_component_expression(
     ScalarExpression::Temporal(TemporalExpr::Component {
         expression: Box::new(expression),
         unit,
+    })
+}
+
+fn zoneddatetime_accessor_expression(
+    expression: ScalarExpression,
+    accessor: ZonedDateTimeAccessor,
+    timezone: Option<&str>,
+) -> ScalarExpression {
+    ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor {
+        expression: Box::new(expression),
+        accessor,
+        timezone: timezone.map(str::to_string),
     })
 }
 
@@ -3599,6 +3611,10 @@ fn lower_graph_plan_renders_temporal_localtime_expressions() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Temporal arithmetic SQL coverage keeps related date, datetime, time, and zoned duration cases together."
+)]
 fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
     let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
     let mut plan = ownership_plan(Direction::Outgoing);
@@ -3640,6 +3656,31 @@ fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
             },
             alias: "scaled_date_shift".to_string(),
         },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Add,
+                left: Box::new(zoneddatetime_from_string_expression(
+                    "2020-03-29T00:30:00",
+                    "Europe/London",
+                )),
+                right: Box::new(duration_expression(0, 0, 3_600, 0)),
+            },
+            alias: "zoned_shift".to_string(),
+        },
+        Projection::Expression {
+            expression: ScalarExpression::Arithmetic {
+                operator: ArithmeticOperator::Subtract,
+                left: Box::new(zoneddatetime_from_string_expression(
+                    "2020-06-01T13:00:00+01:00",
+                    "Europe/London",
+                )),
+                right: Box::new(zoneddatetime_from_string_expression(
+                    "2020-06-01T12:00:00Z",
+                    "+00:00",
+                )),
+            },
+            alias: "zoned_delta".to_string(),
+        },
     ];
     plan.predicate = Some(PredicateExpression::ScalarComparison(ScalarPredicate {
         lhs: ScalarExpression::Arithmetic {
@@ -3669,7 +3710,15 @@ fn lower_graph_plan_renders_temporal_duration_arithmetic_expressions() {
              "SELECT (CAST('2020-01-31' AS DATE) + CAST('1 months 0 days 0 seconds' AS INTERVAL)) AS \"date_shift\", \
              (CAST('2020-01-01T00:00:00' AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS \"datetime_shift\", \
              CAST((CAST(concat('1970-01-01T', CAST(CAST('12:00:00' AS TIME) AS VARCHAR)) AS TIMESTAMP) + CAST('0 months 0 days 5400 seconds' AS INTERVAL)) AS TIME) AS \"time_shift\", \
-             (CAST('2020-01-01' AS DATE) + CAST('0 months 2 days 0 seconds' AS INTERVAL)) AS \"scaled_date_shift\""
+             (CAST('2020-01-01' AS DATE) + CAST('0 months 2 days 0 seconds' AS INTERVAL)) AS \"scaled_date_shift\", \
+             (arrow_cast('2020-03-29T00:30:00', 'Timestamp(ns, Some(\"Europe/London\"))') + CAST('0 months 0 days 3600 seconds' AS INTERVAL)) AS \"zoned_shift\""
+        ),
+        "{}",
+        translation.sql()
+    );
+    assert!(
+        translation.sql().contains(
+            "coral_duration_to_iso(CASE WHEN arrow_cast('2020-06-01T13:00:00+01:00', 'Timestamp(ns, Some(\"Europe/London\"))') IS NULL OR arrow_cast('2020-06-01T12:00:00Z', 'Timestamp(ns, Some(\"+00:00\"))') IS NULL THEN CAST(NULL AS INTERVAL) ELSE CAST(concat('0 months 0 days ', coalesce(CAST(date_part('epoch', (arrow_cast('2020-06-01T13:00:00+01:00', 'Timestamp(ns, Some(\"Europe/London\"))') - arrow_cast('2020-06-01T12:00:00Z', 'Timestamp(ns, Some(\"+00:00\"))'))) AS VARCHAR), '0'), ' seconds') AS INTERVAL) END) AS \"zoned_delta\""
         ),
         "{}",
         translation.sql()
@@ -3908,6 +3957,126 @@ fn lower_graph_plan_renders_temporal_component_expressions() {
         "{}",
         translation.sql()
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Zoned datetime accessor SQL coverage keeps the related accessor projections together."
+)]
+fn lower_graph_plan_renders_zoneddatetime_components_and_accessors() {
+    let graph = Declaration::from_yaml(GRAPH).expect("graph should parse");
+    let mut plan = ownership_plan(Direction::Outgoing);
+    plan.predicates.clear();
+    let london =
+        || zoneddatetime_from_string_expression("2020-06-01T13:00:00+01:00", "Europe/London");
+    plan.projections = vec![
+        Projection::Expression {
+            expression: temporal_component_expression(london(), TemporalComponentUnit::Hour),
+            alias: "london_hour".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                zoneddatetime_from_string_expression(
+                    "2020-06-01T23:30:00-04:00",
+                    "America/New_York",
+                ),
+                TemporalComponentUnit::Day,
+            ),
+            alias: "new_york_day".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::Timezone,
+                Some("Europe/London"),
+            ),
+            alias: "timezone".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::Offset,
+                Some("Europe/London"),
+            ),
+            alias: "offset".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::OffsetSeconds,
+                Some("Europe/London"),
+            ),
+            alias: "offset_seconds".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::OffsetMinutes,
+                Some("Europe/London"),
+            ),
+            alias: "offset_minutes".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::EpochSeconds,
+                Some("Europe/London"),
+            ),
+            alias: "epoch_seconds".to_string(),
+        },
+        Projection::Expression {
+            expression: zoneddatetime_accessor_expression(
+                london(),
+                ZonedDateTimeAccessor::EpochMillis,
+                Some("Europe/London"),
+            ),
+            alias: "epoch_millis".to_string(),
+        },
+        Projection::Expression {
+            expression: temporal_component_expression(
+                ScalarExpression::Arithmetic {
+                    operator: ArithmeticOperator::Add,
+                    left: Box::new(zoneddatetime_from_string_expression(
+                        "2020-03-29T00:30:00",
+                        "Europe/London",
+                    )),
+                    right: Box::new(duration_expression(0, 0, 3_600, 0)),
+                },
+                TemporalComponentUnit::Hour,
+            ),
+            alias: "dst_hour".to_string(),
+        },
+    ];
+
+    let translation = graph
+        .lower_graph_plan(&plan)
+        .expect("zoned datetime components and accessors should lower");
+    let london_sql =
+        "arrow_cast('2020-06-01T13:00:00+01:00', 'Timestamp(ns, Some(\"Europe/London\"))')";
+    let london_offset = format!("right(TRY_CAST({london_sql} AS VARCHAR), 6)");
+
+    for expected in [
+        format!("CAST(date_part('hour', {london_sql}) AS BIGINT) AS \"london_hour\""),
+        "CAST(date_part('day', arrow_cast('2020-06-01T23:30:00-04:00', 'Timestamp(ns, Some(\"America/New_York\"))')) AS BIGINT) AS \"new_york_day\"".to_string(),
+        "'Europe/London' AS \"timezone\"".to_string(),
+        format!("{london_offset} AS \"offset\""),
+        format!(
+            "CASE WHEN {london_offset} IS NULL THEN CAST(NULL AS BIGINT) ELSE ((CASE WHEN left({london_offset}, 1) = '-' THEN -1 ELSE 1 END) * ((CAST(SUBSTRING({london_offset} FROM 2 FOR 2) AS BIGINT) * 3600) + (CAST(SUBSTRING({london_offset} FROM 5 FOR 2) AS BIGINT) * 60))) END AS \"offset_seconds\""
+        ),
+        format!(
+            "CASE WHEN {london_offset} IS NULL THEN CAST(NULL AS BIGINT) ELSE ((CASE WHEN left({london_offset}, 1) = '-' THEN -1 ELSE 1 END) * ((CAST(SUBSTRING({london_offset} FROM 2 FOR 2) AS BIGINT) * 60) + (CAST(SUBSTRING({london_offset} FROM 5 FOR 2) AS BIGINT) * 1))) END AS \"offset_minutes\""
+        ),
+        format!("CAST(trunc(date_part('epoch', {london_sql})) AS BIGINT) AS \"epoch_seconds\""),
+        format!("CAST(trunc(date_part('epoch', {london_sql}) * 1000) AS BIGINT) AS \"epoch_millis\""),
+        "CAST(date_part('hour', (arrow_cast('2020-03-29T00:30:00', 'Timestamp(ns, Some(\"Europe/London\"))') + CAST('0 months 0 days 3600 seconds' AS INTERVAL))) AS BIGINT) AS \"dst_hour\"".to_string(),
+    ] {
+        assert!(
+            translation.sql().contains(&expected),
+            "expected SQL fragment {expected:?} in {}",
+            translation.sql()
+        );
+    }
 }
 
 #[test]

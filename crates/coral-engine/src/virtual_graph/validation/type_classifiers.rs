@@ -110,10 +110,15 @@ pub(super) fn temporal_arithmetic_result_type(
     match (operator, left, right) {
         (
             ArithmeticOperator::Add | ArithmeticOperator::Subtract,
-            ScalarType::Temporal(kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::LocalTime)),
+            ScalarType::Temporal(kind @ (TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::ZonedDateTime | TemporalKind::LocalTime)),
             ScalarType::Temporal(TemporalKind::Duration),
         ) => Some(Ok(ScalarType::Temporal(kind))),
         (
+            ArithmeticOperator::Subtract,
+            ScalarType::Temporal(TemporalKind::ZonedDateTime),
+            ScalarType::Temporal(TemporalKind::ZonedDateTime),
+        )
+        | (
             ArithmeticOperator::Add | ArithmeticOperator::Subtract,
             ScalarType::Temporal(TemporalKind::Duration),
             ScalarType::Temporal(TemporalKind::Duration),
@@ -128,7 +133,7 @@ pub(super) fn temporal_arithmetic_result_type(
                 diagnostic_codes::INVALID_SCALAR_TYPE,
                 path,
                 format!(
-                    "temporal arithmetic does not support {} {} {}; supported forms are temporal +/- duration, duration +/- duration, and duration * numeric literal",
+                    "temporal arithmetic does not support {} {} {}; supported forms are temporal +/- duration, zoned datetime - zoned datetime, duration +/- duration, and duration * numeric literal",
                     left.name(),
                     arithmetic_operator_name(operator),
                     right.name()

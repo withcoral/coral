@@ -68,7 +68,7 @@ use super::ir::{
     PropertyKeyMembershipPredicate, PropertyPredicate, PropertyRef, RelationshipPattern,
     ScalarCaseAlternative, ScalarExpression, ScalarPredicate, ScalarPredicateRhs,
     TemporalComponentUnit, TemporalDurationUnit, TemporalExpr, TemporalKind,
-    UndirectedRelationshipEndpoint,
+    UndirectedRelationshipEndpoint, ZonedDateTimeAccessor,
 };
 use crate::{CatalogInfo, CoreError};
 
@@ -9502,6 +9502,10 @@ fn apply_terminal_return_projection_aliases(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Terminal temporal component projection stays exhaustive over regular components and zoned datetime accessors."
+)]
 fn compile_optional_terminal_temporal_component_projection(
     expression: &Expression,
     output_alias: Option<&Variable>,
@@ -9540,6 +9544,45 @@ fn compile_optional_terminal_temporal_component_projection(
             };
             let base_expression =
                 scalar_alias_projection_expression(projection, format!("{path}.base"))?;
+            if let Some(accessor) = compile_zoned_datetime_accessor(component) {
+                match classify_temporal_component_base(
+                    &base_expression,
+                    PredicateCompileMode::Graph {
+                        plan,
+                        path_state: None,
+                    },
+                    context,
+                )? {
+                    TemporalComponentBaseType::Temporal { kind, timezone } => {
+                        if kind != TemporalKind::ZonedDateTime {
+                            return Err(unsupported(
+                                format!("{path}.property"),
+                                format!("{component} is not supported for {} values", kind.name()),
+                            ));
+                        }
+                        return Ok(Some((
+                            Projection::Expression {
+                                expression: ScalarExpression::Temporal(
+                                    TemporalExpr::ZonedDateTimeAccessor {
+                                        expression: Box::new(base_expression),
+                                        accessor,
+                                        timezone,
+                                    },
+                                ),
+                                alias: output_alias
+                                    .map_or_else(|| component.to_string(), variable_name),
+                            },
+                            consumed_alias,
+                        )));
+                    }
+                    TemporalComponentBaseType::NonTemporal | TemporalComponentBaseType::Unknown => {
+                        return Err(unsupported(
+                            format!("{path}.base"),
+                            "temporal component access requires a temporal value",
+                        ));
+                    }
+                }
+            }
             let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
             match classify_temporal_component_base(
                 &base_expression,
@@ -9549,7 +9592,7 @@ fn compile_optional_terminal_temporal_component_projection(
                 },
                 context,
             )? {
-                TemporalComponentBaseType::Temporal(kind) => {
+                TemporalComponentBaseType::Temporal { kind, .. } => {
                     if !unit.supports_kind(kind) {
                         return Err(unsupported(
                             format!("{path}.property"),
@@ -10511,7 +10554,8 @@ fn unary_scalar_expression_operand_mut(
                 text: expression, ..
             }
             | TemporalExpr::LocalTimeFromString { text: expression }
-            | TemporalExpr::Component { expression, .. },
+            | TemporalExpr::Component { expression, .. }
+            | TemporalExpr::ZonedDateTimeAccessor { expression, .. },
         )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
@@ -10635,7 +10679,8 @@ fn unary_scalar_expression_operand(expression: &ScalarExpression) -> Option<&Sca
                 text: expression, ..
             }
             | TemporalExpr::LocalTimeFromString { text: expression }
-            | TemporalExpr::Component { expression, .. },
+            | TemporalExpr::Component { expression, .. }
+            | TemporalExpr::ZonedDateTimeAccessor { expression, .. },
         )
         | ScalarExpression::Negate { expression } => Some(expression),
         _ => None,
@@ -13785,7 +13830,8 @@ fn hidden_subquery_order_structural_expression_can_be_precomputed(
     expression: &ScalarExpression,
 ) -> bool {
     match expression {
-        ScalarExpression::PresenceGated { expression, .. } => {
+        ScalarExpression::PresenceGated { expression, .. }
+        | ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor { expression, .. }) => {
             hidden_subquery_order_expression_can_be_precomputed(expression)
         }
         ScalarExpression::Coalesce { expressions } => expressions
@@ -14026,7 +14072,8 @@ fn compound_scalar_expression_correlated_subquery_count(
     }
 
     match expression {
-        ScalarExpression::PresenceGated { expression, .. } => {
+        ScalarExpression::PresenceGated { expression, .. }
+        | ScalarExpression::Temporal(TemporalExpr::ZonedDateTimeAccessor { expression, .. }) => {
             Some(scalar_expression_correlated_subquery_count(expression))
         }
         ScalarExpression::Coalesce { expressions } => Some(
@@ -24032,9 +24079,34 @@ fn compile_optional_temporal_component_scalar_expression(
                 mode,
                 context,
             )?;
+            if let Some(accessor) = compile_zoned_datetime_accessor(component) {
+                match classify_temporal_component_base(&base_expression, mode, context)? {
+                    TemporalComponentBaseType::Temporal { kind, timezone } => {
+                        if kind != TemporalKind::ZonedDateTime {
+                            return Err(unsupported(
+                                format!("{path}.property"),
+                                format!("{component} is not supported for {} values", kind.name()),
+                            ));
+                        }
+                        return Ok(Some(ScalarExpression::Temporal(
+                            TemporalExpr::ZonedDateTimeAccessor {
+                                expression: Box::new(base_expression),
+                                accessor,
+                                timezone,
+                            },
+                        )));
+                    }
+                    TemporalComponentBaseType::NonTemporal | TemporalComponentBaseType::Unknown => {
+                        return Err(unsupported(
+                            format!("{path}.base"),
+                            "temporal component access requires a temporal value",
+                        ));
+                    }
+                }
+            }
             let unit = compile_temporal_component_unit(component, format!("{path}.property"))?;
             match classify_temporal_component_base(&base_expression, mode, context)? {
-                TemporalComponentBaseType::Temporal(kind) => {
+                TemporalComponentBaseType::Temporal { kind, .. } => {
                     if !unit.supports_kind(kind) {
                         return Err(unsupported(
                             format!("{path}.property"),
@@ -24058,9 +24130,12 @@ fn compile_optional_temporal_component_scalar_expression(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TemporalComponentBaseType {
-    Temporal(TemporalKind),
+    Temporal {
+        kind: TemporalKind,
+        timezone: Option<String>,
+    },
     NonTemporal,
     Unknown,
 }
@@ -24072,13 +24147,20 @@ fn classify_temporal_component_base(
 ) -> Result<TemporalComponentBaseType, CoreError> {
     match expression {
         ScalarExpression::Temporal(temporal) => Ok(temporal_expression_value_kind(temporal)
-            .map_or(
-                TemporalComponentBaseType::NonTemporal,
-                TemporalComponentBaseType::Temporal,
-            )),
+            .map_or(TemporalComponentBaseType::NonTemporal, |kind| {
+                TemporalComponentBaseType::Temporal {
+                    kind,
+                    timezone: temporal_expression_zoned_timezone(temporal),
+                }
+            })),
         ScalarExpression::Property(property) => {
             classify_temporal_property_ref(property, mode.static_metadata_plan(), context)
         }
+        ScalarExpression::Arithmetic {
+            operator,
+            left,
+            right,
+        } => classify_temporal_arithmetic_component_base(*operator, left, right, mode, context),
         ScalarExpression::Literal(_)
         | ScalarExpression::LiteralList { .. }
         | ScalarExpression::TypedLiteralList { .. }
@@ -24093,6 +24175,68 @@ fn classify_temporal_component_base(
         | ScalarExpression::RelationshipType { .. } => Ok(TemporalComponentBaseType::NonTemporal),
         _ => Ok(TemporalComponentBaseType::Unknown),
     }
+}
+
+fn classify_temporal_arithmetic_component_base(
+    operator: ArithmeticOperator,
+    left: &ScalarExpression,
+    right: &ScalarExpression,
+    mode: PredicateCompileMode<'_>,
+    context: &CypherCompileContext,
+) -> Result<TemporalComponentBaseType, CoreError> {
+    let left = classify_temporal_component_base(left, mode, context)?;
+    let right = classify_temporal_component_base(right, mode, context)?;
+    Ok(match (operator, left, right) {
+        (
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract,
+            TemporalComponentBaseType::Temporal { kind, timezone },
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::Duration,
+                ..
+            },
+        ) if kind != TemporalKind::Duration => {
+            TemporalComponentBaseType::Temporal { kind, timezone }
+        }
+        (
+            ArithmeticOperator::Subtract,
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::ZonedDateTime,
+                ..
+            },
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::ZonedDateTime,
+                ..
+            },
+        )
+        | (
+            ArithmeticOperator::Multiply,
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::Duration,
+                ..
+            },
+            TemporalComponentBaseType::NonTemporal | TemporalComponentBaseType::Unknown,
+        )
+        | (
+            ArithmeticOperator::Add | ArithmeticOperator::Subtract,
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::Duration,
+                ..
+            },
+            TemporalComponentBaseType::Temporal {
+                kind: TemporalKind::Duration,
+                ..
+            },
+        ) => TemporalComponentBaseType::Temporal {
+            kind: TemporalKind::Duration,
+            timezone: None,
+        },
+        (_, TemporalComponentBaseType::Unknown, _) | (_, _, TemporalComponentBaseType::Unknown) => {
+            TemporalComponentBaseType::Unknown
+        }
+        (_, TemporalComponentBaseType::Temporal { .. }, _)
+        | (_, _, TemporalComponentBaseType::Temporal { .. }) => TemporalComponentBaseType::Unknown,
+        _ => TemporalComponentBaseType::NonTemporal,
+    })
 }
 
 fn classify_temporal_property_ref(
@@ -24113,7 +24257,10 @@ fn classify_temporal_property_ref(
     };
     Ok(temporal_kind_for_data_type(data_type).map_or(
         TemporalComponentBaseType::NonTemporal,
-        TemporalComponentBaseType::Temporal,
+        |kind| TemporalComponentBaseType::Temporal {
+            kind,
+            timezone: zoned_timezone_for_data_type(data_type),
+        },
     ))
 }
 
@@ -24262,6 +24409,13 @@ fn timestamp_data_type_temporal_kind(data_type: &str) -> TemporalKind {
     }
 }
 
+fn zoned_timezone_for_data_type(data_type: &str) -> Option<String> {
+    let start = data_type.find("Some(\"")? + "Some(\"".len();
+    let rest = data_type.get(start..)?;
+    let end = rest.find('"')?;
+    Some(rest.get(..end)?.to_string())
+}
+
 fn is_potential_temporal_component_base(
     expression: &Expression,
     mode: PredicateCompileMode<'_>,
@@ -24279,7 +24433,28 @@ fn is_potential_temporal_component_base(
             scalar_alias_projection(state, &variable_name(variable)).is_some()
         }),
         Expression::PropertyLookup { .. } => true,
+        Expression::BinaryOp { op, .. } => matches!(
+            op,
+            CypherBinaryOperator::Add
+                | CypherBinaryOperator::Subtract
+                | CypherBinaryOperator::Multiply
+                | CypherBinaryOperator::Divide
+                | CypherBinaryOperator::Modulo
+                | CypherBinaryOperator::Power
+        ),
         _ => false,
+    }
+}
+
+fn compile_zoned_datetime_accessor(component: &str) -> Option<ZonedDateTimeAccessor> {
+    match component {
+        "timezone" => Some(ZonedDateTimeAccessor::Timezone),
+        "offset" => Some(ZonedDateTimeAccessor::Offset),
+        "offsetSeconds" => Some(ZonedDateTimeAccessor::OffsetSeconds),
+        "offsetMinutes" => Some(ZonedDateTimeAccessor::OffsetMinutes),
+        "epochSeconds" => Some(ZonedDateTimeAccessor::EpochSeconds),
+        "epochMillis" => Some(ZonedDateTimeAccessor::EpochMillis),
+        _ => None,
     }
 }
 
@@ -24367,6 +24542,8 @@ fn temporal_component_name_is_reserved(component: &str) -> bool {
             | "offset"
             | "offsetMinutes"
             | "offsetSeconds"
+            | "epochSeconds"
+            | "epochMillis"
     )
 }
 
@@ -24387,7 +24564,15 @@ fn temporal_expression_value_kind(expression: &TemporalExpr) -> Option<TemporalK
         TemporalExpr::MakeDuration { .. } | TemporalExpr::DurationInUnits { .. } => {
             Some(TemporalKind::Duration)
         }
-        TemporalExpr::Component { .. } => None,
+        TemporalExpr::Component { .. } | TemporalExpr::ZonedDateTimeAccessor { .. } => None,
+    }
+}
+
+fn temporal_expression_zoned_timezone(expression: &TemporalExpr) -> Option<String> {
+    match expression {
+        TemporalExpr::MakeZonedDateTime { timezone, .. }
+        | TemporalExpr::ZonedDateTimeFromString { timezone, .. } => Some(timezone.clone()),
+        _ => None,
     }
 }
 
