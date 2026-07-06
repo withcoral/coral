@@ -103,6 +103,7 @@ pub use virtual_graph::{
     compile_graphql_for_graph_with_variables_and_operation_name,
     compile_graphql_with_operation_name, compile_graphql_with_variables,
     compile_graphql_with_variables_and_operation_name, graphql_schema_sdl_for_graph,
+    translate_cypher_query_for_graph_with_parameters_and_catalog,
 };
 
 /// High-level query operations for the local query engine.

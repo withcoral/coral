@@ -7,20 +7,30 @@ use super::catalog::{
 use super::context::ToolDescriptionContext;
 use super::episode::{open_episode_tool, with_episode_id_argument};
 use super::feedback::feedback_tool;
+use super::graph::{cypher_tool, describe_graph_tool, find_relationship_paths_tool};
 use super::sql::sql_tool;
 
 pub(crate) fn available_tools(
     context: &ToolDescriptionContext,
     episodes_enabled: bool,
     feedback_enabled: bool,
+    graph_enabled: bool,
 ) -> Vec<Tool> {
-    let mut tools = vec![
+    let mut tools = Vec::new();
+    if graph_enabled {
+        tools.extend([
+            describe_graph_tool(),
+            find_relationship_paths_tool(),
+            cypher_tool(),
+        ]);
+    }
+    tools.extend([
         sql_tool(context),
         list_catalog_tool(context),
         search_catalog_tool(context),
         describe_table_tool(),
         list_columns_tool(),
-    ];
+    ]);
     if episodes_enabled {
         tools = tools.into_iter().map(with_episode_id_argument).collect();
         tools.push(open_episode_tool());
@@ -79,7 +89,7 @@ mod tests {
         let context =
             ToolDescriptionContext::new(42, 3, vec!["github".to_string(), "linear".to_string()]);
 
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false, false, false);
         let sql_tool = tool_by_name(&tools, "sql");
         let sql_description = sql_tool.description.as_deref().expect("sql description");
         assert!(sql_description.contains("Connected sources/schemas include: github, linear"));
@@ -115,7 +125,7 @@ mod tests {
     #[test]
     fn available_tools_decorate_episode_aware_tools() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, true, false);
+        let tools = available_tools(&context, true, false, false);
         let sql_tool = tool_by_name(&tools, "sql");
         let episode_id_schema = sql_tool
             .input_schema
@@ -143,7 +153,7 @@ mod tests {
     #[test]
     fn available_tools_add_feedback_last_when_enabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, true, true);
+        let tools = available_tools(&context, true, true, false);
 
         assert_eq!(
             tools.last().map(|tool| tool.name.as_ref()),
@@ -162,7 +172,7 @@ mod tests {
     #[test]
     fn available_tools_keep_default_order() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false, false, false);
         let names = tools
             .iter()
             .map(|tool| tool.name.as_ref())
@@ -181,13 +191,37 @@ mod tests {
     }
 
     #[test]
+    fn available_tools_add_graph_surface_before_sql_when_enabled() {
+        let context = ToolDescriptionContext::new(1, 0, Vec::new());
+        let tools = available_tools(&context, false, false, true);
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "describe_graph",
+                "find_relationship_paths",
+                "cypher",
+                "sql",
+                "list_catalog",
+                "search_catalog",
+                "describe_table",
+                "list_columns"
+            ]
+        );
+    }
+
+    #[test]
     fn tool_descriptions_do_not_cap_connected_source_names() {
         let names = (0..14)
             .map(|index| format!("source_{index:02}"))
             .collect::<Vec<_>>();
         let context = ToolDescriptionContext::new(1, 0, names);
 
-        let tools = available_tools(&context, false, false);
+        let tools = available_tools(&context, false, false, false);
         let description = tool_by_name(&tools, "sql")
             .description
             .as_deref()
@@ -203,8 +237,8 @@ mod tests {
     #[test]
     fn available_tools_do_not_mutate_base_tool_schemas() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let default_tools = available_tools(&context, false, false);
-        let episode_tools = available_tools(&context, true, false);
+        let default_tools = available_tools(&context, false, false, false);
+        let episode_tools = available_tools(&context, true, false, false);
 
         let default_properties = tool_by_name(&default_tools, "sql")
             .input_schema
@@ -224,7 +258,7 @@ mod tests {
     #[test]
     fn feedback_tool_is_not_decorated_when_episodes_are_disabled() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
-        let tools = available_tools(&context, false, true);
+        let tools = available_tools(&context, false, true, false);
         let feedback = tools.last().expect("feedback tool");
         let properties = feedback
             .input_schema
@@ -240,7 +274,7 @@ mod tests {
     fn all_advertised_tools_have_object_input_schemas() {
         let context = ToolDescriptionContext::new(1, 0, Vec::new());
 
-        for tool in available_tools(&context, true, true) {
+        for tool in available_tools(&context, true, true, false) {
             assert_eq!(
                 tool.input_schema.get("type"),
                 Some(&Value::String("object".into()))

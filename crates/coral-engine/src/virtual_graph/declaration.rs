@@ -31,6 +31,35 @@ pub struct Declaration {
     /// Relationship type mappings.
     #[serde(default)]
     pub relationships: Vec<Relationship>,
+    /// Optional graph-author guidance exposed by schema-description surfaces.
+    #[serde(default)]
+    pub usage_notes: Vec<UsageNote>,
+}
+
+/// Graph-author usage guidance. Plain strings are always applicable. Scoped
+/// notes apply when the selected graph slice contains any listed label or
+/// relationship type.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum UsageNote {
+    /// Always-applicable graph guidance.
+    Text(String),
+    /// Guidance tied to graph labels or relationship types.
+    Scoped(ScopedUsageNote),
+}
+
+/// Scoped graph-author usage guidance.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScopedUsageNote {
+    /// Human-facing note text.
+    pub text: String,
+    /// Labels that make this note relevant.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Relationship types that make this note relevant.
+    #[serde(default)]
+    pub relationships: Vec<String>,
 }
 
 /// SQL table reference used by a graph mapping.
@@ -166,6 +195,19 @@ impl Declaration {
             }
         }
 
+        let relationship_types = self
+            .relationships
+            .iter()
+            .map(|relationship| relationship.relationship_type.as_str())
+            .collect::<BTreeSet<_>>();
+        for (index, note) in self.usage_notes.iter().enumerate() {
+            note.validate(
+                &format!("usage_notes[{index}]"),
+                &labels,
+                &relationship_types,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -241,6 +283,102 @@ impl Declaration {
         self.relationships
             .iter()
             .filter(move |relationship| relationship.relationship_type == relationship_type)
+    }
+}
+
+impl UsageNote {
+    fn validate(
+        &self,
+        path: &str,
+        labels: &BTreeSet<&str>,
+        relationship_types: &BTreeSet<&str>,
+    ) -> Result<(), CoreError> {
+        match self {
+            UsageNote::Text(text) => require_non_empty(path, text),
+            UsageNote::Scoped(note) => note.validate(path, labels, relationship_types),
+        }
+    }
+
+    /// Returns the note's human-facing text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            UsageNote::Text(text) => text,
+            UsageNote::Scoped(note) => &note.text,
+        }
+    }
+
+    /// Whether this note is relevant to a selected graph slice.
+    #[must_use]
+    pub fn applies_to(
+        &self,
+        selected_labels: &BTreeSet<&str>,
+        selected_relationship_types: &BTreeSet<&str>,
+    ) -> bool {
+        match self {
+            UsageNote::Text(_) => true,
+            UsageNote::Scoped(note) => {
+                note.applies_to(selected_labels, selected_relationship_types)
+            }
+        }
+    }
+}
+
+impl ScopedUsageNote {
+    fn validate(
+        &self,
+        path: &str,
+        labels: &BTreeSet<&str>,
+        relationship_types: &BTreeSet<&str>,
+    ) -> Result<(), CoreError> {
+        require_non_empty(&format!("{path}.text"), &self.text)?;
+        if self.labels.is_empty() && self.relationships.is_empty() {
+            return Err(Diagnostic::new(
+                diagnostic_codes::INVALID_USAGE_NOTE,
+                path,
+                "scoped usage note must list at least one label or relationship type",
+            )
+            .into_core_error());
+        }
+        for (index, label) in self.labels.iter().enumerate() {
+            require_non_empty(&format!("{path}.labels[{index}]"), label)?;
+            if !labels.contains(label.as_str()) {
+                return Err(Diagnostic::new(
+                    diagnostic_codes::UNKNOWN_NODE_LABEL,
+                    format!("{path}.labels[{index}]"),
+                    format!("usage note references unknown node label '{label}'"),
+                )
+                .into_core_error());
+            }
+        }
+        for (index, relationship_type) in self.relationships.iter().enumerate() {
+            require_non_empty(&format!("{path}.relationships[{index}]"), relationship_type)?;
+            if !relationship_types.contains(relationship_type.as_str()) {
+                return Err(Diagnostic::new(
+                    diagnostic_codes::UNKNOWN_RELATIONSHIP_TYPE,
+                    format!("{path}.relationships[{index}]"),
+                    format!(
+                        "usage note references unknown relationship type '{relationship_type}'"
+                    ),
+                )
+                .into_core_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn applies_to(
+        &self,
+        selected_labels: &BTreeSet<&str>,
+        selected_relationship_types: &BTreeSet<&str>,
+    ) -> bool {
+        self.labels
+            .iter()
+            .any(|label| selected_labels.contains(label.as_str()))
+            || self
+                .relationships
+                .iter()
+                .any(|relationship| selected_relationship_types.contains(relationship.as_str()))
     }
 }
 

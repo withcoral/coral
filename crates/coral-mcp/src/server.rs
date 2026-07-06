@@ -1,15 +1,23 @@
 //! RMCP server implementation for Coral's stdio MCP surface.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use coral_api::v1::{
     CatalogItemKind as ProtoCatalogItemKind, DescribeTableRequest, DescribeTableResponse,
     ExecuteSqlRequest, ListCatalogRequest, ListCatalogResponse, ListColumnsRequest,
-    ListSourcesRequest, OpenEpisodeRequest, PaginationRequest, SearchCatalogRequest, Source,
-    SubmitFeedbackRequest, TableSummary as ProtoTableSummary, catalog_item,
+    ListColumnsResponse, ListSourcesRequest, OpenEpisodeRequest, PaginationRequest,
+    SearchCatalogRequest, Source, SubmitFeedbackRequest, TableSummary as ProtoTableSummary,
+    catalog_item,
 };
 use coral_client::{
     AppClient, CatalogClient, EpisodeClient, FeedbackClient, QueryClient, SourceClient,
     batches_to_json_rows_json_safe_numbers, decode_execute_sql_response, default_workspace,
     with_episode_metadata,
+};
+use coral_engine::{
+    CatalogInfo, ColumnInfo, CoreError, GraphDeclaration, StatusCode, TableInfo,
+    translate_cypher_query_for_graph_with_parameters_and_catalog,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -32,7 +40,9 @@ use crate::{
     surface::{
         CatalogToolKind, EpisodeId, EpisodeOpenedValue, FeedbackStoredValue, SqlBatchValue,
         SqlQueryResultValue, ToolDescriptionContext, ToolName, available_tools, build_tool_result,
-        describe_table_arguments, describe_table_value, feedback_arguments, guide_resource,
+        cypher_arguments, cypher_value, describe_graph_arguments, describe_graph_value,
+        describe_table_arguments, describe_table_value, feedback_arguments,
+        find_relationship_paths_arguments, find_relationship_paths_value, guide_resource,
         guide_resource_content, initial_instructions, list_catalog_arguments, list_catalog_value,
         list_columns_arguments, list_columns_table_fallback_value, list_columns_value,
         open_episode_arguments, optional_episode_id_argument, search_catalog_arguments,
@@ -44,6 +54,7 @@ use crate::{
 
 const LIST_CATALOG_UNBOUNDED_LIMIT: u32 = 0;
 const LIST_CATALOG_COUNT_LIMIT: u32 = 1;
+const LIST_COLUMNS_CATALOG_LIMIT: u32 = 200;
 const CATALOG_KIND_ALL: ProtoCatalogItemKind = ProtoCatalogItemKind::Unspecified;
 const CATALOG_KIND_TABLE: ProtoCatalogItemKind = ProtoCatalogItemKind::Table;
 const CATALOG_KIND_TABLE_FUNCTION: ProtoCatalogItemKind = ProtoCatalogItemKind::TableFunction;
@@ -60,6 +71,28 @@ enum ToolCallOutcome {
 
 fn serialize_tool_value(value: impl Serialize) -> Result<Value, tonic::Status> {
     serde_json::to_value(value).map_err(|error| tonic::Status::internal(error.to_string()))
+}
+
+async fn load_graph_declaration_from_path(path: &Path) -> Result<GraphDeclaration, tonic::Status> {
+    let raw = tokio::fs::read_to_string(path).await.map_err(|error| {
+        tonic::Status::failed_precondition(format!(
+            "virtual graph declaration '{}' could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    GraphDeclaration::from_yaml(&raw).map_err(core_error_to_status)
+}
+
+fn core_error_to_status(error: CoreError) -> tonic::Status {
+    let code = match error.status_code() {
+        StatusCode::InvalidArgument => tonic::Code::InvalidArgument,
+        StatusCode::NotFound => tonic::Code::NotFound,
+        StatusCode::FailedPrecondition => tonic::Code::FailedPrecondition,
+        StatusCode::Unavailable => tonic::Code::Unavailable,
+        StatusCode::Unimplemented => tonic::Code::Unimplemented,
+        StatusCode::Internal => tonic::Code::Internal,
+    };
+    tonic::Status::new(code, error.to_string())
 }
 
 impl ToolCallOutcome {
@@ -197,6 +230,19 @@ impl CoralMcpServer {
             .unwrap_or_else(default_workspace)
     }
 
+    fn graph_enabled(&self) -> bool {
+        self.options.virtual_graph_path.is_some()
+    }
+
+    async fn load_graph_declaration(&self) -> Result<GraphDeclaration, tonic::Status> {
+        let path = self.options.virtual_graph_path.as_deref().ok_or_else(|| {
+            tonic::Status::failed_precondition(
+                "virtual graph tools require CORAL_VIRTUAL_GRAPH_PATH",
+            )
+        })?;
+        load_graph_declaration_from_path(path).await
+    }
+
     async fn load_sources(&self) -> Result<Vec<Source>, tonic::Status> {
         let mut source_client = self.source.clone();
         Ok(source_client
@@ -245,6 +291,81 @@ impl CoralMcpServer {
                     Some(catalog_item::Item::TableFunction(_)) | None => None,
                 })
                 .collect()
+        })
+    }
+
+    async fn load_all_columns(
+        &self,
+        schema_name: &str,
+        table_name: &str,
+    ) -> Result<ListColumnsResponse, tonic::Status> {
+        let mut catalog_client = self.catalog.clone();
+        let mut columns = Vec::new();
+        let mut offset = 0;
+        loop {
+            let response = catalog_client
+                .list_columns(Request::new(ListColumnsRequest {
+                    workspace: Some(self.workspace()),
+                    schema_name: schema_name.to_string(),
+                    table_name: table_name.to_string(),
+                    pattern: None,
+                    ignore_case: true,
+                    required_only: false,
+                    pagination: Some(PaginationRequest {
+                        limit: LIST_COLUMNS_CATALOG_LIMIT,
+                        offset,
+                    }),
+                }))
+                .await?
+                .into_inner();
+            let pagination = response.pagination;
+            columns.extend(response.columns);
+            let Some(pagination) = pagination else {
+                break;
+            };
+            if !pagination.has_more {
+                break;
+            }
+            offset = pagination.next_offset;
+        }
+        Ok(ListColumnsResponse {
+            columns,
+            pagination: None,
+        })
+    }
+
+    async fn load_engine_catalog(&self) -> Result<CatalogInfo, tonic::Status> {
+        let table_summaries = self.load_all_table_summaries().await?;
+        let mut tables = Vec::with_capacity(table_summaries.len());
+        for table in table_summaries {
+            let columns = self
+                .load_all_columns(&table.schema_name, &table.name)
+                .await?;
+            tables.push(TableInfo {
+                schema_name: table.schema_name,
+                table_name: table.name,
+                description: table.description,
+                guide: table.guide,
+                columns: columns
+                    .columns
+                    .into_iter()
+                    .filter_map(|result| result.column)
+                    .map(|column| ColumnInfo {
+                        name: column.name,
+                        data_type: column.data_type,
+                        nullable: column.nullable,
+                        is_virtual: column.is_virtual,
+                        is_required_filter: column.is_required_filter,
+                        description: column.description,
+                        ordinal_position: column.ordinal_position,
+                    })
+                    .collect(),
+                required_filters: table.required_filters,
+            });
+        }
+        Ok(CatalogInfo {
+            tables,
+            table_functions: Vec::new(),
         })
     }
 
@@ -496,6 +617,94 @@ impl CoralMcpServer {
         }
     }
 
+    async fn describe_graph_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = describe_graph_arguments(request_arguments)?;
+        let result = self
+            .load_graph_declaration()
+            .await
+            .and_then(|graph| serialize_tool_value(describe_graph_value(&graph, arguments)));
+        Ok(ToolCallOutcome::from_value_result(
+            "Graph description",
+            result,
+        ))
+    }
+
+    async fn find_relationship_paths_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = find_relationship_paths_arguments(request_arguments)?;
+        let result = self.load_graph_declaration().await.and_then(|graph| {
+            serialize_tool_value(find_relationship_paths_value(&graph, arguments))
+        });
+        Ok(ToolCallOutcome::from_value_result(
+            "Relationship path search",
+            result,
+        ))
+    }
+
+    async fn cypher_tool_result(
+        &self,
+        request_arguments: Option<&Map<String, Value>>,
+        episode_id_metadata: Option<MetadataValue<Ascii>>,
+    ) -> Result<ToolCallOutcome, ErrorData> {
+        let arguments = cypher_arguments(request_arguments)?;
+        let graph = match self.load_graph_declaration().await {
+            Ok(graph) => graph,
+            Err(status) => {
+                return Ok(ToolCallOutcome::ToolError {
+                    operation: "Cypher graph loading",
+                    status,
+                });
+            }
+        };
+        let catalog = match self.load_engine_catalog().await {
+            Ok(catalog) => catalog,
+            Err(status) => {
+                return Ok(ToolCallOutcome::ToolError {
+                    operation: "Cypher catalog loading",
+                    status,
+                });
+            }
+        };
+        let translation = match translate_cypher_query_for_graph_with_parameters_and_catalog(
+            &graph,
+            &arguments.query,
+            &BTreeMap::new(),
+            &catalog,
+        ) {
+            Ok(translation) => translation,
+            Err(error) => {
+                return Ok(ToolCallOutcome::ToolError {
+                    operation: "Cypher translation",
+                    status: core_error_to_status(error),
+                });
+            }
+        };
+
+        let translated_sql = translation.sql().to_string();
+        let request = Request::new(ExecuteSqlRequest {
+            workspace: Some(self.workspace()),
+            sql: translated_sql.clone(),
+        });
+        match with_episode_metadata(episode_id_metadata, self.query_rows(request)).await {
+            Ok(rows) => serialize_tool_value(cypher_value(
+                rows,
+                translated_sql,
+                translation.diagnostics(),
+            ))
+            .map(ToolCallOutcome::success)
+            .map_err(|status| status_to_error_data(&status)),
+            Err(status) => Ok(ToolCallOutcome::ToolError {
+                operation: "Cypher execution",
+                status,
+            }),
+        }
+    }
+
     async fn dispatch_tool(
         &self,
         request: CallToolRequestParams,
@@ -503,6 +712,18 @@ impl CoralMcpServer {
         episode_id_metadata: Option<MetadataValue<Ascii>>,
     ) -> Result<ToolCallOutcome, ErrorData> {
         match request.name.as_ref().parse::<ToolName>().ok() {
+            Some(ToolName::DescribeGraph) if self.graph_enabled() => {
+                self.describe_graph_tool_result(request.arguments.as_ref())
+                    .await
+            }
+            Some(ToolName::FindRelationshipPaths) if self.graph_enabled() => {
+                self.find_relationship_paths_tool_result(request.arguments.as_ref())
+                    .await
+            }
+            Some(ToolName::Cypher) if self.graph_enabled() => {
+                self.cypher_tool_result(request.arguments.as_ref(), episode_id_metadata)
+                    .await
+            }
             Some(ToolName::Sql) => {
                 let arguments = sql_arguments(request.arguments.as_ref())?;
                 match self
@@ -563,9 +784,17 @@ impl CoralMcpServer {
                     .await,
                 ))
             }
-            None | Some(ToolName::OpenEpisode | ToolName::Feedback) => Err(
-                ErrorData::invalid_params(format!("tool '{}' not found", request.name), None),
-            ),
+            None
+            | Some(
+                ToolName::DescribeGraph
+                | ToolName::FindRelationshipPaths
+                | ToolName::Cypher
+                | ToolName::OpenEpisode
+                | ToolName::Feedback,
+            ) => Err(ErrorData::invalid_params(
+                format!("tool '{}' not found", request.name),
+                None,
+            )),
         }
     }
 
@@ -670,6 +899,7 @@ impl ServerHandler for CoralMcpServer {
                 &tool_context,
                 self.options.episodes_enabled,
                 self.options.feedback_enabled,
+                self.graph_enabled(),
             );
             Ok(ListToolsResult::with_all_items(tools))
         })

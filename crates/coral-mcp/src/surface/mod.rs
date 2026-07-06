@@ -7,6 +7,7 @@ mod discovery;
 mod episode;
 mod errors;
 mod feedback;
+mod graph;
 mod resources;
 mod schema;
 mod source_names;
@@ -26,6 +27,10 @@ pub(crate) use episode::{
 };
 pub(crate) use errors::{status_to_error_data, tool_error_from_status, tool_error_result};
 pub(crate) use feedback::{FeedbackStoredValue, feedback_arguments};
+pub(crate) use graph::{
+    cypher_arguments, cypher_value, describe_graph_arguments, describe_graph_value,
+    find_relationship_paths_arguments, find_relationship_paths_value,
+};
 pub(crate) use resources::{
     guide_resource, guide_resource_content, initial_instructions, tables_resource,
     tables_resource_content,

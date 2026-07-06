@@ -3,6 +3,8 @@
 //! `coral-cli` is allowed to read process environment when the CLI surface
 //! explicitly defines an env-backed workflow.
 
+use std::path::PathBuf;
+
 #[cfg(feature = "cli-test-server")]
 const CORAL_ENDPOINT_ENV: &str = "CORAL_ENDPOINT";
 
@@ -20,6 +22,7 @@ pub fn bootstrap_endpoint() -> Option<String> {
 }
 
 const CORAL_TRACE_PARENT_ENV: &str = "CORAL_TRACE_PARENT";
+const CORAL_VIRTUAL_GRAPH_PATH_ENV: &str = "CORAL_VIRTUAL_GRAPH_PATH";
 const CORAL_WORKSPACE_ENV: &str = "CORAL_WORKSPACE";
 
 /// Reads the optional W3C `traceparent` used to link CLI spans to a parent trace.
@@ -30,6 +33,18 @@ const CORAL_WORKSPACE_ENV: &str = "CORAL_WORKSPACE";
 #[must_use]
 pub fn trace_parent() -> Option<String> {
     std::env::var(CORAL_TRACE_PARENT_ENV).ok()
+}
+
+/// Reads the optional virtual graph declaration path used by `coral mcp`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CORAL_VIRTUAL_GRAPH_PATH is a CLI-owned MCP surface selector."
+)]
+#[must_use]
+pub fn virtual_graph_path() -> Option<PathBuf> {
+    std::env::var_os(CORAL_VIRTUAL_GRAPH_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Reads the optional default workspace for CLI commands.

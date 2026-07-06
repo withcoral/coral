@@ -1245,6 +1245,66 @@ async fn mcp_surface_refreshes_and_renders_dynamic_guide() {
 }
 
 #[tokio::test]
+async fn mcp_graph_tools_are_enabled_by_virtual_graph_path() {
+    let temp = TempDir::new().expect("temp dir");
+    let graph_path = temp.path().join("enterprise_graph.yaml");
+    fs::write(
+        &graph_path,
+        r"
+version: 1
+name: enterprise
+nodes:
+  - label: Account
+    table: { schema: crm, name: accounts }
+    key: account_id
+    properties:
+      name: account_name
+",
+    )
+    .expect("write graph");
+    let session = start_session_with_options(
+        &temp,
+        McpOptions {
+            virtual_graph_path: Some(graph_path),
+            ..McpOptions::default()
+        },
+    )
+    .await;
+    let client = &session.client;
+
+    let tools = client.list_all_tools().await.expect("tools");
+    let names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &names[..3],
+        ["describe_graph", "find_relationship_paths", "cypher"]
+    );
+    let describe_graph_tool = tool_by_name(&tools, "describe_graph");
+    tool_by_name(&tools, "find_relationship_paths");
+    tool_by_name(&tools, "cypher");
+
+    let description = client
+        .call_tool(
+            CallToolRequestParams::new("describe_graph").with_arguments(json_object(&json!({
+                "focus": "accounts"
+            }))),
+        )
+        .await
+        .expect("describe graph");
+    assert_eq!(description.is_error, Some(false));
+    let description = description
+        .structured_content
+        .expect("describe graph structured content");
+    assert_matches_output_schema(describe_graph_tool, &description);
+    assert_eq!(description["name"], "enterprise");
+    assert_eq!(description["nodes"][0]["label"], "Account");
+
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn list_catalog_surfaces_table_functions() {
     let temp = TempDir::new().expect("temp dir");
     let manifest_path = write_function_fixture_manifest(temp.path());

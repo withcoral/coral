@@ -222,6 +222,25 @@ fn temporal_columns_catalog() -> CatalogInfo {
     }
 }
 
+#[test]
+fn translates_cypher_query_for_graph_with_parameters_and_catalog_to_sql() {
+    let graph = temporal_columns_test_graph();
+    let catalog = temporal_columns_catalog();
+
+    let translation = translate_cypher_query_for_graph_with_parameters_and_catalog(
+        &graph,
+        "MATCH (person:Person) RETURN person.name AS name LIMIT 3",
+        &BTreeMap::new(),
+        &catalog,
+    )
+    .expect("cypher should translate to SQL");
+
+    assert!(translation.sql().contains("FROM \"rich\".\"people\""));
+    assert!(translation.sql().contains("\"n0\".\"name\" AS \"name\""));
+    assert!(translation.sql().ends_with("LIMIT 3"));
+    assert!(translation.diagnostics().is_empty());
+}
+
 fn typed_float_list_projection(alias: &str, values: Vec<f64>) -> Projection {
     Projection::Expression {
         expression: ScalarExpression::TypedLiteralList {

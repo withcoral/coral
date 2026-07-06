@@ -25,6 +25,7 @@ uuid.workspace = true
 
 coral-api.workspace = true
 coral-client.workspace = true
+coral-engine.workspace = true
 coral-telemetry.workspace = true
 
 [dev-dependencies]

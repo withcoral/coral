@@ -679,6 +679,7 @@ async fn run_app_command(
                     source_names,
                     query_examples,
                     workspace: Some(workspace.clone()),
+                    virtual_graph_path: env::virtual_graph_path(),
                 },
             ))
             .await

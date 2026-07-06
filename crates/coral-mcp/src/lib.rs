@@ -11,7 +11,7 @@
 //!
 //! The exposed MCP surface is intentionally small:
 //!
-//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally `feedback` and `open_episode`
+//! - tools: `sql`, paginated `list_catalog`, `search_catalog`, `describe_table`, `list_columns`, and optionally virtual-graph `describe_graph`, `find_relationship_paths`, `cypher`, `feedback`, and `open_episode`
 //! - resources: `coral://guide`, `coral://tables`
 //!
 //! Protocol lifecycle, initialization, and stdio transport behavior should stay
@@ -32,6 +32,7 @@ mod tests;
 
 use coral_client::AppClient;
 use rmcp::ServiceExt;
+use std::path::PathBuf;
 
 pub use error::McpError;
 pub(crate) use server::CoralMcpServer;
@@ -109,6 +110,8 @@ pub struct McpOptions {
     pub query_examples: Vec<McpQueryExample>,
     /// Workspace scoped to this MCP server instance.
     pub workspace: Option<coral_api::v1::Workspace>,
+    /// Optional virtual graph declaration YAML path that enables graph tools.
+    pub virtual_graph_path: Option<PathBuf>,
 }
 
 /// Runs the `MCP` stdio server using an existing Coral client.

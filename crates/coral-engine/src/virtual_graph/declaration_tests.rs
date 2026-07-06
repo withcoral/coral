@@ -25,6 +25,11 @@ relationships:
     to: { label: Service, key: service_id }
     properties:
       since: since
+usage_notes:
+  - Service ownership notes apply to every graph slice.
+  - text: Use ownership rows when a question asks who owns a service.
+    labels: [Person, Service]
+    relationships: [OWNS]
 ";
 
 #[test]
@@ -46,6 +51,11 @@ fn declaration_from_yaml_accepts_valid_v1_mapping() {
             .node("Person")
             .and_then(|node| node.column_for_property("name")),
         Some("full_name")
+    );
+    assert_eq!(graph.usage_notes.len(), 2);
+    assert_eq!(
+        graph.usage_notes[1].text(),
+        "Use ownership rows when a question asks who owns a service."
     );
 }
 
@@ -127,6 +137,14 @@ fn declaration_rejects_unknown_relationship_endpoint_label() {
     let error = Declaration::from_yaml(&raw).expect_err("unknown endpoint should fail");
 
     assert_invalid_graph_error(error, "UNKNOWN_ENDPOINT_LABEL");
+}
+
+#[test]
+fn declaration_rejects_usage_note_unknown_label() {
+    let raw = VALID_GRAPH.replace("labels: [Person, Service]", "labels: [System]");
+    let error = Declaration::from_yaml(&raw).expect_err("unknown usage-note label should fail");
+
+    assert_invalid_graph_error(error, "UNKNOWN_NODE_LABEL");
 }
 
 #[test]

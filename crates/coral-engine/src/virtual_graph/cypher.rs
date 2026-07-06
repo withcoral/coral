@@ -977,6 +977,34 @@ pub(crate) fn compile_cypher_query_for_graph_with_parameters_and_catalog(
     compile_cypher_query_with_optional_graph(cypher, parameters, Some(graph), Some(catalog))
 }
 
+/// Translates Cypher against a virtual graph and runtime catalog into DataFusion SQL.
+///
+/// This is the catalog-bound companion to [`compile_cypher_query_for_graph`]
+/// for callers that already own a catalog snapshot and an SQL execution path.
+///
+/// # Errors
+///
+/// Returns [`CoreError::InvalidInput`] when the Cypher text is empty, cannot be
+/// parsed, uses unsupported Cypher/GQL features, references a missing
+/// parameter, or cannot be lowered against the supplied graph/catalog.
+pub fn translate_cypher_query_for_graph_with_parameters_and_catalog(
+    graph: &Declaration,
+    cypher: &str,
+    parameters: &BTreeMap<String, CypherParameterValue>,
+    catalog: &CatalogInfo,
+) -> Result<super::SqlTranslation, CoreError> {
+    if cypher.trim().is_empty() {
+        return Err(CoreError::InvalidInput(
+            "Cypher query must not be empty".to_string(),
+        ));
+    }
+
+    let query = compile_cypher_query_for_graph_with_parameters_and_catalog(
+        graph, cypher, parameters, catalog,
+    )?;
+    graph.lower_graph_query_against_catalog(&query, catalog)
+}
+
 fn compile_cypher_query_with_optional_graph(
     cypher: &str,
     parameters: &BTreeMap<String, CypherParameterValue>,
