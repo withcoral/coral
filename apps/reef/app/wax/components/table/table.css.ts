@@ -1,7 +1,7 @@
 import { createVar, fallbackVar, style } from '@vanilla-extract/css'
 import { recipe } from '@vanilla-extract/recipes'
 
-import { theme } from '@/wax/theme/theme.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
 // The fallback keeps cells styled as the default table style when they're
 // rendered without a Table.Wrapper setting the var.
@@ -101,7 +101,7 @@ export const tbody = style({})
 
 export const tr = style({
   borderBottom: `1px solid ${theme.stroke.primary}`,
-  transition: 'background-color 0.1s ease',
+  transition: animation.colorTransition,
   selectors: {
     'tbody &:hover': {
       backgroundColor: tableVars.rowHoverBackground.value,

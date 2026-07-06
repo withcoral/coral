@@ -1,51 +1,53 @@
 import classNames from 'classnames'
+import type { KeyboardEvent, ReactNode } from 'react'
 
 import * as styles from './table.css'
 
-type TableStyle = 'compact' | 'default'
+type TableVariant = 'compact' | 'default'
 
 interface TableProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
 }
 
 interface WrapperProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
-  style?: TableStyle
+  variant?: TableVariant
 }
 
 interface TableHeadProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
 }
 
 interface TableBodyProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
 }
 
 interface TableRowProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
   onClick?: () => void
 }
 
 interface TableHeaderCellProps {
   align?: 'center' | 'left' | 'right'
-  children?: React.ReactNode
+  children?: ReactNode
   className?: string
 }
 
 interface TableCellProps {
   align?: 'center' | 'left' | 'right'
-  children: React.ReactNode
+  children: ReactNode
   className?: string
   mono?: boolean
   title?: string
 }
 
-function Wrapper({ children, className, style: tableStyle = 'default' }: WrapperProps) {
+function Wrapper({ children, className, variant = 'default' }: WrapperProps) {
+  const tableStyle = variant
   return <div className={classNames(styles.wrapper({ tableStyle }), className)}>{children}</div>
 }
 
@@ -62,8 +64,22 @@ function Body({ children, className }: TableBodyProps) {
 }
 
 function Row({ children, className, onClick }: TableRowProps) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLTableRowElement>) => {
+    if (!onClick) return
+    if (event.key !== 'Enter' && event.key !== ' ') return
+
+    event.preventDefault()
+    onClick()
+  }
+
   return (
-    <tr className={classNames(styles.tr, className)} onClick={onClick}>
+    <tr
+      className={classNames(styles.tr, className)}
+      onClick={onClick}
+      onKeyDown={onClick ? handleKeyDown : undefined}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+    >
       {children}
     </tr>
   )
