@@ -1,5 +1,6 @@
 //! Staged WITH query planning helpers.
 
+use super::unwind::dynamic_unwind_variable_name;
 #[allow(
     clippy::allow_attributes,
     clippy::wildcard_imports,
@@ -1521,7 +1522,7 @@ fn collect_unwind_property_element_type(
     ))
 }
 
-fn literal_list_element_type_for_data_type(
+pub(super) fn literal_list_element_type_for_data_type(
     data_type: &str,
     path: impl Into<String>,
 ) -> Result<LiteralListElementType, CoreError> {
@@ -2394,6 +2395,6 @@ fn staged_static_label(label: &LabelExpression) -> bool {
     matches!(label, LabelExpression::Static(_))
 }
 
-fn stage_export_column(variable: &str) -> String {
+pub(super) fn stage_export_column(variable: &str) -> String {
     format!("{variable}_id")
 }
