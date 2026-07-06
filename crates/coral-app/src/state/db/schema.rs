@@ -54,6 +54,5 @@ pub(in crate::state::db) enum SourceSecretKeys {
     Table,
     WorkspaceId,
     SourceName,
-    Position,
     Key,
 }
