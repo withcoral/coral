@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.5.1](https://github.com/withcoral/coral/compare/v0.5.0...v0.5.1) (2026-07-01)
+
+
+### Features
+
+* **spec:** provide means of overriding projections.yaml ([#1418](https://github.com/withcoral/coral/issues/1418)) ([7a7437c](https://github.com/withcoral/coral/commit/7a7437cef9dd9238b3fe8fc338743c5fa50f7bec)), closes [#1028](https://github.com/withcoral/coral/issues/1028)
+
+
+### Bug Fixes
+
+* **app:** add workspace trace pruning store ([#1412](https://github.com/withcoral/coral/issues/1412)) ([d19e431](https://github.com/withcoral/coral/commit/d19e4313ac5e9adf01d474a1591a880e524747e5))
+* **app:** prune traces during workspace remove ([#1413](https://github.com/withcoral/coral/issues/1413)) ([a1276ba](https://github.com/withcoral/coral/commit/a1276baa788eb76bacfce3fc37d55c150e411d92))
+* **mcp:** surface SQL errors in tool content ([#1466](https://github.com/withcoral/coral/issues/1466)) ([edfcbf0](https://github.com/withcoral/coral/commit/edfcbf08b4d3cc0d5eff941d37d100ecdc12c54b))
+
+## [0.5.0](https://github.com/withcoral/coral/compare/v0.4.4...v0.5.0) (2026-07-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** support SQL query batches ([#1393](https://github.com/withcoral/coral/issues/1393))
+
+### Features
+
+* **api:** expose workspace lifecycle service ([#1404](https://github.com/withcoral/coral/issues/1404)) ([9c9509d](https://github.com/withcoral/coral/commit/9c9509d741ce00b19129fff9f3ac1339d0ec9ccf))
+* **app:** persist workspace state ([#1461](https://github.com/withcoral/coral/issues/1461)) ([fd871aa](https://github.com/withcoral/coral/commit/fd871aac79cb22fb0effd8ca30165e2111c0ebae))
+* **app:** read and select MCP startup query history ([#1394](https://github.com/withcoral/coral/issues/1394)) ([a1ff8bf](https://github.com/withcoral/coral/commit/a1ff8bf098d58b89ed044307cded5868741ec607))
+* **app:** record query provenance in traces ([#1389](https://github.com/withcoral/coral/issues/1389)) ([f58825f](https://github.com/withcoral/coral/commit/f58825f1c3a862c21b51d59fc440aa6f340fcb91))
+* **app:** validate workspace-scoped operations ([#1405](https://github.com/withcoral/coral/issues/1405)) ([353c9a4](https://github.com/withcoral/coral/commit/353c9a45e04ac4f27b71e9056df01bd2847fbeb6))
+* **cli:** add workspace selection commands ([#1406](https://github.com/withcoral/coral/issues/1406)) ([8d9f41b](https://github.com/withcoral/coral/commit/8d9f41be8217f8f48dd7dfa624813ab543253a12))
+* **cli:** pass trace-backed query examples to MCP ([#1391](https://github.com/withcoral/coral/issues/1391)) ([a20d9a3](https://github.com/withcoral/coral/commit/a20d9a367bd7c4200eab993d8e38f6228b24049e))
+* **engine:** surface query execution provenance ([#1373](https://github.com/withcoral/coral/issues/1373)) ([4621c89](https://github.com/withcoral/coral/commit/4621c89633f221b214a6dfcc6a64137e006322be))
+* **mcp:** render supplied query examples at initialize ([#1390](https://github.com/withcoral/coral/issues/1390)) ([01d9238](https://github.com/withcoral/coral/commit/01d923846a3699a18df2a5659e6ea8f6d70107cc))
+* **mcp:** support SQL query batches ([#1393](https://github.com/withcoral/coral/issues/1393)) ([60c38d8](https://github.com/withcoral/coral/commit/60c38d8eae6fe4c61a61449fd7a8805699bb78bb))
+* **mcp:** surface selected workspace context ([#1408](https://github.com/withcoral/coral/issues/1408)) ([6f11c47](https://github.com/withcoral/coral/commit/6f11c478da1905a6e5bb828c18f4f7954617b861))
+* **reef:** add protobuf codegen ([#1384](https://github.com/withcoral/coral/issues/1384)) ([012e34f](https://github.com/withcoral/coral/commit/012e34fcc75e55bf215383006f2c701a87588fb8))
+* **sources/core/cloudwatch_logs:** support log stream array filters ([#1417](https://github.com/withcoral/coral/issues/1417)) ([d03c53d](https://github.com/withcoral/coral/commit/d03c53d251951611ecf93aec3dcdac5fbce26cc2))
+* **ui:** add reef frontend shell ([#1377](https://github.com/withcoral/coral/issues/1377)) ([dbce77f](https://github.com/withcoral/coral/commit/dbce77f443bddde1e076e9a0886ddf7400568812))
+
+
+### Bug Fixes
+
+* **app:** harden workspace deletion rollback ([#1409](https://github.com/withcoral/coral/issues/1409)) ([0919ea7](https://github.com/withcoral/coral/commit/0919ea7b3e92c0c59b9873f11996b69f9a354699))
+* **app:** make source re-add atomic ([#1196](https://github.com/withcoral/coral/issues/1196)) ([54b214c](https://github.com/withcoral/coral/commit/54b214cf99fbd1db1610938326df252c7a9419ea))
+* **mcp:** harden workspace source instructions ([#1410](https://github.com/withcoral/coral/issues/1410)) ([ede1808](https://github.com/withcoral/coral/commit/ede1808a2204388999fd3a51c2e3f789223f655b))
+* **sources/core/cloudwatch_metrics:** expose request filters ([#1422](https://github.com/withcoral/coral/issues/1422)) ([542f3ca](https://github.com/withcoral/coral/commit/542f3cac5c38e50f22cd933695dc93d61a2ed73b))
+
 ## [0.4.4](https://github.com/withcoral/coral/compare/v0.4.3...v0.4.4) (2026-06-22)
 
 

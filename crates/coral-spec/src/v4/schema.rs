@@ -12,13 +12,19 @@ use crate::{AuthSpec, HeaderSpec};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "Coral DSL v4 Source Manifest")]
 struct V4SourceManifestSchema {
+    #[schemars(extend("const" = 4))]
     dsl_version: u32,
+    #[schemars(length(min = 1))]
     name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required)]
     description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(inner(length(min = 1)))]
     test_queries: Vec<String>,
+    #[schemars(length(min = 1))]
     surfaces: Vec<V4SurfaceSchema>,
 }
 
@@ -31,17 +37,29 @@ enum V4SurfaceSchema {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("oneOf" = [{ "required": ["url"] }, { "required": ["file"] }]))]
 struct V4OpenApiSurfaceSchema {
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
     namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, pattern(r"^https://"))]
     url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
     file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, length(min = 1))]
     base_url: Option<String>,
     #[serde(default)]
     auth: AuthSpec,
@@ -54,10 +72,18 @@ struct V4OpenApiSurfaceSchema {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct V4McpSurfaceSchema {
+    #[schemars(pattern(r"^[a-z][a-z0-9_]*$"))]
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        required,
+        length(min = 1),
+        pattern(r"^[a-z][a-z0-9_]*$"),
+        description = "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
+    )]
     namespace_suffix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(required, extend("propertyNames" = { "minLength": 1 }))]
     inputs: Option<BTreeMap<String, V4InputSpecSchema>>,
     server: McpServerSpec,
 }
@@ -104,154 +130,14 @@ fn post_process_schema(schema: &mut Value) {
         "$id".to_string(),
         Value::String("https://coral.local/source_manifest_v4.schema.json".to_string()),
     );
-    root.insert(
-        "title".to_string(),
-        Value::String("Coral DSL v4 Source Manifest".to_string()),
-    );
     root.entry("$schema".to_string()).or_insert_with(|| {
         Value::String("https://json-schema.org/draft/2020-12/schema".to_string())
     });
-
-    if let Some(properties) = root.get_mut("properties").and_then(Value::as_object_mut) {
-        post_process_root_properties(properties);
-    }
 
     let Some(defs) = root.get_mut("$defs").and_then(Value::as_object_mut) else {
         return;
     };
     post_process_flattened_value_source_defs(defs);
-    if let Some(surface_schema) = defs.get_mut("V4SurfaceSchema") {
-        post_process_surface_variants(surface_schema);
-        return;
-    }
-    let Some(openapi_surface) = defs
-        .get_mut("V4OpenApiSurfaceSchema")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    openapi_surface.insert(
-        "oneOf".to_string(),
-        json!([{ "required": ["url"] }, { "required": ["file"] }]),
-    );
-    if let Some(properties) = openapi_surface
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
-            url.insert("type".to_string(), json!("string"));
-            url.insert("pattern".to_string(), json!("^https://"));
-        }
-        if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
-            file.insert("type".to_string(), json!("string"));
-            file.insert("minLength".to_string(), json!(1));
-        }
-        post_process_surface_inputs(properties);
-        if let Some(base_url) = properties
-            .get_mut("base_url")
-            .and_then(Value::as_object_mut)
-        {
-            base_url.insert("type".to_string(), json!("string"));
-            base_url.insert("minLength".to_string(), json!(1));
-        }
-    }
-
-    let Some(mcp_surface) = defs
-        .get_mut("V4McpSurfaceSchema")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    if let Some(properties) = mcp_surface
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-    {
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        post_process_surface_inputs(properties);
-    }
-}
-
-fn post_process_root_properties(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(dsl_version) = properties
-        .get_mut("dsl_version")
-        .and_then(Value::as_object_mut)
-    {
-        dsl_version.insert("const".to_string(), json!(4));
-    }
-    if let Some(name) = properties.get_mut("name").and_then(Value::as_object_mut) {
-        name.insert("minLength".to_string(), json!(1));
-    }
-    if let Some(description) = properties
-        .get_mut("description")
-        .and_then(Value::as_object_mut)
-    {
-        description.insert("type".to_string(), json!("string"));
-    }
-    if let Some(test_queries) = properties
-        .get_mut("test_queries")
-        .and_then(Value::as_object_mut)
-        && let Some(items) = test_queries.get_mut("items").and_then(Value::as_object_mut)
-    {
-        items.insert("minLength".to_string(), json!(1));
-    }
-    if let Some(surfaces) = properties
-        .get_mut("surfaces")
-        .and_then(Value::as_object_mut)
-    {
-        surfaces.insert("minItems".to_string(), json!(1));
-    }
-}
-
-fn post_process_surface_variants(surface_schema: &mut Value) {
-    let Some(variants) = surface_schema
-        .get_mut("oneOf")
-        .and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-    for variant in variants {
-        let Some(variant) = variant.as_object_mut() else {
-            continue;
-        };
-        let surface_type = variant
-            .get("properties")
-            .and_then(|value| value.get("type"))
-            .and_then(|value| value.get("const"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string);
-        if matches!(surface_type.as_deref(), Some("openapi")) {
-            variant.insert(
-                "oneOf".to_string(),
-                json!([{ "required": ["url"] }, { "required": ["file"] }]),
-            );
-        }
-        let Some(properties) = variant.get_mut("properties").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        post_process_surface_id(properties);
-        post_process_surface_namespace_suffix(properties);
-        post_process_surface_inputs(properties);
-        if let Some("openapi") = surface_type.as_deref() {
-            if let Some(url) = properties.get_mut("url").and_then(Value::as_object_mut) {
-                url.insert("type".to_string(), json!("string"));
-                url.insert("pattern".to_string(), json!("^https://"));
-            }
-            if let Some(file) = properties.get_mut("file").and_then(Value::as_object_mut) {
-                file.insert("type".to_string(), json!("string"));
-                file.insert("minLength".to_string(), json!(1));
-            }
-            if let Some(base_url) = properties
-                .get_mut("base_url")
-                .and_then(Value::as_object_mut)
-            {
-                base_url.insert("type".to_string(), json!("string"));
-                base_url.insert("minLength".to_string(), json!(1));
-            }
-        }
-    }
 }
 
 fn post_process_flattened_value_source_defs(defs: &mut serde_json::Map<String, Value>) {
@@ -305,50 +191,27 @@ fn compose_flattened_value_source_def(
     *definition = replacement;
 }
 
-fn post_process_surface_id(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(id) = properties.get_mut("id").and_then(Value::as_object_mut) {
-        id.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
-    }
-}
-
-fn post_process_surface_namespace_suffix(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(namespace_suffix) = properties
-        .get_mut("namespace_suffix")
-        .and_then(Value::as_object_mut)
-    {
-        namespace_suffix.insert("type".to_string(), json!("string"));
-        namespace_suffix.insert(
-            "description".to_string(),
-            json!(
-                "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>."
-            ),
-        );
-        namespace_suffix.insert("minLength".to_string(), json!(1));
-        namespace_suffix.insert("pattern".to_string(), json!("^[a-z][a-z0-9_]*$"));
-    }
-}
-
-fn post_process_surface_inputs(properties: &mut serde_json::Map<String, Value>) {
-    if let Some(inputs) = properties.get_mut("inputs").and_then(Value::as_object_mut) {
-        inputs.insert("type".to_string(), json!("object"));
-        inputs.insert("propertyNames".to_string(), json!({ "minLength": 1 }));
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use jsonschema::JSONSchema;
+    use jsonschema::Validator;
     use serde_json::Value as JsonValue;
 
     use super::generated_v4_source_manifest_schema;
     use crate::parse_source_manifest_yaml;
 
-    fn validator() -> JSONSchema {
-        JSONSchema::compile(&generated_v4_source_manifest_schema()).expect("schema compiles")
+    fn validator() -> Validator {
+        jsonschema::validator_for(&generated_v4_source_manifest_schema()).expect("schema compiles")
     }
 
     fn manifest_json(raw: &str) -> JsonValue {
         serde_yaml::from_str(raw).expect("yaml parses as json value")
+    }
+
+    fn validation_errors(validator: &Validator, manifest: &JsonValue) -> Vec<String> {
+        validator
+            .iter_errors(manifest)
+            .map(|error| error.to_string())
+            .collect()
     }
 
     #[test]
@@ -358,10 +221,13 @@ mod tests {
                 .join("../../sources/core-v4/github_v4/manifest.yaml"),
         )
         .expect("core v4 fixture");
-        if let Err(errors) = validator().validate(&manifest_json(&raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept core v4 fixture: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(&raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept core v4 fixture: {errors:?}"
+        );
         parse_source_manifest_yaml(&raw).expect("parser accepts core v4 fixture");
     }
 
@@ -386,10 +252,13 @@ surfaces:
         key: MCP_TOKEN
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept MCP surface: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept MCP surface: {errors:?}"
+        );
         parse_source_manifest_yaml(raw).expect("parser accepts MCP surface");
     }
 
@@ -427,10 +296,13 @@ surfaces:
         key: HTTP_TOKEN
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept flattened MCP value sources: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept flattened MCP value sources: {errors:?}"
+        );
         parse_source_manifest_yaml(raw).expect("parser accepts flattened MCP value sources");
     }
 
@@ -448,14 +320,14 @@ surfaces:
                 "name: demo\ndsl_version: 4\n{field}surfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n"
             );
             assert!(
-                validator().validate(&manifest_json(&raw)).is_err(),
+                !validator().is_valid(&manifest_json(&raw)),
                 "field should be rejected: {field}"
             );
         }
 
         let raw = "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n    url: https://example.com/openapi.yaml\n    sha256: 0000000000000000000000000000000000000000000000000000000000000000\n";
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "surface sha256 should be rejected"
         );
     }
@@ -474,7 +346,7 @@ surfaces:
                 "name: demo\ndsl_version: 4\nsurfaces:\n  - id: rest\n    type: openapi\n{surface_fields}"
             );
             assert!(
-                validator().validate(&manifest_json(&raw)).is_err(),
+                !validator().is_valid(&manifest_json(&raw)),
                 "explicit null should be rejected: {surface_fields}"
             );
         }
@@ -485,7 +357,7 @@ surfaces:
         let raw = "name: demo\ndsl_version: 4\nsurfaces: []\n";
 
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "empty surfaces should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw).expect_err("parser should reject empty surfaces");
@@ -508,10 +380,13 @@ surfaces:
       command: demo-mcp-server
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept one default relation namespace: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept one default relation namespace: {errors:?}"
+        );
         parse_source_manifest_yaml(raw)
             .expect("parser should accept one missing multi-surface namespace");
     }
@@ -532,10 +407,13 @@ surfaces:
       command: demo-mcp-server
 ";
 
-        if let Err(errors) = validator().validate(&manifest_json(raw)) {
-            let errors = errors.map(|error| error.to_string()).collect::<Vec<_>>();
-            panic!("generated schema should accept this parser-owned invariant: {errors:?}");
-        }
+        let validator = validator();
+        let manifest = manifest_json(raw);
+        let errors = validation_errors(&validator, &manifest);
+        assert!(
+            errors.is_empty(),
+            "generated schema should accept this parser-owned invariant: {errors:?}"
+        );
         parse_source_manifest_yaml(raw)
             .expect_err("parser should reject multiple missing multi-surface namespaces");
     }
@@ -553,7 +431,7 @@ surfaces:
 ";
 
         assert!(
-            validator().validate(&manifest_json(raw)).is_err(),
+            !validator().is_valid(&manifest_json(raw)),
             "mixed-case namespace_suffix should be rejected by generated schema"
         );
         parse_source_manifest_yaml(raw)

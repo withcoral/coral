@@ -32,8 +32,12 @@ pub mod metrics;
 pub(crate) mod service;
 
 use crate::bootstrap::AppError;
+use crate::workspaces::WorkspaceName;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+pub(crate) use local_store::{
+    TraceQueryHistoryEntry, TraceQueryTableFunctionUsage, TraceQueryTableUsage, TraceStoreError,
+};
 
 static INIT: OnceLock<Result<TracingInitState, String>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
@@ -43,6 +47,10 @@ static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
 const METRICS_INTERVAL: Duration = Duration::from_secs(5);
 const OTLP_TRACE_DENIED_TARGETS: &[&str] = &["coral.http.body", "coral.mcp.body"];
 const LOCAL_TRACE_EXCLUDED_RPC_SERVICES: &[&str] = &["coral.v1.TraceService"];
+pub(crate) const QUERY_TRACE_SOURCES_ATTR: &str = "coral.query.sources";
+pub(crate) const QUERY_TRACE_TABLES_ATTR: &str = "coral.query.tables";
+pub(crate) const QUERY_TRACE_TABLE_FUNCTIONS_ATTR: &str = "coral.query.table_functions";
+pub(crate) const WORKSPACE_SPAN_ATTRIBUTE: &str = "workspace";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstalledLocalTraceStore {
@@ -263,6 +271,16 @@ fn configured_local_trace_store(
         .map(|dir| InstalledLocalTraceStore::new(dir, config.trace_history.retention()))
 }
 
+pub(crate) async fn delete_workspace_traces(
+    trace_store_dir: PathBuf,
+    workspace_name: &WorkspaceName,
+) -> Result<usize, String> {
+    local_store::TraceStore::new(trace_store_dir)
+        .delete_traces_for_workspace(workspace_name.as_str().to_string())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn telemetry_resource(service_name: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
@@ -307,7 +325,14 @@ fn add_local_trace_exporter(
         build_trace_targets(DEFAULT_LOCAL_TRACE_FILTER, DEFAULT_LOCAL_TRACE_FILTER);
     let exporter = TargetFilteringSpanExporter::new(exporter, internal_trace_targets)
         .excluding_rpc_services(LOCAL_TRACE_EXCLUDED_RPC_SERVICES);
-    Ok(builder.with_span_processor(BatchSpanProcessor::builder(exporter).build()))
+    Ok(builder.with_simple_exporter(exporter))
+}
+
+pub(crate) fn list_local_query_history(
+    dir: PathBuf,
+    retention: Duration,
+) -> Result<Vec<TraceQueryHistoryEntry>, TraceStoreError> {
+    local_store::TraceStore::with_retention(dir, retention).list_query_history_sync()
 }
 
 fn build_otlp_logger_provider(

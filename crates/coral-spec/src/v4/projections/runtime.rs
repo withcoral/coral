@@ -9,15 +9,12 @@ use crate::{
 };
 
 use super::model::{Projection, SqlInputExposure};
-use super::pagination::{pagination_owns_input, pagination_query_param_names};
 
 pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     projection
         .inputs
         .iter()
         .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
-        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .map(|input| FilterSpec {
             name: input.name.clone(),
             data_type: manifest_data_type_name(input.data_type).to_string(),
@@ -30,12 +27,10 @@ pub fn projection_filter_specs(projection: &Projection) -> Vec<FilterSpec> {
 }
 
 pub fn projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArgSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     projection
         .inputs
         .iter()
         .filter(|input| input.sql_exposure == SqlInputExposure::FunctionArg)
-        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .map(|input| TableFunctionArgSpec {
             name: input.name.clone(),
             required: input.required,
@@ -64,7 +59,6 @@ pub fn mcp_projection_arg_specs(projection: &Projection) -> Vec<TableFunctionArg
 }
 
 pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut columns = projection
         .columns
         .iter()
@@ -88,7 +82,6 @@ pub fn projection_column_specs(projection: &Projection) -> Vec<ColumnSpec> {
             .inputs
             .iter()
             .filter(|input| input.sql_exposure == SqlInputExposure::Filter)
-            .filter(|input| !pagination_owns_input(input, &pagination_query_params))
             .filter(|input| !existing.contains(&input.name))
             .map(|input| ColumnSpec {
                 name: input.name.clone(),
@@ -125,7 +118,6 @@ pub fn request_spec_for_projection(
             projection.name
         )));
     };
-    let pagination_query_params = pagination_query_param_names(&projection.pagination);
     let mut path = rest.path_template.clone();
     for input in &projection.inputs {
         if input.source_location == IrInputLocation::Path {
@@ -145,7 +137,6 @@ pub fn request_spec_for_projection(
         .inputs
         .iter()
         .filter(|input| input.source_location == IrInputLocation::Query)
-        .filter(|input| !pagination_owns_input(input, &pagination_query_params))
         .filter_map(|input| {
             let value = match input.sql_exposure {
                 SqlInputExposure::Filter => crate::ValueSourceSpec::Filter {

@@ -16,7 +16,7 @@
 AGENTS.md @withcoral/core-maintainers
 
 # User docs.
-/docs/ @withcoral/docs
+/apps/docs/ @withcoral/docs
 
 # Sources
 /sources/community/ @jsummerfield

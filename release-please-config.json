@@ -9,7 +9,10 @@
   "packages": {
     ".": {
       "package-name": "coral",
-      "extra-files": ["Cargo.toml"],
+      "extra-files": [
+        "Cargo.toml",
+        { "type": "json", "path": "apps/desktop/package.json", "jsonpath": "$.version" }
+      ],
       "exclude-paths": ["sources/community", "sources/core-v4"]
     }
   },

@@ -603,6 +603,7 @@ fn validate_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. }
             if !known_filters.contains(key) =>
@@ -756,6 +757,7 @@ fn validate_arg_value_source(
         ValueSourceSpec::Filter { key, .. }
         | ValueSourceSpec::FilterInt { key, .. }
         | ValueSourceSpec::FilterBool { key, .. }
+        | ValueSourceSpec::FilterStringArray { key, .. }
         | ValueSourceSpec::FilterSplit { key, .. }
         | ValueSourceSpec::FilterSplitInt { key, .. } => {
             return Err(ManifestError::validation(format!(

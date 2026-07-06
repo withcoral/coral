@@ -1,11 +1,8 @@
 use std::collections::HashSet;
 
 use crate::PaginationSpec;
-use crate::v4::ir::IrInputLocation;
 
-use super::model::ProjectionInput;
-
-pub(super) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
+pub(in crate::v4) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashSet<&str> {
     let mut names = HashSet::new();
     if let Some(name) = pagination.page_param.as_deref() {
         names.insert(name);
@@ -22,12 +19,4 @@ pub(super) fn pagination_query_param_names(pagination: &PaginationSpec) -> HashS
         names.insert(name);
     }
     names
-}
-
-pub(super) fn pagination_owns_input(
-    input: &ProjectionInput,
-    pagination_query_params: &HashSet<&str>,
-) -> bool {
-    input.source_location == IrInputLocation::Query
-        && pagination_query_params.contains(input.wire_name.as_str())
 }

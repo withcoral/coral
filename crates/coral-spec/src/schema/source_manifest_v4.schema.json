@@ -48,8 +48,8 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "namespace_suffix": {
-              "type": "string",
               "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "type": "string",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },
@@ -127,8 +127,8 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "namespace_suffix": {
-              "type": "string",
               "description": "Source-relative relation namespace suffix. When present, Coral exposes the surface as <source_name>_<namespace_suffix>; when omitted, the surface uses <source_name>.",
+              "type": "string",
               "minLength": 1,
               "pattern": "^[a-z][a-z0-9_]*$"
             },
@@ -404,6 +404,32 @@
             "from": {
               "type": "string",
               "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
             }
           },
           "required": [
@@ -759,6 +785,32 @@
             "from": {
               "type": "string",
               "const": "filter_bool"
+            }
+          },
+          "required": [
+            "from",
+            "key"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "default": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "default": null
+            },
+            "from": {
+              "type": "string",
+              "const": "filter_string_array"
             }
           },
           "required": [

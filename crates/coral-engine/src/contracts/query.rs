@@ -369,6 +369,149 @@ impl QueryRuntimeContext {
     }
 }
 
+/// Named SQL query parameters, keyed by parameter name without the `$`
+/// prefix: binding `owner` supplies `$owner` in the statement.
+///
+/// Values are typed Coral scalar values. Callers should treat values as data,
+/// never SQL text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QueryParameters {
+    values: BTreeMap<String, QueryParameterValue>,
+}
+
+impl QueryParameters {
+    /// Builds an empty parameter set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true when no parameters are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Inserts one named parameter value and returns the previous value.
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        value: QueryParameterValue,
+    ) -> Option<QueryParameterValue> {
+        self.values.insert(name.into(), value)
+    }
+
+    /// Iterates over parameter names and values in deterministic order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &QueryParameterValue)> {
+        self.values.iter()
+    }
+
+    /// Iterates over parameter names in deterministic order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.values.keys()
+    }
+}
+
+impl From<BTreeMap<String, QueryParameterValue>> for QueryParameters {
+    fn from(values: BTreeMap<String, QueryParameterValue>) -> Self {
+        Self { values }
+    }
+}
+
+impl<const N: usize> From<[(String, QueryParameterValue); N]> for QueryParameters {
+    fn from(values: [(String, QueryParameterValue); N]) -> Self {
+        Self {
+            values: BTreeMap::from(values),
+        }
+    }
+}
+
+impl FromIterator<(String, QueryParameterValue)> for QueryParameters {
+    fn from_iter<T: IntoIterator<Item = (String, QueryParameterValue)>>(iter: T) -> Self {
+        Self {
+            values: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// Scalar types supported by named SQL query parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum QueryParameterType {
+    /// UTF-8 string.
+    String,
+    /// 64-bit signed integer.
+    Integer,
+    /// 64-bit floating point value.
+    Float,
+    /// Boolean.
+    Boolean,
+}
+
+/// One typed SQL query parameter value.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum QueryParameterValue {
+    /// UTF-8 string value, or a typed string NULL.
+    String(Option<String>),
+    /// 64-bit signed integer value, or a typed integer NULL.
+    Integer(Option<i64>),
+    /// 64-bit floating point value, or a typed float NULL.
+    Float(Option<f64>),
+    /// Boolean value, or a typed boolean NULL.
+    Boolean(Option<bool>),
+}
+
+impl QueryParameterValue {
+    /// Builds a non-null string parameter.
+    #[must_use]
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::String(Some(value.into()))
+    }
+
+    /// Builds a typed string NULL parameter.
+    #[must_use]
+    pub fn null_string() -> Self {
+        Self::String(None)
+    }
+
+    /// Builds a non-null integer parameter.
+    #[must_use]
+    pub fn integer(value: i64) -> Self {
+        Self::Integer(Some(value))
+    }
+
+    /// Builds a typed integer NULL parameter.
+    #[must_use]
+    pub fn null_integer() -> Self {
+        Self::Integer(None)
+    }
+
+    /// Builds a non-null float parameter.
+    #[must_use]
+    pub fn float(value: f64) -> Self {
+        Self::Float(Some(value))
+    }
+
+    /// Builds a typed float NULL parameter.
+    #[must_use]
+    pub fn null_float() -> Self {
+        Self::Float(None)
+    }
+
+    /// Builds a non-null boolean parameter.
+    #[must_use]
+    pub fn boolean(value: bool) -> Self {
+        Self::Boolean(Some(value))
+    }
+
+    /// Builds a typed boolean NULL parameter.
+    #[must_use]
+    pub fn null_boolean() -> Self {
+        Self::Boolean(None)
+    }
+}
+
 /// Owned runtime-build inputs needed while compiling and registering sources.
 #[derive(Default)]
 pub struct QueryRuntimeConfig {
@@ -680,12 +823,17 @@ pub struct QueryExecution {
     arrow_schema: Arc<Schema>,
     batches: Vec<RecordBatch>,
     row_count: usize,
+    provenance: QueryExecutionProvenance,
 }
 
 impl QueryExecution {
     #[must_use]
-    /// Builds a validated fully materialized query result.
-    pub fn new(arrow_schema: Arc<Schema>, batches: Vec<RecordBatch>) -> Self {
+    /// Builds a validated fully materialized query result with successful-execution provenance.
+    pub fn new(
+        arrow_schema: Arc<Schema>,
+        batches: Vec<RecordBatch>,
+        mut provenance: QueryExecutionProvenance,
+    ) -> Self {
         let schema = arrow_schema
             .fields()
             .iter()
@@ -701,11 +849,13 @@ impl QueryExecution {
             })
             .collect();
         let row_count = batches.iter().map(RecordBatch::num_rows).sum();
+        provenance.set_row_count(row_count);
         Self {
             schema,
             arrow_schema,
             batches,
             row_count,
+            provenance,
         }
     }
 
@@ -731,6 +881,162 @@ impl QueryExecution {
     /// Returns the total number of rows across all batches.
     pub fn row_count(&self) -> usize {
         self.row_count
+    }
+
+    #[must_use]
+    /// Returns successful-execution provenance for this query result.
+    pub fn provenance(&self) -> &QueryExecutionProvenance {
+        &self.provenance
+    }
+}
+
+/// Successful-execution provenance for one query result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryExecutionProvenance {
+    sql: String,
+    sources: Vec<String>,
+    tables: Vec<QueryTableUsage>,
+    table_functions: Vec<QueryTableFunctionUsage>,
+    row_count: usize,
+}
+
+impl QueryExecutionProvenance {
+    #[must_use]
+    /// Builds one provenance entry for a planned query.
+    ///
+    /// [`QueryExecution::new`] stamps the final row count from the materialized
+    /// result batches.
+    pub fn new(
+        sql: impl Into<String>,
+        sources: Vec<String>,
+        tables: Vec<QueryTableUsage>,
+        table_functions: Vec<QueryTableFunctionUsage>,
+    ) -> Self {
+        Self {
+            sql: sql.into(),
+            sources,
+            tables,
+            table_functions,
+            row_count: 0,
+        }
+    }
+
+    #[must_use]
+    /// Returns the SQL text that was executed.
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    #[must_use]
+    /// Returns the installed source names used by the query.
+    pub fn sources(&self) -> &[String] {
+        &self.sources
+    }
+
+    #[must_use]
+    /// Returns source tables used by the query.
+    pub fn tables(&self) -> &[QueryTableUsage] {
+        &self.tables
+    }
+
+    #[must_use]
+    /// Returns source-scoped table functions used by the query.
+    pub fn table_functions(&self) -> &[QueryTableFunctionUsage] {
+        &self.table_functions
+    }
+
+    #[must_use]
+    /// Returns the total number of rows across all result batches.
+    pub fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub(crate) fn set_row_count(&mut self, row_count: usize) {
+        self.row_count = row_count;
+    }
+}
+
+/// One source table referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableUsage {
+    source: String,
+    schema: String,
+    table: String,
+}
+
+impl QueryTableUsage {
+    #[must_use]
+    /// Builds one source table usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            table: table_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the table name within the SQL schema.
+    pub fn table_name(&self) -> &str {
+        &self.table
+    }
+}
+
+/// One source-scoped table function referenced by a successful query.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryTableFunctionUsage {
+    source: String,
+    schema: String,
+    function: String,
+}
+
+impl QueryTableFunctionUsage {
+    #[must_use]
+    /// Builds one source-scoped table function usage entry.
+    pub fn new(
+        source_name: impl Into<String>,
+        schema_name: impl Into<String>,
+        function_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source_name.into(),
+            schema: schema_name.into(),
+            function: function_name.into(),
+        }
+    }
+
+    #[must_use]
+    /// Returns the installed source name that owns this table function.
+    pub fn source_name(&self) -> &str {
+        &self.source
+    }
+
+    #[must_use]
+    /// Returns the SQL schema name for this table function.
+    pub fn schema_name(&self) -> &str {
+        &self.schema
+    }
+
+    #[must_use]
+    /// Returns the function name within the SQL schema.
+    pub fn function_name(&self) -> &str {
+        &self.function
     }
 }
 
