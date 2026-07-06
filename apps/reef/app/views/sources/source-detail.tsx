@@ -207,7 +207,7 @@ function SourceDetailDialogContent({
           {icon ? (
             <img src={icon} alt="" className={styles.headerLogoImg} />
           ) : (
-            <Icon name="Plug" size="22" color="secondary" />
+            <Icon name="Plug" size="20" color="secondary" />
           )}
         </div>
         <div className={styles.headerText}>

@@ -212,7 +212,7 @@ function SourceInstallDialogContent({
           {icon ? (
             <img alt="" className={styles.headerLogoImg} src={icon} />
           ) : (
-            <Icon name="Plug" size="22" color="secondary" />
+            <Icon name="Plug" size="20" color="secondary" />
           )}
         </div>
         <div className={styles.headerText}>

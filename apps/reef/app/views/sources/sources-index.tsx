@@ -147,7 +147,7 @@ export function SourcesIndex() {
 
         {!loading && !error && allEntries.length === 0 ? (
           <div className={styles.emptyState}>
-            <Icon name="Plug" size="24" color="tertiary" />
+            <Icon name="Plug" size="20" color="tertiary" />
             <Typography.Body variant="secondary">
               No sources available. Check the Coral build for a populated catalog.
             </Typography.Body>
