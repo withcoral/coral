@@ -18,7 +18,7 @@ use crate::search::catalog::sqlite_index::{
     CatalogIndexSnapshot, CatalogRefreshResult, CatalogSearchHits, SqliteCatalogIndex,
 };
 use crate::state::AppStateLayout;
-use crate::storage::fs::{create_new_file_private, ensure_private_dir};
+use crate::storage::fs::create_new_file_private;
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 1;
@@ -178,10 +178,6 @@ impl SqliteSearchError {
 }
 
 fn ensure_sqlite_file(path: &Path) -> Result<(), SqliteSearchError> {
-    if let Some(parent) = path.parent() {
-        ensure_private_dir(parent)?;
-    }
-
     match create_new_file_private(path) {
         Ok(file) => {
             drop(file);
