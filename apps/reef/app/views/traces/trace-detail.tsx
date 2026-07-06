@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import classNames from 'classnames'
 
-import { ScrollArea } from '@/wax/components'
-import * as Button from '@/wax/components/button'
+import { Button, ScrollArea } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { Typography } from '@/wax/components/typography'

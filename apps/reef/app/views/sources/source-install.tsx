@@ -12,7 +12,7 @@ import {
 import { Container as ButtonContainer } from '@/wax/components/button/container'
 import { Icon as ButtonIcon } from '@/wax/components/button/icon'
 import { Text as ButtonText } from '@/wax/components/button/text'
-import * as Dialog from '@/wax/components/dialog'
+import { Dialog } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { addToast } from '@/wax/components/toast'

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import * as Button from '@/wax/components/button'
+import { Button } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import { TextInput } from '@/wax/components/inputs/text'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'

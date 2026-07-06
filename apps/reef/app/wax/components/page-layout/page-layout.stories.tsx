@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { createMemoryRouter, RouterProvider } from 'react-router'
 
-import * as Button from '@/wax/components/button'
+import { Button } from '@/wax/components'
 import { Typography } from '@/wax/components/typography'
 
 import { CopyLinkButton, PageLayout, TopBar } from './page-layout'

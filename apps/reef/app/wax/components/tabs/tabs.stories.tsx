@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { fn } from 'storybook/test'
 
-import * as Tabs from './index'
+import { Tabs } from '@/wax/components'
 
 const meta: Meta = {
   parameters: {
