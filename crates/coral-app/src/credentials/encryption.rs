@@ -21,7 +21,9 @@ use crate::storage::fs as storage_fs;
 use crate::storage::fs::FileLock;
 use crate::workspaces::WorkspaceName;
 
+/// Envelope encryption algorithm identifier persisted with encrypted documents.
 pub(crate) const CREDENTIAL_DOCUMENT_ALGORITHM: &str = "AES-256-GCM";
+/// AAD layout version persisted with encrypted credential and identity documents.
 pub(crate) const CREDENTIAL_DOCUMENT_AAD_VERSION: i64 = 1;
 
 const CREDENTIAL_DOCUMENT_VERSION: u32 = 1;
@@ -54,6 +56,7 @@ impl CredentialEncryptionKeyOrigin {
     }
 }
 
+/// Key-encryption key material used to wrap document-specific DEKs.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CredentialEncryptionKey {
     key_id: String,
@@ -83,14 +86,18 @@ impl CredentialEncryptionKey {
         }
     }
 
+    /// Stable identifier derived from the key material.
     pub(crate) fn key_id(&self) -> &str {
         self.key_id.as_str()
     }
 }
 
+/// Source of key-encryption keys for envelope-encrypted app documents.
 pub(crate) trait CredentialKeyProvider: Send + Sync {
+    /// Return the active KEK used for new writes and rewraps.
     fn active_key(&self) -> Result<CredentialEncryptionKey, CredentialsError>;
 
+    /// Resolve the KEK identified on an existing encrypted document.
     fn key(&self, key_id: &str) -> Result<CredentialEncryptionKey, CredentialsError>;
 }
 
@@ -491,21 +498,37 @@ impl CredentialEncryptionKeychainEntry {
     }
 }
 
+/// Envelope-encrypted document fields persisted by DB-backed secret stores.
+///
+/// The historical credential name is retained for existing call sites. Identity
+/// documents use the same field layout through [`EncryptedEnvelopeDocument`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EncryptedCredentialDocument {
+    /// AES-GCM ciphertext and authentication tag for the plaintext JSON body.
     pub(crate) ciphertext: Vec<u8>,
+    /// Nonce used to seal the plaintext document.
     pub(crate) nonce: Vec<u8>,
+    /// AES-GCM sealed document data-encryption key.
     pub(crate) wrapped_dek: Vec<u8>,
+    /// Nonce used to wrap the DEK.
     pub(crate) wrapped_dek_nonce: Vec<u8>,
+    /// Key-encryption-key identifier used to wrap the DEK.
     pub(crate) key_id: String,
+    /// Envelope encryption algorithm identifier.
     pub(crate) algorithm: String,
+    /// AAD layout version used for the document.
     pub(crate) aad_version: i64,
 }
 
+/// Shared envelope-encrypted document layout for credential and identity data.
+pub(crate) type EncryptedEnvelopeDocument = EncryptedCredentialDocument;
+
 #[derive(serde::Serialize, serde::Deserialize)]
-struct PlaintextCredentialDocument {
-    version: u32,
-    values: BTreeMap<String, String>,
+pub(crate) struct PlaintextCredentialDocument {
+    /// Plaintext credential document schema version.
+    pub(crate) version: u32,
+    /// Credential values serialized before envelope encryption.
+    pub(crate) values: BTreeMap<String, String>,
 }
 
 pub(crate) fn encrypt_credential_values(
@@ -514,43 +537,19 @@ pub(crate) fn encrypt_credential_values(
     values: &BTreeMap<String, String>,
     key_provider: &dyn CredentialKeyProvider,
 ) -> Result<EncryptedCredentialDocument, CredentialsError> {
-    let kek = key_provider.active_key()?;
-    let dek = Zeroizing::new(random_array::<KEY_LEN>()?);
-    let nonce = random_array::<NONCE_LEN>()?;
-    let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
-
     let plaintext = PlaintextCredentialDocument {
         version: CREDENTIAL_DOCUMENT_VERSION,
         values: values.clone(),
     };
-    let mut document_bytes = Zeroizing::new(
+    let document_bytes = Zeroizing::new(
         serde_json::to_vec(&plaintext)
             .map_err(|error| CredentialsError::Parse(error.to_string()))?,
     );
-    seal(
-        &*dek,
-        &nonce,
+    seal_envelope_document(
         credential_document_aad(workspace_name, source_name),
-        &mut document_bytes,
-    )?;
-
-    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
-    seal(
-        &kek.bytes,
-        &wrapped_dek_nonce,
-        credential_dek_aad(kek.key_id()),
-        &mut wrapped_dek,
-    )?;
-
-    Ok(EncryptedCredentialDocument {
-        ciphertext: std::mem::take(&mut *document_bytes),
-        nonce: nonce.to_vec(),
-        wrapped_dek: std::mem::take(&mut *wrapped_dek),
-        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: kek.key_id.clone(),
-        algorithm: CREDENTIAL_DOCUMENT_ALGORITHM.to_string(),
-        aad_version: CREDENTIAL_DOCUMENT_AAD_VERSION,
-    })
+        document_bytes,
+        key_provider,
+    )
 }
 
 pub(crate) fn decrypt_credential_values(
@@ -604,24 +603,7 @@ pub(crate) fn rewrap_credential_document(
             .map(Some);
     }
 
-    let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
-    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
-    seal(
-        &active_kek.bytes,
-        &wrapped_dek_nonce,
-        credential_dek_aad(active_kek.key_id()),
-        &mut wrapped_dek,
-    )?;
-
-    Ok(Some(EncryptedCredentialDocument {
-        ciphertext: document.ciphertext.clone(),
-        nonce: document.nonce.clone(),
-        wrapped_dek: std::mem::take(&mut *wrapped_dek),
-        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
-        key_id: active_kek.key_id.clone(),
-        algorithm: document.algorithm.clone(),
-        aad_version: document.aad_version,
-    }))
+    rewrap_dek(document, &active_kek, &dek)
 }
 
 fn decrypt_credential_document_bytes(
@@ -657,18 +639,26 @@ fn decrypt_credential_document_bytes(
     }
 }
 
-fn unwrap_dek(
+fn unwrap_current_dek(
     document: &EncryptedCredentialDocument,
     kek: &CredentialEncryptionKey,
 ) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
     let mut dek = Zeroizing::new(document.wrapped_dek.clone());
-    match open(
+    open(
         &kek.bytes,
         document.wrapped_dek_nonce.as_slice(),
         credential_dek_aad(&document.key_id),
         dek.as_mut_slice(),
-    ) {
-        Ok(dek_plaintext) => validate_dek_plaintext(dek_plaintext),
+    )
+    .and_then(validate_dek_plaintext)
+}
+
+fn unwrap_dek(
+    document: &EncryptedCredentialDocument,
+    kek: &CredentialEncryptionKey,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, CredentialsError> {
+    match unwrap_current_dek(document, kek) {
+        Ok(dek) => Ok(dek),
         Err(primary_error) => {
             let mut legacy_dek = Zeroizing::new(document.wrapped_dek.clone());
             match open(
@@ -698,6 +688,31 @@ fn validate_dek_plaintext(
     Ok(Zeroizing::new(dek))
 }
 
+fn rewrap_dek(
+    document: &EncryptedEnvelopeDocument,
+    active_kek: &CredentialEncryptionKey,
+    dek: &[u8; KEY_LEN],
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
+    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
+    seal(
+        &active_kek.bytes,
+        &wrapped_dek_nonce,
+        credential_dek_aad(active_kek.key_id()),
+        &mut wrapped_dek,
+    )?;
+
+    Ok(Some(EncryptedCredentialDocument {
+        ciphertext: document.ciphertext.clone(),
+        nonce: document.nonce.clone(),
+        wrapped_dek: std::mem::take(&mut *wrapped_dek),
+        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
+        key_id: active_kek.key_id.clone(),
+        algorithm: document.algorithm.clone(),
+        aad_version: document.aad_version,
+    }))
+}
+
 fn validate_document_metadata(
     document: &EncryptedCredentialDocument,
 ) -> Result<(), CredentialsError> {
@@ -716,7 +731,85 @@ fn validate_document_metadata(
     Ok(())
 }
 
-fn seal(
+/// Seal a serialized plaintext document with a random DEK and wrap that DEK.
+pub(crate) fn seal_envelope_document(
+    document_aad: Vec<u8>,
+    mut document_bytes: Zeroizing<Vec<u8>>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<EncryptedEnvelopeDocument, CredentialsError> {
+    let kek = key_provider.active_key()?;
+    let dek = Zeroizing::new(random_array::<KEY_LEN>()?);
+    let nonce = random_array::<NONCE_LEN>()?;
+    let wrapped_dek_nonce = random_array::<NONCE_LEN>()?;
+
+    seal(&*dek, &nonce, document_aad, &mut document_bytes)?;
+
+    let mut wrapped_dek = Zeroizing::new(dek.to_vec());
+    seal(
+        &kek.bytes,
+        &wrapped_dek_nonce,
+        credential_dek_aad(kek.key_id()),
+        &mut wrapped_dek,
+    )?;
+
+    Ok(EncryptedCredentialDocument {
+        ciphertext: std::mem::take(&mut *document_bytes),
+        nonce: nonce.to_vec(),
+        wrapped_dek: std::mem::take(&mut *wrapped_dek),
+        wrapped_dek_nonce: wrapped_dek_nonce.to_vec(),
+        key_id: kek.key_id.clone(),
+        algorithm: CREDENTIAL_DOCUMENT_ALGORITHM.to_string(),
+        aad_version: CREDENTIAL_DOCUMENT_AAD_VERSION,
+    })
+}
+
+/// Open a current-format envelope document with the supplied payload AAD.
+pub(crate) fn open_envelope_document(
+    document: &EncryptedEnvelopeDocument,
+    document_aad: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Zeroizing<Vec<u8>>, CredentialsError> {
+    validate_document_metadata(document)?;
+    let kek = key_provider.key(&document.key_id)?;
+    let dek = unwrap_current_dek(document, &kek)?;
+
+    let mut ciphertext = Zeroizing::new(document.ciphertext.clone());
+    open(
+        &*dek,
+        document.nonce.as_slice(),
+        document_aad,
+        ciphertext.as_mut_slice(),
+    )
+    .map(|plaintext| Zeroizing::new(plaintext.to_vec()))
+}
+
+/// Rewrap a current-format envelope document when its KEK is stale.
+pub(crate) fn rewrap_envelope_document(
+    document: &EncryptedEnvelopeDocument,
+    document_aad: Vec<u8>,
+    key_provider: &dyn CredentialKeyProvider,
+) -> Result<Option<EncryptedEnvelopeDocument>, CredentialsError> {
+    validate_document_metadata(document)?;
+    let old_kek = key_provider.key(&document.key_id)?;
+    let active_kek = key_provider.active_key()?;
+    if old_kek.key_id == active_kek.key_id {
+        return Ok(None);
+    }
+
+    let dek = unwrap_current_dek(document, &old_kek)?;
+    let mut document_probe = Zeroizing::new(document.ciphertext.clone());
+    open(
+        &*dek,
+        document.nonce.as_slice(),
+        document_aad,
+        document_probe.as_mut_slice(),
+    )?;
+
+    rewrap_dek(document, &active_kek, &dek)
+}
+
+/// Seal bytes in-place with AES-256-GCM and append the authentication tag.
+pub(crate) fn seal(
     key_bytes: &[u8],
     nonce_bytes: &[u8; NONCE_LEN],
     aad: Vec<u8>,
@@ -734,7 +827,8 @@ fn seal(
     .map_err(|_error| CredentialsError::Crypto("AES-256-GCM seal failed".to_string()))
 }
 
-fn open<'a>(
+/// Open AES-256-GCM bytes in-place and return the authenticated plaintext.
+pub(crate) fn open<'a>(
     key_bytes: &[u8],
     nonce_bytes: &[u8],
     aad: Vec<u8>,
@@ -752,7 +846,11 @@ fn open<'a>(
         .map_err(|_error| CredentialsError::Crypto("AES-256-GCM open failed".to_string()))
 }
 
-fn credential_document_aad(workspace_name: &WorkspaceName, source_name: &SourceName) -> Vec<u8> {
+/// Build AAD for a credential document payload.
+pub(crate) fn credential_document_aad(
+    workspace_name: &WorkspaceName,
+    source_name: &SourceName,
+) -> Vec<u8> {
     let aad_version = CREDENTIAL_DOCUMENT_AAD_VERSION.to_string();
     encode_aad_fields(
         "coral-credential-document",
@@ -790,7 +888,8 @@ fn legacy_credential_dek_aad(key_id: &str) -> Vec<u8> {
     format!("coral-credential-dek:v{CREDENTIAL_DOCUMENT_AAD_VERSION}:{key_id}").into_bytes()
 }
 
-fn encode_aad_fields(domain: &str, fields: &[&str]) -> Vec<u8> {
+/// Encode an AAD domain and ordered fields using length-prefixed values.
+pub(crate) fn encode_aad_fields(domain: &str, fields: &[&str]) -> Vec<u8> {
     let mut aad = Vec::new();
     aad.extend_from_slice(domain.as_bytes());
     aad.push(0);
@@ -802,7 +901,8 @@ fn encode_aad_fields(domain: &str, fields: &[&str]) -> Vec<u8> {
     aad
 }
 
-fn random_array<const N: usize>() -> Result<[u8; N], CredentialsError> {
+/// Generate a cryptographically secure random byte array.
+pub(crate) fn random_array<const N: usize>() -> Result<[u8; N], CredentialsError> {
     let mut bytes = [0_u8; N];
     SystemRandom::new().fill(&mut bytes).map_err(|_error| {
         CredentialsError::Crypto("secure random generation failed".to_string())
