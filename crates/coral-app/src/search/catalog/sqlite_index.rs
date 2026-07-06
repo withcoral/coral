@@ -52,6 +52,31 @@ impl SqliteCatalogIndex {
         clippy::unused_self,
         reason = "kept as an instance method so catalog provider can own index capability consistently"
     )]
+    pub(crate) fn projection_is_current(
+        &self,
+        connection: &Connection,
+        workspace_name: &WorkspaceName,
+        fingerprint: &str,
+    ) -> Result<bool, SqliteSearchError> {
+        Ok(catalog_fingerprint(connection, workspace_name)?.as_deref() == Some(fingerprint))
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as an instance method so catalog provider can own index capability consistently"
+    )]
+    pub(crate) fn document_count(
+        &self,
+        connection: &Connection,
+        workspace_name: &WorkspaceName,
+    ) -> Result<u32, SqliteSearchError> {
+        catalog_document_count(connection, workspace_name)
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as an instance method so catalog provider can own index capability consistently"
+    )]
     pub(crate) fn search(
         &self,
         connection: &Connection,
@@ -476,12 +501,16 @@ fn hit_from_row(
 ) -> rusqlite::Result<CatalogSearchHit> {
     let doc_kind_raw: String = row.get(1)?;
     let doc_kind = doc_kind_from_storage(&doc_kind_raw)?;
+    let surface_kind_raw: String = row.get(3)?;
+    let surface_kind = surface_kind_from_storage(&surface_kind_raw)?;
     let title_field: String = row.get(10)?;
     let qualified_name_field: String = row.get(11)?;
     let description_field: String = row.get(12)?;
     let searchable_text: String = row.get(13)?;
     let field_name: String = row.get(5)?;
     let surface_name: String = row.get(4)?;
+    let field_role_raw: String = row.get(6)?;
+    let field_role = field_role_from_storage(&field_role_raw)?;
     let matched_fields = matched_fields(
         terms,
         &[
@@ -498,27 +527,60 @@ fn hit_from_row(
         doc_id: row.get(0)?,
         doc_kind,
         source_name: row.get(2)?,
-        surface_kind: row.get(3)?,
+        surface_kind,
         surface_name,
         field_name,
-        field_role: row.get(6)?,
+        field_role,
         description: row.get(9)?,
         matched_fields,
         retrieval_score: base_score,
     })
 }
 
+fn surface_kind_from_storage(value: &str) -> rusqlite::Result<String> {
+    match value {
+        "" | "table" | "table_function" => Ok(value.to_string()),
+        _ => invalid_catalog_storage_value(3, "surface_kind", value),
+    }
+}
+
+fn field_role_from_storage(value: &str) -> rusqlite::Result<String> {
+    match value {
+        ""
+        | "table_column"
+        | "table_filter"
+        | "table_function_argument"
+        | "table_function_result_column" => Ok(value.to_string()),
+        _ => invalid_catalog_storage_value(6, "field_role", value),
+    }
+}
+
 fn doc_kind_from_storage(value: &str) -> rusqlite::Result<CatalogIndexDocumentKind> {
-    CatalogIndexDocumentKind::from_str(value).ok_or_else(|| {
-        rusqlite::Error::FromSqlConversionFailure(
-            1,
-            Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("unknown catalog search doc_kind '{value}'"),
-            )),
-        )
-    })
+    CatalogIndexDocumentKind::from_str(value)
+        .ok_or_else(|| invalid_catalog_storage_error(1, "doc_kind", value))
+}
+
+fn invalid_catalog_storage_value<T>(
+    column: usize,
+    field: &'static str,
+    value: &str,
+) -> rusqlite::Result<T> {
+    Err(invalid_catalog_storage_error(column, field, value))
+}
+
+fn invalid_catalog_storage_error(
+    column: usize,
+    field: &'static str,
+    value: &str,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unknown catalog search {field} '{value}'"),
+        )),
+    )
 }
 
 fn collect_hits(

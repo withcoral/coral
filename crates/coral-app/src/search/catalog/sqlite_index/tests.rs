@@ -1,4 +1,4 @@
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 use super::{
     CatalogIndexDocument, CatalogIndexDocumentKind, CatalogIndexSnapshot, SqliteCatalogIndex,
@@ -10,27 +10,34 @@ use crate::workspaces::WorkspaceName;
 #[test]
 fn refresh_and_search_catalog_metadata() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = catalog_index_snapshot();
 
-    let refresh = index
-        .refresh(&mut connection, &workspace, &snapshot)
+    let refresh = store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh catalog");
     assert!(refresh.refreshed);
     assert!(refresh.document_count > 0);
+    assert_eq!(
+        store
+            .catalog_document_count()
+            .expect("catalog document count"),
+        3
+    );
 
-    let second_refresh = index
-        .refresh(&mut connection, &workspace, &snapshot)
+    assert!(
+        store
+            .catalog_projection_is_current(&snapshot.fingerprint)
+            .expect("projection current")
+    );
+
+    let second_refresh = store
+        .refresh_catalog_projection(&snapshot)
         .expect("second refresh");
     assert!(!second_refresh.refreshed);
 
-    let hits = index
-        .search(
-            &connection,
-            &workspace,
+    let hits = store
+        .search_catalog(
             &[
                 "github".to_string(),
                 "deployments".to_string(),
@@ -57,22 +64,26 @@ fn refresh_and_search_catalog_metadata() {
 #[test]
 fn search_rejects_unknown_doc_kind_from_storage() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
-    index
-        .refresh(&mut connection, &workspace, &catalog_index_snapshot())
+    let store = catalog_store(&temp);
+    store
+        .refresh_catalog_projection(&catalog_index_snapshot())
         .expect("refresh catalog");
 
+    let connection = store.connect_for_test().expect("connect");
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = ON")
+        .expect("allow storage corruption");
     connection
         .execute(
             "UPDATE catalog_documents SET doc_kind = ?1 WHERE doc_id = ?2",
             ("mystery_kind", "catalog:function:github.search_deployments"),
         )
         .expect("corrupt doc_kind");
+    connection
+        .execute_batch("PRAGMA ignore_check_constraints = OFF")
+        .expect("restore constraint checks");
 
-    let Err(error) = index.search(&connection, &workspace, &["github".to_string()], 10) else {
+    let Err(error) = store.search_catalog(&["github".to_string()], 10) else {
         panic!("unknown doc_kind should fail search");
     };
     match error {
@@ -92,10 +103,33 @@ fn search_rejects_unknown_doc_kind_from_storage() {
 }
 
 #[test]
+fn storage_rejects_unknown_catalog_vocabularies() {
+    let temp = tempdir().expect("tempdir");
+    let store = catalog_store(&temp);
+    store
+        .refresh_catalog_projection(&catalog_index_snapshot())
+        .expect("refresh catalog");
+
+    let connection = store.connect_for_test().expect("connect");
+    connection
+        .execute(
+            "UPDATE catalog_documents SET surface_kind = ?1 WHERE doc_id = ?2",
+            ("function", "catalog:function:github.search_deployments"),
+        )
+        .expect_err("unknown surface_kind should be rejected by schema");
+    connection
+        .execute(
+            "UPDATE catalog_documents SET field_role = ?1 WHERE doc_id = ?2",
+            ("argument", "argument:function:github.search_deployments:q"),
+        )
+        .expect_err("unknown field_role should be rejected by schema");
+}
+
+#[test]
 fn refresh_rechecks_fingerprint_after_writer_lock() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
+    let store = catalog_store(&temp);
+    let mut connection = store.connect_for_test().expect("connect");
     let workspace = WorkspaceName::default();
     let index = SqliteCatalogIndex::new();
     let snapshot = catalog_index_snapshot();
@@ -115,17 +149,14 @@ fn refresh_rechecks_fingerprint_after_writer_lock() {
 #[test]
 fn short_identifiers_match_without_trigram_fts() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = catalog_index_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["q".to_string()], 10)
+    let hits = store
+        .search_catalog(&["q".to_string()], 10)
         .expect("short search");
 
     assert!(hits.hits.iter().any(|hit| hit.field_name == "q"));
@@ -134,17 +165,14 @@ fn short_identifiers_match_without_trigram_fts() {
 #[test]
 fn search_terms_are_normalized_before_retrieval() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = catalog_index_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &[" GitHub ".to_string()], 10)
+    let hits = store
+        .search_catalog(&[" GitHub ".to_string()], 10)
         .expect("search");
 
     assert!(hits.hits.iter().any(|hit| hit.source_name == "github"));
@@ -154,17 +182,14 @@ fn search_terms_are_normalized_before_retrieval() {
 #[test]
 fn empty_terms_are_ignored() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = catalog_index_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["  ".to_string()], 10)
+    let hits = store
+        .search_catalog(&["  ".to_string()], 10)
         .expect("search");
 
     assert!(hits.hits.is_empty());
@@ -174,17 +199,14 @@ fn empty_terms_are_ignored() {
 #[test]
 fn exact_field_name_matches_report_matched_field() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = field_name_match_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["id".to_string()], 10)
+    let hits = store
+        .search_catalog(&["id".to_string()], 10)
         .expect("search");
     let hit = hits
         .hits
@@ -205,17 +227,14 @@ fn like_prefix_pattern_escapes_sql_wildcards() {
 #[test]
 fn prefix_fallback_treats_underscores_as_literals() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = underscore_column_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["user_id".to_string()], 10)
+    let hits = store
+        .search_catalog(&["user_id".to_string()], 10)
         .expect("search");
 
     assert!(hits.hits.iter().any(|hit| hit.field_name == "user_id"));
@@ -228,17 +247,14 @@ fn prefix_fallback_treats_underscores_as_literals() {
 #[test]
 fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = fts_weight_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["needle".to_string()], 1)
+    let hits = store
+        .search_catalog(&["needle".to_string()], 1)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 1);
@@ -252,17 +268,14 @@ fn fts_ranking_weights_qualified_name_before_title_inside_limit() {
 #[test]
 fn exact_identifier_is_retained_before_prefix_limit() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = identifier_priority_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["id".to_string()], 1)
+    let hits = store
+        .search_catalog(&["id".to_string()], 1)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 1);
@@ -273,22 +286,14 @@ fn exact_identifier_is_retained_before_prefix_limit() {
 #[test]
 fn merged_candidate_windows_are_not_globally_truncated() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = identifier_priority_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(
-            &connection,
-            &workspace,
-            &["id".to_string(), "identity".to_string()],
-            1,
-        )
+    let hits = store
+        .search_catalog(&["id".to_string(), "identity".to_string()], 1)
         .expect("search");
 
     assert!(hits.hits.iter().any(|hit| hit.field_name == "id"));
@@ -299,17 +304,14 @@ fn merged_candidate_windows_are_not_globally_truncated() {
 #[test]
 fn exact_fit_does_not_report_retrieval_limited() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = identifier_priority_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["id".to_string()], 2)
+    let hits = store
+        .search_catalog(&["id".to_string()], 2)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 2);
@@ -319,21 +321,23 @@ fn exact_fit_does_not_report_retrieval_limited() {
 #[test]
 fn probe_past_limit_reports_retrieval_limited() {
     let temp = tempdir().expect("tempdir");
-    let store = SqliteSearchStore::open(temp.path().join("search.sqlite3")).expect("store");
-    let mut connection = store.connect().expect("connect");
-    let workspace = WorkspaceName::default();
-    let index = SqliteCatalogIndex::new();
+    let store = catalog_store(&temp);
     let snapshot = identifier_probe_snapshot();
-    index
-        .refresh(&mut connection, &workspace, &snapshot)
+    store
+        .refresh_catalog_projection(&snapshot)
         .expect("refresh");
 
-    let hits = index
-        .search(&connection, &workspace, &["id".to_string()], 2)
+    let hits = store
+        .search_catalog(&["id".to_string()], 2)
         .expect("search");
 
     assert_eq!(hits.hits.len(), 2);
     assert!(hits.retrieval_limited);
+}
+
+fn catalog_store(temp: &TempDir) -> SqliteSearchStore {
+    SqliteSearchStore::open(temp.path().join("search.sqlite3"), WorkspaceName::default())
+        .expect("store")
 }
 
 fn catalog_index_snapshot() -> CatalogIndexSnapshot {

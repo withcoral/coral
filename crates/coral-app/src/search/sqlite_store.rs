@@ -1,4 +1,4 @@
-//! App-scoped `SQLite` storage for Universal Search.
+//! Workspace-scoped `SQLite` storage for Universal Search.
 
 #![cfg_attr(
     not(test),
@@ -8,13 +8,17 @@
     )
 )]
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, ErrorCode};
 
+use crate::search::catalog::sqlite_index::{
+    CatalogIndexSnapshot, CatalogRefreshResult, CatalogSearchHits, SqliteCatalogIndex,
+};
 use crate::state::AppStateLayout;
-use crate::storage::fs::ensure_dir;
+use crate::storage::fs::{create_new_file_private, ensure_private_dir};
 use crate::workspaces::WorkspaceName;
 
 pub(crate) const SEARCH_SQLITE_SCHEMA_VERSION: u32 = 1;
@@ -35,22 +39,35 @@ const SEARCH_SQLITE_MIGRATIONS: &[SearchSqliteMigration] = &[SearchSqliteMigrati
 #[derive(Debug, Clone)]
 pub(crate) struct SqliteSearchStore {
     path: PathBuf,
+    workspace_name: WorkspaceName,
     capabilities: SqliteSearchCapabilities,
 }
 
 impl SqliteSearchStore {
-    pub(crate) fn open_app(
+    pub(crate) fn open_workspace(
         layout: &AppStateLayout,
         workspace_name: &WorkspaceName,
     ) -> Result<Self, SqliteSearchError> {
-        Self::open(layout.search_sqlite_file(workspace_name))
+        Self::open_at(
+            layout.search_sqlite_file(workspace_name),
+            workspace_name.clone(),
+        )
     }
 
-    pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, SqliteSearchError> {
+    #[cfg(test)]
+    pub(crate) fn open(
+        path: impl Into<PathBuf>,
+        workspace_name: WorkspaceName,
+    ) -> Result<Self, SqliteSearchError> {
+        Self::open_at(path, workspace_name)
+    }
+
+    fn open_at(
+        path: impl Into<PathBuf>,
+        workspace_name: WorkspaceName,
+    ) -> Result<Self, SqliteSearchError> {
         let path = path.into();
-        if let Some(parent) = path.parent() {
-            ensure_dir(parent)?;
-        }
+        ensure_sqlite_file(&path)?;
 
         let mut connection = Connection::open(&path)?;
         configure_connection(&connection)?;
@@ -58,13 +75,22 @@ impl SqliteSearchStore {
         ensure_supported(&capabilities)?;
         migrate_if_needed(&mut connection)?;
 
-        Ok(Self { path, capabilities })
+        Ok(Self {
+            path,
+            workspace_name,
+            capabilities,
+        })
     }
 
-    pub(crate) fn connect(&self) -> Result<Connection, SqliteSearchError> {
+    fn connect(&self) -> Result<Connection, SqliteSearchError> {
         let connection = Connection::open(&self.path)?;
         configure_connection(&connection)?;
         Ok(connection)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn connect_for_test(&self) -> Result<Connection, SqliteSearchError> {
+        self.connect()
     }
 
     #[cfg(test)]
@@ -74,6 +100,40 @@ impl SqliteSearchStore {
 
     pub(crate) fn capabilities(&self) -> &SqliteSearchCapabilities {
         &self.capabilities
+    }
+
+    pub(crate) fn catalog_projection_is_current(
+        &self,
+        fingerprint: &str,
+    ) -> Result<bool, SqliteSearchError> {
+        let connection = self.connect()?;
+        SqliteCatalogIndex::new().projection_is_current(
+            &connection,
+            &self.workspace_name,
+            fingerprint,
+        )
+    }
+
+    pub(crate) fn refresh_catalog_projection(
+        &self,
+        snapshot: &CatalogIndexSnapshot,
+    ) -> Result<CatalogRefreshResult, SqliteSearchError> {
+        let mut connection = self.connect()?;
+        SqliteCatalogIndex::new().refresh(&mut connection, &self.workspace_name, snapshot)
+    }
+
+    pub(crate) fn catalog_document_count(&self) -> Result<u32, SqliteSearchError> {
+        let connection = self.connect()?;
+        SqliteCatalogIndex::new().document_count(&connection, &self.workspace_name)
+    }
+
+    pub(crate) fn search_catalog(
+        &self,
+        terms: &[String],
+        limit: usize,
+    ) -> Result<CatalogSearchHits, SqliteSearchError> {
+        let connection = self.connect()?;
+        SqliteCatalogIndex::new().search(&connection, &self.workspace_name, terms, limit)
     }
 }
 
@@ -114,6 +174,21 @@ impl SqliteSearchError {
                     Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
                 )
         )
+    }
+}
+
+fn ensure_sqlite_file(path: &Path) -> Result<(), SqliteSearchError> {
+    if let Some(parent) = path.parent() {
+        ensure_private_dir(parent)?;
+    }
+
+    match create_new_file_private(path) {
+        Ok(file) => {
+            drop(file);
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -272,18 +347,18 @@ mod tests {
     }
 
     #[test]
-    fn open_app_creates_search_sqlite_schema() {
+    fn open_workspace_creates_search_sqlite_schema() {
         let temp = tempdir().expect("tempdir");
         let layout =
             AppStateLayout::discover(Some(temp.path().join("coral-config"))).expect("layout");
         let workspace_name = WorkspaceName::parse("default").expect("workspace");
-        let store = SqliteSearchStore::open_app(&layout, &workspace_name).expect("store");
+        let store = SqliteSearchStore::open_workspace(&layout, &workspace_name).expect("store");
 
         assert_eq!(store.path(), layout.search_sqlite_file(&workspace_name));
         assert!(store.capabilities().fts5);
         assert!(store.capabilities().trigram);
 
-        let connection = store.connect().expect("connect");
+        let connection = store.connect_for_test().expect("connect");
         let user_version: u32 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("user_version");
@@ -311,7 +386,8 @@ mod tests {
             .expect("stamp future schema version");
         drop(connection);
 
-        let error = SqliteSearchStore::open(&path).expect_err("future schema must fail");
+        let error = SqliteSearchStore::open(&path, WorkspaceName::default())
+            .expect_err("future schema must fail");
         assert!(matches!(
             error,
             SqliteSearchError::UnsupportedSchemaVersion {
@@ -335,8 +411,8 @@ mod tests {
     fn opening_current_schema_does_not_rewrite_metadata() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("search.sqlite3");
-        let store = SqliteSearchStore::open(&path).expect("store");
-        let connection = store.connect().expect("connect");
+        let store = SqliteSearchStore::open(&path, WorkspaceName::default()).expect("store");
+        let connection = store.connect_for_test().expect("connect");
         connection
             .execute(
                 "UPDATE search_meta SET updated_at = 'sentinel' WHERE key = 'schema_version'",
@@ -346,7 +422,7 @@ mod tests {
         drop(connection);
         drop(store);
 
-        SqliteSearchStore::open(&path).expect("reopen current schema");
+        SqliteSearchStore::open(&path, WorkspaceName::default()).expect("reopen current schema");
         let connection = rusqlite::Connection::open(&path).expect("raw connection");
         let updated_at = connection
             .query_row(
@@ -371,8 +447,9 @@ mod tests {
             .expect("stamp current schema version");
         drop(connection);
 
-        let store = SqliteSearchStore::open(&path).expect("repair schema");
-        let connection = store.connect().expect("connect");
+        let store =
+            SqliteSearchStore::open(&path, WorkspaceName::default()).expect("repair schema");
+        let connection = store.connect_for_test().expect("connect");
         for table_name in ["search_meta", "catalog_documents", "catalog_documents_fts"] {
             let exists: bool = connection
                 .query_row(
