@@ -10,6 +10,9 @@ use crate::state::db::repositories::app_state_markers::AppStateMarkersRepo;
 use crate::state::db::repositories::credential_documents::CredentialDocumentsRepo;
 use crate::state::db::repositories::episodes::EpisodesRepo;
 use crate::state::db::repositories::feedback_reports::FeedbackReportsRepo;
+use crate::state::db::repositories::identity_specs::{
+    IdentitySpecDocumentsRepo, IdentitySpecsRepo,
+};
 use crate::state::db::repositories::materializations::MaterializationsRepo;
 use crate::state::db::repositories::source_manifests::SourceManifestsRepo;
 use crate::state::db::repositories::sources::SourcesRepo;
@@ -65,6 +68,14 @@ pub(crate) trait DbRepos: DbSession + Sized {
 
     fn credential_documents(&mut self) -> CredentialDocumentsRepo<'_, Self> {
         CredentialDocumentsRepo::new(self)
+    }
+
+    fn identity_specs(&mut self) -> IdentitySpecsRepo<'_, Self> {
+        IdentitySpecsRepo::new(self)
+    }
+
+    fn identity_spec_documents(&mut self) -> IdentitySpecDocumentsRepo<'_, Self> {
+        IdentitySpecDocumentsRepo::new(self)
     }
 
     fn trace_summaries(&mut self) -> TraceSummariesRepo<'_, Self> {

@@ -78,7 +78,8 @@ mod tests {
     use crate::state::AppStateLayout;
     use crate::state::db::repositories::credential_documents::CredentialDocumentWrite;
     use crate::state::db::schema::{
-        SourceManifests, SourceSecretKeys, SourceVariables, Sources, Workspaces,
+        IdentitySpecDocuments, IdentitySpecs, SourceManifests, SourceSecretKeys, SourceVariables,
+        Sources, Workspaces,
     };
     use crate::state::db::session::DbRepos;
     use crate::state::db::{
@@ -154,6 +155,36 @@ mod tests {
         db.migrate().await.expect("migrate postgres");
 
         assert_source_catalog_migration_contract(&db).await;
+    }
+
+    #[tokio::test]
+    async fn identity_spec_migration_contract_against_sqlite() {
+        let temp = tempdir().expect("temp dir");
+        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
+        let config = DatabaseConfig::load(&layout).expect("db config");
+        let DatabaseConfig::Sqlite { path } = config else {
+            panic!("default test config should be sqlite");
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Sqlite { path })
+            .await
+            .expect("open sqlite");
+        db.migrate().await.expect("migrate sqlite");
+
+        assert_identity_spec_migration_contract(&db).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "set CORAL_TEST_POSTGRES_URL to run identity spec migration contract coverage against Postgres"]
+    async fn identity_spec_migration_contract_against_postgres() {
+        let Some(url) = bootstrap::env_var("CORAL_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let db = CoralDb::open(ResolvedDatabaseConfig::Postgres { url })
+            .await
+            .expect("open postgres");
+        db.migrate().await.expect("migrate postgres");
+
+        assert_identity_spec_migration_contract(&db).await;
     }
 
     #[expect(
@@ -313,6 +344,159 @@ mod tests {
             .expect("commit cascade migration contract tx");
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The identity-spec migration contract keeps scope uniqueness and cascade checks together so schema regressions are visible in one fixture."
+    )]
+    async fn assert_identity_spec_migration_contract(db: &CoralDb) {
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workspace_id = format!("identity_workspace_{suffix}");
+        let alternate_workspace_id = format!("identity_alternate_{suffix}");
+        let sentinel_workspace_id = "__global__";
+        let name = format!("identity_spec_{suffix}");
+        let sentinel_name = format!("identity_sentinel_{suffix}");
+        let mut session = db
+            .begin()
+            .await
+            .expect("begin identity spec migration contract tx");
+
+        insert_workspace_row(&mut session, &workspace_id)
+            .await
+            .expect("insert identity workspace");
+        insert_workspace_row(&mut session, &alternate_workspace_id)
+            .await
+            .expect("insert alternate identity workspace");
+        insert_workspace_row(&mut session, sentinel_workspace_id)
+            .await
+            .expect("insert sentinel identity workspace");
+        insert_identity_spec_row(&mut session, "global", "__global__", None, &name)
+            .await
+            .expect("insert global identity spec");
+        insert_identity_spec_document_row(&mut session, "global", "__global__", &name)
+            .await
+            .expect("insert global identity spec document");
+        insert_identity_spec_row(
+            &mut session,
+            "workspace",
+            &workspace_id,
+            Some(&workspace_id),
+            &name,
+        )
+        .await
+        .expect("insert workspace identity spec");
+        insert_identity_spec_document_row(&mut session, "workspace", &workspace_id, &name)
+            .await
+            .expect("insert workspace identity spec document");
+        insert_identity_spec_row(&mut session, "global", "__global__", None, &sentinel_name)
+            .await
+            .expect("insert sentinel-name global identity spec");
+        insert_identity_spec_row(
+            &mut session,
+            "workspace",
+            sentinel_workspace_id,
+            Some(sentinel_workspace_id),
+            &sentinel_name,
+        )
+        .await
+        .expect("insert sentinel-name workspace identity spec");
+        assert_eq!(
+            identity_spec_count(&mut session, "global", "__global__", &name)
+                .await
+                .expect("count global identity spec"),
+            1
+        );
+        assert_eq!(
+            identity_spec_count(&mut session, "workspace", &workspace_id, &name)
+                .await
+                .expect("count workspace identity spec"),
+            1
+        );
+        assert_eq!(
+            identity_spec_document_count(&mut session, "workspace", &workspace_id, &name)
+                .await
+                .expect("count workspace identity spec document"),
+            1
+        );
+        assert_eq!(
+            identity_spec_count(&mut session, "global", "__global__", &sentinel_name)
+                .await
+                .expect("count sentinel-name global identity spec"),
+            1
+        );
+        assert_eq!(
+            identity_spec_count(
+                &mut session,
+                "workspace",
+                sentinel_workspace_id,
+                &sentinel_name,
+            )
+            .await
+            .expect("count sentinel-name workspace identity spec"),
+            1
+        );
+        session
+            .commit()
+            .await
+            .expect("commit identity spec seed rows");
+
+        assert_identity_spec_uniqueness_contract(db, &workspace_id, &alternate_workspace_id, &name)
+            .await;
+        assert_identity_spec_uniqueness_contract(
+            db,
+            sentinel_workspace_id,
+            &alternate_workspace_id,
+            &sentinel_name,
+        )
+        .await;
+        assert_identity_spec_scope_check_contract(db, &workspace_id, &name).await;
+
+        let mut session = db
+            .begin()
+            .await
+            .expect("begin identity spec cascade migration contract tx");
+        delete_workspace(&mut session, &workspace_id)
+            .await
+            .expect("delete identity workspace");
+        assert_eq!(
+            identity_spec_count(&mut session, "workspace", &workspace_id, &name)
+                .await
+                .expect("count workspace identity spec after workspace delete"),
+            0
+        );
+        assert_eq!(
+            identity_spec_document_count(&mut session, "workspace", &workspace_id, &name)
+                .await
+                .expect("count workspace identity spec document after workspace delete"),
+            0
+        );
+        assert_eq!(
+            identity_spec_count(&mut session, "global", "__global__", &name)
+                .await
+                .expect("count global identity spec after workspace delete"),
+            1
+        );
+        assert_eq!(
+            identity_spec_document_count(&mut session, "global", "__global__", &name)
+                .await
+                .expect("count global identity spec document after workspace delete"),
+            1
+        );
+
+        delete_identity_spec(&mut session, "global", "__global__", &name)
+            .await
+            .expect("delete global identity spec");
+        assert_eq!(
+            identity_spec_document_count(&mut session, "global", "__global__", &name)
+                .await
+                .expect("count global identity spec document after spec delete"),
+            0
+        );
+        session
+            .commit()
+            .await
+            .expect("commit identity spec cascade migration contract tx");
+    }
+
     async fn insert_source_catalog_rows<S>(
         session: &mut S,
         workspace_id: &str,
@@ -362,6 +546,117 @@ mod tests {
         tx.rollback()
             .await
             .expect("rollback duplicate secret key tx");
+    }
+
+    async fn assert_identity_spec_uniqueness_contract(
+        db: &CoralDb,
+        workspace_id: &str,
+        alternate_workspace_id: &str,
+        name: &str,
+    ) {
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin duplicate global identity spec tx");
+        assert!(
+            insert_identity_spec_row(&mut tx, "global", "__global__", None, name)
+                .await
+                .is_err(),
+            "duplicate global identity spec should fail"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback duplicate global identity spec tx");
+
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin duplicate workspace identity spec tx");
+        assert!(
+            insert_identity_spec_row(&mut tx, "workspace", workspace_id, Some(workspace_id), name)
+                .await
+                .is_err(),
+            "duplicate workspace identity spec should fail"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback duplicate workspace identity spec tx");
+
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin alternate workspace identity spec tx");
+        insert_identity_spec_row(
+            &mut tx,
+            "workspace",
+            alternate_workspace_id,
+            Some(alternate_workspace_id),
+            name,
+        )
+        .await
+        .expect("same identity spec name should be valid in another workspace");
+        tx.rollback()
+            .await
+            .expect("rollback alternate workspace identity spec tx");
+
+        let mut tx = db.begin().await.expect("begin missing spec document tx");
+        assert!(
+            insert_identity_spec_document_row(&mut tx, "global", "__global__", "missing")
+                .await
+                .is_err(),
+            "identity spec document rows must require an existing identity spec"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback missing spec document tx");
+    }
+
+    async fn assert_identity_spec_scope_check_contract(
+        db: &CoralDb,
+        workspace_id: &str,
+        name: &str,
+    ) {
+        let invalid_global_name = format!("{name}_invalid_global");
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin invalid global identity spec tx");
+        assert!(
+            insert_identity_spec_row(
+                &mut tx,
+                "global",
+                "__global__",
+                Some(workspace_id),
+                &invalid_global_name,
+            )
+            .await
+            .is_err(),
+            "global identity spec must not carry a workspace id"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback invalid global identity spec tx");
+
+        let invalid_workspace_name = format!("{name}_invalid_workspace");
+        let mut tx = db
+            .begin()
+            .await
+            .expect("begin invalid workspace identity spec tx");
+        assert!(
+            insert_identity_spec_row(
+                &mut tx,
+                "workspace",
+                workspace_id,
+                None,
+                &invalid_workspace_name,
+            )
+            .await
+            .is_err(),
+            "workspace identity spec must carry a matching workspace id"
+        );
+        tx.rollback()
+            .await
+            .expect("rollback invalid workspace identity spec tx");
     }
 
     fn credential_document_write() -> CredentialDocumentWrite {
@@ -520,6 +815,99 @@ mod tests {
             .await
     }
 
+    async fn insert_identity_spec_row<S>(
+        session: &mut S,
+        scope_kind: &str,
+        scope_id: &str,
+        workspace_id: Option<&str>,
+        name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(IdentitySpecs::Table)
+                    .columns([
+                        IdentitySpecs::ScopeKind,
+                        IdentitySpecs::ScopeId,
+                        IdentitySpecs::WorkspaceId,
+                        IdentitySpecs::Name,
+                        IdentitySpecs::Version,
+                        IdentitySpecs::Description,
+                        IdentitySpecs::Issuer,
+                        IdentitySpecs::IdentityType,
+                        IdentitySpecs::ManifestYaml,
+                        IdentitySpecs::CreatedAtUnixNanos,
+                        IdentitySpecs::UpdatedAtUnixNanos,
+                    ])
+                    .values_panic([
+                        Expr::val(scope_kind),
+                        Expr::val(scope_id),
+                        Expr::val(workspace_id.map(ToString::to_string)),
+                        Expr::val(name),
+                        Expr::val("1.0.0"),
+                        Expr::val("identity spec migration contract"),
+                        Expr::val("issuer"),
+                        Expr::val("oauth"),
+                        Expr::val("name: migration_identity\n"),
+                        Expr::val(4),
+                        Expr::val(5),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn insert_identity_spec_document_row<S>(
+        session: &mut S,
+        scope_kind: &str,
+        scope_id: &str,
+        name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbSession,
+    {
+        session
+            .execute(
+                Query::insert()
+                    .into_table(IdentitySpecDocuments::Table)
+                    .columns([
+                        IdentitySpecDocuments::ScopeKind,
+                        IdentitySpecDocuments::ScopeId,
+                        IdentitySpecDocuments::Name,
+                        IdentitySpecDocuments::DocumentVersion,
+                        IdentitySpecDocuments::Ciphertext,
+                        IdentitySpecDocuments::Nonce,
+                        IdentitySpecDocuments::WrappedDek,
+                        IdentitySpecDocuments::WrappedDekNonce,
+                        IdentitySpecDocuments::KeyId,
+                        IdentitySpecDocuments::Algorithm,
+                        IdentitySpecDocuments::AadVersion,
+                        IdentitySpecDocuments::CreatedAtUnixNanos,
+                        IdentitySpecDocuments::UpdatedAtUnixNanos,
+                    ])
+                    .values_panic([
+                        Expr::val(scope_kind),
+                        Expr::val(scope_id),
+                        Expr::val(name),
+                        Expr::val(1),
+                        Expr::val(b"ciphertext".to_vec()),
+                        Expr::val(b"nonce".to_vec()),
+                        Expr::val(b"wrapped-dek".to_vec()),
+                        Expr::val(b"wrapped-dek-nonce".to_vec()),
+                        Expr::val("key-id"),
+                        Expr::val("AES-256-GCM"),
+                        Expr::val(1),
+                        Expr::val(6),
+                        Expr::val(7),
+                    ])
+                    .to_owned(),
+            )
+            .await
+    }
+
     fn migration_trace_summary(workspace_id: &str, trace_id: &str) -> TraceSummaryRecord {
         TraceSummaryRecord {
             trace_id: trace_id.to_string(),
@@ -565,6 +953,27 @@ mod tests {
                 Query::delete()
                     .from_table(Workspaces::Table)
                     .and_where(Expr::col(Workspaces::Id).eq(workspace_id))
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn delete_identity_spec<S>(
+        session: &mut S,
+        scope_kind: &str,
+        scope_id: &str,
+        name: &str,
+    ) -> Result<(), DbError>
+    where
+        S: DbWriteSession,
+    {
+        session
+            .execute_delete(
+                Query::delete()
+                    .from_table(IdentitySpecs::Table)
+                    .and_where(Expr::col(IdentitySpecs::ScopeKind).eq(scope_kind))
+                    .and_where(Expr::col(IdentitySpecs::ScopeId).eq(scope_id))
+                    .and_where(Expr::col(IdentitySpecs::Name).eq(name))
                     .to_owned(),
             )
             .await
@@ -646,6 +1055,54 @@ mod tests {
                     .from(SourceManifests::Table)
                     .and_where(Expr::col(SourceManifests::WorkspaceId).eq(workspace_id))
                     .and_where(Expr::col(SourceManifests::SourceName).eq(source_name))
+                    .to_owned(),
+            )
+            .await?
+            .expect("count row");
+        Ok(row.count)
+    }
+
+    async fn identity_spec_count<S>(
+        session: &mut S,
+        scope_kind: &str,
+        scope_id: &str,
+        name: &str,
+    ) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        let row: CountRow = session
+            .fetch_optional(
+                Query::select()
+                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
+                    .from(IdentitySpecs::Table)
+                    .and_where(Expr::col(IdentitySpecs::ScopeKind).eq(scope_kind))
+                    .and_where(Expr::col(IdentitySpecs::ScopeId).eq(scope_id))
+                    .and_where(Expr::col(IdentitySpecs::Name).eq(name))
+                    .to_owned(),
+            )
+            .await?
+            .expect("count row");
+        Ok(row.count)
+    }
+
+    async fn identity_spec_document_count<S>(
+        session: &mut S,
+        scope_kind: &str,
+        scope_id: &str,
+        name: &str,
+    ) -> Result<i64, DbError>
+    where
+        S: DbSession,
+    {
+        let row: CountRow = session
+            .fetch_optional(
+                Query::select()
+                    .expr_as(Func::count(Expr::val(1)), Alias::new("count"))
+                    .from(IdentitySpecDocuments::Table)
+                    .and_where(Expr::col(IdentitySpecDocuments::ScopeKind).eq(scope_kind))
+                    .and_where(Expr::col(IdentitySpecDocuments::ScopeId).eq(scope_id))
+                    .and_where(Expr::col(IdentitySpecDocuments::Name).eq(name))
                     .to_owned(),
             )
             .await?

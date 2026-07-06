@@ -32,6 +32,14 @@ pub(crate) use repositories::credential_documents::{
 };
 pub(crate) use repositories::episodes::EpisodeRecord;
 pub(crate) use repositories::feedback_reports::FeedbackReportRecord;
+#[expect(
+    unused_imports,
+    reason = "Identity spec repositories land before later manager units wire these record types."
+)]
+pub(crate) use repositories::identity_specs::{
+    IdentitySpecDocumentRecord, IdentitySpecDocumentWrite, IdentitySpecKey, IdentitySpecRecord,
+    IdentitySpecScope, IdentitySpecWrite,
+};
 pub(crate) use repositories::materializations::{
     MaterializationRecord, MaterializationSurfaceRecord,
 };

@@ -113,6 +113,40 @@ pub(in crate::state::db) enum CredentialDocuments {
 }
 
 #[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecs {
+    Table,
+    ScopeKind,
+    ScopeId,
+    WorkspaceId,
+    Name,
+    Version,
+    Description,
+    Issuer,
+    IdentityType,
+    ManifestYaml,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
+
+#[derive(Iden)]
+pub(in crate::state::db) enum IdentitySpecDocuments {
+    Table,
+    ScopeKind,
+    ScopeId,
+    Name,
+    DocumentVersion,
+    Ciphertext,
+    Nonce,
+    WrappedDek,
+    WrappedDekNonce,
+    KeyId,
+    Algorithm,
+    AadVersion,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
+}
+
+#[derive(Iden)]
 pub(in crate::state::db) enum TraceSummaries {
     Table,
     TraceId,
