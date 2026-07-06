@@ -1,6 +1,6 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 
-import { breakpoints } from '@/styles/theme'
+import { breakpoints } from '@/styles/theme.css'
 import { utils } from '@/styles/utils'
 import { fontFamily } from '@/wax/theme/font.css'
 import { lightTheme } from '@/wax/theme/theme-light.css'
