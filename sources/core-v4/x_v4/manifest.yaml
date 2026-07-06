@@ -1,11 +1,10 @@
-name: twitter_v4
+name: x_v4
 dsl_version: 4
 description: Query posts, users, search results, timelines, mentions, and engagement from X (formerly Twitter).
 surfaces:
   - id: rest
     type: openapi
-    url: https://api.twitter.com/2/openapi.json
-    base_url: https://api.x.com
+    url: https://api.x.com/2/openapi.json
     inputs:
       X_ACCESS_TOKEN:
         kind: secret
@@ -30,6 +29,4 @@ surfaces:
       reset_header: x-rate-limit-reset
 
 test_queries:
-  - SELECT id, text FROM twitter_v4.search_recents(query => 'from:XDevelopers', max_results => 10) LIMIT 5
-  - SELECT id, text FROM twitter_v4.path_2_users_tweets__b240539d WHERE id = '2244994945' AND max_results = 10 LIMIT 5
-  - SELECT id, text FROM twitter_v4.path_2_users_tweets__e4416c7d WHERE id = '2244994945' AND max_results = 10 LIMIT 5
+  - SELECT id, text FROM x_v4.search_recents(query => 'from:XDevelopers', max_results => 10) LIMIT 5
