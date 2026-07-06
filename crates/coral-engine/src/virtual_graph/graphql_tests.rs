@@ -1,4 +1,4 @@
-use super::super::graphql_schema_sdl_for_graph;
+use super::super::{AggregateFunction, AggregateTarget, graphql_schema_sdl_for_graph};
 use super::*;
 
 fn variable_object(

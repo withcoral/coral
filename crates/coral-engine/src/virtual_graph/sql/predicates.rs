@@ -55,41 +55,82 @@ impl<'a> SqlRenderer<'a> {
         &self,
         predicate: &PredicateExpression,
     ) -> Result<String, CoreError> {
+        self.render_predicate_expression_in_scope(predicate, ScalarScope::TopLevel)
+    }
+
+    pub(super) fn render_scoped_predicate_expression<'b>(
+        &self,
+        predicate: &PredicateExpression,
+        relationships: &[ExistsRelationshipSqlBinding<'a, 'b>],
+        local_nodes: &BTreeMap<&'b str, &'a Node>,
+        local_aliases: &BTreeMap<&'b str, String>,
+    ) -> Result<String, CoreError> {
+        self.render_predicate_expression_in_scope(
+            predicate,
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            },
+        )
+    }
+
+    fn render_predicate_expression_in_scope<'b, 'c>(
+        &self,
+        predicate: &PredicateExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
         match predicate {
             PredicateExpression::Boolean(value) => Ok(value.to_string().to_uppercase()),
-            PredicateExpression::Comparison(predicate) => self.render_predicate(predicate),
-            PredicateExpression::KeyComparison(predicate) => self.render_key_predicate(predicate),
+            PredicateExpression::Comparison(predicate) => {
+                self.render_property_predicate_in_scope(predicate, scope)
+            }
+            PredicateExpression::KeyComparison(predicate) => {
+                self.render_key_predicate_in_scope(predicate, scope)
+            }
             PredicateExpression::ElementIdComparison(predicate) => {
-                self.render_element_id_predicate(predicate)
+                self.render_element_id_predicate_in_scope(predicate, scope)
             }
-            PredicateExpression::Presence(predicate) => self.render_presence_predicate(predicate),
+            PredicateExpression::Presence(predicate) => {
+                self.render_presence_predicate_in_scope(predicate, scope)
+            }
             PredicateExpression::PropertyKeyMembership(predicate) => {
-                self.render_property_key_membership_predicate(predicate)
+                self.render_property_key_membership_predicate_in_scope(predicate, scope)
             }
-            PredicateExpression::ExistsPattern(predicate) => {
-                self.render_exists_pattern_predicate(predicate)
-            }
+            PredicateExpression::ExistsPattern(predicate) => match scope {
+                ScalarScope::TopLevel => self.render_exists_pattern_predicate(predicate),
+                ScalarScope::Scoped {
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                } => self.render_nested_scoped_exists_pattern_predicate(
+                    predicate,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                ),
+            },
             PredicateExpression::ScalarComparison(predicate) => {
-                self.render_scalar_predicate(predicate)
+                self.render_scalar_predicate_in_scope(predicate, scope)
             }
             PredicateExpression::And { left, right } => Ok(format!(
                 "({} AND {})",
-                self.render_predicate_expression(left)?,
-                self.render_predicate_expression(right)?
+                self.render_predicate_expression_in_scope(left, scope)?,
+                self.render_predicate_expression_in_scope(right, scope)?
             )),
             PredicateExpression::Or { left, right } => Ok(format!(
                 "({} OR {})",
-                self.render_predicate_expression(left)?,
-                self.render_predicate_expression(right)?
+                self.render_predicate_expression_in_scope(left, scope)?,
+                self.render_predicate_expression_in_scope(right, scope)?
             )),
             PredicateExpression::Xor { left, right } => {
-                let left = self.render_predicate_expression(left)?;
-                let right = self.render_predicate_expression(right)?;
+                let left = self.render_predicate_expression_in_scope(left, scope)?;
+                let right = self.render_predicate_expression_in_scope(right, scope)?;
                 Ok(render_xor_predicate(&left, &right))
             }
             PredicateExpression::Not { expression } => Ok(format!(
                 "NOT ({})",
-                self.render_predicate_expression(expression)?
+                self.render_predicate_expression_in_scope(expression, scope)?
             )),
         }
     }
@@ -247,94 +288,56 @@ impl<'a> SqlRenderer<'a> {
     }
 
     fn render_predicate(&self, predicate: &PropertyPredicate) -> Result<String, CoreError> {
-        let property = self.render_property_ref(&predicate.property)?;
-        match (&predicate.operator, &predicate.rhs) {
-            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
-                Ok(render_literal_in_predicate(&property, literals))
-            }
-            (ComparisonOperator::In, PredicateRhs::TemporalCoercionList(sources)) => {
-                if sources.is_empty() {
-                    return Ok("FALSE".to_string());
-                }
-                Ok(format!(
-                    "{property} IN ({})",
-                    self.render_temporal_coercion_list_predicate_rhs(
-                        &predicate.property,
-                        sources,
-                    )?
-                ))
-            }
-            (ComparisonOperator::In, _) => Err(CoreError::internal(
-                "validated IN predicate did not contain a literal list",
-            )),
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value))
-                | PredicateRhs::TemporalCoercion { source: value },
-            ) => {
-                let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal("validated string predicate used a non-string operator")
-                    })?;
-                Ok(format!(
-                    "{property} LIKE {} ESCAPE '\\'",
-                    render_like_pattern(operator, value)
-                ))
-            }
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                _,
-            ) => Err(CoreError::internal(
-                "validated string predicate did not contain a string literal",
-            )),
-            (
-                ComparisonOperator::RegexMatch,
-                PredicateRhs::List(_) | PredicateRhs::TemporalCoercionList(_),
-            ) => Err(CoreError::internal(
-                "validated regex predicate did not contain a scalar RHS",
-            )),
-            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
-                &property,
-                &self.render_predicate_rhs(rhs)?,
-            )),
-            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{property} IS NULL"))
-            }
-            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{property} IS NOT NULL"))
-            }
-            (
-                ComparisonOperator::GreaterThan
-                | ComparisonOperator::GreaterThanOrEqual
-                | ComparisonOperator::LessThan
-                | ComparisonOperator::LessThanOrEqual,
-                PredicateRhs::Literal(Literal::Null),
-            ) => Err(CoreError::internal(
-                "validated graph predicate contained an invalid null comparison",
-            )),
-            (_, PredicateRhs::TemporalCoercion { source }) => Ok(format!(
-                "{property} {} {}",
-                render_operator(predicate.operator),
-                self.render_temporal_coercion_predicate_rhs(&predicate.property, source)?
-            )),
-            _ => Ok(format!(
-                "{property} {} {}",
-                render_operator(predicate.operator),
-                self.render_predicate_rhs(&predicate.rhs)?
-            )),
-        }
+        self.render_property_predicate_in_scope(predicate, ScalarScope::TopLevel)
     }
 
-    fn render_scalar_predicate(&self, predicate: &ScalarPredicate) -> Result<String, CoreError> {
-        if let Some(rendered) = self.try_render_count_existence_predicate(predicate)? {
+    fn render_property_predicate_in_scope<'b, 'c>(
+        &self,
+        predicate: &PropertyPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let (property, context) = match scope {
+            ScalarScope::TopLevel => (
+                self.render_property_ref(&predicate.property)?,
+                SimplePredicateContext::Graph,
+            ),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => (
+                self.render_exists_property_ref(
+                    &predicate.property,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )?,
+                SimplePredicateContext::Exists,
+            ),
+        };
+        self.render_simple_predicate_in_scope(
+            &property,
+            predicate.operator,
+            &predicate.rhs,
+            Some(&predicate.property),
+            scope,
+            context,
+        )
+    }
+
+    fn render_scalar_predicate_in_scope<'b, 'c>(
+        &self,
+        predicate: &ScalarPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        if let Some(rendered) =
+            self.try_render_count_existence_predicate_in_scope(predicate, scope)?
+        {
             return Ok(rendered);
         }
 
-        let lhs = self.render_scalar_expression(&predicate.lhs)?;
+        let context = ScalarPredicateContext::from_scope(scope);
+        let lhs = self.render_scalar_expression_in_scope(&predicate.lhs, scope)?;
         match (&predicate.operator, &predicate.rhs) {
             (ComparisonOperator::In, ScalarPredicateRhs::List(literals)) => {
                 if literals.is_empty() {
@@ -347,21 +350,15 @@ impl<'a> SqlRenderer<'a> {
                     .join(", ");
                 Ok(format!("{lhs} IN ({rendered})"))
             }
-            (ComparisonOperator::In, _) => Err(CoreError::internal(
-                "validated scalar IN predicate did not contain a literal list",
-            )),
+            (ComparisonOperator::In, _) => Err(CoreError::internal(context.in_list_error())),
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::String(value))),
-            ) => {
+            ) if matches!(scope, ScalarScope::TopLevel) => {
                 let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal(
-                            "validated scalar string predicate used a non-string operator",
-                        )
-                    })?;
+                    .ok_or_else(|| CoreError::internal(context.string_operator_error()))?;
                 Ok(format!(
                     "{lhs} LIKE {} ESCAPE '\\'",
                     render_like_pattern(operator, value)
@@ -374,12 +371,8 @@ impl<'a> SqlRenderer<'a> {
                 ScalarPredicateRhs::Expression(expression),
             ) => {
                 let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal(
-                            "validated scalar string predicate used a non-string operator",
-                        )
-                    })?;
-                let rhs = self.render_scalar_expression(expression)?;
+                    .ok_or_else(|| CoreError::internal(context.string_operator_error()))?;
+                let rhs = self.render_scalar_expression_in_scope(expression, scope)?;
                 Ok(render_string_function_predicate(operator, &lhs, &rhs))
             }
             (
@@ -387,16 +380,12 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 _,
-            ) => Err(CoreError::internal(
-                "validated scalar string predicate did not contain a string literal",
-            )),
+            ) => Err(CoreError::internal(context.string_rhs_error())),
             (ComparisonOperator::RegexMatch, ScalarPredicateRhs::List(_)) => {
-                Err(CoreError::internal(
-                    "validated scalar regex predicate did not contain a scalar RHS",
-                ))
+                Err(CoreError::internal(context.regex_rhs_error()))
             }
             (ComparisonOperator::RegexMatch, ScalarPredicateRhs::Expression(expression)) => {
-                let rhs = self.render_scalar_expression(expression)?;
+                let rhs = self.render_scalar_expression_in_scope(expression, scope)?;
                 Ok(render_regex_predicate(&lhs, &rhs))
             }
             (
@@ -413,20 +402,20 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::LessThan
                 | ComparisonOperator::LessThanOrEqual,
                 ScalarPredicateRhs::Expression(ScalarExpression::Literal(Literal::Null)),
-            ) => Err(CoreError::internal(
-                "validated scalar predicate contained an invalid null comparison",
-            )),
-            _ => Ok(format!(
+            ) => Err(CoreError::internal(context.null_comparison_error())),
+            (_, ScalarPredicateRhs::Expression(rhs)) => Ok(format!(
                 "{lhs} {} {}",
                 render_operator(predicate.operator),
-                self.render_scalar_predicate_rhs(&predicate.rhs)?
+                self.render_scalar_expression_in_scope(rhs, scope)?
             )),
+            (_, ScalarPredicateRhs::List(_)) => Err(CoreError::internal(context.list_rhs_error())),
         }
     }
 
-    fn try_render_count_existence_predicate(
+    fn try_render_count_existence_predicate_in_scope<'b, 'c>(
         &self,
         predicate: &ScalarPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<Option<String>, CoreError> {
         let ScalarExpression::CountSubquery {
             pattern,
@@ -439,184 +428,64 @@ impl<'a> SqlRenderer<'a> {
         else {
             return Ok(None);
         };
-        self.render_count_existence_predicate(pattern, existence)
-            .map(Some)
-    }
-
-    fn render_key_predicate(&self, predicate: &KeyPredicate) -> Result<String, CoreError> {
-        let key = self.render_binding_key_ref(&predicate.variable)?;
-        match (&predicate.operator, &predicate.rhs) {
-            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
-                if literals.is_empty() {
-                    return Ok("FALSE".to_string());
-                }
-                let rendered = literals
-                    .iter()
-                    .map(render_literal)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Ok(format!("{key} IN ({rendered})"))
-            }
-            (ComparisonOperator::In, PredicateRhs::TemporalCoercionList(sources)) => {
-                if sources.is_empty() {
-                    return Ok("FALSE".to_string());
-                }
-                let rendered = Self::render_temporal_coercion_list_rhs_for_kind(sources, None);
-                Ok(format!("{key} IN ({rendered})"))
-            }
-            (ComparisonOperator::In, _) => Err(CoreError::internal(
-                "validated id() IN predicate did not contain a literal list",
-            )),
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value))
-                | PredicateRhs::TemporalCoercion { source: value },
-            ) => {
-                let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal(
-                            "validated id() string predicate used a non-string operator",
-                        )
-                    })?;
-                Ok(format!(
-                    "{key} LIKE {} ESCAPE '\\'",
-                    render_like_pattern(operator, value)
-                ))
-            }
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                _,
-            ) => Err(CoreError::internal(
-                "validated id() string predicate did not contain a string literal",
-            )),
-            (
-                ComparisonOperator::RegexMatch,
-                PredicateRhs::List(_) | PredicateRhs::TemporalCoercionList(_),
-            ) => Err(CoreError::internal(
-                "validated id() regex predicate did not contain a scalar RHS",
-            )),
-            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
-                &key,
-                &self.render_predicate_rhs(rhs)?,
-            )),
-            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{key} IS NULL"))
-            }
-            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{key} IS NOT NULL"))
-            }
-            (
-                ComparisonOperator::GreaterThan
-                | ComparisonOperator::GreaterThanOrEqual
-                | ComparisonOperator::LessThan
-                | ComparisonOperator::LessThanOrEqual,
-                PredicateRhs::Literal(Literal::Null),
-            ) => Err(CoreError::internal(
-                "validated id() predicate contained an invalid null comparison",
-            )),
-            _ => Ok(format!(
-                "{key} {} {}",
-                render_operator(predicate.operator),
-                self.render_predicate_rhs(&predicate.rhs)?
-            )),
+        match scope {
+            ScalarScope::TopLevel => self
+                .render_count_existence_predicate(pattern, existence)
+                .map(Some),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self
+                .render_scoped_count_existence_predicate(
+                    pattern,
+                    existence,
+                    relationships,
+                    local_nodes,
+                    local_aliases,
+                )
+                .map(Some),
         }
     }
 
-    fn render_element_id_predicate(
+    fn render_key_predicate_in_scope<'b, 'c>(
+        &self,
+        predicate: &KeyPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let key = self.render_binding_key_ref_in_scope(&predicate.variable, scope)?;
+        self.render_simple_predicate_in_scope(
+            &key,
+            predicate.operator,
+            &predicate.rhs,
+            None,
+            scope,
+            SimplePredicateContext::key_from_scope(scope),
+        )
+    }
+
+    fn render_element_id_predicate_in_scope<'b, 'c>(
         &self,
         predicate: &ElementIdPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
-        let element_id = self.render_binding_element_id_ref(&predicate.variable)?;
-        match (&predicate.operator, &predicate.rhs) {
-            (ComparisonOperator::In, PredicateRhs::List(literals)) => {
-                if literals.is_empty() {
-                    return Ok("FALSE".to_string());
-                }
-                let rendered = literals
-                    .iter()
-                    .map(render_literal)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Ok(format!("{element_id} IN ({rendered})"))
-            }
-            (ComparisonOperator::In, PredicateRhs::TemporalCoercionList(sources)) => {
-                if sources.is_empty() {
-                    return Ok("FALSE".to_string());
-                }
-                let rendered = Self::render_temporal_coercion_list_rhs_for_kind(sources, None);
-                Ok(format!("{element_id} IN ({rendered})"))
-            }
-            (ComparisonOperator::In, _) => Err(CoreError::internal(
-                "validated elementId() IN predicate did not contain a literal list",
-            )),
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                PredicateRhs::Literal(Literal::String(value))
-                | PredicateRhs::TemporalCoercion { source: value },
-            ) => {
-                let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal(
-                            "validated elementId() string predicate used a non-string operator",
-                        )
-                    })?;
-                Ok(format!(
-                    "{element_id} LIKE {} ESCAPE '\\'",
-                    render_like_pattern(operator, value)
-                ))
-            }
-            (
-                ComparisonOperator::StartsWith
-                | ComparisonOperator::EndsWith
-                | ComparisonOperator::Contains,
-                _,
-            ) => Err(CoreError::internal(
-                "validated elementId() string predicate did not contain a string literal",
-            )),
-            (
-                ComparisonOperator::RegexMatch,
-                PredicateRhs::List(_) | PredicateRhs::TemporalCoercionList(_),
-            ) => Err(CoreError::internal(
-                "validated elementId() regex predicate did not contain a scalar RHS",
-            )),
-            (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
-                &element_id,
-                &self.render_predicate_rhs(rhs)?,
-            )),
-            (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{element_id} IS NULL"))
-            }
-            (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{element_id} IS NOT NULL"))
-            }
-            (
-                ComparisonOperator::GreaterThan
-                | ComparisonOperator::GreaterThanOrEqual
-                | ComparisonOperator::LessThan
-                | ComparisonOperator::LessThanOrEqual,
-                PredicateRhs::Literal(Literal::Null),
-            ) => Err(CoreError::internal(
-                "validated elementId() predicate contained an invalid null comparison",
-            )),
-            _ => Ok(format!(
-                "{element_id} {} {}",
-                render_operator(predicate.operator),
-                self.render_predicate_rhs(&predicate.rhs)?
-            )),
-        }
+        let element_id = self.render_binding_element_id_ref_in_scope(&predicate.variable, scope)?;
+        self.render_simple_predicate_in_scope(
+            &element_id,
+            predicate.operator,
+            &predicate.rhs,
+            None,
+            scope,
+            SimplePredicateContext::element_id_from_scope(scope),
+        )
     }
 
-    fn render_presence_predicate(
+    fn render_presence_predicate_in_scope<'b, 'c>(
         &self,
         predicate: &PresencePredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
     ) -> Result<String, CoreError> {
-        let presence = self.render_binding_presence_ref(&predicate.variable)?;
+        let presence = self.render_binding_presence_ref_in_scope(&predicate.variable, scope)?;
         match predicate.operator {
             ComparisonOperator::Equal => Ok(format!("{presence} IS NULL")),
             ComparisonOperator::NotEqual => Ok(format!("{presence} IS NOT NULL")),
@@ -628,9 +497,14 @@ impl<'a> SqlRenderer<'a> {
             | ComparisonOperator::StartsWith
             | ComparisonOperator::EndsWith
             | ComparisonOperator::Contains
-            | ComparisonOperator::RegexMatch => Err(CoreError::internal(
-                "validated presence predicate contained an invalid operator",
-            )),
+            | ComparisonOperator::RegexMatch => Err(CoreError::internal(match scope {
+                ScalarScope::TopLevel => {
+                    "validated presence predicate contained an invalid operator"
+                }
+                ScalarScope::Scoped { .. } => {
+                    "validated scoped presence predicate contained invalid operator"
+                }
+            })),
         }
     }
 
@@ -638,21 +512,56 @@ impl<'a> SqlRenderer<'a> {
         &self,
         predicate: &PropertyKeyMembershipPredicate,
     ) -> Result<String, CoreError> {
-        let binding = self.validated.binding(&predicate.variable)?;
-        let has_key = match binding.kind() {
-            ValidatedBindingKind::Node(node) | ValidatedBindingKind::StageColumn { node, .. } => {
-                node.properties.contains_key(&predicate.key)
+        self.render_property_key_membership_predicate_in_scope(predicate, ScalarScope::TopLevel)
+    }
+
+    fn render_property_key_membership_predicate_in_scope<'b, 'c>(
+        &self,
+        predicate: &PropertyKeyMembershipPredicate,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        let has_key = match scope {
+            ScalarScope::TopLevel => {
+                let binding = self.validated.binding(&predicate.variable)?;
+                Some(match binding.kind() {
+                    ValidatedBindingKind::Node(node)
+                    | ValidatedBindingKind::StageColumn { node, .. } => {
+                        node.properties.contains_key(&predicate.key)
+                    }
+                    ValidatedBindingKind::Relationship(relationship) => {
+                        relationship.properties.contains_key(&predicate.key)
+                    }
+                })
             }
-            ValidatedBindingKind::Relationship(relationship) => {
-                relationship.properties.contains_key(&predicate.key)
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                ..
+            } => {
+                if let Some(relationship) =
+                    Self::exists_relationship_for_variable(relationships, &predicate.variable)
+                {
+                    Some(
+                        relationship
+                            .relationship
+                            .properties
+                            .contains_key(&predicate.key),
+                    )
+                } else {
+                    local_nodes
+                        .get(predicate.variable.as_str())
+                        .map(|node| node.properties.contains_key(&predicate.key))
+                }
             }
         };
-        let presence = self.render_binding_presence_ref(
-            predicate
-                .presence_variable
-                .as_deref()
-                .unwrap_or(&predicate.variable),
-        )?;
+        let Some(has_key) = has_key else {
+            return self.render_property_key_membership_predicate(predicate);
+        };
+        let presence_variable = predicate
+            .presence_variable
+            .as_deref()
+            .unwrap_or(&predicate.variable);
+        let presence = self.render_binding_presence_ref_in_scope(presence_variable, scope)?;
         let value = if has_key { "TRUE" } else { "FALSE" };
         Ok(format!(
             "CASE WHEN {presence} IS NULL THEN NULL ELSE {value} END"
@@ -676,33 +585,43 @@ impl<'a> SqlRenderer<'a> {
         local_nodes: &BTreeMap<&'b str, &'a Node>,
         local_aliases: &BTreeMap<&'b str, String>,
     ) -> Result<String, CoreError> {
-        let property = self.render_exists_property_ref(
-            &predicate.property,
-            relationships,
-            local_nodes,
-            local_aliases,
-        )?;
-        match (&predicate.operator, &predicate.rhs) {
+        self.render_property_predicate_in_scope(
+            predicate,
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            },
+        )
+    }
+
+    fn render_simple_predicate_in_scope<'b, 'c>(
+        &self,
+        lhs: &str,
+        operator: ComparisonOperator,
+        rhs: &PredicateRhs,
+        temporal_property: Option<&PropertyRef>,
+        scope: ScalarScope<'a, 'b, 'c>,
+        context: SimplePredicateContext,
+    ) -> Result<String, CoreError> {
+        match (operator, rhs) {
             (ComparisonOperator::In, PredicateRhs::List(literals)) => {
-                Ok(render_literal_in_predicate(&property, literals))
+                Ok(render_literal_in_predicate(lhs, literals))
             }
             (ComparisonOperator::In, PredicateRhs::TemporalCoercionList(sources)) => {
                 if sources.is_empty() {
                     return Ok("FALSE".to_string());
                 }
-                Ok(format!(
-                    "{property} IN ({})",
-                    self.render_exists_temporal_coercion_list_predicate_rhs(
-                        &predicate.property,
-                        sources,
-                        relationships,
-                        local_nodes,
+                let rendered = if let Some(property) = temporal_property {
+                    self.render_temporal_coercion_list_predicate_rhs_in_scope(
+                        property, sources, scope,
                     )?
-                ))
+                } else {
+                    Self::render_temporal_coercion_list_rhs_for_kind(sources, None)
+                };
+                Ok(format!("{lhs} IN ({rendered})"))
             }
-            (ComparisonOperator::In, _) => Err(CoreError::internal(
-                "validated EXISTS IN predicate did not contain a literal list",
-            )),
+            (ComparisonOperator::In, _) => Err(CoreError::internal(context.in_list_error())),
             (
                 ComparisonOperator::StartsWith
                 | ComparisonOperator::EndsWith
@@ -710,14 +629,10 @@ impl<'a> SqlRenderer<'a> {
                 PredicateRhs::Literal(Literal::String(value))
                 | PredicateRhs::TemporalCoercion { source: value },
             ) => {
-                let operator = StringMatchOperator::from_comparison(predicate.operator)
-                    .ok_or_else(|| {
-                        CoreError::internal(
-                            "validated EXISTS string predicate used a non-string operator",
-                        )
-                    })?;
+                let operator = StringMatchOperator::from_comparison(operator)
+                    .ok_or_else(|| CoreError::internal(context.string_operator_error()))?;
                 Ok(format!(
-                    "{property} LIKE {} ESCAPE '\\'",
+                    "{lhs} LIKE {} ESCAPE '\\'",
                     render_like_pattern(operator, value)
                 ))
             }
@@ -726,29 +641,20 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::EndsWith
                 | ComparisonOperator::Contains,
                 _,
-            ) => Err(CoreError::internal(
-                "validated EXISTS string predicate did not contain a string literal",
-            )),
+            ) => Err(CoreError::internal(context.string_rhs_error())),
             (
                 ComparisonOperator::RegexMatch,
                 PredicateRhs::List(_) | PredicateRhs::TemporalCoercionList(_),
-            ) => Err(CoreError::internal(
-                "validated EXISTS regex predicate did not contain a scalar RHS",
-            )),
+            ) => Err(CoreError::internal(context.regex_rhs_error())),
             (ComparisonOperator::RegexMatch, rhs) => Ok(render_regex_predicate(
-                &property,
-                &self.render_exists_predicate_rhs(
-                    rhs,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )?,
+                lhs,
+                &self.render_predicate_rhs_in_scope(rhs, scope)?,
             )),
             (ComparisonOperator::Equal, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{property} IS NULL"))
+                Ok(format!("{lhs} IS NULL"))
             }
             (ComparisonOperator::NotEqual, PredicateRhs::Literal(Literal::Null)) => {
-                Ok(format!("{property} IS NOT NULL"))
+                Ok(format!("{lhs} IS NOT NULL"))
             }
             (
                 ComparisonOperator::GreaterThan
@@ -756,29 +662,152 @@ impl<'a> SqlRenderer<'a> {
                 | ComparisonOperator::LessThan
                 | ComparisonOperator::LessThanOrEqual,
                 PredicateRhs::Literal(Literal::Null),
-            ) => Err(CoreError::internal(
-                "validated EXISTS predicate contained an invalid null comparison",
-            )),
-            (_, PredicateRhs::TemporalCoercion { source }) => Ok(format!(
-                "{property} {} {}",
-                render_operator(predicate.operator),
-                self.render_exists_temporal_coercion_predicate_rhs(
-                    &predicate.property,
-                    source,
-                    relationships,
-                    local_nodes,
-                )?
-            )),
+            ) => Err(CoreError::internal(context.null_comparison_error())),
+            (_, PredicateRhs::TemporalCoercion { source }) if temporal_property.is_some() => {
+                let property = temporal_property.ok_or_else(|| {
+                    CoreError::internal(
+                        "validated temporal coercion predicate was missing a property",
+                    )
+                })?;
+                Ok(format!(
+                    "{lhs} {} {}",
+                    render_operator(operator),
+                    self.render_temporal_coercion_predicate_rhs_in_scope(property, source, scope)?
+                ))
+            }
             _ => Ok(format!(
-                "{property} {} {}",
-                render_operator(predicate.operator),
-                self.render_exists_predicate_rhs(
-                    &predicate.rhs,
-                    relationships,
-                    local_nodes,
-                    local_aliases,
-                )?
+                "{lhs} {} {}",
+                render_operator(operator),
+                self.render_predicate_rhs_in_scope(rhs, scope)?
             )),
+        }
+    }
+
+    fn render_predicate_rhs_in_scope<'b, 'c>(
+        &self,
+        rhs: &PredicateRhs,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_predicate_rhs(rhs),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self.render_exists_predicate_rhs(rhs, relationships, local_nodes, local_aliases),
+        }
+    }
+
+    fn render_temporal_coercion_predicate_rhs_in_scope<'b, 'c>(
+        &self,
+        property: &PropertyRef,
+        source: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_temporal_coercion_predicate_rhs(property, source),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                ..
+            } => self.render_exists_temporal_coercion_predicate_rhs(
+                property,
+                source,
+                relationships,
+                local_nodes,
+            ),
+        }
+    }
+
+    fn render_temporal_coercion_list_predicate_rhs_in_scope<'b, 'c>(
+        &self,
+        property: &PropertyRef,
+        sources: &[String],
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => {
+                self.render_temporal_coercion_list_predicate_rhs(property, sources)
+            }
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                ..
+            } => self.render_exists_temporal_coercion_list_predicate_rhs(
+                property,
+                sources,
+                relationships,
+                local_nodes,
+            ),
+        }
+    }
+
+    fn render_binding_key_ref_in_scope<'b, 'c>(
+        &self,
+        variable: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_binding_key_ref(variable),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self.render_exists_key_ref(variable, relationships, local_nodes, local_aliases),
+        }
+    }
+
+    fn render_binding_element_id_ref_in_scope<'b, 'c>(
+        &self,
+        variable: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_binding_element_id_ref(variable),
+            ScalarScope::Scoped { .. } => Ok(format!(
+                "CAST({} AS VARCHAR)",
+                self.render_binding_key_ref_in_scope(variable, scope)?
+            )),
+        }
+    }
+
+    fn render_binding_presence_ref_in_scope<'b, 'c>(
+        &self,
+        variable: &str,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_binding_presence_ref(variable),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self.render_scoped_binding_presence_ref(
+                variable,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
+        }
+    }
+
+    fn render_scalar_expression_in_scope<'b, 'c>(
+        &self,
+        expression: &ScalarExpression,
+        scope: ScalarScope<'a, 'b, 'c>,
+    ) -> Result<String, CoreError> {
+        match scope {
+            ScalarScope::TopLevel => self.render_scalar_expression(expression),
+            ScalarScope::Scoped {
+                relationships,
+                local_nodes,
+                local_aliases,
+            } => self.render_scoped_scalar_expression(
+                expression,
+                relationships,
+                local_nodes,
+                local_aliases,
+            ),
         }
     }
 
@@ -854,13 +883,146 @@ impl<'a> SqlRenderer<'a> {
             Some(TemporalKind::ZonedDateTime | TemporalKind::Duration) | None => literal,
         }
     }
+}
 
-    fn render_scalar_predicate_rhs(&self, rhs: &ScalarPredicateRhs) -> Result<String, CoreError> {
-        match rhs {
-            ScalarPredicateRhs::Expression(expression) => self.render_scalar_expression(expression),
-            ScalarPredicateRhs::List(_) => Err(CoreError::internal(
-                "validated scalar literal list predicate reached generic RHS renderer",
-            )),
+#[derive(Clone, Copy)]
+enum SimplePredicateContext {
+    Graph,
+    Key,
+    ElementId,
+    Exists,
+    Scoped,
+}
+
+impl SimplePredicateContext {
+    fn key_from_scope(scope: ScalarScope<'_, '_, '_>) -> Self {
+        match scope {
+            ScalarScope::TopLevel => Self::Key,
+            ScalarScope::Scoped { .. } => Self::Scoped,
+        }
+    }
+
+    fn element_id_from_scope(scope: ScalarScope<'_, '_, '_>) -> Self {
+        match scope {
+            ScalarScope::TopLevel => Self::ElementId,
+            ScalarScope::Scoped { .. } => Self::Scoped,
+        }
+    }
+
+    fn in_list_error(self) -> &'static str {
+        match self {
+            Self::Graph => "validated IN predicate did not contain a literal list",
+            Self::Key => "validated id() IN predicate did not contain a literal list",
+            Self::ElementId => "validated elementId() IN predicate did not contain a literal list",
+            Self::Exists => "validated EXISTS IN predicate did not contain a literal list",
+            Self::Scoped => "validated scoped IN predicate did not contain a literal list",
+        }
+    }
+
+    fn string_operator_error(self) -> &'static str {
+        match self {
+            Self::Graph => "validated string predicate used a non-string operator",
+            Self::Key => "validated id() string predicate used a non-string operator",
+            Self::ElementId => "validated elementId() string predicate used a non-string operator",
+            Self::Exists => "validated EXISTS string predicate used a non-string operator",
+            Self::Scoped => "validated scoped string predicate used a non-string operator",
+        }
+    }
+
+    fn string_rhs_error(self) -> &'static str {
+        match self {
+            Self::Graph => "validated string predicate did not contain a string literal",
+            Self::Key => "validated id() string predicate did not contain a string literal",
+            Self::ElementId => {
+                "validated elementId() string predicate did not contain a string literal"
+            }
+            Self::Exists => "validated EXISTS string predicate did not contain a string literal",
+            Self::Scoped => "validated scoped string predicate did not contain a string literal",
+        }
+    }
+
+    fn regex_rhs_error(self) -> &'static str {
+        match self {
+            Self::Graph => "validated regex predicate did not contain a scalar RHS",
+            Self::Key => "validated id() regex predicate did not contain a scalar RHS",
+            Self::ElementId => "validated elementId() regex predicate did not contain a scalar RHS",
+            Self::Exists => "validated EXISTS regex predicate did not contain a scalar RHS",
+            Self::Scoped => "validated scoped regex predicate did not contain a scalar RHS",
+        }
+    }
+
+    fn null_comparison_error(self) -> &'static str {
+        match self {
+            Self::Graph => "validated graph predicate contained an invalid null comparison",
+            Self::Key => "validated id() predicate contained an invalid null comparison",
+            Self::ElementId => {
+                "validated elementId() predicate contained an invalid null comparison"
+            }
+            Self::Exists => "validated EXISTS predicate contained an invalid null comparison",
+            Self::Scoped => "validated scoped predicate contained an invalid null comparison",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ScalarPredicateContext {
+    TopLevel,
+    Scoped,
+}
+
+impl ScalarPredicateContext {
+    fn from_scope(scope: ScalarScope<'_, '_, '_>) -> Self {
+        match scope {
+            ScalarScope::TopLevel => Self::TopLevel,
+            ScalarScope::Scoped { .. } => Self::Scoped,
+        }
+    }
+
+    fn in_list_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => "validated scalar IN predicate did not contain a literal list",
+            Self::Scoped => "validated scoped scalar IN predicate did not contain a literal list",
+        }
+    }
+
+    fn string_operator_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => "validated scalar string predicate used a non-string operator",
+            Self::Scoped => "validated scoped scalar string predicate used a non-string operator",
+        }
+    }
+
+    fn string_rhs_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => "validated scalar string predicate did not contain a string literal",
+            Self::Scoped => "validated scoped scalar string predicate did not contain a scalar RHS",
+        }
+    }
+
+    fn regex_rhs_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => "validated scalar regex predicate did not contain a scalar RHS",
+            Self::Scoped => "validated scoped scalar regex predicate did not contain a scalar RHS",
+        }
+    }
+
+    fn null_comparison_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => "validated scalar predicate contained an invalid null comparison",
+            Self::Scoped => {
+                "validated scoped scalar predicate contained an invalid null comparison"
+            }
+        }
+    }
+
+    fn list_rhs_error(self) -> &'static str {
+        match self {
+            Self::TopLevel => {
+                "validated scalar literal list predicate reached generic RHS renderer"
+            }
+            Self::Scoped => {
+                "validated scoped scalar literal list predicate reached generic RHS renderer"
+            }
         }
     }
 }
