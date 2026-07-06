@@ -138,14 +138,10 @@ impl SourcesRepo<'_, CoralTx<'_>> {
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
     ) -> Result<Option<i64>, DbError> {
-        let statement = Query::select()
-            .column(Sources::CreatedAtUnixNanos)
-            .from(Sources::Table)
-            .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
-            .and_where(Expr::col(Sources::Name).eq(source_name.as_str()))
-            .to_owned();
-        let row: Option<SourceCreatedAtRow> = self.session.fetch_optional(statement).await?;
-        Ok(row.map(|row| row.created_at_unix_nanos))
+        Ok(self
+            .source_row(workspace_name, source_name)
+            .await?
+            .map(|row| row.created_at_unix_nanos))
     }
 
     async fn source_created_at(
