@@ -6,7 +6,7 @@ use crate::credentials::CredentialStorageKind;
 use crate::sources::SourceName;
 use crate::sources::model::{InstalledSource, SourceOrigin};
 use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources};
-use crate::state::db::{DbError, DbSession, DbWriteSession};
+use crate::state::db::{DbError, DbSession};
 use crate::workspaces::WorkspaceName;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -22,16 +22,6 @@ struct SourceRow {
 struct SourceVariableRow {
     key: String,
     value: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SourceSecretKeyRow {
-    key: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SourceNameRow {
-    name: String,
 }
 
 pub(crate) struct SourcesRepo<'a, S> {
@@ -80,9 +70,10 @@ where
             .and_where(Expr::col(Sources::WorkspaceId).eq(workspace_name.as_str()))
             .order_by(Sources::Name, Order::Asc)
             .to_owned();
-        let rows: Vec<SourceNameRow> = self.session.fetch_all(statement).await?;
-        rows.into_iter()
-            .map(|row| parse_source_name(&row.name).map(|name| name.as_str().to_string()))
+        let names: Vec<String> = self.session.fetch_all_scalars(statement).await?;
+        names
+            .into_iter()
+            .map(|name| parse_source_name(&name).map(|name| name.as_str().to_string()))
             .collect()
     }
 
@@ -135,7 +126,6 @@ where
             .source_secret_keys(workspace_name, &source_name)
             .await?
             .into_iter()
-            .map(|row| row.key)
             .collect();
         Ok(InstalledSource {
             name: source_name,
@@ -170,7 +160,7 @@ where
         &mut self,
         workspace_name: &WorkspaceName,
         source_name: &SourceName,
-    ) -> Result<Vec<SourceSecretKeyRow>, DbError> {
+    ) -> Result<Vec<String>, DbError> {
         let statement = Query::select()
             .column(SourceSecretKeys::Key)
             .from(SourceSecretKeys::Table)
@@ -178,13 +168,13 @@ where
             .and_where(Expr::col(SourceSecretKeys::SourceName).eq(source_name.as_str()))
             .order_by(SourceSecretKeys::Key, Order::Asc)
             .to_owned();
-        self.session.fetch_all(statement).await
+        self.session.fetch_all_scalars(statement).await
     }
 }
 
 impl<S> SourcesRepo<'_, S>
 where
-    S: DbWriteSession,
+    S: DbSession,
 {
     pub(crate) async fn upsert_source(
         &mut self,

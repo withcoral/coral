@@ -75,9 +75,7 @@ mod tests {
     use super::{MIGRATOR, rows_match_current_migrations};
     use crate::state::AppStateLayout;
     use crate::state::db::schema::{SourceSecretKeys, SourceVariables, Sources, Workspaces};
-    use crate::state::db::{
-        CoralDb, DatabaseConfig, DbError, DbSession, DbWriteSession, ResolvedDatabaseConfig,
-    };
+    use crate::state::db::{CoralDb, DatabaseConfig, DbError, DbSession, ResolvedDatabaseConfig};
 
     #[derive(Debug, sqlx::FromRow)]
     struct CountRow {
@@ -413,7 +411,7 @@ mod tests {
         source_name: &str,
     ) -> Result<(), DbError>
     where
-        S: DbWriteSession,
+        S: DbSession,
     {
         session
             .execute_delete(
@@ -428,7 +426,7 @@ mod tests {
 
     async fn delete_workspace<S>(session: &mut S, workspace_id: &str) -> Result<(), DbError>
     where
-        S: DbWriteSession,
+        S: DbSession,
     {
         session
             .execute_delete(

@@ -133,4 +133,31 @@ impl<'a> CoralTx<'a> {
             }
         }
     }
+
+    pub(super) async fn fetch_all_scalars<T>(
+        &mut self,
+        statement: SelectStatement,
+    ) -> Result<Vec<T>, DbError>
+    where
+        T: Send + Unpin,
+        for<'r> (T,): FromRow<'r, SqliteRow>,
+        for<'r> (T,): FromRow<'r, PgRow>,
+    {
+        match &mut self.backend {
+            CoralTxBackend::Sqlite(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
+                sqlx::query_scalar_with::<Sqlite, T, _>(sqlx::AssertSqlSafe(sql), values)
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(Into::into)
+            }
+            CoralTxBackend::Postgres(tx) => {
+                let (sql, values) = statement.build_sqlx(sea_query::PostgresQueryBuilder);
+                sqlx::query_scalar_with::<Postgres, T, _>(sqlx::AssertSqlSafe(sql), values)
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(Into::into)
+            }
+        }
+    }
 }
